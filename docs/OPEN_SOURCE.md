@@ -38,4 +38,4 @@ git diff --cached --stat
 
 GitHub Actions 的 macOS 源码构建使用 `xcode-27`（预览）以满足当前 SDK 27 API，运行目标仍为 macOS 14；Windows job 不安装服务、不生成公开安装包。真实 UI、Finder、权限和两机行为另行验收。
 
-主分支 push 与手动 CI 在检查成功后生成 bootstrap arm64 DMG 和 SHA-256 清单，作为 Actions artifact 保留 14 天；PR 只检查与构建，不发布安装包。该包为 ad-hoc 签名、未经 Apple 公证，不包含 LAN 自动更新签名清单。
+主分支 push 与手动 CI 的独立打包 job 在源码边界及包检查成功后生成 bootstrap arm64 DMG 和 SHA-256 清单，作为 Actions artifact 保留 14 天；测试 job 独立报告结果，存在构建产物不代表测试全部通过；PR 只检查与构建，不发布安装包。该包为 ad-hoc 签名、未经 Apple 公证，不包含 LAN 自动更新签名清单。

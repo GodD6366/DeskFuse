@@ -49,8 +49,29 @@ jobs:
           RUST_TEST_THREADS: '1'
         run: ./scripts/check.sh
 
+  macos-build:
+    name: macOS arm64 DMG
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin
+          rustup component add rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: macos-release
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Validate public source boundary
+        run: python3 scripts/check-repository.py
       - name: Build main-branch bootstrap DMG
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         env:
           CODESIGN_IDENTITY: '-'
           RELEASE_METADATA: ${{ github.workspace }}/release.json
@@ -61,7 +82,6 @@ jobs:
           ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
           python3 scripts/release.py inventory
       - name: Upload main-branch build
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: uniDesk-macos-arm64-${{ github.sha }}

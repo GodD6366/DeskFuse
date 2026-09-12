@@ -10,6 +10,22 @@ struct Node {
     trust: unidesk_identity::MemoryTrustStore,
     store: MemoryRuntimeStore,
 }
+// Preserve evidence for asynchronous multi-node failures without logging real
+// application data: these nodes contain only synthetic in-memory test fixtures.
+impl Drop for Node {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "failed test node {} snapshot: {:?}",
+                self.id,
+                self.runtime.snapshot_view()
+            );
+            while let Ok(event) = self.events.try_recv() {
+                eprintln!("failed test node {} event: {event:?}", self.id);
+            }
+        }
+    }
+}
 impl Node {
     async fn new(seed: u8, name: &str, cert: &[u8], key: &[u8]) -> Self {
         Self::with_trust(
