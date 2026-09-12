@@ -43,11 +43,11 @@ impl Drop for Links {
 }
 impl InputActor {
     fn link_desired(&self, peer: DeviceId) -> bool {
-        self.available
-            && self.network_allowed(peer)
+        // A selected peer may exchange layout metadata without native input
+        // permission. Activation and leases enforce availability separately.
+        self.network_allowed(peer)
             && !self.snapshot.environment.local_suspended
-            && ((self.snapshot.settings.enabled
-                && self.snapshot.settings.participants.contains(&peer))
+            && (self.snapshot.settings.participants.contains(&peer)
                 || self.incoming.as_ref().is_some_and(|a| a.peer == peer))
     }
     pub(super) fn tick_links(&mut self) {

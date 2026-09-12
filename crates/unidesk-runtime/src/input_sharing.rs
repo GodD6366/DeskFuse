@@ -1632,7 +1632,7 @@ mod tests {
                 links: recovery::Links::default(),
                 environment: environment::Environment::default(),
                 outgoing: if controller {
-                    BTreeMap::from([(peer, Activation::ready_fixture(peer, context.clone()))])
+                    BTreeMap::from([(peer, activation.clone())])
                 } else {
                     BTreeMap::new()
                 },
@@ -2016,6 +2016,8 @@ mod tests {
     #[test]
     fn renew_ack_required_and_sender_success_does_not_extend_lease() {
         let (mut actor, peer, context, _, _) = setup(true);
+        // Settle initial environment selection before testing lease renewal.
+        actor.tick_environment();
         actor.request(peer, "display".into());
         let id = *actor.leases.keys().next().unwrap();
         receive(
@@ -2278,6 +2280,9 @@ mod tests {
     #[tokio::test]
     async fn disabled_controller_only_establishes_metadata_links_for_selected_peers() {
         let (mut actor, peer, _, transport, _) = setup(true);
+        // This fixture represents a disabled controller, not an active lease being stopped.
+        actor.outgoing.clear();
+        actor.controller_intents.clear();
         actor.snapshot.settings.enabled = false;
         actor.available = false;
         actor.snapshot.settings.participants.clear();

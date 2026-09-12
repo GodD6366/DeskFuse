@@ -196,6 +196,28 @@ pub struct TransportConnection {
 
 /// A transport implementation used by the actor.
 pub trait TransportProvider: Send + Sync {
+    /// Resolve/classify routes in the provider's address space. In-memory and
+    /// custom providers need not resolve synthetic endpoints through host DNS.
+    fn classify_endpoints(
+        &self,
+        endpoints: Vec<Endpoint>,
+    ) -> ProviderFuture<Vec<unidesk_transport::routes::ClassifiedEndpoint>> {
+        Box::pin(async move {
+            Ok(endpoints
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(index, endpoint)| unidesk_transport::routes::ClassifiedEndpoint {
+                        index,
+                        endpoint,
+                        kind: unidesk_core::InterfaceKind::Other,
+                        input_eligible: false,
+                    },
+                )
+                .collect())
+        })
+    }
+
     fn control_peers(&self) -> unidesk_transport::ControlPeerStream {
         Box::pin(stream::pending())
     }
@@ -400,6 +422,12 @@ impl<T> TransportProvider for Arc<T>
 where
     T: TransportProvider + ?Sized,
 {
+    fn classify_endpoints(
+        &self,
+        endpoints: Vec<Endpoint>,
+    ) -> ProviderFuture<Vec<unidesk_transport::routes::ClassifiedEndpoint>> {
+        (**self).classify_endpoints(endpoints)
+    }
     fn control_peers(&self) -> unidesk_transport::ControlPeerStream {
         (**self).control_peers()
     }
@@ -4231,6 +4259,12 @@ impl<T> TransportProvider for ControlTransportAdapter<T>
 where
     T: unidesk_transport::ControlTransport + 'static,
 {
+    fn classify_endpoints(
+        &self,
+        endpoints: Vec<Endpoint>,
+    ) -> ProviderFuture<Vec<unidesk_transport::routes::ClassifiedEndpoint>> {
+        Box::pin(async move { Ok(unidesk_transport::routes::classify_endpoints(endpoints).await) })
+    }
     fn control_peers(&self) -> unidesk_transport::ControlPeerStream {
         self.inner.control_peers()
     }

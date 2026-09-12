@@ -30,6 +30,7 @@ pub(super) struct DialResult {
     generation: u64,
     failed: Vec<RouteId>,
     resolved: Option<Endpoint>,
+    measurements: Vec<(RouteId, unidesk_core::InterfaceKind, Option<u32>)>,
     result: Result<(RouteCandidate, TransportConnection), RuntimeError>,
 }
 fn retry_delay(failures: u32) -> Duration {
@@ -346,44 +347,42 @@ impl Actor {
             .get(&peer)
             .copied()
             .unwrap_or_default();
-        let classified = unidesk_transport::routes::classify_endpoints(
-            routes.iter().map(|r| r.endpoint.clone()).collect(),
-        )
-        .await;
-        let rtt = measure_route_rtts(
-            self.transport.clone(),
-            peer,
-            classified
-                .iter()
-                .map(|item| item.endpoint.clone())
-                .collect(),
-        )
-        .await;
-        if let Some(state) = self.peers.get_mut(&peer) {
-            for item in &classified {
-                let Some(route) = state.routes.get_mut(&routes[item.index].id) else {
-                    continue;
-                };
-                route.path_kind = Some(item.kind);
-                if let Some(delay) = rtt.get(&(item.endpoint.host.clone(), item.endpoint.port)) {
-                    route.rtt_ms = Some(u32::try_from(delay.as_millis()).unwrap_or(u32::MAX));
-                    if route.health != RouteHealth::Healthy {
-                        route.health = RouteHealth::Unknown;
-                    }
-                }
-            }
-        }
-        let mut candidates =
-            unidesk_transport::routes::sort_classified(classified, preference, &rtt);
-        // A return address is only a tie-break when Auto has no measured RTT.
-        // Explicit 雷电/有线/Wi-Fi must not be overridden by the last inbound IP.
-        if preference == RoutePreference::Automatic && rtt.is_empty() {
-            candidates.sort_by_key(|(_, endpoint)| return_endpoint.as_ref() != Some(endpoint));
-        }
         let installed = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let installed_task = installed.clone();
         let dial_routes = routes.clone();
         let task = tokio::spawn(async move {
+            // Resolution and probes belong to the cancellable dial task, not the
+            // actor: queued revoke/route-change/shutdown must remain responsive.
+            let classified = transport
+                .classify_endpoints(dial_routes.iter().map(|r| r.endpoint.clone()).collect())
+                .await
+                .unwrap_or_default();
+            let rtt = measure_route_rtts(
+                transport.clone(),
+                peer,
+                classified
+                    .iter()
+                    .map(|item| item.endpoint.clone())
+                    .collect(),
+            )
+            .await;
+            let measurements = classified
+                .iter()
+                .map(|item| {
+                    let delay = rtt
+                        .get(&(item.endpoint.host.clone(), item.endpoint.port))
+                        .map(|delay| u32::try_from(delay.as_millis()).unwrap_or(u32::MAX));
+                    (dial_routes[item.index].id, item.kind, delay)
+                })
+                .collect();
+            let mut candidates =
+                unidesk_transport::routes::sort_classified(classified, preference, &rtt);
+            // A return address is only a tie-break when Auto has no measured RTT.
+            // Explicit 雷电/有线/Wi-Fi must not be overridden by the last inbound IP.
+            if preference == RoutePreference::Automatic && rtt.is_empty() {
+                candidates.sort_by_key(|(_, endpoint)| return_endpoint.as_ref() != Some(endpoint));
+            }
+
             let mut failed = vec![];
             let mut result = Err(RuntimeError::Transport("no available control route".into()));
             let mut resolved = None;
@@ -433,6 +432,7 @@ impl Actor {
                     generation,
                     failed,
                     resolved,
+                    measurements,
                     result,
                 })
                 .await;
@@ -485,6 +485,16 @@ impl Actor {
             }
         }
         self.recovery.attempts.remove(&peer);
+        if let Some(state) = self.peers.get_mut(&peer) {
+            for (id, kind, delay) in result.measurements {
+                if let Some(route) = state.routes.get_mut(&id) {
+                    route.path_kind = Some(kind);
+                    if let Some(delay) = delay {
+                        route.rtt_ms = Some(delay);
+                    }
+                }
+            }
+        }
         for route in result.failed {
             self.mark_route_failed(peer, route);
         }
@@ -625,10 +635,11 @@ impl Actor {
         if routes.is_empty() {
             return;
         }
-        let classified = unidesk_transport::routes::classify_endpoints(
-            routes.iter().map(|route| route.endpoint.clone()).collect(),
-        )
-        .await;
+        let classified = self
+            .transport
+            .classify_endpoints(routes.iter().map(|route| route.endpoint.clone()).collect())
+            .await
+            .unwrap_or_default();
         let rtt = measure_route_rtts(
             self.transport.clone(),
             peer,
@@ -721,10 +732,10 @@ async fn measure_route_rtts(
     peer: DeviceId,
     endpoints: Vec<Endpoint>,
 ) -> BTreeMap<(String, u16), Duration> {
-    let mut tasks = Vec::with_capacity(endpoints.len());
-    for endpoint in endpoints {
+    // Keep probes owned by this future so cancelling a dial also drops probes.
+    let probes = endpoints.into_iter().map(|endpoint| {
         let transport = transport.clone();
-        tasks.push(tokio::spawn(async move {
+        async move {
             let started = Instant::now();
             let result = tokio::time::timeout(
                 Duration::from_millis(800),
@@ -737,13 +748,15 @@ async fn measure_route_rtts(
                 }
                 _ => None,
             }
-        }));
-    }
-    let mut measured = BTreeMap::new();
-    for task in tasks {
-        if let Ok(Some((endpoint, delay))) = task.await {
-            measured.insert((endpoint.host, endpoint.port), delay);
         }
+    });
+    let mut measured = BTreeMap::new();
+    for (endpoint, delay) in futures::future::join_all(probes)
+        .await
+        .into_iter()
+        .flatten()
+    {
+        measured.insert((endpoint.host, endpoint.port), delay);
     }
     measured
 }

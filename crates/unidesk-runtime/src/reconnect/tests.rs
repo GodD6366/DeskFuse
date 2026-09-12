@@ -8,6 +8,10 @@ struct ProbeTransport {
     started: Arc<AtomicUsize>,
 }
 impl TransportProvider for ProbeTransport {
+    fn control_generation(&self, peer: DeviceId) -> Option<u64> {
+        self.inner.control_generation(peer)
+    }
+
     fn control_session_alive(&self, peer: DeviceId) -> Option<bool> {
         Some(self.alive.lock().unwrap().contains(&peer))
     }
