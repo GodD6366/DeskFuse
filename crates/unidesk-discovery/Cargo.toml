@@ -11,7 +11,7 @@ publish.workspace = true
 
 
 [dependencies]
-mdns-sd = "=0.21.1"
+mdns-sd = "=0.21.3"
 thiserror = "=2.0.18"
 unidesk-core = { path = "../unidesk-core" }
 
