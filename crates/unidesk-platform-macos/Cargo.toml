@@ -27,7 +27,7 @@ unidesk-input = { path = "../unidesk-input" }
 block2 = "0.6.2"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
-core-graphics = { version = "0.24.0", default-features = false, features = ["link", "highsierra"] }
+core-graphics = { version = "0.25.0", default-features = false, features = ["link", "highsierra"] }
 objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSNotification",
