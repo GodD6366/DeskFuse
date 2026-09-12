@@ -1,0 +1,239 @@
+//! History-only deduplication: transport and pasteboard echo policy stay separate.
+use super::*;
+use unidesk_platform::{MemoryPasteboard, PasteboardItem, PasteboardRepresentation};
+
+fn text(value: &str) -> PasteboardSnapshot {
+    PasteboardSnapshot {
+        text: Some(value.into()),
+        ..Default::default()
+    }
+}
+
+fn item(formats: &[(&str, &[u8])]) -> PasteboardItem {
+    PasteboardItem {
+        representations: formats
+            .iter()
+            .map(|(kind, bytes)| PasteboardRepresentation {
+                type_name: (*kind).into(),
+                data: bytes.to_vec(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn duplicates_refresh_source_snapshot_and_order_without_consuming_ids() {
+    let (sender, mut receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    history.record(text("A"), "本机", &sender);
+    let a_id = history.items[0].0.id;
+    history.record(text("A"), "远端 1", &sender);
+    assert_eq!(history.items.len(), 1);
+    history.record(text("B"), "本机", &sender);
+    let mut latest = text("A");
+    latest.change_count = 99;
+    history.record(latest.clone(), "远端 2", &sender);
+    assert_eq!(history.items.len(), 2);
+    assert_eq!(history.next_id, 2);
+    assert_eq!(history.items[0].0.id, a_id);
+    assert_eq!(history.items[0].0.source, "远端 2");
+    assert_eq!(history.items[0].1, latest);
+    assert_eq!(history.items[1].0.content, "B");
+    let mut last = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if let UiEvent::ClipboardHistory(items) = event {
+            last = items;
+        }
+    }
+    assert_eq!(
+        last,
+        history
+            .items
+            .iter()
+            .map(|(v, _)| v.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn format_order_and_remote_markers_are_ignored_but_latest_snapshot_is_retained() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    let mut first = text("hello");
+    first.items = vec![item(&[
+        ("public.rtf", b"{hello}"),
+        ("public.utf8-plain-text", b"hello"),
+    ])];
+    history.record(first.clone(), "本机", &sender);
+    let id = history.items[0].0.id;
+    let mut latest = first;
+    latest.items[0].representations.reverse();
+    latest.items[0]
+        .representations
+        .push(PasteboardRepresentation {
+            type_name: "com.unidesk.clipboard-origin".into(),
+            data: b"marker".to_vec(),
+        });
+    latest
+        .items
+        .push(item(&[("com.apple.is-remote-clipboard", b"yes")]));
+    latest.change_count = 42;
+    history.record(latest.clone(), "远端", &sender);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].0.id, id);
+    assert_eq!(history.items[0].1, latest);
+    let pasteboard = MemoryPasteboard::new();
+    pasteboard.write_text("other").unwrap();
+    history.restore(id, &pasteboard).unwrap();
+    assert_eq!(pasteboard.read().unwrap().items, latest.items);
+}
+
+#[test]
+fn complete_native_formats_and_item_boundaries_remain_distinct() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    let mut original = text("same visible text");
+    original.items = vec![item(&[("public.rtf", b"bold"), ("app.private", b"v1")])];
+    let mut changed_format = original.clone();
+    changed_format.items[0].representations[0].data = b"italic".to_vec();
+    let mut changed_private = original.clone();
+    changed_private.items[0].representations[1].data = b"v2".to_vec();
+    let mut split_items = original.clone();
+    split_items.items = vec![
+        item(&[("public.rtf", b"bold")]),
+        item(&[("app.private", b"v1")]),
+    ];
+    let mut reversed_items = split_items.clone();
+    reversed_items.items.reverse();
+    for snapshot in [
+        original,
+        changed_format,
+        changed_private,
+        split_items,
+        reversed_items,
+    ] {
+        history.record(snapshot, "本机", &sender);
+    }
+    assert_eq!(history.items.len(), 5);
+}
+
+#[test]
+fn whitespace_and_text_beyond_display_limit_are_not_discarded() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    for value in ["A", "A ", "A\n", "A\r\n"] {
+        history.record(text(value), "本机", &sender);
+    }
+    let prefix = "x".repeat(32_000);
+    history.record(text(&format!("{prefix}a")), "本机", &sender);
+    history.record(text(&format!("{prefix}b")), "远端", &sender);
+    assert_eq!(history.items.len(), 6);
+    assert_eq!(history.items[0].0.content, history.items[1].0.content);
+    assert!(history.items[0].0.content_truncated);
+}
+
+#[test]
+fn image_identity_uses_original_bytes_not_preview() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    let image = image::DynamicImage::new_rgb8(4, 4);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let first = PasteboardSnapshot {
+        png: Some(encoded.into_inner()),
+        ..Default::default()
+    };
+    // Same decodable pixels and preview, different original byte stream.
+    let mut second = first.clone();
+    second
+        .png
+        .as_mut()
+        .unwrap()
+        .extend_from_slice(b"trailing metadata");
+    history.record(first.clone(), "本机", &sender);
+    let id = history.items[0].0.id;
+    history.record(first, "远端", &sender);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].0.id, id);
+    history.record(second, "远端", &sender);
+    assert_eq!(history.items.len(), 2);
+    assert!(history.items[0].0.image_png.is_some());
+    assert_eq!(history.items[0].0.image_png, history.items[1].0.image_png);
+}
+
+#[test]
+fn file_path_sets_take_priority_without_reading_files() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    let mut first = text("old Finder text");
+    first.file_urls = vec!["/missing/source/a".into(), "/missing/source/b".into()];
+    history.record(first, "本机", &sender);
+    let id = history.items[0].0.id;
+    let mut latest = text("new Finder text");
+    latest.file_urls = vec![
+        "/missing/source/b".into(),
+        "/missing/source/a".into(),
+        "/missing/source/a".into(),
+    ];
+    history.record(latest.clone(), "远端", &sender);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].0.id, id);
+    assert_eq!(history.items[0].1, latest);
+    assert_eq!(history.items[0].0.file_paths, latest.file_urls);
+    latest.file_urls = vec!["/different/source/a".into(), "/different/source/b".into()];
+    history.record(latest, "远端", &sender);
+    history.record(text("/missing/source/a"), "本机", &sender);
+    assert_eq!(history.items.len(), 3);
+    assert!(history.restore(id, &MemoryPasteboard::new()).is_err());
+}
+
+#[test]
+fn eviction_and_clear_do_not_leave_stale_dedup_entries() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    for n in 0..50 {
+        history.record(text(&n.to_string()), "本机", &sender);
+    }
+    history.record(text("0"), "远端", &sender);
+    assert_eq!(history.items[0].0.id, 1);
+    assert_eq!(history.items.len(), 50);
+    history.record(text("50"), "本机", &sender);
+    assert!(!history.items.iter().any(|(item, _)| item.content == "1"));
+    history.record(text("1"), "本机", &sender);
+    assert_eq!(history.items[0].0.id, 52);
+    history.items.clear();
+    history.record(text("1"), "本机", &sender);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].0.id, 53);
+}
+
+#[test]
+fn cache_cleanup_removes_only_matching_file_history_after_dedup() {
+    let (sender, _receiver) = unbounded();
+    let mut history = ClipboardHistoryStore::default();
+    let files = PasteboardSnapshot {
+        file_urls: vec!["/synthetic/cache/one/file".into()],
+        ..Default::default()
+    };
+    history.record(files.clone(), "本机", &sender);
+    history.record(files.clone(), "远端", &sender);
+    history.record(text("keep"), "本机", &sender);
+    let cleanup = CacheCleanup {
+        removed_paths: vec![PathBuf::from("/synthetic/cache/one")],
+        ..Default::default()
+    };
+    file_policy::apply_cleanup(
+        cleanup,
+        &mut history,
+        &MemoryPasteboard::new(),
+        &mut None,
+        &sender,
+    );
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].0.content, "keep");
+    history.record(files, "远端", &sender);
+    assert_eq!(history.items.len(), 2);
+    assert_eq!(history.items[0].0.id, 3);
+}

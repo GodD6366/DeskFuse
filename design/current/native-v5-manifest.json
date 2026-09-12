@@ -1,0 +1,59 @@
+{
+  "approvedDate": "2026-09-11",
+  "kind": "design-reference-not-runtime-evidence",
+  "files": [
+    {
+      "file": "06-v5-clipboard.png",
+      "sha256": "ece3d8079288b746f1a59cc1ab42f9d74ec15df8d9137ac964b523f69ca1577f",
+      "tab": "剪贴板",
+      "generationId": "de3e77e0-ebe6-41be-8e7d-19f5f0091906",
+      "conversationId": "b145adbb-d2eb-4581-87b8-f5c7c2cc9367",
+      "assetId": "b7afe930-46f7-4411-91b1-ee648b9e7e78",
+      "takeoverUrl": "https://tools.godd.site:6443/studio/b145adbb-d2eb-4581-87b8-f5c7c2cc9367?generation=de3e77e0-ebe6-41be-8e7d-19f5f0091906",
+      "width": 1556,
+      "height": 1011
+    },
+    {
+      "file": "07-v5-input-sharing.png",
+      "sha256": "66e3ecbcbefbaae90d5e5824381e70f3266c809b76849f98b61109d2a1ec5caf",
+      "tab": "键鼠共享",
+      "generationId": "1c644d63-8a8d-43f4-b817-6eb730f29195",
+      "conversationId": "f6301abd-2669-41b4-b3a3-fe9a8d654f0d",
+      "assetId": "2b2f5379-503d-4f7e-b117-920d852e0399",
+      "takeoverUrl": "https://tools.godd.site:6443/studio/f6301abd-2669-41b4-b3a3-fe9a8d654f0d?generation=1c644d63-8a8d-43f4-b817-6eb730f29195",
+      "width": 1555,
+      "height": 1011
+    },
+    {
+      "file": "08-v5-devices.png",
+      "sha256": "13e3dae59b323ddbabed50c02b9fef064c920c8aa285a74cefd806ccfffb7af7",
+      "tab": "设备",
+      "generationId": "fddd15f8-c5b5-4613-b9dc-6a1871140958",
+      "conversationId": "a9771370-d568-4f8c-b2cb-1f1adadc2c52",
+      "assetId": "2b128873-ce26-4b97-9ff4-411de046c12b",
+      "takeoverUrl": "https://tools.godd.site:6443/studio/a9771370-d568-4f8c-b2cb-1f1adadc2c52?generation=fddd15f8-c5b5-4613-b9dc-6a1871140958",
+      "width": 1556,
+      "height": 1011
+    },
+    {
+      "file": "09-v5-transfers.png",
+      "sha256": "9882b0e4dbf171db4425787ba7d64c9594c58bf825a0dfc1ab6a463598649e89",
+      "tab": "传输",
+      "generationId": "be57a609-6f66-496e-bbfe-dfd68e83f213",
+      "conversationId": "476c282c-1f12-4eb2-88da-76a399e16729",
+      "assetId": "e0c1e62c-59df-4a83-ae97-ac23d81aa44d",
+      "takeoverUrl": "https://tools.godd.site:6443/studio/476c282c-1f12-4eb2-88da-76a399e16729?generation=be57a609-6f66-496e-bbfe-dfd68e83f213",
+      "width": 1556,
+      "height": 1011
+    }
+  ],
+  "inputOverride": "用户旧实现矩形屏幕 + 编号、设备名称、真实尺寸；不实现图片里的壁纸、机身或支架。尺寸采用引擎提供的逻辑桌面大小，标为 pt，不编造物理英寸。",
+  "provider": "Atelier",
+  "model": "gpt-image-2",
+  "generatedOn": "2026-09-11",
+  "requestedSize": "2016x1344",
+  "quality": "high",
+  "referenceAssetIds": [
+    "9b7a8383-831b-4105-95b2-3810a48e00a5"
+  ]
+}

@@ -1,0 +1,34 @@
+[package]
+name = "unidesk-probe"
+
+description = "Headless two-Mac verification probe for uniDesk M1 discovery/pairing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+unidesk-core = { path = "../../crates/unidesk-core" }
+unidesk-discovery = { path = "../../crates/unidesk-discovery" }
+unidesk-identity = { path = "../../crates/unidesk-identity" }
+prost = "0.14"
+unidesk-protocol = { path = "../../crates/unidesk-protocol" }
+unidesk-runtime = { path = "../../crates/unidesk-runtime" }
+unidesk-transport = { path = "../../crates/unidesk-transport" }
+
+quinn.workspace = true
+rustls.workspace = true
+rcgen = "=0.13.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"

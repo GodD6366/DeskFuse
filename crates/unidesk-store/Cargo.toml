@@ -1,0 +1,25 @@
+[package]
+name = "unidesk-store"
+
+description = "SQLite-backed persistence for uniDesk state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+unidesk-core = { path = "../unidesk-core" }
+unidesk-identity = { path = "../unidesk-identity" }
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"

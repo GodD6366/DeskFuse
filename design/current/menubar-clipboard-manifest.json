@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-12",
+  "source": "Atelier bundled CLI",
+  "conversationId": "49453c12-3007-46cf-b031-21c7d8553978",
+  "generationId": "ebea7c16-b246-42b4-bc28-042c333c19cb",
+  "assetId": "f037b316-9281-4ca0-8ae1-b6dcbe271d36",
+  "takeoverUrl": "https://tools.godd.site:6443/studio/49453c12-3007-46cf-b031-21c7d8553978?generation=ebea7c16-b246-42b4-bc28-042c333c19cb",
+  "image": "10-menubar-clipboard.png",
+  "width": 1024,
+  "height": 1536,
+  "sha256": "1183b5806915135a06fa2133b0b78cfd98b43edda7d4d0ea29a3f369b4a68bde",
+  "referenceAssets": [
+    "2d6b3e65-67a7-4d4d-aea4-24acde8aaf2d",
+    "e19fb705-c13b-4f96-9cb0-593580726ce8"
+  ],
+  "visualReview": {
+    "method": "Opened generated local PNG for visual inspection; not an application screenshot",
+    "passed": [
+      "Single menu-bar-anchored panel",
+      "Search, four type filters and source selector",
+      "Six mixed content rows with thumbnail and device metadata",
+      "Subtle blue selection and aligned shortcuts",
+      "Unobscured footer with view-all and copy",
+      "Design-proposal and sample-content caption"
+    ],
+    "notVerified": [
+      "Exact point-sized native layout",
+      "Runtime Liquid Glass",
+      "Keyboard and click handling",
+      "Clipboard restore",
+      "Finder and two-device workflows"
+    ]
+  },
+  "kind": "design-reference-not-runtime-evidence",
+  "approvedDate": "2026-09-12"
+}

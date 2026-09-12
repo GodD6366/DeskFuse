@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560">
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f7f8fb"/>
+    </linearGradient>
+    <linearGradient id="route" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c2e6ff"/>
+      <stop offset="0.5" stop-color="#3c99ff"/>
+      <stop offset="1" stop-color="#b7e9ff"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-100%" width="140%" height="300%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+  <rect width="920" height="560" fill="url(#canvas)"/>
+  <path d="M241 266C343 194 569 194 681 266" fill="none" stroke="#d9edff" stroke-width="10" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M241 266C343 194 569 194 681 266" fill="none" stroke="url(#route)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="455" cy="213" r="7" fill="#f6ffff" stroke="#8ed3ff" stroke-width="2"/>
+  <path d="M148 152l18-11 16 17-16 12Z" fill="#a6d8ff" fill-opacity="0.65"/>
+  <path d="M170 139l13 19-17 12-18-18Z" fill="#b8a8ff" fill-opacity="0.48"/>
+  <path d="M746 140l17 10-1 22-18-11Z" fill="#8dd9ff" fill-opacity="0.65"/>
+  <path d="M760 158l-14 15-17-13 16-17Z" fill="#c8b5ff" fill-opacity="0.42"/>
+  <path d="M187 401c33 31 77 43 126 36" fill="none" stroke="#e2ecff" stroke-width="2"/>
+  <circle cx="214" cy="418" r="6" fill="#b895ff" fill-opacity="0.75"/>
+  <circle cx="286" cy="438" r="5" fill="#9acfff" fill-opacity="0.72"/>
+  <path d="M622 434c44 8 84-7 113-39" fill="none" stroke="#e2ecff" stroke-width="2"/>
+  <circle cx="650" cy="438" r="5" fill="#8fcaff" fill-opacity="0.7"/>
+  <circle cx="716" cy="410" r="6" fill="#bc9dff" fill-opacity="0.7"/>
+  <path d="M0 508H920" stroke="#e4e6eb"/>
+  <text x="460" y="539" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" font-weight="500" fill="#4a4d54">将 uniDesk 拖入 Applications 文件夹</text>
+</svg>

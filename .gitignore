@@ -1,0 +1,59 @@
+# One dependency graph for the application workspace.
+**/target/
+**/Cargo.lock
+!/Cargo.lock
+
+# Local builds, screenshots, logs, source snapshots and device evidence.
+/dist/
+/artifacts/
+*.dmg
+*.app/
+__pycache__/
+*.pyc
+
+# Generated artwork is rebuilt from the committed SVG sources.
+/resources/generated/
+/resources/macos_center_icon.svg
+
+# Keep legacy design directories out of Git; maintained designs live in design/current.
+/design/atelier/
+/design/proposals/
+/design/iterations/
+/design/current/archive/
+/design/BLUESYNC_DESIGN.md
+
+# Local agent installation and machine-specific configuration.
+.agents/
+/.codex/
+/AGENTS.md
+/CLAUDE.md
+.antigravitycli/
+/node
+/skills-lock.json
+.env
+.env.*
+!.env.example
+.DS_Store
+*.p12
+*.pfx
+*.keychain-db
+
+# Local device identity secret.
+identity.key
+
+# Machine-specific signing certificate fingerprint (no private key).
+.codesign-identity
+
+# Reproducible generated native bindings and Swift build artifacts.
+/apps/unidesk-macos/.build/
+/apps/unidesk-macos/.swiftpm/
+/apps/unidesk-macos/Generated/
+/apps/unidesk-macos/Sources/UniDeskEngine/*.swift
+/apps/unidesk-macos/Sources/UniDeskEngineFFI/*.h
+/apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
+
+# Historical development plans remain local; active contracts stay in docs/.
+/docs/INPUT_DATAGRAM_PLAN.md
+/docs/NATIVE_MIGRATION.md
+/docs/archive/
+/docs/history/

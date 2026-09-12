@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/unidesk-core",
+    "crates/unidesk-protocol",
+    "crates/unidesk-store",
+    "crates/unidesk-identity",
+    "crates/unidesk-discovery",
+    "crates/unidesk-transport",
+    "crates/unidesk-runtime",
+    "crates/unidesk-platform",
+    "crates/unidesk-update",
+    "crates/unidesk-platform-macos",
+    "crates/unidesk-platform-windows",
+    "crates/unidesk-transfer",
+    "crates/unidesk-input",
+    "crates/unidesk-engine",
+    "crates/unidesk-ffi",
+    "apps/unidesk-service",
+    "apps/unidesk-probe",
+]
+default-members = ["crates/unidesk-ffi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/GodD6366/uniDesk"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.dependencies]
+anyhow = "=1.0.102"
+bytes = "=1.11.0"
+dirs = "=6.0.0"
+ed25519-dalek = { version = "=3.0.0", features = ["serde"] }
+futures = "=0.3.31"
+mdns-sd = "=0.21.1"
+prost = "=0.14.4"
+quinn = { version = "=0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+security-framework = "=3.7.0"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+sha2 = "=0.11.0"
+thiserror = "=2.0.18"
+tokio = { version = "=1.49.0", features = ["full"] }
+tokio-util = { version = "=0.7.18", features = ["codec", "io", "io-util", "net", "rt", "time"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "fmt"] }
+uuid = { version = "=1.20.0", features = ["serde", "v4"] }
+
+[patch.crates-io]
+# quinn-proto 0.11.17 double-subtracts evicted DATAGRAM bytes and panics while
+# holding the connection lock. Pin the upstream fix until a release includes it.
+# https://github.com/quinn-rs/quinn/pull/2806
+quinn-proto = { git = "https://github.com/quinn-rs/quinn", rev = "48d77bd2e277eba46111360189b42bd50f4c777e" }
+
+# Keep host proc-macro dylibs loadable on newer macOS dyld/linkers.
+# https://github.com/rust-lang/rust/issues/138866
+# This does not disable optimization or change runtime application behavior.
+[profile.release.build-override]
+strip = "none"

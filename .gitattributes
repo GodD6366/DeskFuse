@@ -1,0 +1,9 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.der binary
+# Preserve upstream license bytes and their recorded hashes verbatim.
+resources/licenses/** -text -whitespace

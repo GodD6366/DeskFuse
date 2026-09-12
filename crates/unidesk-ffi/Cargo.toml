@@ -1,0 +1,32 @@
+[package]
+name = "unidesk-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+uniffi = { version = "=0.32.1", features = ["cli"] }
+thiserror = "2"
+futures = "0.3"
+uuid = "1"
+unidesk-input = { path = "../unidesk-input" }
+unidesk-engine = { path = "../unidesk-engine" }
+unidesk-core = { path = "../unidesk-core" }
+unidesk-runtime = { path = "../unidesk-runtime" }
+unidesk-platform = { path = "../unidesk-platform" }
+unidesk-platform-macos = { path = "../unidesk-platform-macos" }
+unidesk-transfer = { path = "../unidesk-transfer" }
+unidesk-update = { path = "../unidesk-update" }
+
+[[bin]]
+name = "unidesk-bindgen"
+path = "src/bindgen.rs"
+
+[lints]
+workspace = true

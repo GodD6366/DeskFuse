@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Release coordinator glue. No signing keys, mutable CI counters, or auto-updater uploads."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+ROOT = Path(__file__).resolve().parent.parent
+ASSETS = ("uniDesk-arm64.dmg", "release.json", "build-info.json", "SHA256SUMS")
+
+
+def version(root: Path = ROOT) -> str:
+    return tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+
+
+def validate(path: Path, expected: str, tag: str | None = None) -> dict:
+    data = json.loads(path.read_text())
+    if set(data) != {"version", "build_number", "release_id"}:
+        raise ValueError("unexpected release descriptor fields")
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", expected):
+        raise ValueError("first-release pipeline requires X.Y.Z (GitHub marks it prerelease)")
+    if data["version"] != expected or (tag is not None and tag != f"v{expected}"):
+        raise ValueError("tag, workspace version and release descriptor must match")
+    if type(data["build_number"]) is not int or not 1 <= data["build_number"] <= 9999:
+        raise ValueError("CFBundleVersion build must be in 1..9999")
+    if not isinstance(data["release_id"], str) or not uuid.UUID(data["release_id"]).int:
+        raise ValueError("release_id must be a nonzero UUID")
+    return data
+
+
+def checksum(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def prepare(out: Path) -> None:
+    if out.exists():
+        raise ValueError("descriptor already exists; remove it explicitly only when preparing a NEW release")
+    ledger = Path(os.environ.get("UNIDESK_RELEASE_LEDGER", str(Path.home() / "Library/Application Support/uniDesk-release/build-ledger"))).resolve()
+    if ledger.is_relative_to(ROOT.resolve()):
+        raise ValueError("release ledger must stay outside the checkout")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["cargo", "run", "--locked", "--quiet", "-p", "unidesk-update", "--bin", "unidesk-release", "--", "next", version(), str(ledger), str(out)], cwd=ROOT, check=True)
+    validate(out, version())
+
+
+def inventory(directory: Path, commit: str) -> None:
+    if not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise ValueError("expected full source commit SHA")
+    release = validate(directory / "release.json", version())
+    write_json(directory / "build-info.json", {
+        "commit": commit, "release": release, "target": "aarch64-apple-darwin",
+        "minimum_macos": "14.0", "signing": "ad-hoc", "notarized": False,
+        "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+        "dmg_sha256": checksum(directory / ASSETS[0]),
+    })
+    (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in ASSETS if name != "SHA256SUMS"))
+    verify_inventory(directory, release, commit)
+
+
+def verify_inventory(directory: Path, release: dict, commit: str) -> None:
+    expected = {name for name in ASSETS if name != "SHA256SUMS"}
+    actual = {}
+    for line in (directory / "SHA256SUMS").read_text().splitlines():
+        match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9._-]+)", line)
+        if not match or match[2] not in expected or match[2] in actual:
+            raise ValueError("invalid checksum manifest")
+        actual[match[2]] = match[1]
+    if set(actual) != expected or any(checksum(directory / name) != digest for name, digest in actual.items()):
+        raise ValueError("release assets failed checksum verification")
+    if json.loads((directory / "release.json").read_text()) != release:
+        raise ValueError("existing release descriptor conflicts with source")
+    info = json.loads((directory / "build-info.json").read_text())
+    if (info.get("commit") != commit or info.get("release") != release
+            or info.get("dmg_sha256") != actual[ASSETS[0]] or info.get("signing") != "ad-hoc"
+            or info.get("notarized") is not False or info.get("target") != "aarch64-apple-darwin"):
+        raise ValueError("existing build information conflicts with source")
+
+
+def api(path: str, *, missing_ok: bool = False) -> dict | None:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise ValueError("GH_TOKEN required")
+    request = urllib.request.Request("https://api.github.com/" + path, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "unidesk-release",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404 and missing_ok:
+            return None
+        raise ValueError(f"GitHub API request failed: HTTP {error.code}") from None
+
+
+def probe(repo: str, tag: str, commit: str) -> bool:
+    # A repository lookup disambiguates a missing tag from missing repo access.
+    api(f"repos/{repo}")
+    release = validate(ROOT / "release.json", version(), tag)
+    remote = api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=True)
+    if remote is None:
+        return False
+    if remote["draft"]:
+        raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
+    if not remote["prerelease"] or {item["name"] for item in remote["assets"]} != set(ASSETS):
+        raise ValueError("existing release type/assets conflict; refusing to overwrite")
+    with tempfile.TemporaryDirectory(prefix="unidesk-release-verify-") as temporary:
+        subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
+        verify_inventory(Path(temporary), release, commit)
+    return True
+
+
+def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
+    release = validate(ROOT / "release.json", version(), tag)
+    verify_inventory(directory, release, commit)
+    if probe(repo, tag, commit):
+        print("Existing published release verified; unchanged.")
+        return
+    notes = (f"macOS 14+ · Apple Silicon (arm64)\n\n"
+             f"**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations.\n\n"
+             f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"
+             "Windows remains experimental source/service work, not an installable desktop release. "
+             "Build/package checks do not establish Finder paste, drag-out, native input permissions or physical two-device acceptance. "
+             "No signed LAN auto-update payload is published.\n\n")
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    heading = f"## [{version()}]"
+    if heading not in changelog:
+        raise ValueError("CHANGELOG entry required for release version")
+    notes += changelog.split(heading, 1)[1].split("\n## ", 1)[0].strip()
+    with tempfile.TemporaryDirectory(prefix="unidesk-release-notes-") as temporary:
+        path = Path(temporary) / "notes.md"
+        path.write_text(notes)
+        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"uniDesk {tag} (prerelease)", "--notes-file", str(path)], check=True)
+        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in ASSETS]], check=True)
+        # Verify uploaded bytes while still a draft. Failure leaves an unpublished draft.
+        download = Path(temporary) / "download"
+        subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", str(download)], check=True)
+        verify_inventory(download, release, commit)
+        subprocess.run(["gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease", "--latest=false"], check=True)
+    if not probe(repo, tag, commit):
+        raise ValueError("release publication was not confirmed")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["version", "prepare", "validate", "inventory", "probe", "publish"])
+    parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
+    parser.add_argument("--directory", type=Path, default=ROOT / "dist")
+    parser.add_argument("--tag")
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
+    parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
+    args = parser.parse_args()
+    if args.command == "version":
+        print(version())
+    elif args.command == "prepare":
+        prepare(args.descriptor)
+    elif args.command == "validate":
+        validate(args.descriptor, version(), args.tag)
+        print("release descriptor verified")
+    elif args.command == "inventory":
+        inventory(args.directory, args.commit or "")
+    else:
+        if not args.tag or not args.repo or not args.commit:
+            parser.error("--repo, --tag and --commit required")
+        if args.command == "publish":
+            publish(args.directory, args.repo, args.tag, args.commit)
+        else:
+            existing = probe(args.repo, args.tag, args.commit)
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                    out.write(f"exists={str(existing).lower()}\n")
+            print("existing release verified" if existing else "new release")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit(f"error: {error}")

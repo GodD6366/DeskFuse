@@ -1,0 +1,38 @@
+[package]
+name = "unidesk-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+unidesk-core = { path = "../../crates/unidesk-core" }
+unidesk-identity = { path = "../../crates/unidesk-identity" }
+unidesk-runtime = { path = "../../crates/unidesk-runtime" }
+unidesk-store = { path = "../../crates/unidesk-store" }
+unidesk-transport = { path = "../../crates/unidesk-transport" }
+unidesk-discovery = { path = "../../crates/unidesk-discovery" }
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
+    "Win32_System_Services", "Win32_System_Pipes", "Win32_System_Threading",
+    "Win32_System_RemoteDesktop", "Win32_Storage_FileSystem"
+] }
+
+[[bin]]
+name = "unidesk-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "unidesk-service-client"
+path = "src/client.rs"
+
+[lints]
+workspace = true

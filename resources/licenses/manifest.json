@@ -1,0 +1,133 @@
+{
+  "block2@0.6.2": {
+    "file": "block2-0.6.2.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "dispatch2@0.3.1": {
+    "file": "dispatch2-0.3.1.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "objc2@0.6.4": {
+    "file": "objc2-0.6.4.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "objc2-app-kit@0.3.2": {
+    "file": "objc2-app-kit-0.3.2.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "objc2-core-foundation@0.3.2": {
+    "file": "objc2-core-foundation-0.3.2.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "objc2-encode@4.1.0": {
+    "file": "objc2-encode-4.1.0.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "objc2-foundation@0.3.2": {
+    "file": "objc2-foundation-0.3.2.txt",
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+  },
+  "yasna@0.5.2": {
+    "file": "yasna-0.5.2.txt",
+    "source": "https://raw.githubusercontent.com/qnighy/yasna.rs/b7e65f9a4c317494cce2d18ea02b3d6eaaea7985/LICENSE-MIT",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "2a7df90e60fd5512b8bca35d3ce90e068f21c52d962855053fd1d9e2e7ca0f16"
+  },
+  "zune-core@0.4.12": {
+    "file": "zune-core-0.4.12.txt",
+    "source": "https://raw.githubusercontent.com/etemesi254/zune-image/f8fbb123d5ed04441e8324a555bfcda0cb1bd28f/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "c6dff146a9f31848ac296faa5a08a4253caf2c384c86f906dc99e7fc0a39cc8c"
+  },
+  "zune-jpeg@0.4.21": {
+    "file": "zune-jpeg-0.4.21.txt",
+    "source": "https://raw.githubusercontent.com/etemesi254/zune-image/fa2c767a01d7d9373911d0bf63e0588553d67e0e/LICENSE.md",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "c6dff146a9f31848ac296faa5a08a4253caf2c384c86f906dc99e7fc0a39cc8c"
+  },
+  "uniffi@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_bindgen@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_core@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_internal_macros@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_macros@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_meta@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_pipeline@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "uniffi_udl@0.32.1": {
+    "file": "uniffi-0.32.1.txt",
+    "source": "https://raw.githubusercontent.com/mozilla/uniffi-rs/35a47433d8f015302fbf608f2b395eff6972c36f/LICENSE",
+    "provenance": "crate .cargo_vcs_info.json",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  "libwebp-sys@0.9.6": {
+    "declaration_only": true,
+    "manifest_file": "Cargo.toml",
+    "source": "https://docs.rs/crate/libwebp-sys/0.9.6/source/Cargo.toml",
+    "manifest_sha256": "2f5696007646185244c73dac6c3be758bfc4f037571bfdc53bdff6ede7f2a50f",
+    "license": "MIT",
+    "standard": "MIT",
+    "reason": "Published binding crate supplies an MIT declaration without dedicated binding license text. Preserve package authors and standard terms; do not invent copyright notices. Vendored libwebp uses the separate BSD terms and patent grant reproduced below.",
+    "archive_notices": [
+      {
+        "file": "vendor/COPYING",
+        "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+      },
+      {
+        "file": "vendor/PATENTS",
+        "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c"
+      },
+      {
+        "file": "vendor/AUTHORS",
+        "sha256": "9f43aafb76998315d1eac1e441fbd8e1edc28107a7d28ae26223d258f577e84a"
+      }
+    ]
+  }
+}

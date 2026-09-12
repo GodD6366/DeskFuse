@@ -1,0 +1,179 @@
+import SwiftUI
+import AppKit
+import UniDeskEngine
+
+struct WorkflowShortcutRecorder: View {
+    @Bindable var store: AppStore
+    @Binding var shortcut: WorkflowKey?
+    var workflowID: String? = nil
+    var onRecordingChange: (Bool) -> Void = { _ in }
+    @State private var recording = false
+    @State private var monitor: Any?
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("全局快捷键").font(.headline)
+                Spacer()
+                if recording {
+                    Button("取消录制") { stop(); message = nil }
+                } else if shortcut != nil {
+                    Button("移除绑定", role: .destructive) { shortcut = nil; message = nil }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button(action: begin) {
+                HStack(spacing: 12) {
+                    Image(systemName: recording ? "record.circle" : "keyboard")
+                        .font(.title3).foregroundStyle(recording ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(recording ? "现在按下组合键" : shortcut == nil ? "点击录制快捷键" : "已设置快捷键")
+                            .font(.body.weight(.medium))
+                        Text(recording ? "按 Esc 取消，原绑定保持不变" : shortcut == nil ? "例如 ⌃ ⌥ V，运行整个图片流程" : "点击此处重新录制")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if !recording, let shortcut { ShortcutKeycaps(shortcut: shortcut.native) }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(recording ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(recording ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: recording ? 2 : 1) }
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(recording ? "正在录制快捷键，按 Esc 取消" : "录制全局快捷键")
+            if let message {
+                Label(message, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.red).font(.caption).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("包含 ⌘、⌥ 或 ⌃ 中至少一个修饰键。绑定在保存后生效。")
+                    .foregroundStyle(.secondary).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+        .onDisappear(perform: stop)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in stop() }
+    }
+    private func begin() {
+        guard store.engine != nil else { message = "引擎尚未就绪，请稍后重试"; return }
+        stop(); recording = true; message = nil; onRecordingChange(true)
+        store.engine?.setRecording(enabled: true)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            MainActor.assumeIsolated {
+                let flags = UInt64(event.modifierFlags.intersection([.shift, .control, .option, .command]).rawValue)
+                if event.keyCode == 53 && flags == 0 { stop(); message = nil; return }
+                guard flags & 0x1c0000 != 0 else { message = "请同时按住 ⌘、⌥ 或 ⌃"; return }
+                if let conflict = conflict(key: event.keyCode, flags: flags) { message = conflict; return }
+                shortcut = WorkflowKey(key_code: event.keyCode, modifiers: flags)
+                message = nil; stop()
+            }
+            return nil
+        }
+    }
+    private func conflict(key: UInt16, flags: UInt64) -> String? {
+        if key == 9 && flags == 0x100000 { return "⌘ V 保留给普通粘贴，请换一组按键" }
+        if key == 53 && flags & 0x1c0000 == 0x1c0000 { return "这组按键用于紧急收回，请换一组按键" }
+        if key == 2 && flags == 0x120000 { return "这组按键用于文件暂存区，请换一组按键" }
+        if store.snapshot?.input.settings.shortcuts.contains(where: { $0.keyCode == key && $0.modifiers == flags }) == true {
+            return "这组按键已用于键鼠控制，请换一组按键"
+        }
+        if let other = store.imageWorkflowDefinitions.first(where: { $0.id != workflowID && $0.enabled && $0.shortcut?.key_code == key && $0.shortcut?.modifiers == flags }) {
+            return "已绑定到“\(other.name)”，请换一组按键"
+        }
+        return nil
+    }
+    private func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if recording { recording = false; store.engine?.setRecording(enabled: false); onRecordingChange(false) }
+    }
+}
+
+struct WorkflowShortcutSettings: View {
+    @Bindable var store: AppStore
+    let manageWorkflows: () -> Void
+    @State private var editing: WorkflowDefinition?
+    var body: some View {
+        Section {
+            ForEach(store.imageWorkflowDefinitions) { flow in
+                HStack(spacing: 12) {
+                    Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary).frame(width: 24)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(flow.name).fontWeight(.medium).lineLimit(1)
+                            if !flow.enabled { Text("已停用").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        Text(flow.steps.map { $0.kind.title }.joined(separator: " → "))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer(minLength: 12)
+                    Button { editing = flow } label: {
+                        if let shortcut = flow.shortcut { ShortcutKeycaps(shortcut: shortcut.native) }
+                        else { Label("设置快捷键", systemImage: "plus").font(.callout) }
+                    }.buttonStyle(.borderless).help("编辑“\(flow.name)”的快捷键")
+                }.padding(.vertical, 5)
+            }
+            if store.imageWorkflowDefinitions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("还没有图片流程").fontWeight(.medium)
+                    Text("先组合压缩、转格式和粘贴，再为整个流程设置快捷键。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }.padding(.vertical, 6)
+            }
+            Button("管理图片流程…", action: manageWorkflows)
+        } header: { Label("图片工作流", systemImage: "photo.on.rectangle") }
+          footer: { Text("点击右侧组合键即可修改。停用的流程不会响应快捷键；全局触发需要辅助功能权限。") }
+        .sheet(item: $editing) { flow in WorkflowShortcutSheet(store: store, initial: flow) { editing = nil } }
+    }
+}
+private struct WorkflowShortcutSheet: View {
+    @Bindable var store: AppStore
+    @State var initial: WorkflowDefinition
+    let close: () -> Void
+    @State private var recording = false
+    @State private var saving = false
+    @State private var failure: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("设置快捷键").font(.title2.bold())
+                Text(initial.name).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+            }
+            WorkflowShortcutRecorder(store: store, shortcut: $initial.shortcut,
+                workflowID: initial.id, onRecordingChange: { recording = $0 })
+                .disabled(saving)
+            if !initial.enabled { Label("流程已停用；保存绑定不会自动启用流程。", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary) }
+            if let failure { Label(failure, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            Divider()
+            HStack {
+                Spacer()
+                Button("取消", action: close).disabled(saving)
+                Button(saving ? "保存中…" : "保存绑定") {
+                    saving = true; failure = nil
+                    Task {
+                        do { try await ImageWorkflowStore.shared.save(initial); close() }
+                        catch { failure = error.userFacingMessage; saving = false }
+                    }
+                }.buttonStyle(.borderedProminent).disabled(recording || saving)
+            }
+        }.padding(24).frame(width: 500)
+        .interactiveDismissDisabled(saving)
+    }
+}
+
+struct ImageWorkflowMenu: View {
+    @Bindable var store: AppStore
+    let historyID: UInt64
+    var body: some View {
+        Menu("使用工作流…", systemImage: "square.stack.3d.up") {
+            ForEach(store.imageWorkflowDefinitions.filter(\.enabled)) { flow in
+                Button(flow.name) { store.runImageWorkflow(flow.id, historyID: historyID) }
+            }
+            if !store.imageWorkflowDefinitions.contains(where: \.enabled) {
+                Text("请先在设置中启用图片流程")
+            }
+        }
+    }
+}

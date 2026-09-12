@@ -1,0 +1,47 @@
+[package]
+name = "unidesk-runtime"
+
+description = "Single-actor Tokio runtime for uniDesk networking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+serde.workspace = true
+unidesk-update = { path = "../unidesk-update" }
+serde_json = "1"
+semver = "1"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+fs2 = "0.4"
+ed25519-dalek = "2.1"
+futures = "0.3"
+thiserror = "2"
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "time"] }
+unidesk-core = { path = "../unidesk-core" }
+unidesk-input = { path = "../unidesk-input" }
+unidesk-discovery = { path = "../unidesk-discovery" }
+unidesk-identity = { path = "../unidesk-identity" }
+unidesk-protocol = { path = "../unidesk-protocol" }
+unidesk-store = { path = "../unidesk-store" }
+unidesk-transport = { path = "../unidesk-transport" }
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = "0.10"
+rcgen = "=0.13.2"
+async-trait = "=0.1.92"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "=0.31.3", default-features = false, features = ["time"] }
