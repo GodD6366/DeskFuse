@@ -43,6 +43,10 @@ jobs:
           python3 scripts/check-repository.py
           python3 -m unittest discover -s scripts/tests -v
       - name: Rust checks
+        # Loopback QUIC tests each own a multi-thread runtime and real deadlines;
+        # do not oversubscribe the small hosted runner with multiple such tests.
+        env:
+          RUST_TEST_THREADS: '1'
         run: ./scripts/check.sh
 
       - name: Build main-branch bootstrap DMG

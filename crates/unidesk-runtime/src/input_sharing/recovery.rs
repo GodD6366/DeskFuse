@@ -87,7 +87,20 @@ impl InputActor {
             }
             match done.result {
                 Ok(()) => {
-                    self.links.retries.remove(&done.peer);
+                    if self
+                        .transport
+                        .input_contexts(done.peer)
+                        .iter()
+                        .any(ConnectionContext::input_eligible)
+                    {
+                        self.links.retries.remove(&done.peer);
+                    } else {
+                        // A provider acknowledgement is not yet an eligible
+                        // physical LAN link. Avoid an immediate retry loop.
+                        self.links
+                            .retries
+                            .insert(done.peer, (0, Instant::now() + Duration::from_secs(2)));
+                    }
                     self.attempted.remove(&done.peer);
                 }
                 Err(error) => {
@@ -174,7 +187,7 @@ impl InputActor {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn disabled_input_cancels_and_joins_link_reconstruction() {
+    async fn deselected_peer_cancels_and_joins_metadata_link_reconstruction() {
         let (mut actor, peer, _, _, _) = super::super::tests::setup(true);
         let cancelled = Arc::new(AtomicBool::new(false));
         struct Cancelled(Arc<AtomicBool>);
@@ -199,7 +212,9 @@ mod tests {
                 task,
             },
         );
-        actor.available = false;
+        // Permission loss alone may retain selected-peer display metadata;
+        // deselection removes that explicit peer scope and cancels the task.
+        actor.snapshot.settings.participants.clear();
         actor.tick_links();
         actor.reap_links().await;
         assert!(actor.links.active.is_empty());

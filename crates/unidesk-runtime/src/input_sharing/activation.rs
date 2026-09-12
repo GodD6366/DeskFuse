@@ -1515,15 +1515,24 @@ mod tests {
         for remove in [false, true] {
             let (mut sender, peer, _, _, _) = setup(true);
             let intent = sender.outgoing[&peer].intent_id;
+            let mut settings = sender.snapshot.settings.clone();
             if remove {
-                sender.snapshot.settings.participants.clear();
+                settings.participants.clear();
             } else {
-                sender.snapshot.settings.enabled = false;
+                settings.enabled = false;
             }
+            // Exercise the persisted settings command, not a direct mutation
+            // that bypasses controller-intent reconciliation.
+            sender
+                .command(RuntimeCommand::SetInputSharingSettings(settings.clone()))
+                .await;
             sender.tick_activations();
             assert!(sender.outgoing.is_empty());
-            sender.snapshot.settings.enabled = true;
-            sender.snapshot.settings.participants = vec![peer];
+            settings.enabled = true;
+            settings.participants = vec![peer];
+            sender
+                .command(RuntimeCommand::SetInputSharingSettings(settings))
+                .await;
             sender.tick_activations();
             assert_ne!(sender.outgoing[&peer].intent_id, intent);
         }

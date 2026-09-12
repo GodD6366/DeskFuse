@@ -389,7 +389,7 @@ async fn real_quic_expired_invitation_releases_prompt_without_trust() {
         &identity,
     )
     .unwrap();
-    let offer = NetworkOffer::signed(roster, b.id, now_unix_ms() + 700, &identity).unwrap();
+    let offer = NetworkOffer::signed(roster, b.id, now_unix_ms() + 3_000, &identity).unwrap();
     let payload = SignedNetworkOperation::signed(NetworkOperation::Offer(offer), &identity)
         .unwrap()
         .encode()
