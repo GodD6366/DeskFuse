@@ -206,6 +206,12 @@ pub fn session_is_active() -> bool {
         && value("CGSSessionScreenIsLocked") != Some(true)
 }
 
+// Capture and injection must stay responsive while the app is in the background.
+fn prioritize_current_thread() {
+    use objc2_foundation::{NSQualityOfService, NSThread};
+    NSThread::currentThread().setQualityOfService(NSQualityOfService::UserInteractive);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,10 +266,4 @@ mod tests {
         d.pause();
         assert!(d.arm(a, Duration::from_millis(1500)));
     }
-}
-
-// Capture and injection must stay responsive while the app is in the background.
-fn prioritize_current_thread() {
-    use objc2_foundation::{NSQualityOfService, NSThread};
-    NSThread::currentThread().setQualityOfService(NSQualityOfService::UserInteractive);
 }

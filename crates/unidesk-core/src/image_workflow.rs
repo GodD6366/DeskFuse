@@ -84,15 +84,14 @@ impl ImageWorkflow {
         if self.steps.is_empty() || self.steps.len() > 32 {
             return Err("流程需要 1–32 个步骤".into());
         }
-        if let Some(s) = &self.shortcut {
-            if s.key_code > 127
+        if let Some(s) = &self.shortcut
+            && (s.key_code > 127
                 || s.modifiers & !0x1e0000 != 0
                 || s.modifiers & 0x1c0000 == 0
                 || (s.key_code == 9 && s.modifiers == 0x100000)
-                || (s.key_code == 53 && s.modifiers & 0x1c0000 == 0x1c0000)
-            {
-                return Err("快捷键必须含 ⌘/⌥/⌃，且不能占用普通粘贴或紧急收回".into());
-            }
+                || (s.key_code == 53 && s.modifiers & 0x1c0000 == 0x1c0000))
+        {
+            return Err("快捷键必须含 ⌘/⌥/⌃，且不能占用普通粘贴或紧急收回".into());
         }
         for (i, s) in self.steps.iter().enumerate() {
             let output = matches!(s.kind, WorkflowStepKind::Copy | WorkflowStepKind::Paste);
@@ -101,7 +100,7 @@ impl ImageWorkflow {
             }
             if !(1..=100).contains(&s.quality)
                 || s.target_bytes
-                    .is_some_and(|n| n < 1024 || n > 128 * 1024 * 1024)
+                    .is_some_and(|n| !(1024..=128 * 1024 * 1024).contains(&n))
                 || s.max_edge.is_some_and(|n| n == 0 || n > 16384)
                 || s.scale_percent.is_some_and(|n| n == 0 || n > 100)
             {

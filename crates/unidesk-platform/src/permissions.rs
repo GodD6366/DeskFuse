@@ -132,5 +132,7 @@ pub trait PermissionService: Send + Sync {
         self.snapshot().status(kind)
     }
 
+    /// # Errors
+    /// Returns an error when the platform cannot open the requested settings pane.
     fn open_system_settings(&self, kind: PermissionKind) -> PlatformResult<()>;
 }

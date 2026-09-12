@@ -1,5 +1,7 @@
 //! Typed workflow API; definitions and all execution remain owned by Rust.
-use super::*;
+// UniFFI exports require owned arguments across the native language boundary.
+#![allow(clippy::needless_pass_by_value)]
+use super::{Engine, EngineError, Shortcut, failure};
 use unidesk_core::image_workflow as core_workflow;
 use unidesk_engine::image_workflow as worker;
 #[derive(Clone, Copy, Debug, uniffi::Enum)]
@@ -218,6 +220,8 @@ impl From<worker::ImageWorkflowRun> for ImageWorkflowRun {
 }
 #[uniffi::export]
 impl Engine {
+    /// # Errors
+    /// Returns an error if the engine is stopped or stored workflows cannot be read.
     pub fn image_workflows(&self) -> Result<Vec<ImageWorkflow>, EngineError> {
         self.active()?;
         Ok(self
@@ -228,39 +232,45 @@ impl Engine {
             .map(Into::into)
             .collect())
     }
+    /// # Errors
+    /// Returns an error for an invalid workflow, reserved shortcut, unavailable engine or persistence failure.
     pub fn save_image_workflow(&self, workflow: ImageWorkflow) -> Result<(), EngineError> {
         self.active()?;
-        if workflow.enabled {
-            if let Some(shortcut) = &workflow.shortcut {
-                let state = self.state.lock().map_err(failure)?;
-                let settings = &state.model.input_sharing.settings.shortcuts;
-                if [
-                    &settings.left,
-                    &settings.right,
-                    &settings.up,
-                    &settings.down,
-                    &settings.lock,
-                ]
-                .iter()
-                .any(|s| s.key_code == shortcut.key_code && s.modifiers == shortcut.modifiers)
-                {
-                    return Err(failure("该快捷键已被键鼠共享占用"));
-                }
-                if shortcut.key_code == 2 && shortcut.modifiers == 0x120000 {
-                    return Err(failure("该快捷键用于打开文件暂存区"));
-                }
+        if workflow.enabled
+            && let Some(shortcut) = &workflow.shortcut
+        {
+            let state = self.state.lock().map_err(failure)?;
+            let settings = &state.model.input_sharing.settings.shortcuts;
+            if [
+                &settings.left,
+                &settings.right,
+                &settings.up,
+                &settings.down,
+                &settings.lock,
+            ]
+            .iter()
+            .any(|s| s.key_code == shortcut.key_code && s.modifiers == shortcut.modifiers)
+            {
+                return Err(failure("该快捷键已被键鼠共享占用"));
+            }
+            if shortcut.key_code == 2 && shortcut.modifiers == 0x0012_0000 {
+                return Err(failure("该快捷键用于打开文件暂存区"));
             }
         }
         self.workflows.save(workflow.into()).map_err(failure)?;
         self.refresh_workflow_hotkeys();
         Ok(())
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or the stored workflow cannot be deleted.
     pub fn delete_image_workflow(&self, id: String) -> Result<(), EngineError> {
         self.active()?;
         self.workflows.delete(&id).map_err(failure)?;
         self.refresh_workflow_hotkeys();
         Ok(())
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or the workflow/input cannot be admitted.
     pub fn run_image_workflow(
         &self,
         workflow_id: String,
@@ -283,6 +293,8 @@ impl Engine {
             .start(workflow_id, input, output, target_pid)
             .map_err(failure)
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or the requested run is unavailable.
     pub fn image_workflow_run(&self, run_id: String) -> Result<ImageWorkflowRun, EngineError> {
         self.active()?;
         self.workflows
@@ -290,10 +302,14 @@ impl Engine {
             .map(Into::into)
             .map_err(failure)
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or the requested run cannot be cancelled.
     pub fn cancel_image_workflow(&self, run_id: String) -> Result<(), EngineError> {
         self.active()?;
         self.workflows.cancel(&run_id).map_err(failure)
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or system shortcuts cannot be enumerated.
     pub fn system_shortcuts(&self) -> Result<Vec<SystemShortcut>, EngineError> {
         self.active()?;
         Ok(worker::system_shortcuts()

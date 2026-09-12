@@ -702,11 +702,7 @@ impl Sync {
                                 .lock()
                                 .ok()
                                 .map(|mut store| {
-                                    file_policy::register_offers(
-                                        &mut store,
-                                        &source,
-                                        targets.into_iter(),
-                                    )
+                                    file_policy::register_offers(&mut store, &source, targets)
                                 })
                                 .unwrap_or_default();
                             for (peer, id) in offers {

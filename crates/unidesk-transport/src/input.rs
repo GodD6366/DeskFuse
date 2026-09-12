@@ -621,14 +621,13 @@ impl InputHub {
                 }
             }
             rx.close();
-            if let Ok(mut writers) = hub.writers.lock() {
-                if writers
+            if let Ok(mut writers) = hub.writers.lock()
+                && writers
                     .get(&key)
                     .is_some_and(|current| Arc::ptr_eq(current, &rx))
                 {
                     writers.remove(&key);
                 }
-            }
         });
         tx
     }

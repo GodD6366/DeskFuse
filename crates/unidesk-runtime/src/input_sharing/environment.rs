@@ -84,11 +84,12 @@ impl InputActor {
             return;
         }
         self.environment.temporary = Some(controller);
-        if remember && let Some(ssid) = ssid {
-            if self.environment.rules.contains_key(&ssid) || self.environment.rules.len() < 64 {
-                self.environment.rules.insert(ssid, controller);
-                self.environment.dirty = true;
-            }
+        if remember
+            && let Some(ssid) = ssid
+            && (self.environment.rules.contains_key(&ssid) || self.environment.rules.len() < 64)
+        {
+            self.environment.rules.insert(ssid, controller);
+            self.environment.dirty = true;
         }
         self.environment.last_sent = None;
     }

@@ -4613,6 +4613,7 @@ where
 /// Deterministic in-memory transport provider.
 #[derive(Clone)]
 pub struct MemoryTransport {
+    generations: Arc<Mutex<BTreeMap<DeviceId, u64>>>,
     remote_hellos: Arc<Mutex<BTreeMap<DeviceId, Hello>>>,
     registered_identities: Arc<Mutex<BTreeMap<DeviceId, [u8; 32]>>>,
     failures: Arc<Mutex<BTreeSet<RouteId>>>,
@@ -4648,6 +4649,7 @@ impl MemoryTransport {
     pub fn new() -> Self {
         let (inbox, _) = broadcast::channel(128);
         Self {
+            generations: Arc::default(),
             remote_hellos: Arc::new(Mutex::new(BTreeMap::new())),
             registered_identities: Arc::new(Mutex::new(BTreeMap::new())),
             failures: Arc::new(Mutex::new(BTreeSet::new())),
@@ -4712,6 +4714,25 @@ impl MemoryTransport {
 }
 
 impl TransportProvider for MemoryTransport {
+    fn control_generation(&self, peer: DeviceId) -> Option<u64> {
+        self.generations.lock().ok()?.get(&peer).copied()
+    }
+
+    fn send_message_on_session(
+        &self,
+        peer: DeviceId,
+        generation: u64,
+        message: PeerMessage,
+    ) -> ProviderFuture<()> {
+        let transport = self.clone();
+        Box::pin(async move {
+            if transport.control_generation(peer) != Some(generation) {
+                return Err(RuntimeError::Transport("obsolete control session".into()));
+            }
+            transport.send_message(peer, message).await
+        })
+    }
+
     fn register_peer_identity(
         &self,
         peer_id: DeviceId,
@@ -4751,8 +4772,9 @@ impl TransportProvider for MemoryTransport {
         let failures = self.failures.clone();
         let revoked = self.revoked.clone();
         let count = self.connect_count.clone();
+        let generations = self.generations.clone();
         Box::pin(async move {
-            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let generation = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u64 + 1;
             if revoked
                 .lock()
                 .map_err(|_| RuntimeError::Transport("revocation set is poisoned".to_owned()))?
@@ -4774,6 +4796,10 @@ impl TransportProvider for MemoryTransport {
                 .map_err(|_| RuntimeError::Transport("hello map is poisoned".to_owned()))?
                 .get(&peer_id)
                 .cloned();
+            generations
+                .lock()
+                .map_err(|_| RuntimeError::Transport("generation map is poisoned".into()))?
+                .insert(peer_id, generation);
             Ok(TransportConnection {
                 peer_id,
                 route_id: route.id,
@@ -4822,11 +4848,16 @@ impl TransportProvider for MemoryTransport {
     fn revoke_peer(&self, peer_id: DeviceId) -> ProviderFuture<()> {
         let revoked = self.revoked.clone();
         let count = self.disconnect_count.clone();
+        let generations = self.generations.clone();
         Box::pin(async move {
             revoked
                 .lock()
                 .map_err(|_| RuntimeError::Transport("revocation set is poisoned".to_owned()))?
                 .insert(peer_id);
+            generations
+                .lock()
+                .map_err(|_| RuntimeError::Transport("generation map is poisoned".into()))?
+                .remove(&peer_id);
             count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         })
@@ -4843,9 +4874,14 @@ impl TransportProvider for MemoryTransport {
         })
     }
 
-    fn disconnect(&self, _peer_id: DeviceId) -> ProviderFuture<()> {
+    fn disconnect(&self, peer_id: DeviceId) -> ProviderFuture<()> {
         let count = self.disconnect_count.clone();
+        let generations = self.generations.clone();
         Box::pin(async move {
+            generations
+                .lock()
+                .map_err(|_| RuntimeError::Transport("generation map is poisoned".into()))?
+                .remove(&peer_id);
             count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         })
@@ -4939,6 +4975,64 @@ mod tests {
             .to_bytes()
             .to_vec();
         (DeviceId::from_bytes(id), hello)
+    }
+
+    #[tokio::test]
+    async fn memory_transport_pinned_requests_follow_connection_generation() {
+        let (peer, hello) = hello();
+        let transport = MemoryTransport::new();
+        transport.set_remote_hello(peer, hello.clone());
+        let route = RouteCandidate::new(
+            Endpoint::new("127.0.0.1", 42424).unwrap(),
+            RouteSource::Mdns,
+            RouteHealth::Healthy,
+            Capabilities::NETWORK,
+        );
+        let payload = || {
+            PeerMessage::Clipboard(
+                ClipboardPayload::new("text/plain", b"fixture".to_vec(), 1).unwrap(),
+            )
+        };
+        assert_eq!(transport.control_generation(peer), None);
+        transport
+            .connect(hello.clone(), peer, route.clone())
+            .await
+            .unwrap();
+        let first = transport.control_generation(peer).unwrap();
+        transport
+            .send_message_on_session(peer, first, payload())
+            .await
+            .unwrap();
+        transport.disconnect(peer).await.unwrap();
+        assert_eq!(transport.control_generation(peer), None);
+        assert!(
+            transport
+                .send_message_on_session(peer, first, payload())
+                .await
+                .is_err()
+        );
+        transport.connect(hello, peer, route).await.unwrap();
+        let second = transport.control_generation(peer).unwrap();
+        assert_ne!(first, second);
+        assert!(
+            transport
+                .send_message_on_session(peer, first, payload())
+                .await
+                .is_err()
+        );
+        transport
+            .send_message_on_session(peer, second, payload())
+            .await
+            .unwrap();
+        transport.revoke_peer(peer).await.unwrap();
+        assert_eq!(transport.control_generation(peer), None);
+        assert!(
+            transport
+                .send_message_on_session(peer, second, payload())
+                .await
+                .is_err()
+        );
+        assert_eq!(transport.sent_messages().len(), 2);
     }
 
     #[derive(Clone)]

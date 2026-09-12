@@ -1,3 +1,5 @@
+// UniFFI exports require owned arguments across the native language boundary.
+#![allow(clippy::needless_pass_by_value)]
 use unidesk_core as core;
 use unidesk_engine::{model, state::EngineState};
 
@@ -13,6 +15,7 @@ impl From<String> for EngineError {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // Independent device capability/status flags.
 pub struct Device {
     pub id: String,
     pub name: String,
@@ -79,8 +82,7 @@ fn device_routes(device: &model::Device, public_network_enabled: bool) -> Vec<De
                 failures: route.failure_count,
                 path: route
                     .path_kind
-                    .map(core::InterfaceKind::label)
-                    .unwrap_or("")
+                    .map_or("", core::InterfaceKind::label)
                     .into(),
                 rtt_ms: route.rtt_ms,
             }
@@ -161,6 +163,7 @@ pub struct Transfer {
     pub outgoing: bool,
 }
 #[derive(Clone, Debug, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // Independent file policy switches.
 pub struct FileSettings {
     pub prefetch: bool,
     pub threshold: u64,
@@ -266,6 +269,8 @@ pub struct InputSettings {
     pub shortcuts: Vec<Shortcut>,
 }
 impl InputSettings {
+    /// # Errors
+    /// Returns an error for invalid device IDs, shortcut count, display placements or input settings.
     pub fn into_core(
         self,
         previous: &core::InputSharingSettings,
@@ -306,19 +311,20 @@ impl InputSettings {
                 })
             })
             .collect::<Result<_, EngineError>>()?;
-        if self.shortcuts.len() != 5 {
-            return Err("快捷键配置需要五个方向/锁定按键".to_string().into());
-        }
-        let mut keys = self.shortcuts.into_iter().map(|s| core::InputShortcut {
+        let [left, right, up, down, lock]: [Shortcut; 5] = self
+            .shortcuts
+            .try_into()
+            .map_err(|_| EngineError::from("快捷键配置需要五个方向/锁定按键".to_string()))?;
+        let key = |s: Shortcut| core::InputShortcut {
             key_code: s.key_code,
             modifiers: s.modifiers,
-        });
+        };
         s.shortcuts = core::InputShortcutBindings {
-            left: keys.next().unwrap(),
-            right: keys.next().unwrap(),
-            up: keys.next().unwrap(),
-            down: keys.next().unwrap(),
-            lock: keys.next().unwrap(),
+            left: key(left),
+            right: key(right),
+            up: key(up),
+            down: key(down),
+            lock: key(lock),
         };
         s.validate().map_err(|e| EngineError::from(e.to_string()))?;
         Ok(s)
@@ -388,6 +394,7 @@ pub struct EnvironmentRule {
     pub controller: String,
 }
 #[derive(Clone, Debug, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // Independent native status flags.
 pub struct InputState {
     pub settings: InputSettings,
     pub summary: String,
@@ -406,6 +413,7 @@ pub struct InputState {
     pub rules: Vec<EnvironmentRule>,
 }
 #[derive(Clone, Debug, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // Independent native status flags.
 pub struct UpdateState {
     pub version: String,
     pub build: u64,
@@ -421,6 +429,7 @@ pub struct UpdateState {
     pub error: Option<String>,
 }
 #[derive(Clone, Debug, uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)] // Independent UI state flags in an FFI record.
 pub struct EngineSnapshot {
     pub revision: u64,
     pub local_id: String,
@@ -534,6 +543,7 @@ pub enum EngineCommand {
     RefreshPermissions,
 }
 #[derive(Clone, Debug, uniffi::Enum)]
+#[allow(clippy::large_enum_variant)] // UniFFI exports value records, not Box<record>.
 pub enum EngineEvent {
     ImageWorkflowRun {
         run: crate::ImageWorkflowRun,
@@ -581,6 +591,7 @@ pub enum ExportOutcome {
 }
 
 impl From<&EngineState> for EngineSnapshot {
+    #[allow(clippy::too_many_lines)] // Single field-by-field native snapshot projection.
     fn from(s: &EngineState) -> Self {
         let m = &s.model;
         let input = &m.input_sharing;
@@ -635,8 +646,7 @@ impl From<&EngineState> for EngineSnapshot {
                                 devices
                                     .iter()
                                     .find(|p| p.id == id)
-                                    .map(|p| p.name.clone())
-                                    .unwrap_or_else(|| id.clone())
+                                    .map_or_else(|| id.clone(), |p| p.name.clone())
                             },
                             x: screen.x,
                             y: screen.y,
@@ -685,7 +695,7 @@ impl From<&EngineState> for EngineSnapshot {
                     preview: h.preview.clone(),
                     source: h.source.clone(),
                     has_image: h.image_png.is_some(),
-                    file_count: h.file_paths.len() as u32,
+                    file_count: u32::try_from(h.file_paths.len()).unwrap_or(u32::MAX),
                 })
                 .collect(),
             transfers: m
@@ -791,12 +801,10 @@ impl From<&EngineState> for EngineSnapshot {
                     .collect(),
             },
             update: UpdateState {
-                version: m
-                    .updates
-                    .installed
-                    .as_ref()
-                    .map(|i| i.version.to_string())
-                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").into()),
+                version: m.updates.installed.as_ref().map_or_else(
+                    || env!("CARGO_PKG_VERSION").into(),
+                    |i| i.version.to_string(),
+                ),
                 build: m.updates.installed.as_ref().map_or(0, |i| i.build_number),
                 checking: m.updates.checking,
                 available: m.updates.installed.is_some(),
@@ -839,6 +847,8 @@ pub struct LayoutOffset {
 }
 
 #[uniffi::export]
+/// # Errors
+/// Returns an error for invalid device/display identifiers or invalid layout geometry.
 pub fn preview_display_move(
     displays: Vec<Display>,
     device_id: String,

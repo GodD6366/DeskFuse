@@ -159,18 +159,18 @@ impl ImageWorkflowService {
         Ok(())
     }
     fn update(&self, id: &str, edit: impl FnOnce(&mut ImageWorkflowRun)) {
-        if let Ok(mut jobs) = self.jobs.lock() {
-            if let Some(job) = jobs.get_mut(id) {
-                edit(&mut job.run);
-                self.bridge.workflow_notify(job.run.clone());
-            }
+        if let Ok(mut jobs) = self.jobs.lock()
+            && let Some(job) = jobs.get_mut(id)
+        {
+            edit(&mut job.run);
+            self.bridge.workflow_notify(job.run.clone());
         }
     }
     fn external(&self, id: &str, active: bool) {
-        if let Ok(mut jobs) = self.jobs.lock() {
-            if let Some(job) = jobs.get_mut(id) {
-                job.external = active;
-            }
+        if let Ok(mut jobs) = self.jobs.lock()
+            && let Some(job) = jobs.get_mut(id)
+        {
+            job.external = active;
         }
     }
     pub fn start(
@@ -479,16 +479,16 @@ impl ImageWorkflowService {
             }
         };
         // A final explicit format must not be accidentally replaced by a compatibility TIFF.
-        if let Some(limit) = target {
-            if result.data.len() as u64 > limit {
-                return Err("最终图片无法满足目标体积，请增大上限".into());
-            }
+        if let Some(limit) = target
+            && result.data.len() as u64 > limit
+        {
+            return Err("最终图片无法满足目标体积，请增大上限".into());
         }
         check_cancel(cancel)?;
-        if let (Some(path), Some(stamp)) = (&source_path, &source_fingerprint) {
-            if &file_stamp(path)? != stamp {
-                return Err("源文件已变化，请重新运行流程".into());
-            }
+        if let (Some(path), Some(stamp)) = (&source_path, &source_fingerprint)
+            && &file_stamp(path)? != stamp
+        {
+            return Err("源文件已变化，请重新运行流程".into());
         }
         let output_path =
             destination.join(format!("{}-processed.{}", stem, result.format.extension()));

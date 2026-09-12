@@ -58,6 +58,7 @@ impl FilePolicy {
             .is_some_and(|offer| offer.id == id && offer.requested)
     }
 
+    #[allow(clippy::too_many_arguments)] // Coordinates the existing clipboard task state.
     pub(super) fn connection_lost(
         &mut self,
         peer: DeviceId,
@@ -68,14 +69,13 @@ impl FilePolicy {
         target: &AtomicI32,
         ui: &UnboundedSender<UiEvent>,
     ) {
-        if self.pending.as_ref().is_some_and(|p| p.peer == peer) {
-            if let Some(offer) = self.pending.take() {
-                if pasteboard.change_count().ok() == Some(offer.change_count) {
-                    flag.store(false, Ordering::Release);
-                    requested.store(false, Ordering::Release);
-                    target.store(0, Ordering::Release);
-                }
-            }
+        if self.pending.as_ref().is_some_and(|p| p.peer == peer)
+            && let Some(offer) = self.pending.take()
+            && pasteboard.change_count().ok() == Some(offer.change_count)
+        {
+            flag.store(false, Ordering::Release);
+            requested.store(false, Ordering::Release);
+            target.store(0, Ordering::Release);
         }
         for ((id, transfer), state) in incoming.iter_mut().filter(|((id, _), _)| *id == peer) {
             if pasteboard.change_count().ok() == Some(state.pasteboard_change_count) {

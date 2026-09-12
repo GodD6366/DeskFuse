@@ -1,5 +1,7 @@
 //! Native client boundary. Callbacks are serialized on a dedicated dispatcher;
 //! clients enqueue them and must not synchronously wait on subscribe/unsubscribe from a callback.
+// UniFFI exports require owned arguments across the native language boundary.
+#![allow(clippy::needless_pass_by_value)]
 mod image_workflow;
 mod types;
 use futures::{
@@ -73,6 +75,9 @@ pub struct Engine {
 #[uniffi::export]
 impl Engine {
     #[uniffi::constructor]
+    #[allow(clippy::too_many_lines)] // Explicit native engine setup/command dispatch.
+    /// # Errors
+    /// Returns an error if an engine is already running, startup recovery fails, or a worker cannot start.
     pub fn new() -> Result<Arc<Self>, EngineError> {
         if STARTUP
             .get_or_init(|| Mutex::new(None))
@@ -155,10 +160,10 @@ impl Engine {
     loop {
      futures::select!{
       control=controls.next()=>match control {
-       Some(Control::Subscribe(next,ack))=>{listener=Some(next);let snapshot=EngineSnapshot::from(&*event_state.lock().unwrap_or_else(|e|e.into_inner()));if let Some(l)=&listener{l.on_event(EngineEvent::Snapshot{snapshot});}let _=ack.send(());},
+       Some(Control::Subscribe(next,ack))=>{listener=Some(next);let snapshot=EngineSnapshot::from(&*event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner));if let Some(l)=&listener{l.on_event(EngineEvent::Snapshot{snapshot});}let _=ack.send(());},
        Some(Control::Unsubscribe(ack))=>{listener=None;let _=ack.send(());},
-       Some(Control::Workflow(event))=>{if let Err(message)=event_workflows.start(event.id,unidesk_engine::image_workflow::WorkflowInput::Clipboard,unidesk_engine::image_workflow::WorkflowOutputMode::Configured,event.target_pid){if let Some(l)=&listener{l.on_event(EngineEvent::CommandFailed{request_id:0,message});}}},
-       Some(Control::Stop(ack))=>{if let Some(l)=&listener{for id in std::mem::take(&mut *event_pending.lock().unwrap_or_else(|e|e.into_inner())){l.on_event(EngineEvent::CommandFailed{request_id:id,message:"引擎已停止".into()});}}drop(paste_monitor.take());let _=ack.send(());break;},
+       Some(Control::Workflow(event))=>{if let Err(message)=event_workflows.start(event.id,unidesk_engine::image_workflow::WorkflowInput::Clipboard,unidesk_engine::image_workflow::WorkflowOutputMode::Configured,event.target_pid)&& let Some(l)=&listener{l.on_event(EngineEvent::CommandFailed{request_id:0,message});}},
+       Some(Control::Stop(ack))=>{if let Some(l)=&listener{for id in std::mem::take(&mut *event_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)){l.on_event(EngineEvent::CommandFailed{request_id:id,message:"引擎已停止".into()});}}drop(paste_monitor.take());let _=ack.send(());break;},
        None=>break,
       },
       event=events.next()=>{
@@ -169,14 +174,14 @@ impl Engine {
         }else if !p.accessibility().is_granted(){paste_monitor=None;}
        }
        let notification=match &event{
-        UiEvent::CommandResult{request_id,error}=>{event_pending.lock().unwrap_or_else(|e|e.into_inner()).remove(request_id);Some(match error{Some(message)=>EngineEvent::CommandFailed{request_id:*request_id,message:message.clone()},None=>EngineEvent::CommandApplied{request_id:*request_id}})},
+        UiEvent::CommandResult{request_id,error}=>{event_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(request_id);Some(match error{Some(message)=>EngineEvent::CommandFailed{request_id:*request_id,message:message.clone()},None=>EngineEvent::CommandApplied{request_id:*request_id}})},
         UiEvent::RuntimeEvent(unidesk_runtime::RuntimeEvent::PairingDecisionFailed{request_id,reason})=>Some(EngineEvent::PairingFailed{request_id:request_id.to_string(),message:reason.clone()}),
         UiEvent::PasteReady{target_pid,expected_change_count}=>Some(EngineEvent::PasteReady{target_pid:*target_pid,change_count:*expected_change_count}),
         UiEvent::ImageWorkflowRun(run)=>Some(EngineEvent::ImageWorkflowRun{run:run.clone().into()}),
         UiEvent::StageFileShelf(paths)=>Some(EngineEvent::StageFiles{paths:paths.clone()}),
         UiEvent::Quit=>Some(EngineEvent::Quit),_=>None,
        };
-       let snapshot={let mut state=event_state.lock().unwrap_or_else(|e|e.into_inner());state.apply(event);EngineSnapshot::from(&*state)};
+       let snapshot={let mut state=event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.apply(event);EngineSnapshot::from(&*state)};
        if let Some(l)=&listener{l.on_event(EngineEvent::Snapshot{snapshot});if let Some(event)=notification{l.on_event(event);}}
       }
      }
@@ -198,9 +203,13 @@ impl Engine {
             shutdown_lock: Mutex::new(()),
         }))
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or its state lock is poisoned.
     pub fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
         Ok(EngineSnapshot::from(&*self.state.lock().map_err(failure)?))
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or the callback dispatcher is unavailable.
     pub fn subscribe(&self, listener: Box<dyn EngineListener>) -> Result<(), EngineError> {
         self.active()?;
         let (tx, rx) = mpsc::channel();
@@ -209,6 +218,8 @@ impl Engine {
             .map_err(failure)?;
         rx.recv().map_err(failure)
     }
+    /// # Errors
+    /// Returns an error if the callback dispatcher cannot acknowledge removal.
     pub fn unsubscribe(&self) -> Result<(), EngineError> {
         if self.stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -219,6 +230,9 @@ impl Engine {
             .map_err(failure)?;
         rx.recv().map_err(failure)
     }
+    #[allow(clippy::too_many_lines)] // Explicit native engine setup/command dispatch.
+    /// # Errors
+    /// Returns an error for invalid command data, a stopped engine or an unavailable worker queue.
     pub fn submit(&self, command: EngineCommand) -> Result<CommandReceipt, EngineError> {
         self.active()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -333,14 +347,13 @@ impl Engine {
                     .iter()
                     .filter(|w| w.enabled)
                 {
-                    if let Some(chord) = &workflow.shortcut {
-                        if settings
+                    if let Some(chord) = &workflow.shortcut
+                        && settings
                             .shortcuts
                             .iter()
                             .any(|s| s.key_code == chord.key_code && s.modifiers == chord.modifiers)
-                        {
-                            return Err(failure("该键鼠快捷键已被图片流程占用"));
-                        }
+                    {
+                        return Err(failure("该键鼠快捷键已被图片流程占用"));
                     }
                 }
                 TokioCommand::Runtime(RuntimeCommand::SetInputSharingSettings(
@@ -393,6 +406,8 @@ impl Engine {
             transfer_id,
         })
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped or its state lock is poisoned.
     pub fn search_history(&self, query: String, filter: u8) -> Result<Vec<u64>, EngineError> {
         self.active()?;
         let state = self.state.lock().map_err(failure)?;
@@ -406,6 +421,8 @@ impl Engine {
             .map(|item| item.id)
             .collect())
     }
+    /// # Errors
+    /// Returns an error if the engine is stopped, the state lock is poisoned or the item no longer exists.
     pub fn content(&self, id: u64) -> Result<ClipboardContent, EngineError> {
         self.active()?;
         let state = self.state.lock().map_err(failure)?;
@@ -423,6 +440,8 @@ impl Engine {
             file_paths: item.file_paths.clone(),
         })
     }
+    /// # Errors
+    /// Returns an error for empty, unavailable or unretainable file paths, or a stopped engine.
     pub fn acquire_export(&self, paths: Vec<String>) -> Result<ExportLease, EngineError> {
         self.active()?;
         if paths.is_empty() {
@@ -443,6 +462,8 @@ impl Engine {
             paths,
         })
     }
+    /// # Errors
+    /// Returns an error if the export lease identifier is invalid.
     pub fn release_export(&self, id: String, outcome: ExportOutcome) -> Result<(), EngineError> {
         let _ = outcome;
         self.bridge.release_transfer_cache_paths(transfer(&id)?);
@@ -457,21 +478,25 @@ impl Engine {
         }
         self.bridge.set_input_recording(enabled);
     }
+    /// # Errors
+    /// Returns an error if the diagnostic export cannot be written to the requested path.
     pub fn export_diagnostics(&self, path: String) -> Result<(), EngineError> {
         self.bridge
             .export_diagnostics(std::path::Path::new(&path))
             .map_err(failure)
     }
+    /// # Errors
+    /// Returns an error if shutdown coordination is poisoned or the worker cannot terminate.
     pub fn shutdown(&self) -> Result<(), EngineError> {
         let _shutdown = self.shutdown_lock.lock().map_err(failure)?;
         if self.stopped.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
         self.workflow_dispatch_stop.store(true, Ordering::Release);
-        if let Ok(mut handle) = self.workflow_dispatch.lock() {
-            if let Some(handle) = handle.take() {
-                let _ = handle.join();
-            }
+        if let Ok(mut handle) = self.workflow_dispatch.lock()
+            && let Some(handle) = handle.take()
+        {
+            let _ = handle.join();
         }
         self.workflows.shutdown();
         self.bridge.pause_current_managed_activation();
@@ -502,6 +527,8 @@ impl Drop for Engine {
     }
 }
 #[uniffi::export]
+/// # Errors
+/// Returns an error if update recovery fails or the startup status lock is poisoned.
 pub fn prepare_startup(transaction: Option<String>) -> Result<bool, EngineError> {
     let status = unidesk_engine::app_update::prepare_startup(transaction).map_err(failure)?;
     let self_test = status.is_some();
@@ -512,6 +539,8 @@ pub fn prepare_startup(transaction: Option<String>) -> Result<bool, EngineError>
     Ok(self_test)
 }
 #[uniffi::export]
+/// # Errors
+/// Returns an error if no update awaits acknowledgement, the status lock is poisoned or acknowledgement fails.
 pub fn acknowledge_startup() -> Result<(), EngineError> {
     let status = STARTUP
         .get_or_init(|| Mutex::new(None))
@@ -523,16 +552,18 @@ pub fn acknowledge_startup() -> Result<(), EngineError> {
     unidesk_engine::app_update::acknowledge_startup(status).map_err(failure)
 }
 #[uniffi::export]
+/// # Errors
+/// Returns the native permission request error.
 pub fn request_permission(kind: PermissionKind) -> Result<(), EngineError> {
-    unidesk_platform_macos::request_permission(kind.into())
-        .map(|_| ())
-        .map_err(failure)
+    unidesk_platform_macos::request_permission(kind.into()).map_err(failure)
 }
 #[uniffi::export]
 pub fn request_wifi_access() {
     unidesk_platform_macos::wifi_environment::request_ssid_access();
 }
 #[uniffi::export]
+/// # Errors
+/// Returns an error when reading the pasteboard generation or posting the native paste shortcut fails.
 pub fn replay_paste(
     target_pid: i32,
     current_pid: i32,

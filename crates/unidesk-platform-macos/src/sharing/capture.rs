@@ -911,6 +911,45 @@ unsafe fn decode_event(kind: u32, event: CGEventRef) -> Option<CaptureSample> {
     })
 }
 
+impl unidesk_platform::SharedInputCapture for MacOSSharingCapture {
+    fn start(&mut self) -> PlatformResult<()> {
+        MacOSSharingCapture::start(self)
+    }
+    fn stop(&mut self) -> PlatformResult<()> {
+        MacOSSharingCapture::stop(self)
+    }
+    fn set_mode(&self, mode: CaptureMode) {
+        MacOSSharingCapture::set_mode(self, mode)
+    }
+    fn set_hotkeys(&self, hotkeys: HotkeyBindings) {
+        MacOSSharingCapture::set_hotkeys(self, hotkeys)
+    }
+    fn arm_session(&self, session: unidesk_core::InputSessionId, duration: Duration) -> bool {
+        MacOSSharingCapture::arm_session(self, session, duration)
+    }
+    fn renew_deadline(&self, duration: Duration) -> bool {
+        MacOSSharingCapture::renew_deadline(self, duration)
+    }
+    fn lease_expired(&self) -> bool {
+        MacOSSharingCapture::lease_expired(self)
+    }
+    fn set_controller_hotkeys_enabled(&self, enabled: bool) {
+        MacOSSharingCapture::set_controller_hotkeys_enabled(self, enabled)
+    }
+    fn enter_remote(&self, x: f64, y: f64) -> PlatformResult<()> {
+        MacOSSharingCapture::enter_remote(self, x, y)
+    }
+    fn exit_remote(&self, restore: Option<(f64, f64)>) -> PlatformResult<()> {
+        MacOSSharingCapture::exit_remote(self, restore)
+    }
+    fn event_notification(&self) -> Arc<tokio::sync::Notify> {
+        MacOSSharingCapture::event_notification(self)
+    }
+    fn next_event(&mut self) -> PlatformResult<Option<CaptureEvent>> {
+        MacOSSharingCapture::next_event(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,44 +1373,5 @@ mod tests {
             assert!(!capture_hotkey_matches(&keys, false, code, flags));
             assert!(capture_hotkey_matches(&keys, true, code, flags));
         }
-    }
-}
-
-impl unidesk_platform::SharedInputCapture for MacOSSharingCapture {
-    fn start(&mut self) -> PlatformResult<()> {
-        MacOSSharingCapture::start(self)
-    }
-    fn stop(&mut self) -> PlatformResult<()> {
-        MacOSSharingCapture::stop(self)
-    }
-    fn set_mode(&self, mode: CaptureMode) -> () {
-        MacOSSharingCapture::set_mode(self, mode)
-    }
-    fn set_hotkeys(&self, hotkeys: HotkeyBindings) -> () {
-        MacOSSharingCapture::set_hotkeys(self, hotkeys)
-    }
-    fn arm_session(&self, session: unidesk_core::InputSessionId, duration: Duration) -> bool {
-        MacOSSharingCapture::arm_session(self, session, duration)
-    }
-    fn renew_deadline(&self, duration: Duration) -> bool {
-        MacOSSharingCapture::renew_deadline(self, duration)
-    }
-    fn lease_expired(&self) -> bool {
-        MacOSSharingCapture::lease_expired(self)
-    }
-    fn set_controller_hotkeys_enabled(&self, enabled: bool) -> () {
-        MacOSSharingCapture::set_controller_hotkeys_enabled(self, enabled)
-    }
-    fn enter_remote(&self, x: f64, y: f64) -> PlatformResult<()> {
-        MacOSSharingCapture::enter_remote(self, x, y)
-    }
-    fn exit_remote(&self, restore: Option<(f64, f64)>) -> PlatformResult<()> {
-        MacOSSharingCapture::exit_remote(self, restore)
-    }
-    fn event_notification(&self) -> Arc<tokio::sync::Notify> {
-        MacOSSharingCapture::event_notification(self)
-    }
-    fn next_event(&mut self) -> PlatformResult<Option<CaptureEvent>> {
-        MacOSSharingCapture::next_event(self)
     }
 }

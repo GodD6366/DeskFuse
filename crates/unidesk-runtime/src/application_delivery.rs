@@ -34,10 +34,10 @@ pub(super) struct ReceiptGuard {
 }
 impl Drop for ReceiptGuard {
     fn drop(&mut self) {
-        if let Ok(mut results) = self.receipts.lock() {
-            if let Some(receipt) = results.remove(&self.id) {
-                receipt.cancel.send_replace(true);
-            }
+        if let Ok(mut results) = self.receipts.lock()
+            && let Some(receipt) = results.remove(&self.id)
+        {
+            receipt.cancel.send_replace(true);
         }
     }
 }
@@ -161,10 +161,9 @@ impl Actor {
             .writers
             .get(&peer)
             .is_some_and(|w| w.generation != generation || w.task.is_finished())
+            && let Some(old) = self.delivery.writers.remove(&peer)
         {
-            if let Some(old) = self.delivery.writers.remove(&peer) {
-                old.task.abort();
-            }
+            old.task.abort();
         }
         let receipts = self.delivery.results.clone();
         let writer = self.delivery.writers.entry(peer).or_insert_with(|| {
@@ -245,11 +244,11 @@ impl Actor {
             .map(|(p, _)| *p)
             .collect::<Vec<_>>();
         for peer in obsolete {
-            if let Some(p) = self.delivery.probes.remove(&peer) {
-                if let Some(t) = p.task {
-                    t.abort();
-                    let _ = t.await;
-                }
+            if let Some(p) = self.delivery.probes.remove(&peer)
+                && let Some(t) = p.task
+            {
+                t.abort();
+                let _ = t.await;
             }
         }
         for (peer, generation) in live {

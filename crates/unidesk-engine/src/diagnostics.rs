@@ -189,6 +189,10 @@ impl Diagnostics {
             .len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn to_json_lines(&self) -> String {
         self.snapshot()
             .into_iter()

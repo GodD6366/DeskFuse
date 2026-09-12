@@ -357,9 +357,12 @@ impl fmt::Debug for SQLiteStore {
     }
 }
 
+/// Persisted history ID, payload and optional copy timestamp.
+pub type ClipboardHistoryRow = (u64, Vec<u8>, Option<u64>);
+
 impl SQLiteStore {
     /// Load version-1 snapshots and their optional copy time, newest first (at most 50).
-    pub fn clipboard_history(&self) -> Result<Vec<(u64, Vec<u8>, Option<u64>)>> {
+    pub fn clipboard_history(&self) -> Result<Vec<ClipboardHistoryRow>> {
         let connection = self.lock_connection()?;
         let mut statement = connection.prepare(
             "SELECT id, payload, copied_at_ms FROM clipboard_history_v1 ORDER BY position DESC LIMIT 50",

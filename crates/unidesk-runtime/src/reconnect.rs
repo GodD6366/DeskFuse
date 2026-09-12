@@ -239,10 +239,10 @@ impl Actor {
             attempt.task.abort();
             let _ = attempt.task.await;
             let installed = attempt.installed.load(Ordering::Acquire);
-            if installed != 0 {
-                if let Err(error) = self.transport.disconnect_control(peer, installed).await {
-                    self.emit_error(error);
-                }
+            if installed != 0
+                && let Err(error) = self.transport.disconnect_control(peer, installed).await
+            {
+                self.emit_error(error);
             }
             if let Some(state) = self.peers.get_mut(&peer) {
                 state.connection = ConnectionState::Disconnected;

@@ -957,6 +957,36 @@ pub(super) fn modifier_keycodes(flags: u64) -> BTreeSet<u16> {
     }
     keys
 }
+
+impl unidesk_platform::SharedInputInjector for MacOSSharingInjector {
+    fn arm_session(&self, session: InputSessionId, duration: Duration) -> bool {
+        MacOSSharingInjector::arm_session(self, session, duration)
+    }
+    fn renew_deadline(&self, duration: Duration) -> bool {
+        MacOSSharingInjector::renew_deadline(self, duration)
+    }
+    fn lease_expired(&self) -> bool {
+        MacOSSharingInjector::lease_expired(self)
+    }
+    fn enqueue_batch(
+        &self,
+        session: InputSessionId,
+        display: &DisplayDescriptor,
+        state_epoch: u64,
+        events: &[SharedInputEvent],
+    ) -> PlatformResult<()> {
+        MacOSSharingInjector::enqueue_batch(self, session, display, state_epoch, events)
+    }
+    fn error_notification(&self) -> Arc<Notify> {
+        MacOSSharingInjector::error_notification(self)
+    }
+    fn take_error(&self) -> Option<PlatformError> {
+        MacOSSharingInjector::take_error(self)
+    }
+    fn release_all(&self) -> PlatformResult<()> {
+        MacOSSharingInjector::release_all(self)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1584,35 +1614,5 @@ mod tests {
                 .sum::<i64>(),
             1
         );
-    }
-}
-
-impl unidesk_platform::SharedInputInjector for MacOSSharingInjector {
-    fn arm_session(&self, session: InputSessionId, duration: Duration) -> bool {
-        MacOSSharingInjector::arm_session(self, session, duration)
-    }
-    fn renew_deadline(&self, duration: Duration) -> bool {
-        MacOSSharingInjector::renew_deadline(self, duration)
-    }
-    fn lease_expired(&self) -> bool {
-        MacOSSharingInjector::lease_expired(self)
-    }
-    fn enqueue_batch(
-        &self,
-        session: InputSessionId,
-        display: &DisplayDescriptor,
-        state_epoch: u64,
-        events: &[SharedInputEvent],
-    ) -> PlatformResult<()> {
-        MacOSSharingInjector::enqueue_batch(self, session, display, state_epoch, events)
-    }
-    fn error_notification(&self) -> Arc<Notify> {
-        MacOSSharingInjector::error_notification(self)
-    }
-    fn take_error(&self) -> Option<PlatformError> {
-        MacOSSharingInjector::take_error(self)
-    }
-    fn release_all(&self) -> PlatformResult<()> {
-        MacOSSharingInjector::release_all(self)
     }
 }

@@ -552,10 +552,10 @@ impl InputShareMessage {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if let Self::ForgetControllerEnvironment { ssid } = self {
-            if ssid.is_empty() || ssid.len() > 32 {
-                return Err(invalid("invalid Wi-Fi environment"));
-            }
+        if let Self::ForgetControllerEnvironment { ssid } = self
+            && (ssid.is_empty() || ssid.len() > 32)
+        {
+            return Err(invalid("invalid Wi-Fi environment"));
         }
         match self {
             Self::ControllerPresence { ssid, .. } | Self::ControllerSelection { ssid, .. }

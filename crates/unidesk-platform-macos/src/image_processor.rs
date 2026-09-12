@@ -2,6 +2,8 @@
 //! on an engine worker, never on the native UI or input-capture thread.
 //!
 //! Pixels are straight-alpha RGBA in sRGB, with orientation already applied.
+#![allow(unsafe_code)] // ImageIO/CoreGraphics FFI is confined to this adapter.
+
 use core_foundation::{
     base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
@@ -146,7 +148,7 @@ fn decode_bounded(bytes: &[u8], max_edge: Option<u32>) -> Result<ImagePixels, St
     let props = unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(props) };
     let dimension = |k: CFStringRef| -> Result<u32, String> {
         props
-            .find(&key(k))
+            .find(key(k))
             .and_then(|n| n.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())
             .and_then(|n| u32::try_from(n).ok())

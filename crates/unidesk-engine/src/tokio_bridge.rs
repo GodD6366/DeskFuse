@@ -339,9 +339,9 @@ fn clipboard_preview_png(snapshot: &PasteboardSnapshot) -> Option<Arc<Vec<u8>>> 
     let (data, _, _) = clipboard_primary_image(snapshot)?;
     #[cfg(target_os = "macos")]
     {
-        return unidesk_platform_macos::image_processor::preview_png(data, 1600)
+        unidesk_platform_macos::image_processor::preview_png(data, 1600)
             .ok()
-            .map(Arc::new);
+            .map(Arc::new)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1188,10 +1188,10 @@ async fn run_worker(
                 &ui_sender,
             );
             for (id, source) in &outgoing_file_sources {
-                if source.target_peer.is_none_or(|target| target == peer) {
-                    if let Some(cancel) = outgoing_file_cancellations.get(id) {
-                        cancel.store(true, Ordering::Release);
-                    }
+                if source.target_peer.is_none_or(|target| target == peer)
+                    && let Some(cancel) = outgoing_file_cancellations.get(id)
+                {
+                    cancel.store(true, Ordering::Release);
                 }
             }
         }
