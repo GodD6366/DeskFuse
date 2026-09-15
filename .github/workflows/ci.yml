@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  macos:
+    name: macOS arm64 checks
+    runs-on: xcode-27 # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin
+          rustup component add rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: macos-check
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Workflow lint and credential scan
+        run: ./scripts/check-ci.sh
+      - name: Repository and release tooling checks
+        run: |
+          python3 scripts/check-repository.py
+          python3 -m unittest discover -s scripts/tests -v
+      - name: Rust checks
+        # Loopback QUIC tests each own a multi-thread runtime and real deadlines;
+        # do not oversubscribe the small hosted runner with multiple such tests.
+        env:
+          RUST_TEST_THREADS: '1'
+        run: ./scripts/check.sh
+
+  macos-build:
+    name: macOS arm64 DMG
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin
+          rustup component add rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: macos-release
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Validate public source boundary
+        run: python3 scripts/check-repository.py
+      - name: Build main-branch bootstrap DMG
+        env:
+          CODESIGN_IDENTITY: '-'
+          RELEASE_METADATA: ${{ github.workspace }}/release.json
+          UNIDESK_DMG_FINDER_LAYOUT: '0'
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
+        run: |
+          ./scripts/package-macos.sh --bootstrap
+          ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
+          python3 scripts/release.py inventory
+      - name: Upload main-branch build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: uniDesk-macos-arm64-${{ github.sha }}
+          path: |
+            dist/uniDesk-arm64.dmg
+            dist/release.json
+            dist/build-info.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows experimental adapters and service
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned toolchain
+        run: |
+          rustup show active-toolchain
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Target installation failed' }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: windows-check
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Native adapter checks (no real input or clipboard)
+        run: ./scripts/check-windows-native.ps1
+      - name: Service checks (no SCM installation)
+        run: ./scripts/check-windows-service.ps1

@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates this GitHub-hosted preview label.
+# Upstream announcement: https://github.com/actions/runner-images/issues/14404
+# Keep all other runner-label checks enabled; do not accept arbitrary labels.
+self-hosted-runner:
+  labels:
+    - xcode-27

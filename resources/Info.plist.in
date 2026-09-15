@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>uniDesk</string>
+	<key>CFBundleExecutable</key>
+	<string>unidesk-app</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.unidesk.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>uniDesk.icns</string>
+	<key>CFBundleName</key>
+	<string>uniDesk</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD_VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_unidesk._udp</string>
+		<string>_unidesk-input._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>uniDesk uses the local network to discover and connect trusted Macs.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>uniDesk 需要读取当前 Wi-Fi 名称，以应用你保存的家里或公司主控规则；不会收集地理位置。</string>
+	<key>NSLocationUsageDescription</key>
+	<string>读取当前 Wi-Fi 名称以选择键鼠主控，不收集地理位置。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>uniDesk 需要向 Finder 读取粘贴目标文件夹，以便文件接收完成后自动保存到你首次粘贴的位置。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>

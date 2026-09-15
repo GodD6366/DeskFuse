@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: DMG verification must run on Darwin" >&2
+  exit 1
+fi
+
+for command_name in hdiutil codesign lipo python3; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "error: required command not found: $command_name" >&2
+    exit 127
+  fi
+done
+
+DMG_PATH="${1:-${DMG_PATH:-$ROOT_DIR/dist/uniDesk-arm64.dmg}}"
+if [[ ! -f "$DMG_PATH" ]]; then
+  echo "error: DMG not found: $DMG_PATH" >&2
+  exit 1
+fi
+
+hdiutil verify "$DMG_PATH" >/dev/null
+MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-dmg.XXXXXX")"
+ATTACHED=0
+cleanup() {
+  if [[ "$ATTACHED" -eq 1 ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+  fi
+  rmdir "$MOUNT_POINT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT" >/dev/null
+ATTACHED=1
+
+APP_BUNDLE="$MOUNT_POINT/uniDesk.app"
+CONTENTS_DIR="$APP_BUNDLE/Contents"
+BINARY_PATH="$CONTENTS_DIR/MacOS/unidesk-app"
+INFO_PLIST="$CONTENTS_DIR/Info.plist"
+for resource in LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt uniDesk.icns uniDesk-icon-1024.png unidesk-status-icon.png; do
+  [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
+done
+
+# Metadata is part of the signed payload. An empty placeholder does not prove
+# system discovery, but must never pass the package integrity check.
+python3 - "$CONTENTS_DIR/Resources/Metadata.appintents/extract.actionsdata" <<'PYINTENTS'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.is_file() or not path.stat().st_size:
+    raise SystemExit("error: App Intents metadata missing from bundle")
+payload = json.loads(path.read_text())
+text = json.dumps(payload, ensure_ascii=False)
+if "RunWorkflowIntent" not in text or "WorkflowEntity" not in text:
+    raise SystemExit("error: image workflow intent/entity missing from bundle metadata")
+PYINTENTS
+
+[[ -d "$APP_BUNDLE" ]] || { echo "error: uniDesk.app missing from DMG" >&2; exit 1; }
+[[ -x "$BINARY_PATH" ]] || { echo "error: unidesk-app missing or not executable" >&2; exit 1; }
+[[ -f "$INFO_PLIST" ]] || { echo "error: Info.plist missing" >&2; exit 1; }
+[[ -f "$CONTENTS_DIR/Resources/uniDesk.icns" ]] || { echo "error: app icon missing" >&2; exit 1; }
+[[ -f "$CONTENTS_DIR/Resources/unidesk-status-icon.png" ]] || { echo "error: status icon missing" >&2; exit 1; }
+# Both SVG sources are bundled; the menu bar uses its own 18pt/2x template.
+python3 - "$CONTENTS_DIR/Resources" <<'PYICONS'
+from pathlib import Path
+import struct, sys
+import xml.etree.ElementTree as ET
+resources = Path(sys.argv[1])
+for name, size in (("uniDesk-icon", 1024), ("unidesk-status-icon", 36)):
+    root = ET.parse(resources / f"{name}.svg").getroot()
+    if root.tag != "{http://www.w3.org/2000/svg}svg":
+        raise SystemExit(f"error: invalid SVG source: {name}")
+    png_name = "uniDesk-icon-1024.png" if size == 1024 else f"{name}.png"
+    header = (resources / png_name).read_bytes()[:24]
+    if (len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n"
+            or header[12:16] != b"IHDR" or struct.unpack(">II", header[16:24]) != (size, size)):
+        raise SystemExit(f"error: invalid {size}px icon: {png_name}")
+print("icons: application SVG/1024px/ICNS and separate monochrome SVG/36px template")
+PYICONS
+[[ -L "$MOUNT_POINT/Applications" ]] || { echo "error: Applications shortcut missing" >&2; exit 1; }
+[[ "$(readlink "$MOUNT_POINT/Applications")" == "/Applications" ]] || {
+  echo "error: Applications shortcut has wrong target" >&2
+  exit 1
+}
+[[ -f "$MOUNT_POINT/.background/installer-background.png" ]] || {
+  echo "error: installer background missing" >&2
+  exit 1
+}
+if [[ "${UNIDESK_DMG_FINDER_LAYOUT:-1}" != "0" ]]; then
+  [[ -f "$MOUNT_POINT/.DS_Store" ]] || { echo "error: Finder layout missing" >&2; exit 1; }
+fi
+[[ ! -e "$CONTENTS_DIR/Resources/uniDesk.entitlements" ]] || {
+  echo "error: entitlements must be used for signing, not shipped in Contents/Resources" >&2
+  exit 1
+}
+
+ARCHES="$(lipo -archs "$BINARY_PATH")"
+[[ "$ARCHES" == "arm64" ]] || { echo "error: expected arm64-only binary, got: $ARCHES" >&2; exit 1; }
+python3 - "$CONTENTS_DIR/Info.plist" <<'PYINPUTSERVICE'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as source:
+    services = plistlib.load(source).get('NSBonjourServices', [])
+if not {'_unidesk._udp', '_unidesk-input._udp'}.issubset(services):
+    raise SystemExit('error: missing control/input Bonjour declaration')
+print('Bonjour: separate control and input services declared')
+PYINPUTSERVICE
+codesign --verify --deep --strict "$APP_BUNDLE"
+python3 - "$APP_BUNDLE" <<'PYAUTOMATION'
+import plistlib, subprocess, sys
+result = subprocess.run(["codesign", "-d", "--entitlements", ":-", sys.argv[1]], capture_output=True, check=True)
+entitlements = plistlib.loads(result.stdout)
+if entitlements.get("com.apple.security.automation.apple-events") is not True:
+    raise SystemExit("error: Finder automation entitlement missing from signed app")
+print("Finder automation: signed Apple Events entitlement present")
+PYAUTOMATION
+[[ -x "$CONTENTS_DIR/MacOS/unidesk-update-helper" ]] || { echo "error: update helper missing" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-update-helper")" == "arm64" ]] || { echo "error: update helper architecture" >&2; exit 1; }
+codesign --verify --strict "$CONTENTS_DIR/MacOS/unidesk-update-helper"
+[[ -x "$CONTENTS_DIR/MacOS/unidesk-input-service" ]] || { echo "error: input service missing" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-input-service")" == "arm64" ]] || { echo "error: input service architecture" >&2; exit 1; }
+codesign --verify --strict "$CONTENTS_DIR/MacOS/unidesk-input-service"
+# Inspect all shipped Mach-O files: Info.plist alone cannot establish the
+# deployment target, and Rust must be statically linked into the native client.
+python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/unidesk-update-helper" "$CONTENTS_DIR/MacOS/unidesk-input-service" <<'PYNATIVE'
+import re, subprocess, sys
+for binary in sys.argv[1:]:
+    load = subprocess.check_output(["otool", "-l", binary], text=True)
+    versions = re.findall(r"\bminos\s+(\d+\.\d+)", load)
+    if not versions or any(tuple(map(int, v.split("."))) > (14, 0) for v in versions):
+        raise SystemExit(f"error: unsupported deployment target in {binary}: {versions}")
+    sdks = re.findall(r"\bsdk\s+(\d+\.\d+)", load)
+    if binary.endswith("/unidesk-app") and (not sdks or any(int(v.split(".")[0]) < 26 for v in sdks)):
+        raise SystemExit(f"error: native Liquid Glass requires a linked macOS 26+ SDK: {sdks}")
+    links = subprocess.check_output(["otool", "-L", binary], text=True)
+    if re.search(r"gpui|libunidesk_ffi", links, re.I):
+        raise SystemExit(f"error: unexpected client dynamic dependency: {binary}")
+    if binary.endswith("/unidesk-app") and "SwiftUI.framework" not in links:
+        raise SystemExit("error: native SwiftUI framework dependency missing")
+    print(f"Mach-O: {binary.rsplit('/', 1)[-1]} minimum macOS {versions[0]}, SDK {sdks[0] if sdks else 'unknown'}")
+PYNATIVE
+if [[ -f "$MOUNT_POINT/.updates/manifest.json" ]]; then
+  cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- verify "$ROOT_DIR/resources/unidesk-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
+  EMBEDDED_UPDATE="$CONTENTS_DIR/Resources/LanUpdate"
+  cmp "$MOUNT_POINT/.updates/manifest.json" "$EMBEDDED_UPDATE/manifest.json"
+  cmp "$MOUNT_POINT/.updates/uniDesk-arm64-update.zip" "$EMBEDDED_UPDATE/uniDesk-arm64-update.zip"
+  python3 - "$CONTENTS_DIR/Resources/release.json" "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE/uniDesk-arm64-update.zip" <<'PYSEED'
+import json, pathlib, sys, zipfile
+release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())["manifest"]
+if manifest["release"] != release:
+    raise SystemExit("error: embedded update release differs from installed app")
+with zipfile.ZipFile(sys.argv[3]) as payload:
+    if json.loads(payload.read("uniDesk.app/Contents/Resources/release.json")) != release:
+        raise SystemExit("error: update payload release differs from installed app")
+    if any(name.startswith("uniDesk.app/Contents/Resources/LanUpdate/") for name in payload.namelist()):
+        raise SystemExit("error: recursive embedded update payload")
+print("LAN distribution: installed app carries the exact verified release payload")
+PYSEED
+fi
+SIGNING_INFO="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
+SIGNING_AUTHORITY="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Authority=//p' | head -n 1)"
+TEAM_ID="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+if [[ -n "$SIGNING_AUTHORITY" && "$TEAM_ID" != "not set" ]]; then
+  SIGNING_STATUS="$SIGNING_AUTHORITY (Team ID $TEAM_ID)"
+else
+  SIGNING_STATUS="ad-hoc"
+fi
+
+if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+  DISPLAY_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$INFO_PLIST")"
+  ICON_FILE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$INFO_PLIST")"
+  BUNDLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$INFO_PLIST")"
+  BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")"
+  EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+  MIN_SYSTEM_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST")"
+  AUTOMATION_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$INFO_PLIST")"
+  LOCAL_NETWORK_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$INFO_PLIST")"
+  BONJOUR_SERVICE="$(/usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$INFO_PLIST")"
+  [[ "$DISPLAY_NAME" == "uniDesk" ]] || { echo "error: wrong display name: $DISPLAY_NAME" >&2; exit 1; }
+  [[ "$ICON_FILE" == "uniDesk.icns" ]] || { echo "error: wrong icon file: $ICON_FILE" >&2; exit 1; }
+  [[ "$BUNDLE_NAME" == "uniDesk" ]] || { echo "error: wrong bundle name: $BUNDLE_NAME" >&2; exit 1; }
+  [[ "$BUNDLE_ID" == "com.unidesk.app" ]] || { echo "error: wrong bundle id: $BUNDLE_ID" >&2; exit 1; }
+  [[ "$EXECUTABLE" == "unidesk-app" ]] || { echo "error: wrong executable: $EXECUTABLE" >&2; exit 1; }
+  [[ "$MIN_SYSTEM_VERSION" == "14.0" ]] || { echo "error: minimum macOS must be 14.0: $MIN_SYSTEM_VERSION" >&2; exit 1; }
+  [[ -n "$AUTOMATION_DESCRIPTION" ]] || { echo "error: NSAppleEventsUsageDescription missing" >&2; exit 1; }
+  [[ -n "$LOCAL_NETWORK_DESCRIPTION" ]] || { echo "error: NSLocalNetworkUsageDescription missing" >&2; exit 1; }
+  [[ "$BONJOUR_SERVICE" == "_unidesk._udp" ]] || { echo "error: wrong Bonjour service: $BONJOUR_SERVICE" >&2; exit 1; }
+  if UI_ELEMENT="$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$INFO_PLIST" 2>/dev/null)"; then
+    [[ "$UI_ELEMENT" == "false" ]] || { echo "error: LSUIElement must be false when present" >&2; exit 1; }
+  fi
+fi
+
+# Release metadata is part of the signed bundle, not inferred from a Git checkout.
+python3 - "$APP_BUNDLE/Contents/Resources/release.json" "$INFO_PLIST" <<'PYMETA'
+import json, plistlib, sys, uuid
+with open(sys.argv[1], encoding="utf-8") as source:
+    release = json.load(source)
+with open(sys.argv[2], "rb") as source:
+    info = plistlib.load(source)
+if set(release) != {"version", "build_number", "release_id"}:
+    raise SystemExit("error: invalid bundled release fields")
+if type(release["build_number"]) is not int or release["build_number"] <= 0:
+    raise SystemExit("error: invalid bundled release number")
+if release["version"] != info["CFBundleShortVersionString"] or str(release["build_number"]) != info["CFBundleVersion"]:
+    raise SystemExit("error: bundled release differs from Info.plist")
+if not uuid.UUID(release["release_id"]).int:
+    raise SystemExit("error: empty release identity")
+print(f"release: {release['version']} build {release['build_number']} ({release['release_id']})")
+PYMETA
+
+echo "verified: $DMG_PATH"
+echo "architecture: $ARCHES"
+echo "signing: $SIGNING_STATUS"
+echo "notarization: not assessed; this verifier does not establish Gatekeeper acceptance"

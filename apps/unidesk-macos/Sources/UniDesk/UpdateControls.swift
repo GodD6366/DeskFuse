@@ -1,0 +1,50 @@
+import SwiftUI
+import UniDeskEngine
+
+/// Both entry points use the engine's single updater and its real progress.
+struct UpdateControls: View {
+    let store: AppStore
+    let update: UpdateState
+
+    private var actionTitle: String {
+        if update.manualRequested { return update.ready ? "正在准备安装…" : "正在下载安装…" }
+        if update.ready { return "立即安装并重启" }
+        if update.downloading { return "下载完成后立即安装" }
+        return "立即下载安装"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LabeledContent("当前版本", value: "\(update.version) · build \(update.build)")
+            if (update.ready || update.downloading), let target = update.targetVersion {
+                LabeledContent("更新版本", value: target)
+            }
+            Text(update.message).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if update.downloading && update.totalBytes > 0 {
+                ProgressView(value: Double(update.receivedBytes), total: Double(update.totalBytes))
+                Text("\(byteCount(update.receivedBytes)) / \(byteCount(update.totalBytes))")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            if let error = update.error {
+                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack { installButton; checkButton }
+                VStack(alignment: .leading) { installButton; checkButton }
+            }
+            Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 uniDesk；正在传输、粘贴或导出的文件会等待完成。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var installButton: some View {
+        Button(actionTitle) { store.send(.downloadAndInstallUpdate) }
+            .buttonStyle(.borderedProminent)
+            .disabled(!update.available || update.manualRequested)
+    }
+
+    private var checkButton: some View {
+        Button(update.checking ? "正在检查…" : "检查更新") { store.send(.checkUpdates) }
+            .disabled(!update.available || update.checking || update.ready || update.manualRequested)
+    }
+}

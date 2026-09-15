@@ -1,0 +1,30 @@
+[package]
+name = "unidesk-transfer"
+description = "Core, transport-independent file and folder transfer primitives for uniDesk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+unidesk-core = { path = "../unidesk-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["serde", "v4"] }
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[target.'cfg(windows)'.dependencies]
+unidesk-platform-windows = { path = "../unidesk-platform-windows" }
