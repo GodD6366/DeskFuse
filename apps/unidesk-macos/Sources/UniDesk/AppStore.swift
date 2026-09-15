@@ -196,9 +196,9 @@ import UniDeskEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "键鼠共享", devices = "设备", transfers = "传输"
+    case clipboard = "剪贴板", input = "键鼠共享", devices = "设备", transfers = "传输", lanTransfer = "局域网传输"
     var id: Self { self }
-    var symbol: String { switch self { case .clipboard: "doc"; case .input: "computermouse"; case .devices: "display"; case .transfers: "arrow.left.arrow.right" } }
+    var symbol: String { switch self { case .clipboard: "doc"; case .input: "computermouse"; case .devices: "display"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "qrcode" } }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

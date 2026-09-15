@@ -35,7 +35,7 @@ struct GeneralSettingsView: View {
                             .disabled(!ready || exportingDiagnostics)
                     }
                     Divider()
-                    Text("详细日志默认关闭，仅本次运行有效，不同步到其他设备。\n关闭后仍可导出已记录内容；错误与崩溃信息继续保留。日志不包含剪贴板正文。")
+                    Text("日志默认开启，按小时保存，自动删除超过 7 天的日志；开关仅本次运行有效。\n关闭后仍记录错误；不包含剪贴板正文、文件内容或凭据。磁盘日志位于 ~/Library/Logs/uniDesk。")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 560, alignment: .leading)

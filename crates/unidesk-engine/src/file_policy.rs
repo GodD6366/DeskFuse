@@ -188,7 +188,7 @@ impl FilePolicy {
             if offer.peer != peer {
                 return true;
             }
-            if !incoming.contains_key(&(peer, offer.id)) {
+            if offer.requested && !incoming.contains_key(&(peer, offer.id)) {
                 emit_receive_transfer_status(
                     ui,
                     offer.id,
@@ -445,15 +445,20 @@ impl FilePolicy {
                         requested_flag.store(false, Ordering::Release);
                         target_pid.store(0, Ordering::Release);
                     }
-                    emit_receive_transfer_status(
-                        ui,
-                        *transfer_id,
-                        offer.name,
-                        reason.clone(),
-                        TransferState::Cancelled,
-                        0,
-                        offer.total_bytes,
-                    );
+                    // Revoking an idle clipboard offer is not a transfer.
+                    // Otherwise a local copy followed by peer cancellation can
+                    // create a brand-new cancelled task and open the overlay.
+                    if offer.requested {
+                        emit_receive_transfer_status(
+                            ui,
+                            *transfer_id,
+                            offer.name,
+                            reason.clone(),
+                            TransferState::Cancelled,
+                            0,
+                            offer.total_bytes,
+                        );
+                    }
                 }
                 // The disk receiver must also see cancellation if it has started.
                 false
@@ -670,6 +675,10 @@ impl FilePolicy {
         let Some(offer) = offer else {
             return;
         };
+        let report_transfer = offer.requested
+            || incoming.contains_key(&(offer.peer, id))
+            || (owns_intent && requested.load(Ordering::Acquire))
+            || self.workflow_demand == Some(id);
         if let Some(state) = incoming.get_mut(&(offer.peer, id)) {
             state.cancel();
         } else {
@@ -690,15 +699,17 @@ impl FilePolicy {
             },
         )
         .await;
-        emit_receive_transfer_status(
-            ui,
-            id,
-            offer.name,
-            reason.into(),
-            TransferState::Cancelled,
-            0,
-            offer.total_bytes,
-        );
+        if report_transfer {
+            emit_receive_transfer_status(
+                ui,
+                id,
+                offer.name,
+                reason.into(),
+                TransferState::Cancelled,
+                0,
+                offer.total_bytes,
+            );
+        }
         self.emit(ui, Some(reason.into()));
     }
     #[allow(clippy::too_many_arguments)]
@@ -744,7 +755,9 @@ impl FilePolicy {
         let expired = incoming
             .iter()
             .filter(|((peer, _), state)| {
-                state.last_activity.elapsed() > Duration::from_secs(120) || !peers.contains(peer)
+                state.last_activity.elapsed()
+                    > Duration::from_secs(if state.finishing { 600 } else { 120 })
+                    || !peers.contains(peer)
             })
             .map(|(key, _)| *key)
             .collect::<Vec<_>>();
@@ -1104,6 +1117,52 @@ mod tests {
         transport.clear_sent();
         (runtime, transport, peers)
     }
+    #[test]
+    fn disconnect_only_reports_detached_offers_that_started_transferring() {
+        let mut policy = FilePolicy::new().unwrap();
+        let peer = MemoryIdentityProvider::new()
+            .load_or_create()
+            .unwrap()
+            .device_id();
+        let pasteboard = MemoryPasteboard::new();
+        let flag = AtomicBool::new(false);
+        let requested = AtomicBool::new(false);
+        let target = AtomicI32::new(0);
+        let (ui, mut events) = unbounded();
+        for started in [false, true] {
+            let id = TransferId::new();
+            policy.detached.insert(
+                id,
+                PendingOffer {
+                    id,
+                    peer,
+                    name: "file.png".into(),
+                    total_bytes: 1,
+                    change_count: 10,
+                    requested: started,
+                    created: Instant::now(),
+                },
+            );
+            policy.connection_lost(
+                peer,
+                &pasteboard,
+                &mut HashMap::new(),
+                &flag,
+                &requested,
+                &target,
+                &ui,
+            );
+            let reports = std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| matches!(event, UiEvent::TransferStatus { transfer_id, .. } if *transfer_id == id))
+                .count();
+            assert_eq!(reports, usize::from(started));
+            assert!(!policy.detached.contains_key(&id));
+        }
+        let root = policy.cache.root().to_path_buf();
+        drop(policy);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn startup_eviction_protects_files_already_on_the_system_clipboard() {
         let mut policy = FilePolicy::new().unwrap();

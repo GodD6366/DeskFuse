@@ -81,6 +81,10 @@ const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug)]
 pub enum UiEvent {
+    FilePasteAcquiring {
+        paste_id: TransferId,
+        transfer_id: TransferId,
+    },
     FilePasteLinked {
         paste_id: TransferId,
         transfer_id: TransferId,
@@ -153,6 +157,18 @@ pub enum UiEvent {
 }
 
 pub enum TokioCommand {
+    #[cfg(target_os = "macos")]
+    LanWebContext {
+        reply: std::sync::mpsc::Sender<Result<crate::lan_web::LanContext, String>>,
+    },
+    #[cfg(target_os = "macos")]
+    LanWebCommit {
+        snapshot: PasteboardSnapshot,
+        native_items: Vec<unidesk_platform::PasteboardItem>,
+        expected_change_count: i64,
+        cancel: Arc<AtomicBool>,
+        reply: std::sync::mpsc::Sender<Result<crate::lan_web::LanCommitResult, String>>,
+    },
     ReleaseShareSource(TransferId),
     ShareSourceFailed {
         id: TransferId,
@@ -392,13 +408,34 @@ fn clipboard_primary_image(
 
 /// A display derivative only. History restoration retains the original bytes.
 pub(crate) fn clipboard_preview_png(snapshot: &PasteboardSnapshot) -> Option<Arc<Vec<u8>>> {
+    clipboard_preview_png_at_size(snapshot, 1600)
+}
+
+pub(crate) fn clipboard_preview_png_at_size(
+    snapshot: &PasteboardSnapshot,
+    max_pixel_size: u32,
+) -> Option<Arc<Vec<u8>>> {
+    let max_pixel_size = max_pixel_size.clamp(64, 1600);
     if !snapshot.file_urls.is_empty() {
+        #[cfg(target_os = "macos")]
+        if let [path] = snapshot.file_urls.as_slice()
+            && crate::clipboard_library::image_file_mime(path).is_some()
+        {
+            // Decode only when a preview is requested; the clipboard poll and
+            // summary query stay free of image IO. ImageIO bounds allocation.
+            return unidesk_platform_macos::lan_web::image_png(
+                std::path::Path::new(path),
+                max_pixel_size,
+            )
+            .ok()
+            .map(Arc::new);
+        }
         return None;
     }
     let (data, _, _) = clipboard_primary_image(snapshot)?;
     #[cfg(target_os = "macos")]
     {
-        unidesk_platform_macos::image_processor::preview_png(data, 1600)
+        unidesk_platform_macos::image_processor::preview_png(data, max_pixel_size)
             .ok()
             .map(Arc::new)
     }
@@ -413,14 +450,53 @@ pub(crate) fn clipboard_preview_png(snapshot: &PasteboardSnapshot) -> Option<Arc
         limits.max_image_height = Some(16_384);
         reader.limits(limits);
         let decoded = reader.decode().ok()?;
-        let thumbnail = decoded.thumbnail(1600, 1600);
+        let thumbnail = decoded.thumbnail(max_pixel_size, max_pixel_size);
         let mut png = std::io::Cursor::new(Vec::new());
         thumbnail.write_to(&mut png, image::ImageFormat::Png).ok()?;
         Some(Arc::new(png.into_inner()))
     }
 }
 
+// The database owns retention; this is only a small, newest-first hot cache.
+// Keep one oversized current copy so native clipboard operations stay intact.
+pub(crate) const CLIPBOARD_HOT_CACHE_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) fn clipboard_snapshot_bytes(snapshot: &PasteboardSnapshot) -> usize {
+    snapshot.text.as_ref().map_or(0, String::len)
+        + snapshot.png.as_ref().map_or(0, Vec::len)
+        + snapshot.file_urls.iter().map(String::len).sum::<usize>()
+        + snapshot
+            .items
+            .iter()
+            .flat_map(|item| &item.representations)
+            .map(|rep| rep.type_name.len() + rep.data.len())
+            .sum::<usize>()
+}
+
 impl ClipboardHistoryStore {
+    /// The library row id is authoritative for record identity. Its digest can
+    /// be coarser than this cache's content equality (plain text is keyed by its
+    /// bytes, so the same text with different auxiliary pasteboard types maps to
+    /// one row), so two cache entries can otherwise end up carrying one id.
+    /// Collapse any older entry that now shares the id and keep the freshly
+    /// recorded snapshot at the front.
+    fn adopt_front_id(&mut self, id: u64) {
+        if let Some((item, _)) = self.items.front_mut() {
+            item.id = id;
+        }
+        if self.items.iter().skip(1).any(|(item, _)| item.id == id) {
+            let mut kept = false;
+            self.items.retain(|(item, _)| {
+                if item.id == id {
+                    let keep = !kept;
+                    kept = true;
+                    keep
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
     fn record(
         &mut self,
         snapshot: PasteboardSnapshot,
@@ -433,9 +509,7 @@ impl ClipboardHistoryStore {
         {
             Ok(Some(id)) => {
                 if self.insert(snapshot, source) {
-                    if let Some((item, _)) = self.items.front_mut() {
-                        item.id = id;
-                    }
+                    self.adopt_front_id(id);
                     self.publish(ui_sender);
                 }
             }
@@ -512,6 +586,7 @@ impl ClipboardHistoryStore {
         };
         let item = ClipboardHistoryItem {
             id,
+            source_app_id: clipboard_bundle::source_metadata(&snapshot).app_bundle_id,
             copied_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()
@@ -528,12 +603,23 @@ impl ClipboardHistoryStore {
                 .text
                 .as_ref()
                 .is_some_and(|text| text.chars().nth(32_000).is_some()),
-            image_png: cached_preview.or_else(|| clipboard_preview_png(&snapshot)),
+            image_png: cached_preview.or_else(|| clipboard_preview_png_at_size(&snapshot, 160)),
             file_paths: snapshot.file_urls.clone(),
             source: source.into(),
         };
         self.items.push_front((item, snapshot));
         self.items.truncate(50);
+        let weight = |(item, snapshot): &(ClipboardHistoryItem, PasteboardSnapshot)| {
+            clipboard_snapshot_bytes(snapshot)
+                + item.content.len()
+                + item.image_png.as_ref().map_or(0, |image| image.len())
+        };
+        let mut bytes: usize = self.items.iter().map(weight).sum();
+        while bytes > CLIPBOARD_HOT_CACHE_BYTES && self.items.len() > 1 {
+            if let Some(removed) = self.items.pop_back() {
+                bytes -= weight(&removed);
+            }
+        }
         true
     }
 
@@ -702,7 +788,16 @@ fn write_prepared_clipboard(
 
 /// A file sender does not complete until each intended receiver confirms that
 /// its verified staging directory was committed and installed on pasteboard.
-type FileClipboardAcknowledgements = Arc<Mutex<HashMap<(DeviceId, TransferId), OneShotSender<()>>>>;
+struct FileClipboardAcknowledgement {
+    completed: OneShotSender<()>,
+    progress: tokio::sync::watch::Sender<u64>,
+}
+struct PendingFileAcknowledgement {
+    completed: oneshot::Receiver<()>,
+    progress: tokio::sync::watch::Receiver<u64>,
+}
+type FileClipboardAcknowledgements =
+    Arc<Mutex<HashMap<(DeviceId, TransferId), FileClipboardAcknowledgement>>>;
 
 #[cfg(any(not(test), target_os = "macos"))]
 pub(crate) mod production_transport {
@@ -946,6 +1041,38 @@ impl TokioBridge {
 
     /// Read original clipboard content without restoring or publishing it.
     /// Must be called from a background workflow thread, never the UI thread.
+    #[cfg(target_os = "macos")]
+    pub fn lan_web_context(&self) -> Result<crate::lan_web::LanContext, String> {
+        let (reply, receiver) = std::sync::mpsc::channel();
+        self.submit(TokioCommand::LanWebContext { reply })?;
+        workflow_reply(receiver)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn lan_web_commit(
+        &self,
+        snapshot: PasteboardSnapshot,
+        native_items: Vec<unidesk_platform::PasteboardItem>,
+        expected_change_count: i64,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<crate::lan_web::LanCommitResult, String> {
+        let (reply, receiver) = std::sync::mpsc::channel();
+        self.submit(TokioCommand::LanWebCommit {
+            snapshot,
+            native_items,
+            expected_change_count,
+            cancel: cancel.clone(),
+            reply,
+        })?;
+        // The HTTP worker owns the cache reservation until the serialized commit
+        // acknowledges it. A timeout must never delete a file already stored in SQLite.
+        let result = receiver.recv().map_err(|_| "引擎已停止".to_owned())?;
+        if result.is_err() {
+            cancel.store(true, Ordering::Release);
+        }
+        result
+    }
+
     pub fn workflow_source(
         &self,
         history_id: Option<u64>,
@@ -1210,7 +1337,7 @@ impl TokioBridge {
             "scope": "current_process",
             "version": env!("CARGO_PKG_VERSION"),
             "pid": std::process::id(),
-            "note": "Debug collection is opt-in. Disabling retains prior samples; absent samples do not prove absence of stalls."
+            "note": "Debug collection is on by default; hourly files retain at most seven days. Disabling retains prior samples; absent samples do not prove absence of stalls."
         }).to_string();
         contents.push('\n');
         contents.push_str(&self.diagnostics.to_json_lines());
@@ -1363,6 +1490,8 @@ async fn run_worker(
         }
     };
 
+    #[cfg(target_os = "macos")]
+    let lan_display_name = local_display_name();
     let input_service = runtime.input_service_control();
     *input_signals
         .input_service
@@ -1892,6 +2021,61 @@ async fn run_worker(
                             );
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    Some(TokioCommand::LanWebContext { reply }) => {
+                        let view = runtime.snapshot_view();
+                        let result = pasteboard.change_count().map(|change_count| crate::lan_web::LanContext {
+                            change_count,
+                            local_id: view.snapshot.local_device_id.to_hex(),
+                            local_name: lan_display_name.clone(),
+                        }).map_err(|e| e.to_string());
+                        let _ = reply.send(result);
+                    }
+                    #[cfg(target_os = "macos")]
+                    Some(TokioCommand::LanWebCommit { mut snapshot, native_items, expected_change_count, cancel, reply }) => {
+                        let result = (|| -> Result<crate::lan_web::LanCommitResult, String> {
+                            if cancel.load(Ordering::Acquire) { return Err("上传已取消".into()); }
+                            clipboard_bundle::attach_source_metadata(&mut snapshot, &clipboard_bundle::SourceMetadata {
+                                app_bundle_id: Some("com.unidesk.lan-web".into()),
+                                device_id: Some(runtime.snapshot_view().snapshot.local_device_id.to_hex()),
+                                created_at_ms: Some(crate::clipboard_library::now_ms()),
+                                no_history: false,
+                            });
+                            let library = crate::clipboard_library::global()?;
+                            let (id, index_warning) = library.ingest_preserving_commit(&snapshot, "手机网页")?;
+                            let id = id.ok_or("此来源已被排除，未加入列表")?;
+                            // Once committed, always report a saved result, even if a later native
+                            // pasteboard operation fails. The HTTP owner must retain these files.
+                            let mut written = false;
+                            let mut message: String;
+                            if cancel.load(Ordering::Acquire) || pasteboard.change_count().ok() != Some(expected_change_count) {
+                                message = "已加入列表；Mac 剪贴板已变化或请求已取消，未覆盖".into();
+                            } else {
+                                let write = if !native_items.is_empty() { pasteboard.write_items(&native_items) }
+                                    else if let Some(text) = &snapshot.text { pasteboard.write_text(text) }
+                                    else { pasteboard.write_file_urls(&snapshot.file_urls) };
+                                match write {
+                                    Ok(()) => match pasteboard.change_count() {
+                                        Ok(count) => {
+                                            snapshot.change_count = count;
+                                            clipboard_last_change_count = Some(count);
+                                            file_policy.protect_clipboard(&pasteboard);
+                                            clipboard_sync.invalidate_copy(&ui_sender);
+                                            if clipboard_enabled { clipboard_sync.publish(snapshot.clone(), false, &runtime, &ui_sender); }
+                                            written = true;
+                                            message = "已加入列表并复制到 Mac".into();
+                                        },
+                                        Err(_) => { message = "已加入列表；无法确认 Mac 剪贴板写入结果".into(); }
+                                    },
+                                    Err(_) => { message = "已加入列表；Mac 剪贴板写入失败，可稍后从列表复制".into(); }
+                                }
+                            }
+                            if index_warning.is_some() { message.push_str("；跨设备列表索引暂未同步"); }
+                            if clipboard_history.insert(snapshot, "手机网页") { clipboard_history.adopt_front_id(id); clipboard_history.publish(&ui_sender); }
+                            Ok(crate::lan_web::LanCommitResult { item_id:id, clipboard_written:written, message })
+                        })();
+                        let _ = reply.send(result);
+                    }
                     Some(TokioCommand::WorkflowSource { history_id, cancel, reply }) => {
                         if cancel.load(Ordering::Acquire) {
                             let _ = reply.send(Err("工作流已取消".into()));
@@ -2046,7 +2230,15 @@ async fn run_worker(
                     let _ = ui_sender.unbounded_send(UiEvent::CommandResult { request_id, error: command_error });
                 }
             }
-            event = runtime_events.next() => {
+            (key, permit) = wait_for_receive_capacity(&incoming_file_clipboards),
+                if incoming_file_clipboards.values().any(IncomingFileClipboard::is_backpressured) => {
+                flush_pending_receive(key, permit, &mut incoming_file_clipboards, &ui_sender);
+                if let Some(receipt) = incoming_file_clipboards.get(&key).and_then(|state| state.receipt(key.1)) {
+                    let _ = send_file_clipboard_frame(&runtime, &[key.0], &clipboard_sequence, receipt).await;
+                }
+            }
+            event = runtime_events.next(),
+                if !incoming_file_clipboards.values().any(IncomingFileClipboard::is_backpressured) => {
                 let Some(event) = event else { break; };
                 match event {
                     RuntimeEvent::Snapshot(snapshot) => {
@@ -2091,24 +2283,32 @@ async fn run_worker(
                             }
                         }
                         // Native content and deferred references require the acknowledged protocol.
-                        if payload.mime!=CLIPBOARD_FILE_MIME || matches!(ClipboardFileFrame::decode(&payload.data),Ok(ClipboardFileFrame::Deferred {..})) {continue;}
-                        if payload.mime == CLIPBOARD_FILE_MIME && let Ok(frame) = ClipboardFileFrame::decode(&payload.data) {
-                            if let ClipboardFileFrame::Cancel { transfer_id, .. } = &frame && let Some(cancelled)=outgoing_file_cancellations.get(transfer_id) { cancelled.store(true,Ordering::Release); }
-                            if file_policy.control(&frame,peer_id,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
-                        }
-                        if payload.mime == CLIPBOARD_FILE_MIME
-                            && let Ok(ClipboardFileFrame::Ack { transfer_id }) =
-                                ClipboardFileFrame::decode(&payload.data)
-                        {
-                            if let Ok(mut acknowledgements) = file_clipboard_acknowledgements.lock()
-                                && let Some(acknowledge) =
-                                    acknowledgements.remove(&(peer_id, transfer_id))
-                            {
-                                let _ = acknowledge.send(());
+                        if payload.mime != CLIPBOARD_FILE_MIME { continue; }
+                        // Decode the potentially large compressed manifest exactly once.
+                        let frame = match ClipboardFileFrame::decode(&payload.data) {
+                            Ok(frame) => frame,
+                            Err(error) => { emit_clipboard_error(&ui_sender, &diagnostics, error.to_string()); continue; }
+                        };
+                        if matches!(frame, ClipboardFileFrame::Deferred { .. }) { continue; }
+                        if let ClipboardFileFrame::Receipt { transfer_id, accepted_frames } = &frame {
+                            if let Ok(acks) = file_clipboard_acknowledgements.lock()
+                                && let Some(ack) = acks.get(&(peer_id, *transfer_id)) {
+                                ack.progress.send_if_modified(|old| { if *old < *accepted_frames { *old = *accepted_frames; true } else { false } });
                             }
                             continue;
                         }
-                        if let Some(transfer_id) = apply_remote_clipboard(
+                        if let ClipboardFileFrame::Cancel { transfer_id, .. } = &frame && let Some(cancelled)=outgoing_file_cancellations.get(transfer_id) { cancelled.store(true,Ordering::Release); }
+                        if file_policy.control(&frame,peer_id,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
+                        if let ClipboardFileFrame::Ack { transfer_id } = &frame {
+                            if let Ok(mut acknowledgements) = file_clipboard_acknowledgements.lock()
+                                && let Some(acknowledge) = acknowledgements.remove(&(peer_id, *transfer_id)) {
+                                let _ = acknowledge.completed.send(());
+                            }
+                            continue;
+                        }
+                        let file_id = frame.transfer_id();
+                        let is_data_frame = matches!(frame, ClipboardFileFrame::Offer {..}|ClipboardFileFrame::RequestedOffer {..}|ClipboardFileFrame::Chunk {..}|ClipboardFileFrame::Complete {..});
+                        if let Some(transfer_id) = apply_remote_clipboard_decoded(
                             &pasteboard,
                             &payload,
                             &mut RemoteClipboardState {
@@ -2125,6 +2325,7 @@ async fn run_worker(
                             &ui_sender,
                             &diagnostics,
                             peer_id,
+                            Some(frame),
                         ) {
                             file_policy.finished(transfer_id);
                             file_policy.protect_clipboard(&pasteboard);
@@ -2140,9 +2341,12 @@ async fn run_worker(
                                 )
                                 .await;
                             });
-                        } else if payload.mime==CLIPBOARD_FILE_MIME && let Ok(frame)=ClipboardFileFrame::decode(&payload.data) {
-                            let id=frame.transfer_id();
-                            if matches!(frame,ClipboardFileFrame::Offer {..}|ClipboardFileFrame::RequestedOffer {..}|ClipboardFileFrame::Chunk {..}|ClipboardFileFrame::Complete {..}) && !incoming_file_clipboards.contains_key(&(peer_id,id)) {
+                        } else {
+                            let id = file_id;
+                            if let Some(receipt) = incoming_file_clipboards.get(&(peer_id,id)).and_then(|state| state.receipt(id)) {
+                                let _ = send_file_clipboard_frame(&runtime, &[peer_id], &clipboard_sequence, receipt).await;
+                            }
+                            if is_data_frame && !incoming_file_clipboards.contains_key(&(peer_id,id)) {
                                 file_policy.finished(id);
                                 let _=send_file_clipboard_frame(&runtime,&[peer_id],&clipboard_sequence,ClipboardFileFrame::Cancel {transfer_id:id,reason:"接收被取消，或未通过容量与完整性检查".into()}).await;
                             }
@@ -2367,6 +2571,9 @@ async fn run_worker(
                         if !duplicate {
                             let id = TransferId::new();
                             let pid = captured.target_pid;
+                            if let Ok(transfer_id) = finder_paste_jobs::parse_transfer(&captured.reference.transfer_id) {
+                                let _ = ui_sender.unbounded_send(UiEvent::FilePasteAcquiring { paste_id: id, transfer_id });
+                            }
                             emit_receive_transfer_status(&ui_sender, id, captured.reference.name.clone(),
                                 "路径获取中".into(), TransferState::Preparing, 0, captured.reference.total_bytes);
                             diagnostics.record(DiagnosticLevel::Info, "file_paste", "path_query_started",
@@ -2922,6 +3129,8 @@ fn start_local_file_clipboard(
     let task_events = task_events.clone();
     tokio::spawn(async move {
         let preparation_cancel = cancelled.clone();
+        let preparation_ui = ui_sender.clone();
+        let preparation_name = name.clone();
         let prepared = match tokio::task::spawn_blocking(move || {
             let check_copy = || -> Result<(), String> {
                 if let Some(expected) = expected_change_count {
@@ -2939,11 +3148,14 @@ fn start_local_file_clipboard(
             check_copy()?;
             let source = match expected_source {
                 Some(source) => source,
-                None => {
-                    DeferredClipboardSource::inspect(paths.clone()).map_err(|e| e.to_string())?
-                }
+                None => DeferredClipboardSource::inspect_cancellable(paths.clone(), || {
+                    preparation_cancel.load(Ordering::Acquire)
+                })
+                .map_err(|e| e.to_string())?,
             };
-            source.validate_unchanged().map_err(|e| e.to_string())?;
+            source
+                .validate_unchanged_cancellable(|| preparation_cancel.load(Ordering::Acquire))
+                .map_err(|e| e.to_string())?;
             if preparation_cancel.load(Ordering::Acquire) {
                 return Err("共享已取消".to_owned());
             }
@@ -2958,8 +3170,7 @@ fn start_local_file_clipboard(
                 },
                 preparation_cancel.clone(),
             )?;
-            // Source invalidation and cancellation must never become fallback sends.
-            source.validate_unchanged().map_err(|e| e.to_string())?;
+            // The final post-hash comparison also validates workflow input identity.
             if preparation_cancel.load(Ordering::Acquire) {
                 return Err("共享已取消".to_owned());
             }
@@ -2980,9 +3191,30 @@ fn start_local_file_clipboard(
             if output_paths.is_empty() {
                 return Err("工作流没有可发送的结果文件".into());
             }
-            let plan = ClipboardFilePlan::from_paths_with_transfer_id(&output_paths, transfer_id)
+            let mut last_scan_progress = std::time::Instant::now() - Duration::from_secs(1);
+            let plan = ClipboardFilePlan::from_paths_observed(
+                &output_paths,
+                transfer_id,
+                || preparation_cancel.load(Ordering::Acquire),
+                |items| {
+                    if last_scan_progress.elapsed() >= Duration::from_millis(200) {
+                        last_scan_progress = std::time::Instant::now();
+                        emit_transfer_status(
+                            &preparation_ui,
+                            transfer_id,
+                            preparation_name.clone(),
+                            format!("正在准备文件，已扫描 {items} 项…"),
+                            TransferState::Preparing,
+                            0,
+                            source.total_bytes,
+                        );
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            source
+                .validate_unchanged_cancellable(|| preparation_cancel.load(Ordering::Acquire))
                 .map_err(|e| e.to_string())?;
-            source.validate_unchanged().map_err(|e| e.to_string())?;
             check_copy()?;
             Ok::<_, String>((plan, processed, lease))
         })
@@ -2990,17 +3222,28 @@ fn start_local_file_clipboard(
         {
             Ok(Ok(prepared)) => prepared,
             Ok(Err(error)) => {
-                emit_clipboard_error(
-                    &ui_sender,
-                    &diagnostics,
-                    format!("Finder 文件读取失败：{error}"),
-                );
+                let was_cancelled = cancelled.load(Ordering::Acquire);
+                if !was_cancelled {
+                    emit_clipboard_error(
+                        &ui_sender,
+                        &diagnostics,
+                        format!("Finder 文件读取失败：{error}"),
+                    );
+                }
                 emit_transfer_status(
                     &ui_sender,
                     transfer_id,
                     name.clone(),
-                    format!("扫描失败：{error}"),
-                    TransferState::Failed,
+                    if was_cancelled {
+                        "文件准备已取消".into()
+                    } else {
+                        format!("扫描失败：{error}")
+                    },
+                    if was_cancelled {
+                        TransferState::Cancelled
+                    } else {
+                        TransferState::Failed
+                    },
                     0,
                     0,
                 );
@@ -3186,7 +3429,7 @@ async fn stream_local_file_clipboard(
         return false;
     }
 
-    let acknowledgement_receivers =
+    let mut acknowledgement_receivers =
         match register_file_clipboard_acknowledgements(acknowledgements, peers, transfer_id) {
             Ok(receivers) => receivers,
             Err(error) => {
@@ -3230,6 +3473,32 @@ async fn stream_local_file_clipboard(
         return false;
     }
 
+    if let Err(error) = wait_for_file_receipts(&mut acknowledgement_receivers, 1, cancelled).await {
+        remove_file_clipboard_acknowledgements(acknowledgements, peers, transfer_id);
+        if cancelled.load(Ordering::Acquire) {
+            emit_transfer_status(
+                ui_sender,
+                transfer_id,
+                name.to_owned(),
+                "已取消".into(),
+                TransferState::Cancelled,
+                0,
+                total_bytes,
+            );
+        } else {
+            emit_file_clipboard_failure(
+                ui_sender,
+                diagnostics,
+                transfer_id,
+                name.to_owned(),
+                error,
+                0,
+                total_bytes,
+            );
+        }
+        return false;
+    }
+    let mut sent_frames = 1_u64;
     emit_transfer_status(
         ui_sender,
         transfer_id,
@@ -3325,6 +3594,37 @@ async fn stream_local_file_clipboard(
                 return false;
             }
             transferred_bytes = transferred_bytes.saturating_add(descriptor.length as u64);
+            sent_frames = sent_frames.saturating_add(1);
+            if (sent_frames - 1).is_multiple_of(16) {
+                if let Err(error) =
+                    wait_for_file_receipts(&mut acknowledgement_receivers, sent_frames, cancelled)
+                        .await
+                {
+                    remove_file_clipboard_acknowledgements(acknowledgements, peers, transfer_id);
+                    if cancelled.load(Ordering::Acquire) {
+                        emit_transfer_status(
+                            ui_sender,
+                            transfer_id,
+                            name.to_owned(),
+                            "已取消".into(),
+                            TransferState::Cancelled,
+                            transferred_bytes,
+                            total_bytes,
+                        );
+                    } else {
+                        emit_file_clipboard_failure(
+                            ui_sender,
+                            diagnostics,
+                            transfer_id,
+                            name.to_owned(),
+                            error,
+                            transferred_bytes,
+                            total_bytes,
+                        );
+                    }
+                    return false;
+                }
+            }
             if transferred_bytes == total_bytes
                 || last_progress.elapsed() >= Duration::from_millis(100)
             {
@@ -3445,7 +3745,7 @@ async fn stream_local_file_clipboard(
         ui_sender,
         transfer_id,
         name.to_owned(),
-        "接收端已校验并写入剪贴板".to_owned(),
+        "接收端已完成文件校验".to_owned(),
         TransferState::Completed,
         total_bytes,
         total_bytes,
@@ -3457,7 +3757,7 @@ fn register_file_clipboard_acknowledgements(
     acknowledgements: &FileClipboardAcknowledgements,
     peers: &[DeviceId],
     transfer_id: TransferId,
-) -> Result<Vec<oneshot::Receiver<()>>, String> {
+) -> Result<Vec<PendingFileAcknowledgement>, String> {
     let mut guard = acknowledgements
         .lock()
         .map_err(|_| "文件传输确认队列不可用".to_owned())?;
@@ -3470,8 +3770,18 @@ fn register_file_clipboard_acknowledgements(
     let mut receivers = Vec::with_capacity(peers.len());
     for peer_id in peers {
         let (sender, receiver) = oneshot::channel();
-        let _ = guard.insert((*peer_id, transfer_id), sender);
-        receivers.push(receiver);
+        let (progress, progress_receiver) = tokio::sync::watch::channel(0);
+        let _ = guard.insert(
+            (*peer_id, transfer_id),
+            FileClipboardAcknowledgement {
+                completed: sender,
+                progress,
+            },
+        );
+        receivers.push(PendingFileAcknowledgement {
+            completed: receiver,
+            progress: progress_receiver,
+        });
     }
     Ok(receivers)
 }
@@ -3488,15 +3798,41 @@ fn remove_file_clipboard_acknowledgements(
     }
 }
 
+/// End-to-end application credit, distinct from QUIC receipt and final hash ACK.
+async fn wait_for_file_receipts(
+    receivers: &mut [PendingFileAcknowledgement],
+    sent_frames: u64,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    for pending in receivers {
+        let deadline = tokio::time::sleep(Duration::from_secs(30));
+        tokio::pin!(deadline);
+        while *pending.progress.borrow() < sent_frames {
+            tokio::select! {
+                result = pending.progress.changed() => {
+                    result.map_err(|_| "接收端确认通道已关闭".to_owned())?;
+                },
+                _ = &mut deadline => return Err("等待接收端队列确认超时，请确认两台设备均已更新后重试".into()),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if cancelled.load(Ordering::Acquire) { return Err("发送方已取消".into()); }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn wait_for_file_clipboard_acknowledgements(
-    receivers: Vec<oneshot::Receiver<()>>,
+    receivers: Vec<PendingFileAcknowledgement>,
     acknowledgements: &FileClipboardAcknowledgements,
     peers: &[DeviceId],
     transfer_id: TransferId,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
-    for mut receiver in receivers {
-        let timeout = tokio::time::sleep(Duration::from_secs(30));
+    for pending in receivers {
+        let mut receiver = pending.completed;
+        // A large directory can spend minutes hashing and committing small files.
+        let timeout = tokio::time::sleep(Duration::from_secs(600));
         tokio::pin!(timeout);
         loop {
             tokio::select! {
@@ -3604,6 +3940,7 @@ struct RemoteClipboardState<'a> {
     paste_target_pid: &'a AtomicI32,
 }
 
+#[cfg(test)]
 fn apply_remote_clipboard(
     pasteboard: &impl Pasteboard,
     payload: &ClipboardPayload,
@@ -3612,8 +3949,35 @@ fn apply_remote_clipboard(
     diagnostics: &Diagnostics,
     peer_id: DeviceId,
 ) -> Option<TransferId> {
+    let frame = (payload.mime == CLIPBOARD_FILE_MIME)
+        .then(|| ClipboardFileFrame::decode(&payload.data).ok())
+        .flatten();
+    apply_remote_clipboard_decoded(
+        pasteboard,
+        payload,
+        state,
+        ui_sender,
+        diagnostics,
+        peer_id,
+        frame,
+    )
+}
+
+fn apply_remote_clipboard_decoded(
+    pasteboard: &impl Pasteboard,
+    payload: &ClipboardPayload,
+    state: &mut RemoteClipboardState<'_>,
+    ui_sender: &UnboundedSender<UiEvent>,
+    diagnostics: &Diagnostics,
+    peer_id: DeviceId,
+    frame: Option<ClipboardFileFrame>,
+) -> Option<TransferId> {
     if payload.mime == CLIPBOARD_FILE_MIME {
-        let frame = ClipboardFileFrame::decode(&payload.data).ok();
+        let transfer_id = frame.as_ref().map(ClipboardFileFrame::transfer_id);
+        let cancel_reason = match &frame {
+            Some(ClipboardFileFrame::Cancel { reason, .. }) => Some(reason.clone()),
+            _ => None,
+        };
         let new_offer = matches!(&frame, Some(ClipboardFileFrame::Offer { transfer_id, .. } | ClipboardFileFrame::RequestedOffer {transfer_id,..}) if !state.incoming_files.contains_key(&(peer_id, *transfer_id)));
         // A requested response may arrive after a newer copy. It must not
         // reinstall its old marker or steal the newer task's paste intent.
@@ -3636,15 +4000,19 @@ fn apply_remote_clipboard(
                 state.paste_target_pid.store(0, Ordering::Release);
             }
         }
-        let result = apply_remote_file_clipboard(
-            pasteboard,
-            &payload.data,
-            state.incoming_files,
-            state.cache,
-            peer_id,
-            state.receive_events,
-            ui_sender,
-        );
+        let result = frame
+            .ok_or_else(|| "文件传输帧无效".to_owned())
+            .and_then(|frame| {
+                apply_remote_file_clipboard_frame(
+                    pasteboard,
+                    frame,
+                    state.incoming_files,
+                    state.cache,
+                    peer_id,
+                    state.receive_events,
+                    ui_sender,
+                )
+            });
         let old_len = state.history.items.len();
         state.history.items.retain(|(_, snapshot)| {
             snapshot
@@ -3668,22 +4036,19 @@ fn apply_remote_clipboard(
                 snapshot: state.cache.snapshot().unwrap_or_default(),
                 message: Some(format!("{error}；{cleanup_message}")),
             });
-            if let Some(frame) = &frame {
-                if let Some(incoming) = state
-                    .incoming_files
-                    .get_mut(&(peer_id, frame.transfer_id()))
-                {
+            if let Some(transfer_id) = transfer_id {
+                if let Some(incoming) = state.incoming_files.get_mut(&(peer_id, transfer_id)) {
                     incoming.cancel();
                 } else if !state
                     .incoming_files
                     .keys()
-                    .any(|(_, id)| *id == frame.transfer_id())
+                    .any(|(_, id)| *id == transfer_id)
                 {
                     // No disk worker ever started (e.g. quota rejected the offer).
-                    state.cache.finish(frame.transfer_id());
+                    state.cache.finish(transfer_id);
                 }
                 if pasteboard.read_remote_origin_marker().ok().flatten()
-                    == Some(format!("unidesk-clipboard-file-v1:{}", frame.transfer_id()))
+                    == Some(format!("unidesk-clipboard-file-v1:{}", transfer_id))
                 {
                     state.pending_incoming_file.store(false, Ordering::Release);
                     state.paste_requested.store(false, Ordering::Release);
@@ -3691,10 +4056,7 @@ fn apply_remote_clipboard(
                 }
             }
             emit_clipboard_error(ui_sender, diagnostics, error);
-        } else if let Some(ClipboardFileFrame::Cancel {
-            transfer_id,
-            reason,
-        }) = frame
+        } else if let (Some(transfer_id), Some(reason)) = (transfer_id, cancel_reason)
             && pasteboard.read_remote_origin_marker().ok().flatten()
                 == Some(format!("unidesk-clipboard-file-v1:{transfer_id}"))
         {

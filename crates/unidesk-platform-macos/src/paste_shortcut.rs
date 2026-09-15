@@ -444,13 +444,35 @@ unsafe extern "C" fn paste_tap_callback(
         let autorepeat =
             unsafe { CGEventGetIntegerValueField(event, EventField::KEYBOARD_EVENT_AUTOREPEAT) }
                 != 0;
-        if autorepeat || capture.request(pid) {
+        let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
+        let change_count = pasteboard.changeCount() as i64;
+        let captured_reference = if autorepeat {
+            capture.has_reference_at(change_count)
+        } else {
+            capture.request(pid, change_count)
+        };
+        if captured_reference {
+            if physical
+                && let Some(captured) = usize::try_from(keycode)
+                    .ok()
+                    .and_then(|i| context.captured_keys.get(i))
+            {
+                captured.store(true, Ordering::Release);
+            }
             return ptr::null_mut();
         }
-        // A remote reference which is still being installed must never leak an
-        // empty physical paste into Finder. The next press will retry capture.
+        // During remote-reference installation the engine may not yet have
+        // published a capture. Only suppress that empty remote pasteboard;
+        // a stale pending flag must never swallow a local screenshot or text.
         if context.pending_file.load(Ordering::Acquire) {
-            return ptr::null_mut();
+            let marker_type =
+                objc2_foundation::NSString::from_str(crate::REMOTE_ORIGIN_MARKER_TYPE);
+            let remote_file = pasteboard
+                .stringForType(&marker_type)
+                .is_some_and(|marker| marker.to_string().starts_with("unidesk-clipboard-file-v1:"));
+            if remote_file && pasteboard.changeCount() as i64 == change_count {
+                return ptr::null_mut();
+            }
         }
         return event;
     }

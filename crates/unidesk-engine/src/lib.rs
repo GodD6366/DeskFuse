@@ -2,6 +2,7 @@
 pub mod app_update;
 pub mod clipboard_bundle;
 pub mod diagnostics;
+mod diagnostics_file;
 pub mod input_coordinator;
 pub mod model;
 mod platform;
@@ -21,3 +22,6 @@ pub mod library_files;
 
 #[cfg(target_os = "macos")]
 pub mod input_service;
+
+#[cfg(target_os = "macos")]
+pub mod lan_web;

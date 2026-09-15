@@ -6,6 +6,8 @@ mod clipboard_paste;
 mod workflow;
 pub use clipboard_paste::*;
 mod clipboard_library;
+#[cfg(target_os = "macos")]
+mod lan_web;
 mod types;
 use futures::{
     StreamExt,
@@ -63,6 +65,8 @@ enum Control {
 }
 #[derive(uniffi::Object)]
 pub struct Engine {
+    #[cfg(target_os = "macos")]
+    lan_web: unidesk_engine::lan_web::LanWebService,
     bridge: Arc<TokioBridge>,
     workflows: Arc<unidesk_engine::workflow::WorkflowService>,
     workflow_hotkeys: Arc<Mutex<unidesk_platform_macos::WorkflowHotkeys>>,
@@ -102,6 +106,12 @@ impl Engine {
                 return Err(failure(e));
             }
         };
+        #[cfg(target_os = "macos")]
+        let lan_web = unidesk_engine::lan_web::LanWebService::new(&bridge).map_err(|e| {
+            bridge.shutdown();
+            RUNNING.store(false, Ordering::Release);
+            failure(e)
+        })?;
         let workflows =
             unidesk_engine::workflow::WorkflowService::new(bridge.clone()).map_err(|e| {
                 bridge.shutdown();
@@ -202,6 +212,8 @@ impl Engine {
    });
   }).map_err(|e|{bridge.shutdown();RUNNING.store(false,Ordering::Release);failure(e)})?;
         Ok(Arc::new(Self {
+            #[cfg(target_os = "macos")]
+            lan_web,
             workflows,
             workflow_hotkeys,
             workflow_dispatch_stop,
@@ -537,6 +549,8 @@ impl Engine {
         {
             let _ = handle.join();
         }
+        #[cfg(target_os = "macos")]
+        self.lan_web.shutdown();
         self.workflows.shutdown();
         self.bridge.pause_current_managed_activation();
         let result = self.bridge.shutdown_and_wait().map_err(failure);

@@ -66,6 +66,8 @@ import UniDeskEngine
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { event in
             MainActor.assumeIsolated {
+                // Native menu windows belong to this interaction, not an outside click.
+                guard !ClipboardHistoryMenuSession.isTracking else { return }
                 let panel = self.pointerPanel
                 let popoverWindow = self.popover.contentViewController?.view.window
                 let visible = panel?.isVisible == true || self.popover.isShown

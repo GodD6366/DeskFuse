@@ -14,7 +14,7 @@ struct SettingsPresentation: Equatable {
 
     init(_ snapshot: EngineSnapshot?) {
         clipboardEnabled = snapshot?.clipboardEnabled ?? true
-        debugLoggingEnabled = snapshot?.debugLoggingEnabled ?? false
+        debugLoggingEnabled = snapshot?.debugLoggingEnabled ?? true
         permissions = snapshot?.permissions ?? []
         files = snapshot?.files
         cache = snapshot?.cache

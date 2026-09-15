@@ -439,6 +439,8 @@ impl Sync {
                 target.0,
                 if selected.workflow.is_some() {
                     "正在执行共享工作流…"
+                } else if !snapshot.file_urls.is_empty() {
+                    "正在读取文件目录…"
                 } else {
                     "排队中"
                 },
@@ -466,8 +468,9 @@ impl Sync {
                         return Err("共享已取消".into());
                     }
                     if !snapshot.file_urls.is_empty() {
-                        return DeferredClipboardSource::inspect(
+                        return DeferredClipboardSource::inspect_cancellable(
                             snapshot.file_urls.iter().map(PathBuf::from).collect(),
+                            || cancel.load(Ordering::Acquire),
                         )
                         .map(|source| Prepared::Files(source, selected))
                         .map_err(|e| e.to_string());
@@ -480,8 +483,9 @@ impl Sync {
                     let snapshot = processed.snapshot;
                     if !snapshot.file_urls.is_empty() {
                         // Native-to-file output is already prepared; never run it again.
-                        return DeferredClipboardSource::inspect(
+                        return DeferredClipboardSource::inspect_cancellable(
                             snapshot.file_urls.iter().map(PathBuf::from).collect(),
+                            || cancel.load(Ordering::Acquire),
                         )
                         .map(|source| {
                             Prepared::Files(source, crate::workflow_sharing::Selected::default())

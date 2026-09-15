@@ -1,6 +1,18 @@
 use super::{Engine, EngineError, failure};
 #[uniffi::export]
 impl Engine {
+    pub fn clipboard_thumbnail(
+        &self,
+        id: u64,
+        max_pixel_size: u32,
+    ) -> Result<Vec<u8>, EngineError> {
+        self.active()?;
+        unidesk_engine::clipboard_library::global()
+            .map_err(failure)?
+            .thumbnail(id, max_pixel_size)
+            .map_err(failure)
+    }
+
     pub fn library_query(&self, request: String) -> Result<String, EngineError> {
         self.active()?;
         let response = unidesk_engine::clipboard_library::global()

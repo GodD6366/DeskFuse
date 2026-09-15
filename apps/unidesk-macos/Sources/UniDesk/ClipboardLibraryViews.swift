@@ -75,24 +75,6 @@ struct ClipboardLibraryTabs: View {
     }
 }
 
-struct ClipboardLibraryMembershipMenu: View {
-    @Bindable var library = ClipboardLibraryStore.shared
-    let itemID: UInt64
-    var listIDs: [String] = []
-    var body: some View {
-        Menu("手动列表") {
-            if library.lists.filter({ $0.kind == "manual" }).isEmpty { Text("请先新建手动列表") }
-            ForEach(library.lists.filter { $0.kind == "manual" }) { list in
-                Button {
-                    library.perform(["op": "membership", "list_id": list.id, "history_id": itemID, "present": !listIDs.contains(list.id)])
-                } label: {
-                    if listIDs.contains(list.id) { Label(list.name, systemImage: "checkmark") } else { Text(list.name) }
-                }
-            }
-        }
-    }
-}
-
 private struct ClipboardLibraryEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable private var library = ClipboardLibraryStore.shared

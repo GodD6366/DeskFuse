@@ -19,6 +19,8 @@ struct MenuBarClipboardView: View {
     @State private var nextOffset: Int?
     @State private var calendarRevision = 0
     @State private var searching = false
+    @State private var pageRequest = UUID()
+    @State private var paginationGeneration = UUID()
     @State private var searchError: String?
     @State private var copyError: String?
     @State private var copying = false
@@ -32,23 +34,51 @@ struct MenuBarClipboardView: View {
     @State private var previewImage: NSImage?
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
-    private var items: [HistoryItem] {
-        let page = pageItems.map { library.displayItem($0, snapshot: store.snapshot) }
+    /// Every record the panel may show, deduplicated and ordered newest first.
+    /// The library page already carries the engine's order key; snapshot-only
+    /// records are merged by the same key instead of being prepended, so a
+    /// remote row newer than the local history still sorts to the top.
+    private var baseItems: [HistoryItem] {
+        // Record identity must be unique: `ForEach` and the per-card lookup
+        // dictionaries both key on `id`. Engine snapshots are normally unique,
+        // but a stale or legacy entry must never trap the panel on duplicates.
+        var seen = Set<UInt64>()
+        let page = pageItems.compactMap { item -> HistoryItem? in
+            let display = library.displayItem(item, snapshot: store.snapshot)
+            return seen.insert(display.id).inserted ? display : nil
+        }
+        var order: [UInt64: UInt64] = [:]
+        for item in pageItems { order[item.id] = item.sort_at_ms ?? item.copied_at_ms ?? 0 }
         // `pageItems` is only refreshed while the panel is open, so a record copied
         // while it was closed would wait for the library query to appear. The engine
-        // snapshot history is already in memory and current; surface those records at
-        // the top immediately. Active searches and list filters keep the query as the
-        // source of truth because their ordering and membership differ.
+        // snapshot history is already in memory and current; merge those records in
+        // by recency. Active searches and list filters keep the query as the source
+        // of truth because their ordering and membership differ.
         guard query.isEmpty, source == nil, listID == nil, !history.isEmpty else { return page }
-        let known = Set(page.map(\.id))
-        let fresh = history.filter { !known.contains($0.id) }
+        let fresh = history.filter { seen.insert($0.id).inserted }
         guard !fresh.isEmpty else { return page }
-        return fresh + page
+        for item in fresh { order[item.id] = item.copiedAtMs ?? 0 }
+        return (fresh + page).sorted {
+            let left = order[$0.id] ?? 0, right = order[$1.id] ?? 0
+            return left == right ? $0.id > $1.id : left > right
+        }
+    }
+    /// Remote index file rows with no local payload are omitted: the panel
+    /// previously rendered an "文件不可用" marker after the async probe, which
+    /// grew the card and shifted the whole list. Only that stable, engine-reported
+    /// case is filtered; local records are never hidden, and an async probe only
+    /// disables copy instead of removing a row that already rendered.
+    private var items: [HistoryItem] {
+        let unavailable = Set(pageItems.lazy.filter { $0.remote == true && $0.available == false }.map(\.id))
+        return baseItems.filter { item in
+            guard item.fileCount > 0 else { return true }
+            return !unavailable.contains(item.id)
+        }
     }
     private var titles: [UInt64: String] {
-        Dictionary(uniqueKeysWithValues: pageItems.compactMap { item in
+        Dictionary(pageItems.compactMap { item in
             (item.title?.isEmpty == false) ? (item.id, item.title!) : nil
-        })
+        }, uniquingKeysWith: { _, latest in latest })
     }
     private var selectedItem: HistoryItem? { items.first { $0.id == selectedID } }
     private var canCopy: Bool {
@@ -173,8 +203,8 @@ struct MenuBarClipboardView: View {
         // `pageItems`/`items` inside the card builder made every selection change
         // O(cards x items) on the main thread, which is what made clicking a card
         // feel sticky once the page held enough rows.
-        let rows = Dictionary(uniqueKeysWithValues: pageItems.map { ($0.id, $0) })
-        let positions = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
+        let rows = Dictionary(pageItems.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let positions = Dictionary(items.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return ScrollViewReader { proxy in
             Group {
@@ -184,13 +214,13 @@ struct MenuBarClipboardView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ClipboardMasonryGrid(items: items, selected: selectedID, columnCount: 2,
-                                             hasMore: nextOffset != nil, searching: searching,
+                                             hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, searching: searching,
                                              loadMore: { Task { await searchHistory(append: true) } }) { item, isSelected in
                             MenuBarClipboardCard(
                                 item: item,
                                 selected: isSelected,
                                 client: store.client,
-                                appID: rows[item.id]?.source_app_id,
+                                appID: item.sourceAppId,
                                 memberships: rows[item.id]?.memberships ?? [],
                                 title: titles[item.id],
                                 index: positions[item.id] ?? 99,
@@ -216,7 +246,7 @@ struct MenuBarClipboardView: View {
                             } else {
                                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                                     MenuBarClipboardRow(item: item, index: index, showShortcuts: commandHeld, selected: selectedID == item.id,
-                                        client: store.client, appID: rows[item.id]?.source_app_id,
+                                        client: store.client, appID: item.sourceAppId,
                                         title: titles[item.id],
                                         memberships: rows[item.id]?.memberships ?? [],
                                         remoteUnavailable: isRemoteUnavailable(rows[item.id]),
@@ -231,9 +261,15 @@ struct MenuBarClipboardView: View {
                                     .id(item.id)
                                 }
                             }
+                            if nextOffset != nil {
+                                ClipboardPaginationTrigger(itemCount: nextOffset ?? 0, searching: searching) {
+                                    Task { await searchHistory(append: true) }
+                                }
+                                .id(paginationGeneration)
+                            }
                         }
                         .padding(.horizontal, 12).padding(.vertical, 10)
-                        if nextOffset != nil { Button("加载更多") { Task { await searchHistory(append: true) } }.disabled(searching).padding(.bottom, 10) }
+
                     }
                     .scrollIndicators(.automatic)
                 }
@@ -297,14 +333,17 @@ struct MenuBarClipboardView: View {
     }
 
     @MainActor private func searchHistory(append: Bool = false) async {
-        if append && searching { return }
+        if append && (searching || nextOffset == nil) { return }
         let requested = searchKey
+        let request = UUID(); pageRequest = request
+        if !append { paginationGeneration = UUID() }
         searching = true; searchError = nil
-        defer { if requested == searchKey { searching = false } }
+        defer { if pageRequest == request { searching = false } }
         do {
-            if !append { try await Task.sleep(for: .milliseconds(120)) }
+            // Debounce typing, not panel presentation or history refresh.
+            if !append && !query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
             let result = try await library.query(listID: listID, search: query, source: source, offset: append ? (nextOffset ?? 0) : 0)
-            guard !Task.isCancelled, requested == searchKey, panelActive else { return }
+            guard !Task.isCancelled, pageRequest == request, requested == searchKey, panelActive else { return }
             if append {
                 let existing = Set(pageItems.map(\.id)); pageItems += result.items.filter { !existing.contains($0.id) }
             } else { pageItems = result.items }
@@ -314,7 +353,7 @@ struct MenuBarClipboardView: View {
             }
             if selectedID.map({ id in items.contains(where: { $0.id == id }) }) != true { selectedID = items.first?.id }
         } catch {
-            guard !Task.isCancelled, requested == searchKey else { return }
+            guard !Task.isCancelled, pageRequest == request, requested == searchKey else { return }
             searchError = error.userFacingMessage
         }
     }
@@ -328,6 +367,8 @@ struct MenuBarClipboardView: View {
         dismissPreview()
         commandHeld = false
         panelActive = false; session = UUID(); copying = false
+        pageRequest = UUID(); searching = false
+        pageItems = []; nextOffset = nil; fileAvailability = [:]
         cancelPreparation()
     }
 

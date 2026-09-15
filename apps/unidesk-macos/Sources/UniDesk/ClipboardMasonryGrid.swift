@@ -44,56 +44,6 @@ struct ClipboardHeaderButtonStyle: ButtonStyle {
     }
 }
 
-/// Inline editable label for a clipboard record. Callers choose the fallback:
-/// masonry cards show only a real title (empty otherwise), while rows fall back
-/// to the derived content title.
-struct ClipboardEditableTitle: View {
-    let title: String?
-    let fallback: String
-    @Binding var editing: Bool
-    let onCommit: (String) -> Void
-    var font: Font = .system(size: 13, weight: .semibold)
-    @State private var draft = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Group {
-            if editing {
-                TextField("", text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(font)
-                    .focused($focused)
-                    .onSubmit(commit)
-                    .onExitCommand { editing = false }
-                    .onChange(of: focused) { _, value in if !value { commit() } }
-            } else {
-                Text(display)
-                    .font(font)
-                    .foregroundStyle(hasTitle ? Color.primary : Color.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(minHeight: 16, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { editing = true }
-                    .help(hasTitle ? title! : "双击编辑标题")
-            }
-        }
-        .onChange(of: editing) { _, value in
-            if value { draft = title ?? ""; focused = true }
-        }
-    }
-
-    private var hasTitle: Bool { title?.isEmpty == false }
-    private var display: String { hasTitle ? title! : fallback }
-
-    private func commit() {
-        guard editing else { return }
-        editing = false
-        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value != (title ?? "") { onCommit(value) }
-    }
-}
-
 /// Natural-height column grid shared by the main history pane and the menu bar
 /// panel. Cards cap their own content height so one long text or tall image
 /// cannot dominate a column.
@@ -102,6 +52,8 @@ struct ClipboardMasonryGrid<Card: View>: View {
     let selected: UInt64?
     let columnCount: Int
     let hasMore: Bool
+    let paginationOffset: Int
+    let paginationGeneration: UUID
     let searching: Bool
     let loadMore: () -> Void
     @ViewBuilder let card: (HistoryItem, Bool) -> Card
@@ -123,6 +75,10 @@ struct ClipboardMasonryGrid<Card: View>: View {
         // reading it per column re-ran the whole assignment for every column on
         // every selection change.
         let columns = buckets
+        let longestColumn = columns.indices.max {
+            columns[$0].reduce(CGFloat.zero) { $0 + Self.estimatedHeight($1) + 12 }
+                < columns[$1].reduce(CGFloat.zero) { $0 + Self.estimatedHeight($1) + 12 }
+        } ?? 0
         ScrollView {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(columns.indices, id: \.self) { index in
@@ -131,17 +87,18 @@ struct ClipboardMasonryGrid<Card: View>: View {
                             card(item, item.id == selected)
                                 .id(item.id)
                         }
+                        // Keep the sentinel INSIDE a lazy column; an eager footer
+                        // can appear before the user has scrolled to the bottom.
+                        if hasMore && index == longestColumn {
+                            ClipboardPaginationTrigger(itemCount: paginationOffset, searching: searching, loadMore: loadMore)
+                            .id(paginationGeneration)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            if hasMore {
-                Button("加载更多", action: loadMore)
-                    .disabled(searching)
-                    .padding(.vertical, 12)
-            }
         }
     }
 
@@ -181,8 +138,11 @@ struct ClipboardHistoryCard: View {
                 .overlay(alignment: .bottomTrailing) { watermark }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 8) {
-                header
+                if hasTitle { header }
                 content
+                if hasMetadata {
+                    metadata.frame(maxWidth: .infinity, alignment: .center)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -193,16 +153,10 @@ struct ClipboardHistoryCard: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture(perform: onSelect)
-        .contextMenu {
-            if let date = item.copiedDate {
-                Text("复制于 \(date.formatted(date: .abbreviated, time: .standard))")
-            }
-            Divider()
-            Button("编辑标题") { editingTitle = true }
-            Divider()
-            ClipboardLibraryMembershipMenu(itemID: item.id, listIDs: memberships)
-            Divider()
-            Button("删除", role: .destructive, action: onDelete)
+        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
+            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .sheet(isPresented: $editingTitle) {
+            ClipboardTitleEditor(title: title, onSave: onRename)
         }
         .help(item.preview)
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
@@ -214,6 +168,7 @@ struct ClipboardHistoryCard: View {
             loading = false
             thumbnail = image
         }
+        .onDisappear { thumbnail = nil; loading = false }
     }
 
     /// Bottom-right app icon, tilted 45° left, with roughly a quarter clipped off.
@@ -229,16 +184,22 @@ struct ClipboardHistoryCard: View {
         }
     }
 
+    private var hasTitle: Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+    private var hasMetadata: Bool { item.copiedDate != nil || ocrHit || (meta?.remote == true && meta?.available == false) }
+
     private var header: some View {
         HStack(spacing: 6) {
-            // Cards show only a real user title; empty stays empty.
-            ClipboardEditableTitle(
-                title: title,
-                fallback: "",
-                editing: $editingTitle,
-                onCommit: onRename
-            )
+            ClipboardTitleLabel(title: title, fallback: "", editing: $editingTitle)
             Spacer(minLength: 4)
+        }
+    }
+
+    private var metadata: some View {
+        ZStack {
+            if let date = item.copiedDate {
+                Text(Self.timeFormatter.string(from: date))
+                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+            }
             HStack(spacing: 4) {
                 if ocrHit {
                     Image(systemName: "text.viewfinder")
@@ -250,42 +211,35 @@ struct ClipboardHistoryCard: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .help("使用时从来源设备获取")
                 }
-            }
-            if let date = item.copiedDate {
-                Text(Self.timeFormatter.string(from: date))
-                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
         }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder private var content: some View {
         if item.hasImage {
             if let image = thumbnail ?? selectedImage {
                 Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: Self.maxContentHeight)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Self.maxContentHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else if loading {
                 ProgressView().controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 80)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Self.maxContentHeight)
             } else {
-                fallbackTitle
+                fallbackTitle.frame(height: Self.maxContentHeight)
             }
         } else {
-            Text(item.clipboardTitle)
-                .font(.system(size: 13))
-                .foregroundStyle(Color(nsColor: .labelColor))
-                .lineLimit(10)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(maxHeight: Self.maxContentHeight, alignment: .top)
-                .clipped()
+            ClipboardCardText(text: item.clipboardTitle, lineLimit: 10, maxHeight: Self.maxContentHeight)
         }
     }
 
     private var fallbackTitle: some View {
-        Text(item.clipboardTitle)
-            .font(.system(size: 13))
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Label(meta?.remote == true && meta?.available == false ? "待获取图片" : "图片不可用", systemImage: "photo.badge.exclamationmark")
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -294,4 +248,30 @@ struct ClipboardHistoryCard: View {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+/// Fit against the actual column width, not a character-count estimate.
+struct ClipboardCardText: View {
+    let text: String
+    let lineLimit: Int
+    let maxHeight: CGFloat
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(text)
+                .font(.system(size: 13))
+                .fixedSize(horizontal: true, vertical: true)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: text.contains("\n") ? .leading : .center)
+            Text(text)
+                .font(.system(size: 13))
+                .lineLimit(lineLimit)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(Color(nsColor: .labelColor))
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: maxHeight, alignment: .top)
+        .clipped()
+    }
 }

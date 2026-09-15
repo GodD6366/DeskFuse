@@ -519,13 +519,16 @@ fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
 fn source_size(source: &Path, cancelled: &AtomicBool) -> io::Result<u64> {
     check_cancelled(cancelled)?;
     let metadata = source.symlink_metadata()?;
+    if metadata.file_type().is_symlink() {
+        return Ok(0);
+    }
     if metadata.is_file() {
         return Ok(metadata.len());
     }
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "暂不支持保存符号链接或特殊文件",
+            "暂不支持保存设备、套接字等特殊文件",
         ));
     }
     let mut total = 0_u64;
@@ -713,7 +716,13 @@ fn copy_tree(
 ) -> io::Result<()> {
     check_cancelled(cancelled)?;
     let metadata = source.symlink_metadata()?;
-    if metadata.is_dir() {
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(source)?;
+        // The private stage contains only directories we just created; links are
+        // copied as leaves and are never traversed during sizing or delivery.
+        rustix::fs::symlinkat(&target, &stage.directory, relative).map_err(io::Error::from)?;
+        stage.created.push((relative.to_owned(), false));
+    } else if metadata.is_dir() {
         let name = c_path(relative)?;
         // SAFETY: private stage FD with a relative path composed only from
         // read_dir entry names; mkdir is exclusive and never replaces an entry.
@@ -784,7 +793,7 @@ fn copy_tree(
     } else {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "暂不支持保存符号链接或特殊文件",
+            "暂不支持保存设备、套接字等特殊文件",
         ));
     }
     Ok(())

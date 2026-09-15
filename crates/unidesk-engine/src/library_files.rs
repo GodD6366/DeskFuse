@@ -49,6 +49,28 @@ pub fn reference(snapshot: &PasteboardSnapshot) -> Result<Option<Reference>> {
     rep.map(|r| serde_json::from_slice(&r.data).map_err(err))
         .transpose()
 }
+/// Metadata-only availability probe. Download/restore still uses resolve_local,
+/// which validates the complete resource manifest before exporting bytes.
+pub(crate) fn local_paths_for_preview(
+    snapshot: &PasteboardSnapshot,
+    local_device: &str,
+) -> Result<Option<Vec<String>>> {
+    let Some(reference) = reference(snapshot)? else {
+        return Ok(Some(snapshot.file_urls.clone()));
+    };
+    if reference.device_id != local_device {
+        return Ok(None);
+    }
+    let raw: String = db()?
+        .query_row(
+            "SELECT paths FROM cl_file_resources WHERE id=?1 AND manifest_hash=?2",
+            params![reference.resource_id, reference.manifest_hash],
+            |row| row.get(0),
+        )
+        .map_err(err)?;
+    serde_json::from_str(&raw).map(Some).map_err(err)
+}
+
 /// Called on a blocking worker when first adding local files to a manual list.
 /// Hashes the complete manifest; returns a path-free, transmissible snapshot.
 pub fn register(snapshot: &PasteboardSnapshot, local_device: &str) -> Result<PasteboardSnapshot> {

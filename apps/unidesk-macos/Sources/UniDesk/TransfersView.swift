@@ -89,7 +89,12 @@ private struct TransferQueueRow: View {
     private var progressTotal: UInt64 { task.phase == .delivering ? task.saveTotal : task.total }
 
     @ViewBuilder private var progress: some View {
-        if active {
+        if task.phase == .verifying {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(task.phaseTitle).font(.caption).foregroundStyle(.secondary)
+            }
+        } else if active {
             VStack(alignment: .leading, spacing: 8) {
                 if progressTotal > 0 {
                     HStack {
@@ -105,11 +110,27 @@ private struct TransferQueueRow: View {
                 }
             }
         } else if task.phase == .queued {
-            HStack(spacing: 10) { ProgressView().controlSize(.small); Text("等待传输…").font(.caption).foregroundStyle(.secondary) }
+            HStack(spacing: 10) { ProgressView().controlSize(.small); Text(task.phaseTitle).font(.caption).foregroundStyle(.secondary) }
         } else if task.phase == .completed {
             Label("已完成", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
         } else if task.phase == .cancelled {
             Text("已取消").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Shared phase wording for the transfer page and global progress panel.
+extension Transfer {
+    var phaseTitle: String {
+        switch phase {
+        case .queued: "准备中"
+        case .sending: "发送中"
+        case .receiving: "接收中"
+        case .verifying: outgoing ? "等待校验" : "校验中"
+        case .delivering: "保存中"
+        case .completed: "已完成"
+        case .cancelled: "已取消"
+        case .failed: "失败"
         }
     }
 }

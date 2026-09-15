@@ -39,6 +39,7 @@ struct MainContentView: View {
             case .input: InputView(store: store, snapshot: snapshot)
             case .devices: DevicesView(store: store, snapshot: snapshot, searchRequest: deviceSearchRequest)
             case .transfers: TransfersView(store: store, transfers: snapshot.transfers)
+            case .lanTransfer: LanTransferView(store: store)
             }
         } else {
             ContentUnavailableView("无法启动", systemImage: "exclamationmark.triangle", description: Text(store.error ?? "引擎未就绪"))

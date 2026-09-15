@@ -694,7 +694,7 @@ fn native_report_is_current(
 fn native_phase(
     permission: PermissionSnapshot,
     session_active: bool,
-    recording: bool,
+    _recording: bool,
     adapters_ready: bool,
     error: Option<String>,
 ) -> (InputActivationStatus, Option<String>) {
@@ -707,9 +707,6 @@ fn native_phase(
     // its diagnostic status must not prevent creating our active tap/injector.
     if !session_active {
         return (LockedSession, Some("等待解锁本机桌面".into()));
-    }
-    if recording {
-        return (Unavailable, Some("正在录制快捷键，暂时停止输入".into()));
     }
     if let Some(error) = error {
         return (Unavailable, Some(error));
@@ -915,7 +912,7 @@ async fn run(
             _ = capture_ready.notified() => {
                 // Do not route a pending sample after a user pause/emergency or
                 // while the observer is stale. Maintenance applies the new gate.
-                if emergency.load(Ordering::Acquire) || recording.load(Ordering::Acquire)
+                if emergency.load(Ordering::Acquire)
                     || !state.available || !state.effective.enabled
                     || !state.capture_started
                     || !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input)
@@ -944,7 +941,7 @@ async fn run(
                                 }
                             }
                             if !state.policy.is_remote() { state.anchor=(sample.global_x,sample.global_y); }
-                            if state.effective.role != InputShareRole::Controller
+                            if (recording_active || state.effective.role != InputShareRole::Controller)
                                 && !matches!(&sample.event, SharedInputEvent::Key {code,pressed:true,modifiers,..} if HotkeyBindings::is_emergency(*code,*modifiers)) {continue;}
                             let global = Point::new(sample.global_x, sample.global_y);
                             let actions = state.policy.handle_input(sample.event, global, Vector2::new(sample.delta_x,sample.delta_y), started.elapsed().as_millis() as u64);
@@ -997,7 +994,12 @@ async fn run(
                 let recording_requested=recording.load(Ordering::Acquire);
                 if recording_requested != recording_active {
                     recording_active=recording_requested;
-                    state.reset_adapters(&runtime).await;
+                    // Recording consumes shortcuts in the app, not the network
+                    // keyboard. Keep inbound injection and its lease alive.
+                    if recording_active && state.policy.is_remote() {
+                        state.reclaim(&runtime, Some(state.anchor)).await;
+                    }
+                    state.capture.set_controller_hotkeys_enabled(!recording_active && effective.role==InputShareRole::Controller);
                     let _=ui.unbounded_send(UiEvent::InputRecordingReady(recording_active));
                     next_refresh=now;
                 }
@@ -1041,7 +1043,7 @@ async fn run(
                                     // capture without changing the saved settings.
                                     // Every new tap needs its role and custom hotkeys.
                                     state.capture.set_hotkeys(hotkey_bindings(&effective));
-                                    state.capture.set_controller_hotkeys_enabled(effective.role==InputShareRole::Controller);
+                                    state.capture.set_controller_hotkeys_enabled(!recording_active && effective.role==InputShareRole::Controller);
                                 }
                                 Err(error)=>adapter_error=Some(error.to_string())
                             }
@@ -1071,7 +1073,7 @@ async fn run(
                         if state.retired.contains(&session) || progress.expired(now) {link.ready=false;link.reason=Some("控制租约未续期".into());}
                     }
                 }
-                let enabled = !recording_active && effective.enabled && state.available;
+                let enabled = effective.enabled && state.available;
                 let mut native_snapshot = snapshot.clone();
                 native_snapshot.settings = effective.clone();
                 let layout = layout_displays(&native_snapshot,local,true);
@@ -1087,7 +1089,7 @@ async fn run(
                     state.policy.set_hotkeys(bindings.clone());
                     state.policy.set_disabled_corners(effective.disabled_corners, f64::from(effective.corner_size));
                     state.capture.set_hotkeys(bindings);
-                    state.capture.set_controller_hotkeys_enabled(effective.role==InputShareRole::Controller);
+                    state.capture.set_controller_hotkeys_enabled(!recording_active && effective.role==InputShareRole::Controller);
                     }
                     state.layout=layout;
                 }
@@ -1378,10 +1380,7 @@ mod tests {
             Preparing
         );
         assert_eq!(native_phase(permission, true, false, true, None).0, Ready);
-        assert_eq!(
-            native_phase(permission, true, true, true, None).0,
-            Unavailable
-        );
+        assert_eq!(native_phase(permission, true, true, true, None).0, Ready);
         assert_eq!(
             native_phase(permission, true, false, true, Some("tap failed".into())).0,
             Unavailable

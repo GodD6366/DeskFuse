@@ -185,3 +185,6 @@ pub fn attach_source_metadata(
             });
     }
 }
+
+/// Photo metadata only; the original bytes live in the managed transfer cache.
+pub const LAN_PHOTO_TYPE: &str = "com.unidesk.lan-photo-v1";

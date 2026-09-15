@@ -1,10 +1,10 @@
 //! Framing and source planning for seamless file clipboard transfers.
 
 use super::{
-    ChunkDescriptor, EntryType, RelativePath, TransferEntry, TransferError, TransferId,
-    TransferManifest,
+    ChunkDescriptor, RelativePath, TransferEntry, TransferError, TransferId, TransferManifest,
 };
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// MIME marker carried inside the authenticated clipboard channel.
@@ -18,6 +18,11 @@ const ACK: u8 = 5;
 const DEFERRED: u8 = 6;
 const REQUEST: u8 = 7;
 const REQUESTED_OFFER: u8 = 8;
+const RECEIPT: u8 = 11;
+const COMPRESSED_OFFER: u8 = 9;
+const COMPRESSED_REQUESTED_OFFER: u8 = 10;
+const MAX_MANIFEST_BYTES: usize = 256 * 1024 * 1024;
+const MAX_OFFER_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const CHUNK_SIZE: usize = 1024 * 1024;
 
 /// One local file and the chunk plan used to stream it without buffering the
@@ -56,7 +61,7 @@ pub struct ClipboardFilePlan {
 
 impl ClipboardFilePlan {
     /// Build one manifest while retaining every copied top-level file or
-    /// directory. Symlinks and non-UTF-8 names fail closed.
+    /// directory. Internal relative links are preserved, never followed.
     pub fn from_paths(paths: &[PathBuf]) -> Result<Self, TransferError> {
         Self::from_paths_with_transfer_id(paths, TransferId::new())
     }
@@ -66,6 +71,15 @@ impl ClipboardFilePlan {
     pub fn from_paths_with_transfer_id(
         paths: &[PathBuf],
         transfer_id: TransferId,
+    ) -> Result<Self, TransferError> {
+        Self::from_paths_observed(paths, transfer_id, || false, |_| {})
+    }
+
+    pub fn from_paths_observed(
+        paths: &[PathBuf],
+        transfer_id: TransferId,
+        cancelled: impl Fn() -> bool,
+        mut progress: impl FnMut(usize),
     ) -> Result<Self, TransferError> {
         if paths.is_empty() {
             return Err(TransferError::InvalidManifest(
@@ -86,7 +100,11 @@ impl ClipboardFilePlan {
                 ))
             })?;
             let root_relative = RelativePath::new(Path::new(root_name))?;
-            let single = TransferManifest::from_path(source_root)?;
+            let base = entries.len();
+            let single =
+                TransferManifest::from_path_observed(source_root, &cancelled, &mut |count| {
+                    progress(base + count)
+                })?;
             if metadata.is_file() {
                 let entry = single.entries().first().ok_or_else(|| {
                     TransferError::InvalidManifest("file manifest is empty".into())
@@ -98,23 +116,7 @@ impl ClipboardFilePlan {
 
             entries.push(TransferEntry::directory(&root_relative, 0)?);
             for entry in single.entries() {
-                let prefixed = RelativePath::new(
-                    Path::new(root_relative.as_str()).join(entry.path().as_ref()),
-                )?;
-                let copied = match entry.entry_type() {
-                    EntryType::File => TransferEntry::file(
-                        &prefixed,
-                        entry.size(),
-                        entry.mtime(),
-                        entry.hash().ok_or_else(|| {
-                            TransferError::InvalidManifest(format!(
-                                "file {} has no hash",
-                                entry.path()
-                            ))
-                        })?,
-                    )?,
-                    EntryType::Directory => TransferEntry::directory(&prefixed, entry.mtime())?,
-                };
+                let copied = entry.prefixed(&root_relative)?;
                 if entry.is_file() {
                     source_pairs.push((copied.clone(), source_root.join(entry.path().as_ref())));
                 }
@@ -199,6 +201,11 @@ pub enum ClipboardFileFrame {
     Ack {
         transfer_id: TransferId,
     },
+    /// Cumulative queue acceptance; not an integrity/success acknowledgement.
+    Receipt {
+        transfer_id: TransferId,
+        accepted_frames: u64,
+    },
 }
 
 impl ClipboardFileFrame {
@@ -212,7 +219,8 @@ impl ClipboardFileFrame {
             | Self::Chunk { transfer_id, .. }
             | Self::Complete { transfer_id }
             | Self::Cancel { transfer_id, .. }
-            | Self::Ack { transfer_id } => *transfer_id,
+            | Self::Ack { transfer_id }
+            | Self::Receipt { transfer_id, .. } => *transfer_id,
         }
     }
 
@@ -245,16 +253,37 @@ impl ClipboardFileFrame {
                 transfer_id,
                 manifest,
             } => {
-                output.push(if matches!(self, Self::RequestedOffer { .. }) {
-                    REQUESTED_OFFER
+                let json = serde_json::to_vec(manifest)
+                    .map_err(|error| TransferError::InvalidManifest(error.to_string()))?;
+                if json.len() > MAX_MANIFEST_BYTES {
+                    return Err(TransferError::InvalidManifest(
+                        "文件清单超过 256 MiB，请分批复制".into(),
+                    ));
+                }
+                let compressed = json.len() > 64 * 1024;
+                let body = if compressed {
+                    let mut encoder =
+                        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                    encoder.write_all(&json)?;
+                    encoder.finish()?
                 } else {
-                    OFFER
-                });
-                output.extend_from_slice(transfer_id.as_bytes());
-                output.extend_from_slice(
-                    &serde_json::to_vec(manifest)
-                        .map_err(|error| TransferError::InvalidManifest(error.to_string()))?,
+                    json
+                };
+                if body.len() > MAX_OFFER_BYTES {
+                    return Err(TransferError::InvalidManifest(
+                        "压缩后的文件清单仍过大，请分批复制".into(),
+                    ));
+                }
+                output.push(
+                    match (matches!(self, Self::RequestedOffer { .. }), compressed) {
+                        (true, true) => COMPRESSED_REQUESTED_OFFER,
+                        (false, true) => COMPRESSED_OFFER,
+                        (true, false) => REQUESTED_OFFER,
+                        (false, false) => OFFER,
+                    },
                 );
+                output.extend_from_slice(transfer_id.as_bytes());
+                output.extend_from_slice(&body);
             }
             Self::Chunk {
                 transfer_id,
@@ -297,6 +326,14 @@ impl ClipboardFileFrame {
                 output.extend_from_slice(transfer_id.as_bytes());
                 output.extend_from_slice(reason.as_bytes());
             }
+            Self::Receipt {
+                transfer_id,
+                accepted_frames,
+            } => {
+                output.push(RECEIPT);
+                output.extend_from_slice(transfer_id.as_bytes());
+                output.extend_from_slice(&accepted_frames.to_be_bytes());
+            }
             Self::Ack { transfer_id } => {
                 output.push(ACK);
                 output.extend_from_slice(transfer_id.as_bytes());
@@ -328,20 +365,41 @@ impl ClipboardFileFrame {
                 })
             }
             REQUEST if body.is_empty() => Ok(Self::Request { transfer_id }),
-            OFFER | REQUESTED_OFFER => {
-                let manifest = serde_json::from_slice(body)
-                    .map_err(|error| TransferError::InvalidManifest(error.to_string()))?;
-                Ok(if kind == REQUESTED_OFFER {
-                    Self::RequestedOffer {
-                        transfer_id,
-                        manifest,
+            OFFER | REQUESTED_OFFER | COMPRESSED_OFFER | COMPRESSED_REQUESTED_OFFER => {
+                if body.len() > MAX_OFFER_BYTES {
+                    return Err(TransferError::InvalidManifest(
+                        "file offer is too large".into(),
+                    ));
+                }
+                let mut decoded = Vec::new();
+                let json = if matches!(kind, COMPRESSED_OFFER | COMPRESSED_REQUESTED_OFFER) {
+                    flate2::read::ZlibDecoder::new(body)
+                        .take(MAX_MANIFEST_BYTES as u64 + 1)
+                        .read_to_end(&mut decoded)?;
+                    if decoded.len() > MAX_MANIFEST_BYTES {
+                        return Err(TransferError::InvalidManifest(
+                            "expanded file manifest is too large".into(),
+                        ));
                     }
+                    decoded.as_slice()
                 } else {
-                    Self::Offer {
-                        transfer_id,
-                        manifest,
-                    }
-                })
+                    body
+                };
+                let manifest = serde_json::from_slice(json)
+                    .map_err(|error| TransferError::InvalidManifest(error.to_string()))?;
+                Ok(
+                    if matches!(kind, REQUESTED_OFFER | COMPRESSED_REQUESTED_OFFER) {
+                        Self::RequestedOffer {
+                            transfer_id,
+                            manifest,
+                        }
+                    } else {
+                        Self::Offer {
+                            transfer_id,
+                            manifest,
+                        }
+                    },
+                )
             }
             CHUNK => decode_chunk(transfer_id, body),
             COMPLETE if body.is_empty() => Ok(Self::Complete { transfer_id }),
@@ -355,6 +413,10 @@ impl ClipboardFileFrame {
                 })
             }
             ACK if body.is_empty() => Ok(Self::Ack { transfer_id }),
+            RECEIPT if body.len() == 8 => Ok(Self::Receipt {
+                transfer_id,
+                accepted_frames: u64::from_be_bytes(body.try_into().expect("checked receipt size")),
+            }),
             _ => Err(TransferError::InvalidChunk(
                 "unknown or malformed file clipboard frame".into(),
             )),
@@ -388,13 +450,14 @@ pub struct DeferredClipboardSource {
     pub roots: Vec<PathBuf>,
     pub names: Vec<String>,
     pub total_bytes: u64,
-    entries: Vec<SourceMetadata>,
+    entries: std::sync::Arc<Vec<SourceMetadata>>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SourceMetadata {
     path: PathBuf,
     size: u64,
     directory: bool,
+    link_target: Option<PathBuf>,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -406,6 +469,12 @@ struct SourceMetadata {
 }
 impl DeferredClipboardSource {
     pub fn inspect(roots: Vec<PathBuf>) -> Result<Self, TransferError> {
+        Self::inspect_cancellable(roots, || false)
+    }
+    pub fn inspect_cancellable(
+        roots: Vec<PathBuf>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Self, TransferError> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         let mut names = Vec::new();
@@ -430,19 +499,41 @@ impl DeferredClipboardSource {
             ));
         }
         while let Some(path) = stack.pop() {
+            if cancelled() {
+                return Err(TransferError::State("文件目录扫描已取消".into()));
+            }
             #[cfg(windows)]
             let (metadata, stamp) = unidesk_platform_windows::filesystem::source_stamp(&path)?;
             #[cfg(not(windows))]
             let metadata = fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_symlink() {
-                return Err(TransferError::SymlinkNotAllowed(path));
-            }
-            if !metadata.is_file() && !metadata.is_dir() {
+            let link_target = if metadata.file_type().is_symlink() {
+                let root = roots
+                    .iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+                    .expect("source descendant");
+                if &path == root {
+                    return Err(TransferError::SymlinkNotAllowed(path));
+                }
+                let relative =
+                    RelativePath::new(path.strip_prefix(root).expect("source descendant"))?;
+                let target = fs::read_link(&path)?;
+                super::validate_link_target(
+                    &relative,
+                    target.to_str().ok_or_else(|| {
+                        TransferError::InvalidPath("符号链接目标不是 UTF-8".into())
+                    })?,
+                )?;
+                Some(target)
+            } else {
+                None
+            };
+            if !metadata.is_file() && !metadata.is_dir() && link_target.is_none() {
                 return Err(TransferError::InvalidPath("unsupported source type".into()));
             }
-            if entries.len() >= 100_000 {
+            if entries.len() >= super::MAX_MANIFEST_ENTRIES {
                 return Err(TransferError::InvalidManifest(
-                    "too many clipboard entries".into(),
+                    "文件目录超过 100 万项，请分批复制".into(),
                 ));
             }
             if metadata.is_file() {
@@ -454,6 +545,7 @@ impl DeferredClipboardSource {
                 path: path.clone(),
                 size: metadata.len(),
                 directory: metadata.is_dir(),
+                link_target,
                 #[cfg(unix)]
                 device: metadata.dev(),
                 #[cfg(unix)]
@@ -474,7 +566,7 @@ impl DeferredClipboardSource {
             roots,
             names,
             total_bytes,
-            entries,
+            entries: std::sync::Arc::new(entries),
         })
     }
     /// Reject deleted, replaced, resized, edited, or renamed sources before any
@@ -483,7 +575,13 @@ impl DeferredClipboardSource {
     /// change it without changing file contents. Identity, size, mtime and the
     /// complete tree still have to match, including after manifest hashing.
     pub fn validate_unchanged(&self) -> Result<(), TransferError> {
-        if Self::inspect(self.roots.clone())? != *self {
+        self.validate_unchanged_cancellable(|| false)
+    }
+    pub fn validate_unchanged_cancellable(
+        &self,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), TransferError> {
+        if Self::inspect_cancellable(self.roots.clone(), cancelled)? != *self {
             return Err(TransferError::State("源文件已更改，请重新复制".into()));
         }
         Ok(())

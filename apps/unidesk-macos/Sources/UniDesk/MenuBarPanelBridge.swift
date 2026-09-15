@@ -40,16 +40,30 @@ struct MenuBarPanelBridge: NSViewRepresentable {
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
                          NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] notification in
-                    let closing = notification.name == NSWindow.willCloseNotification || notification.name == NSWindow.didResignKeyNotification
-                    MainActor.assumeIsolated {
-                        if closing { self?.owner.handle.generation &+= 1 }
+                    let willClose = notification.name == NSWindow.willCloseNotification
+                    let closing = willClose || notification.name == NSWindow.didResignKeyNotification
+                    let menuFocusChange = MainActor.assumeIsolated {
+                        let ignore = !willClose
+                            && ClipboardHistoryMenuSession.isTracking
+                        if closing && !ignore { self?.owner.handle.generation &+= 1 }
+                        return ignore
                     }
+                    // Decide synchronously: a queued resign-key callback must not
+                    // close the session after menu tracking has already ended.
+                    guard !menuFocusChange else { return }
                     Task { @MainActor [weak self] in self?.reconcile(forceClosed: closing) }
                 })
             }
+            observers.append(NotificationCenter.default.addObserver(
+                forName: ClipboardHistoryMenuSession.didEnd, object: nil, queue: .main
+            ) { [weak self] _ in
+                // Reconcile after AppKit restores the panel's key-window state.
+                Task { @MainActor [weak self] in self?.reconcile() }
+            })
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
                 let consumed: Bool = MainActor.assumeIsolated {
-                    guard let self, let window = self.window,
+                    guard !ClipboardHistoryMenuSession.isTracking,
+                          let self, let window = self.window,
                           window.isVisible, window.isKeyWindow else { return false }
                     guard event.type == .flagsChanged || event.window === window else { return false }
                     self.owner.modifiersChanged(event.modifierFlags)
@@ -63,6 +77,9 @@ struct MenuBarPanelBridge: NSViewRepresentable {
             Task { @MainActor [weak self] in self?.reconcile() }
         }
         func reconcile(forceClosed: Bool = false) {
+            // Opening a native submenu is not the end of the clipboard session.
+            // Do not clear its rows, invalidate copy, or steal its keyboard input.
+            if ClipboardHistoryMenuSession.isTracking, window?.isVisible == true { return }
             let next = !forceClosed && window?.isVisible == true && window?.isKeyWindow == true
             guard next != active else { return }
             active = next

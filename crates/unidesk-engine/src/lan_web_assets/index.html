@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>uniDesk · 局域网传输</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="page-header">
+      <a class="brand" href="/" aria-label="uniDesk 首页"><span class="brand-mark" aria-hidden="true"></span>uniDesk</a>
+      <span id="connection" class="connection" role="status">正在连接</span>
+    </header>
+    <nav class="page-tabs" role="tablist" aria-label="局域网传输页面">
+      <button id="tab-transfer" role="tab" aria-selected="true" aria-controls="panel-transfer" type="button">传输</button>
+      <button id="tab-browse" role="tab" aria-selected="false" aria-controls="panel-browse" tabindex="-1" type="button">查看</button>
+    </nav>
+    <main>
+      <section id="panel-transfer" class="send-section" role="tabpanel" aria-labelledby="tab-transfer">
+        <div class="intro"><div><h1 id="page-title">传到你的 Mac</h1><p id="device-name">照片与文字，在同一局域网轻松接力。</p></div><span class="local-badge">局域网传输</span></div>
+        <form id="text-form" class="composer">
+          <label class="visually-hidden" for="text-input">要发送的文字</label>
+          <textarea id="text-input" rows="4" placeholder="粘贴或输入文字…" required></textarea>
+          <div class="composer-bar"><span id="text-count" class="muted">文字会加入 Mac 的剪贴板列表</span><button id="send-text" class="button primary" type="submit">发送文字</button></div>
+        </form>
+        <div class="photo-bar"><div><strong>也可以传照片</strong><span class="muted">支持多选，逐张发送原文件</span></div><button id="choose-photos" class="button secondary" type="button"><span aria-hidden="true">＋</span> 上传照片</button><input id="photo-input" type="file" accept="image/*,.heic,.heif" multiple hidden></div>
+        <p id="send-message" class="inline-message" role="status" hidden></p>
+        <section id="queue-section" class="queue-section" aria-label="上传任务" hidden><div class="queue-heading"><h2>发送记录</h2><button id="clear-completed" class="text-button" type="button">清除已完成</button></div><ul id="upload-queue" class="upload-queue"></ul></section>
+      </section>
+      <section id="panel-browse" class="library" role="tabpanel" aria-labelledby="tab-browse" hidden>
+        <div class="library-heading"><div><h2 id="library-title">剪贴板列表</h2><span id="item-count" class="muted">照片、文字与文件，都在这里</span></div><div class="view-switch" role="group" aria-label="列表显示方式"><button id="view-list" type="button" aria-pressed="true" aria-label="列表" title="列表"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9"/></svg></button><button id="view-masonry" type="button" aria-pressed="false" aria-label="瀑布流" title="瀑布流"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h5v6H3zm9 0h5v10h-5zM3 13h5v4H3zm9 4h5"/></svg></button></div></div>
+        <div class="filters"><label class="search-field"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search" type="search" autocomplete="off" placeholder="搜索列表" aria-label="搜索剪贴板列表"></label><div class="filter-selects"><label><span class="visually-hidden">分组</span><select id="list-filter"><option value="">全部分组</option></select></label><label><span class="visually-hidden">来源</span><select id="source-filter"><option value="">全部来源</option></select></label></div></div>
+        <div id="list-message" class="list-message" role="status">正在读取剪贴板列表…</div>
+        <div id="items" class="items list" aria-busy="true"></div>
+        <div class="pagination"><button id="load-more" class="button secondary" type="button" hidden>加载更多</button><button id="retry-list" class="button secondary" type="button" hidden>重新读取</button></div>
+      </section>
+    </main>
+    <footer>内容保存在 Mac 中，仅通过当前局域网传输。</footer>
+  </div>
+  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title">
+    <header class="preview-header"><div><h2 id="preview-title">预览</h2><p id="preview-meta"></p></div><button id="preview-close" type="button" aria-label="关闭预览">×</button></header>
+    <div id="preview-content" class="preview-content" aria-busy="false"></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

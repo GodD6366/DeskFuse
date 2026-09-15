@@ -25,7 +25,7 @@ struct SettingsPermissionsView: View {
                     .buttonStyle(.borderless)
                 }
             } footer: {
-                Text("状态来自 macOS。输入监控仅用于诊断，不作为键鼠共享的额外门槛。")
+                Text("状态来自 macOS。仅展示 uniDesk 实际使用的系统权限。")
             }
         }
         .formStyle(.grouped)
@@ -76,7 +76,7 @@ struct SettingsPermissionsView: View {
 
     private func purpose(_ kind: PermissionKind) -> String {
         switch kind {
-        case .accessibility: "读取 Finder 粘贴位置与控制键鼠"
+        case .accessibility: "拦截文件粘贴、检查 Finder 焦点与控制键鼠"
         case .fullDiskAccess: "访问受系统保护的文件与目录"
         case .inputMonitoring: "诊断本机键盘与鼠标事件"
         }

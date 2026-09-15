@@ -41,6 +41,8 @@ pub use clipboard_file::{
 
 /// The protocol's default chunk size (1 MiB).
 pub const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
+/// Bounded metadata, not a small-folder-only clipboard limit.
+pub const MAX_MANIFEST_ENTRIES: usize = 1_000_000;
 /// Alias retained for callers that prefer a byte-count constant.
 pub const DEFAULT_CHUNK_SIZE_BYTES: u64 = DEFAULT_CHUNK_SIZE as u64;
 
@@ -406,6 +408,7 @@ pub type ContentHash = Sha256Digest;
 pub enum EntryType {
     File,
     Directory,
+    Symlink,
 }
 
 /// One manifest entry.  Directory entries have `hash == None` and `size == 0`.
@@ -417,6 +420,10 @@ pub struct TransferEntry {
     /// Modification time in nanoseconds since Unix epoch.
     mtime: i128,
     hash: Option<Sha256Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
 }
 
 impl TransferEntry {
@@ -432,6 +439,8 @@ impl TransferEntry {
             size,
             mtime,
             hash: Some(hash),
+            link_target: None,
+            mode: None,
         })
     }
 
@@ -442,7 +451,47 @@ impl TransferEntry {
             size: 0,
             mtime,
             hash: None,
+            link_target: None,
+            mode: None,
         })
+    }
+
+    /// Preserve a link as metadata; never read or traverse its target.
+    pub fn symlink(
+        path: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+        mtime: i128,
+    ) -> Result<Self, TransferError> {
+        let mut entry = Self::directory(path, mtime)?;
+        entry.entry_type = EntryType::Symlink;
+        let target = target
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| TransferError::InvalidPath("符号链接目标不是 UTF-8".into()))?;
+        validate_link_target(&entry.path, target)?;
+        entry.link_target = Some(target.to_owned());
+        Ok(entry)
+    }
+
+    pub fn link_target(&self) -> Option<&str> {
+        self.link_target.as_deref()
+    }
+
+    fn with_metadata(mut self, metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if self.entry_type != EntryType::Symlink {
+                self.mode = Some(metadata.permissions().mode() & 0o777);
+            }
+        }
+        self
+    }
+
+    pub(crate) fn prefixed(&self, prefix: &RelativePath) -> Result<Self, TransferError> {
+        let mut entry = self.clone();
+        entry.path = RelativePath::new(prefix.as_ref().join(self.path.as_ref()))?;
+        Ok(entry)
     }
 
     /// Constructs an entry from its explicit type.  Directories must have
@@ -455,6 +504,9 @@ impl TransferEntry {
         hash: Option<Sha256Digest>,
     ) -> Result<Self, TransferError> {
         match entry_type {
+            EntryType::Symlink => Err(TransferError::InvalidManifest(
+                "symbolic link requires a target".into(),
+            )),
             EntryType::File => Self::file(
                 path,
                 size,
@@ -590,6 +642,11 @@ impl<'de> Deserialize<'de> for TransferManifest {
 
 impl TransferManifest {
     pub fn new(mut entries: Vec<TransferEntry>) -> Result<Self, TransferError> {
+        if entries.len() > MAX_MANIFEST_ENTRIES {
+            return Err(TransferError::InvalidManifest(
+                "文件目录超过 100 万项，请分批复制".into(),
+            ));
+        }
         entries.sort_by(|left, right| left.path.cmp(&right.path));
         let mut paths = BTreeSet::new();
         let mut path_kinds = BTreeMap::new();
@@ -610,7 +667,10 @@ impl TransferManifest {
                     prefix.push('/');
                 }
                 prefix.push_str(component);
-                if path_kinds.get(&prefix) == Some(&EntryType::File) {
+                if path_kinds
+                    .get(&prefix)
+                    .is_some_and(|kind| *kind != EntryType::Directory)
+                {
                     return Err(TransferError::InvalidManifest(format!(
                         "file {} is an ancestor of {}",
                         prefix, entry.path
@@ -618,6 +678,24 @@ impl TransferManifest {
                 }
             }
             path_kinds.insert(entry.path.as_str().to_owned(), entry.entry_type);
+            if entry.entry_type == EntryType::Symlink {
+                if entry.size != 0 || entry.hash.is_some() || entry.mode.is_some() {
+                    return Err(TransferError::InvalidManifest(
+                        "symbolic link has file metadata".into(),
+                    ));
+                }
+                let target = entry.link_target.as_deref().ok_or_else(|| {
+                    TransferError::InvalidManifest("symbolic link has no target".into())
+                })?;
+                validate_link_target(&entry.path, target)?;
+                file_count += 1;
+                continue;
+            }
+            if entry.link_target.is_some() || entry.mode.is_some_and(|mode| mode & !0o777 != 0) {
+                return Err(TransferError::InvalidManifest(
+                    "invalid file metadata".into(),
+                ));
+            }
             if entry.is_file() {
                 if entry.hash.is_none() {
                     return Err(TransferError::InvalidManifest(format!(
@@ -655,11 +733,20 @@ impl TransferManifest {
         Self::new(entries)
     }
 
-    /// Builds a manifest for a regular file or directory.  Every symlink is
-    /// rejected rather than followed, which rules out both local and remote
-    /// symlink escapes.
+    /// Builds a manifest without following links. Internal relative links are
+    /// retained as metadata; an external or top-level link is rejected.
     pub fn from_path(root: impl AsRef<Path>) -> Result<Self, TransferError> {
-        let root = root.as_ref();
+        Self::from_path_observed(root.as_ref(), &|| false, &mut |_| {})
+    }
+
+    pub(crate) fn from_path_observed(
+        root: &Path,
+        cancelled: &impl Fn() -> bool,
+        progress: &mut impl FnMut(usize),
+    ) -> Result<Self, TransferError> {
+        if cancelled() {
+            return Err(TransferError::State("文件准备已取消".into()));
+        }
         let metadata = fs::symlink_metadata(root)?;
         if metadata.file_type().is_symlink() {
             return Err(TransferError::SymlinkNotAllowed(root.to_path_buf()));
@@ -669,14 +756,20 @@ impl TransferManifest {
                 .file_name()
                 .ok_or_else(|| TransferError::InvalidManifest("file has no name".into()))?;
             let relative = RelativePath::new(Path::new(name))?;
-            let hash = hash_file(root)?;
-            return Self::new(vec![TransferEntry {
-                path: relative,
-                entry_type: EntryType::File,
-                size: metadata.len(),
-                mtime: metadata_mtime(&metadata),
-                hash: Some(hash),
-            }]);
+            let hash = hash_file_cancellable(root, cancelled)?;
+            progress(1);
+            return Self::new(vec![
+                TransferEntry {
+                    path: relative,
+                    entry_type: EntryType::File,
+                    size: metadata.len(),
+                    mtime: metadata_mtime(&metadata),
+                    hash: Some(hash),
+                    link_target: None,
+                    mode: None,
+                }
+                .with_metadata(&metadata),
+            ]);
         }
         if !metadata.is_dir() {
             return Err(TransferError::InvalidManifest(format!(
@@ -685,7 +778,7 @@ impl TransferManifest {
             )));
         }
         let mut entries = Vec::new();
-        collect_manifest_entries(root, Path::new(""), &mut entries)?;
+        collect_manifest_entries(root, Path::new(""), &mut entries, cancelled, progress)?;
         Self::new(entries)
     }
 
@@ -753,9 +846,15 @@ impl TransferManifest {
             hasher.update([match entry.entry_type {
                 EntryType::File => 1,
                 EntryType::Directory => 2,
+                EntryType::Symlink => 3,
             }]);
             hasher.update(entry.size.to_le_bytes());
             hasher.update(entry.mtime.to_le_bytes());
+            if let Some(target) = &entry.link_target {
+                hasher.update(target.as_bytes());
+            }
+            hasher.update([0]);
+            hasher.update(entry.mode.unwrap_or_default().to_le_bytes());
             if let Some(hash) = entry.hash {
                 hasher.update([1]);
                 hasher.update(hash.0);
@@ -1858,6 +1957,15 @@ mod secure_fs {
         open_parent(root, path)
     }
 
+    pub(crate) fn create_symlink(
+        root: &Dir,
+        path: &RelativePath,
+        target: &str,
+    ) -> Result<(), TransferError> {
+        let (parent, leaf) = open_parent_for_create(root, path).map_err(TransferError::Io)?;
+        io_result(rustix::fs::symlinkat(target, parent.as_ref(), leaf)).map_err(TransferError::Io)
+    }
+
     pub(crate) fn write_chunk(
         root: &Dir,
         path: &RelativePath,
@@ -1885,7 +1993,6 @@ mod secure_fs {
             }
             written += count;
         }
-        io_result(rustix::fs::fsync(&file))?;
         Ok(())
     }
 
@@ -1910,11 +2017,19 @@ mod secure_fs {
             )));
         }
         let file: File = file.into();
-        let actual = hash_reader(file).map_err(TransferError::Io)?;
+        let actual = hash_reader(&file).map_err(TransferError::Io)?;
         let expected = entry.hash().ok_or_else(|| {
             TransferError::InvalidManifest(format!("file {} has no hash", entry.path()))
         })?;
         if actual == expected {
+            if let Some(mode) = entry.mode {
+                io_result(rustix::fs::fchmod(
+                    &file,
+                    Mode::from_raw_mode((mode & 0o777) as _),
+                ))
+                .map_err(TransferError::Io)?;
+            }
+            file.sync_all().map_err(TransferError::Io)?;
             Ok(())
         } else {
             Err(TransferError::HashMismatch { expected, actual })
@@ -2172,8 +2287,9 @@ impl FileStaging {
         let entry = self
             .manifest
             .entries()
-            .iter()
-            .find(|entry| entry.path() == path)
+            .binary_search_by(|entry| entry.path().cmp(path))
+            .ok()
+            .map(|index| &self.manifest.entries()[index])
             .ok_or_else(|| {
                 TransferError::InvalidChunk(format!("path {path} is not in the manifest"))
             })?;
@@ -2534,6 +2650,18 @@ fn commit_secure(
         staging.complete_file(entry)?;
     }
 
+    for entry in staging
+        .manifest
+        .entries()
+        .iter()
+        .filter(|entry| entry.link_target.is_some())
+    {
+        secure_fs::create_symlink(
+            &staging.root_fd,
+            entry.path(),
+            entry.link_target.as_deref().expect("validated link"),
+        )?;
+    }
     let mut report = CommitReport::default();
     let mut journal = Vec::new();
     let mut reserved = BTreeSet::new();
@@ -2585,7 +2713,12 @@ fn commit_secure(
             )?;
         }
 
-        for entry in staging.manifest.files() {
+        for entry in staging
+            .manifest
+            .entries()
+            .iter()
+            .filter(|entry| !entry.is_directory())
+        {
             let original_path = RelativePath::new(entry.path())?;
             if is_skipped_path(&original_path, &skipped_directories) {
                 report
@@ -2641,7 +2774,7 @@ fn commit_secure(
             } else {
                 None
             };
-            secure_fs::rename(&staging.root_fd, &path, &destination, &target)
+            secure_fs::rename(&staging.root_fd, &original_path, &destination, &target)
                 .map_err(TransferError::Io)?;
             if backup.is_none() {
                 journal.push(JournalEntry::CreatedFile(target.clone()));
@@ -2792,6 +2925,8 @@ fn collect_manifest_entries(
     root: &Path,
     relative: &Path,
     entries: &mut Vec<TransferEntry>,
+    cancelled: &impl Fn() -> bool,
+    progress: &mut impl FnMut(usize),
 ) -> Result<(), TransferError> {
     let directory = if relative.as_os_str().is_empty() {
         root.to_path_buf()
@@ -2801,6 +2936,9 @@ fn collect_manifest_entries(
     let mut children = fs::read_dir(&directory)?.collect::<Result<Vec<_>, io::Error>>()?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
+        if cancelled() {
+            return Err(TransferError::State("文件准备已取消".into()));
+        }
         let path = child.path();
         let metadata = fs::symlink_metadata(&path)?;
         let child_relative = if relative.as_os_str().is_empty() {
@@ -2809,24 +2947,60 @@ fn collect_manifest_entries(
             relative.join(child.file_name())
         };
         let safe = RelativePath::new(&child_relative)?;
-        if metadata.file_type().is_symlink() {
-            return Err(TransferError::SymlinkNotAllowed(path));
+        if entries.len() >= MAX_MANIFEST_ENTRIES {
+            return Err(TransferError::InvalidManifest(
+                "文件目录超过 100 万项，请分批复制".into(),
+            ));
         }
-        if metadata.is_dir() {
-            entries.push(TransferEntry::directory(&safe, metadata_mtime(&metadata))?);
-            collect_manifest_entries(root, &child_relative, entries)?;
-        } else if metadata.is_file() {
-            entries.push(TransferEntry::file(
+        if metadata.file_type().is_symlink() {
+            entries.push(TransferEntry::symlink(
                 &safe,
-                metadata.len(),
+                fs::read_link(&path)?,
                 metadata_mtime(&metadata),
-                hash_file(&path)?,
             )?);
+        } else if metadata.is_dir() {
+            entries.push(
+                TransferEntry::directory(&safe, metadata_mtime(&metadata))?
+                    .with_metadata(&metadata),
+            );
+            collect_manifest_entries(root, &child_relative, entries, cancelled, progress)?;
+        } else if metadata.is_file() {
+            entries.push(
+                TransferEntry::file(
+                    &safe,
+                    metadata.len(),
+                    metadata_mtime(&metadata),
+                    hash_file_cancellable(&path, cancelled)?,
+                )?
+                .with_metadata(&metadata),
+            );
         } else {
             return Err(TransferError::InvalidManifest(format!(
                 "unsupported filesystem entry: {}",
                 path.display()
             )));
+        }
+        progress(entries.len());
+    }
+    Ok(())
+}
+
+/// Validate lexically without ever following a local or remote link.
+pub(crate) fn validate_link_target(path: &RelativePath, target: &str) -> Result<(), TransferError> {
+    let mut depth = path.as_str().split('/').count().saturating_sub(1);
+    if target.is_empty() || target.contains('\0') || target.contains('\\') {
+        return Err(TransferError::InvalidPath("符号链接目标无效".into()));
+    }
+    for component in Path::new(target).components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            _ => {
+                return Err(TransferError::InvalidPath(
+                    "符号链接指向所选目录之外，请包含其所在项目目录后重新复制".into(),
+                ));
+            }
         }
     }
     Ok(())
@@ -2875,8 +3049,24 @@ fn hash_reader(mut reader: impl Read) -> io::Result<Sha256Digest> {
     Ok(Sha256Digest(bytes))
 }
 
-fn hash_file(path: impl AsRef<Path>) -> Result<Sha256Digest, TransferError> {
-    Ok(hash_reader(File::open(path)?)?)
+fn hash_file_cancellable(
+    path: impl AsRef<Path>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Sha256Digest, TransferError> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if cancelled() {
+            return Err(TransferError::State("文件准备已取消".into()));
+        }
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Sha256Digest(hasher.finalize().into()))
 }
 
 fn metadata_mtime(metadata: &fs::Metadata) -> i128 {

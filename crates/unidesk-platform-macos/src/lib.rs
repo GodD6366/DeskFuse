@@ -56,6 +56,9 @@ pub mod wifi_environment;
 #[cfg(target_os = "macos")]
 pub mod image_processor;
 
+#[cfg(target_os = "macos")]
+pub mod lan_web;
+
 /// Foreground application observed at clipboard capture; absence stays unknown.
 pub fn clipboard_source_application() -> (Option<String>, Option<String>) {
     let app = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication();

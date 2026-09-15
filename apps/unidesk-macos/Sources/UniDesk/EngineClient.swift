@@ -51,11 +51,18 @@ actor EngineClient {
     func search(_ query: String, filter: UInt8) throws -> [UInt64] { try engine.searchHistory(query: query, filter: filter) }
     func libraryQuery(_ request: String) throws -> String { try engine.libraryQuery(request: request) }
     func libraryMutate(_ request: String) throws -> String { try engine.libraryMutate(request: request) }
+    func lanWebState() throws -> String { try engine.lanWebState() }
+    func configureLanWeb(enabled: Bool, interfaceName: String?) throws -> String {
+        try engine.configureLanWeb(enabled: enabled, interfaceName: interfaceName)
+    }
     func prepareClipboardPaste(_ id: UInt64, session: String) async throws -> Int64 {
         let engine = self.engine
         return try await Task.detached { try engine.prepareClipboardPaste(id: id, session: session) }.value
     }
     func cancelClipboardPreparation(_ session: String) throws { try engine.cancelClipboardPreparation(session: session) }
+    func thumbnail(_ id: UInt64, maxPixelSize: Int) throws -> Data {
+        try engine.clipboardThumbnail(id: id, maxPixelSize: UInt32(max(64, min(maxPixelSize, 480))))
+    }
     func content(_ id: UInt64) throws -> ClipboardContent { try engine.content(id: id) }
     func exportDiagnostics(_ path: String) throws { try engine.exportDiagnostics(path: path) }
     func shutdown() throws { try engine.shutdown() }

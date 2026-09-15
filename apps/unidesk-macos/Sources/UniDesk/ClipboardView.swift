@@ -23,28 +23,53 @@ struct ClipboardView: View {
     @State private var nextOffset: Int?
     @State private var total = 0
     @State private var searching = false
+    @State private var pageRequest = UUID()
+    @State private var paginationGeneration = UUID()
     @State private var queryRevision = 0
     @State private var copyToken: String?
     @State private var copyError: String?
     @State private var copiedID: UInt64?
 
-    private var items: [HistoryItem] {
-        let page = pageItems.map { library.displayItem($0, snapshot: snapshot) }
+    /// Every record the pane may show, deduplicated and ordered newest first.
+    private var baseItems: [HistoryItem] {
+        // Record identity must stay unique for `ForEach` and the keyed metadata
+        // dictionaries below; tolerate a stale or legacy duplicate snapshot row.
+        var seen = Set<UInt64>()
+        let page = pageItems.compactMap { item -> HistoryItem? in
+            let display = library.displayItem(item, snapshot: snapshot)
+            return seen.insert(display.id).inserted ? display : nil
+        }
+        var order: [UInt64: UInt64] = [:]
+        for item in pageItems { order[item.id] = item.sort_at_ms ?? item.copied_at_ms ?? 0 }
         // The window is rebuilt when it is reopened, so `pageItems` starts empty
         // even though the engine already holds the newest records in its snapshot
-        // history. Prepend those records so the latest content is visible without
-        // waiting for the library page query. Searches and smart-list filters keep
-        // the query as the source of truth because their ordering differs.
+        // history. Merge those records in by recency so the latest content is
+        // visible without waiting for the page query. Searches and smart-list
+        // filters keep the query as the source of truth because their ordering
+        // and membership differ.
         guard search.isEmpty, source == nil, listID == nil, !snapshot.history.isEmpty else { return page }
-        let known = Set(page.map(\.id))
-        let fresh = snapshot.history.filter { !known.contains($0.id) }
+        let fresh = snapshot.history.filter { seen.insert($0.id).inserted }
         guard !fresh.isEmpty else { return page }
-        return fresh + page
+        for item in fresh { order[item.id] = item.copiedAtMs ?? 0 }
+        return (fresh + page).sorted {
+            let left = order[$0.id] ?? 0, right = order[$1.id] ?? 0
+            return left == right ? $0.id > $1.id : left > right
+        }
+    }
+    /// Remote index file rows without a usable local payload are omitted rather
+    /// than shown with a fetch/unavailable affordance. Local records are never
+    /// filtered here.
+    private var items: [HistoryItem] {
+        let unavailable = Set(pageItems.lazy.filter { $0.remote == true && $0.available == false }.map(\.id))
+        return baseItems.filter { item in
+            guard item.fileCount > 0 else { return true }
+            return !unavailable.contains(item.id)
+        }
     }
     private var queryKey: String { "\(listID ?? "")|\(search)|\(source ?? "")|\(library.revision)|\(snapshot.history.map(\.id))|\(queryRevision)" }
 
     var body: some View {
-        HistorySplitView {
+        HistorySplitView(expandHistory: displayMode == .grid) {
             ClipboardHistoryPane(
                 items: items, sources: library.sourceChoices(legacyNames: snapshot.history.map(\.source), snapshot: snapshot),
                 selected: $selected, search: $search, source: $source,
@@ -54,15 +79,15 @@ struct ClipboardView: View {
                 syncEnabled: Binding(get: { snapshot.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
                 selectedImage: content?.id == selected ? previewImage : nil,
                 client: store.client,
-                appIDs: Dictionary(uniqueKeysWithValues: pageItems.compactMap { item in
-                    item.source_app_id.map { (item.id, $0) }
-                }),
-                titles: Dictionary(uniqueKeysWithValues: pageItems.compactMap { item in
+                appIDs: Dictionary(items.compactMap { item in
+                    item.sourceAppId.map { (item.id, $0) }
+                }, uniquingKeysWith: { _, latest in latest }),
+                titles: Dictionary(pageItems.compactMap { item in
                     (item.title?.isEmpty == false) ? (item.id, item.title!) : nil
-                }),
-                metas: Dictionary(uniqueKeysWithValues: pageItems.map { item in
+                }, uniquingKeysWith: { _, latest in latest }),
+                metas: Dictionary(pageItems.map { item in
                     (item.id, ClipboardItemMeta(remote: item.remote ?? false, available: item.available ?? true, ocrText: item.ocr_text))
-                }),
+                }, uniquingKeysWith: { _, latest in latest }),
                 onRename: { id, title in library.rename(id, title: title) },
                 previewing: previewing,
                 onTogglePreview: { previewing.toggle() },
@@ -70,8 +95,8 @@ struct ClipboardView: View {
                     library.delete([id])
                     cancelCopy(); copyError = nil; copiedID = nil; previewing = false
                 },
-                listID: $listID, total: total, memberships: Dictionary(uniqueKeysWithValues: pageItems.map { ($0.id, $0.memberships ?? []) }),
-                hasMore: nextOffset != nil, loadMore: { Task { await loadPage(append: true) } }
+                listID: $listID, total: total, memberships: Dictionary(pageItems.map { ($0.id, $0.memberships ?? []) }, uniquingKeysWith: { _, latest in latest }),
+                hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, loadMore: { Task { await loadPage(append: true) } }
             )
         } detail: {
             VStack(spacing: 0) {
@@ -115,7 +140,12 @@ struct ClipboardView: View {
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             if copiedID == id { copiedID = nil }
         }
-        .onDisappear { cancelCopy(); ClipboardQuickLookController.shared.close() }
+        .onDisappear {
+            cancelCopy(); ClipboardQuickLookController.shared.close()
+            pageRequest = UUID(); searching = false
+            content = nil; media = nil; previewImage = nil
+            pageItems = []; nextOffset = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
             if (notification.object as? NSWindow)?.identifier?.rawValue == "unidesk-main" {
                 cancelCopy()
@@ -212,20 +242,23 @@ struct ClipboardView: View {
 
     @MainActor private func loadPage(append: Bool) async {
         let key = queryKey
-        if append && searching { return }
+        if append && (searching || nextOffset == nil) { return }
+        let request = UUID(); pageRequest = request
+        if !append { paginationGeneration = UUID() }
         searching = true
-        defer { if key == queryKey { searching = false } }
+        defer { if pageRequest == request { searching = false } }
         do {
-            if !append { try await Task.sleep(for: .milliseconds(120)) }
+            // Debounce typing, not window presentation or history refresh.
+            if !append && !search.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
             let result = try await library.query(listID: listID, search: search, source: source, offset: append ? (nextOffset ?? 0) : 0)
-            guard !Task.isCancelled, key == queryKey else { return }
+            guard !Task.isCancelled, pageRequest == request, key == queryKey else { return }
             if append {
                 let existing = Set(pageItems.map(\.id)); pageItems += result.items.filter { !existing.contains($0.id) }
             } else { pageItems = result.items }
             total = result.total; nextOffset = result.next_offset
-            scheduleOCR(pageItems)
+            scheduleOCR(result.items)
             if let target = navigationSelected, pageItems.contains(where: { $0.id == target }) { selected = target; navigationSelected = nil }
-        } catch { if !Task.isCancelled, key == queryKey { store.error = error.userFacingMessage } }
+        } catch { if !Task.isCancelled, pageRequest == request, key == queryKey { store.error = error.userFacingMessage } }
     }
 
     private func scheduleOCR(_ items: [ClipboardLibraryItem]) {

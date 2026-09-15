@@ -41,6 +41,7 @@ mod workspace_tests {
     fn clipboard_search_uses_full_text_source_and_type() {
         let mut item = crate::model::ClipboardHistoryItem {
             id: 1,
+            source_app_id: None,
             copied_at_ms: None,
             mime: "text/plain".into(),
             length: 20,

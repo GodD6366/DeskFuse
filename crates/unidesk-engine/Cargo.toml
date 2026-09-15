@@ -9,6 +9,11 @@ publish.workspace = true
 
 
 [dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+bytes.workspace = true
+tokio-util.workspace = true
+url = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid.workspace = true
 unidesk-update = { path = "../unidesk-update" }

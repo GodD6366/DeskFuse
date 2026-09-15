@@ -5,11 +5,11 @@ impl ClipboardHistoryStore {
         let library = crate::clipboard_library::global()?;
         let mut history = Self::default();
         for (id, snapshot, source, copied_at_ms) in library.recent(50)?.into_iter().rev() {
-            if history.insert(snapshot, source)
-                && let Some((item, _)) = history.items.front_mut()
-            {
-                item.id = id;
-                item.copied_at_ms = copied_at_ms;
+            if history.insert(snapshot, source) {
+                history.adopt_front_id(id);
+                if let Some((item, _)) = history.items.front_mut() {
+                    item.copied_at_ms = copied_at_ms;
+                }
             }
             history.next_id = history.next_id.max(id);
         }

@@ -1,7 +1,7 @@
 //! Native macOS global input capture and injection.
 //!
-//! Capture uses a listen-only `CGEventTap` on a dedicated Core Foundation run
-//! loop and requires the macOS **Input Monitoring** TCC grant. Injection posts
+//! Capture uses a Accessibility-authorized `CGEventTap` on a dedicated Core Foundation run
+//! loop and requires the macOS **Accessibility** TCC grant. Injection posts
 //! synthetic `CGEvent`s to the HID tap location and requires the **辅助功能 /
 //! Accessibility** TCC grant. Both boundaries fail explicitly rather than
 //! silently pretending an event reached the operating system.
@@ -57,9 +57,6 @@ unsafe extern "C" {
     /// Returns whether the process may post synthetic HID events
     /// (Accessibility / 辅助功能).
     fn CGPreflightPostEventAccess() -> u8;
-    /// Returns whether the process may listen to global input events
-    /// (Input Monitoring / 输入监控).
-    fn CGPreflightListenEventAccess() -> u8;
 }
 
 /// Native macOS input injector backed by `CGEvent` HID posting.
@@ -198,7 +195,7 @@ impl InputInjector for MacOSInputInjector {
     }
 }
 
-/// Native macOS global input capture backed by a listen-only `CGEventTap`.
+/// Native macOS global input capture backed by a Accessibility-authorized `CGEventTap`.
 pub struct MacOSGlobalInputCapture {
     events: std::sync::mpsc::Receiver<InputEvent>,
     runloop: Arc<Mutex<Option<CFRunLoop>>>,
@@ -239,7 +236,7 @@ impl GlobalInputCapture for MacOSGlobalInputCapture {
         if self.active.load(Ordering::Relaxed) {
             return Ok(());
         }
-        if unsafe { CGPreflightListenEventAccess() } == 0 {
+        if unsafe { CGPreflightPostEventAccess() } == 0 {
             return Err(PlatformError::InputPermissionRequired);
         }
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -323,9 +320,9 @@ fn capture_thread(
         CGEventType::ScrollWheel,
     ];
     let tap = match CGEventTap::new(
-        CGEventTapLocation::HID,
+        CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
-        CGEventTapOptions::ListenOnly,
+        CGEventTapOptions::Default,
         event_types,
         move |_proxy, event_type, event| {
             if let Some(event) = convert_captured_event(event_type, event) {

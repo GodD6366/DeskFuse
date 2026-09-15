@@ -143,6 +143,7 @@ impl Library {
    CREATE TABLE IF NOT EXISTS cl_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_items(id INTEGER PRIMARY KEY AUTOINCREMENT,global_id TEXT UNIQUE NOT NULL,digest TEXT NOT NULL,summary TEXT NOT NULL,payload BLOB,search_text TEXT NOT NULL DEFAULT '',copied INTEGER,imported INTEGER NOT NULL,ordinary INTEGER NOT NULL DEFAULT 1,blob_hash TEXT,origin_device TEXT);
    CREATE INDEX IF NOT EXISTS cl_items_date ON cl_items(copied DESC,id DESC);
+   CREATE INDEX IF NOT EXISTS cl_items_page_order ON cl_items(COALESCE(copied,imported) DESC,id DESC);
    CREATE INDEX IF NOT EXISTS cl_items_digest ON cl_items(digest);
    CREATE TABLE IF NOT EXISTS cl_records(key TEXT PRIMARY KEY,revision INTEGER NOT NULL,author TEXT NOT NULL,deleted INTEGER NOT NULL,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_operations(seq INTEGER PRIMARY KEY AUTOINCREMENT,op_id TEXT UNIQUE NOT NULL,body TEXT NOT NULL);
@@ -333,6 +334,24 @@ impl Library {
         })
     }
     pub fn ingest(&self, snapshot: &PasteboardSnapshot, source: &str) -> Result<Option<u64>> {
+        let id = self.ingest_record(snapshot, source)?;
+        if let Some(id) = id {
+            self.publish_index_for(id)?;
+        }
+        Ok(id)
+    }
+    /// HTTP uploads must distinguish a committed local record from an optional
+    /// cross-device index publication failure before releasing source-file ownership.
+    pub(crate) fn ingest_preserving_commit(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+    ) -> Result<(Option<u64>, Option<String>)> {
+        let id = self.ingest_record(snapshot, source)?;
+        let warning = id.and_then(|id| self.publish_index_for(id).err());
+        Ok((id, warning))
+    }
+    fn ingest_record(&self, snapshot: &PasteboardSnapshot, source: &str) -> Result<Option<u64>> {
         let origin = self.origin(snapshot, source);
         if origin.no_history || self.excluded(origin.app_id.as_deref()) {
             return Ok(None);
@@ -365,9 +384,6 @@ impl Library {
         tx.commit().map_err(err)?;
         drop(db);
         self.changed();
-        // Publish a compact search index entry so paired devices can search this
-        // record (including its OCR text) without transferring the payload.
-        self.publish_index_for(id)?;
         Ok(Some(id))
     }
 
@@ -451,6 +467,22 @@ impl Library {
             .flatten();
         decode(&bytes.ok_or("内容尚未同步或历史已过期")?)
     }
+    /// Return only a display-sized derivative across FFI, not the 1600px
+    /// detail preview or the original restorable clipboard representations.
+    pub fn thumbnail(&self, id: u64, max_pixel_size: u32) -> Result<Vec<u8>> {
+        let mut snapshot = self.snapshot(id)?;
+        let device = self.device.lock().map_err(err)?.clone();
+        if let Some(paths) = crate::library_files::local_paths_for_preview(&snapshot, &device)? {
+            snapshot.file_urls = paths;
+        }
+        Ok(crate::tokio_bridge::clipboard_preview_png_at_size(
+            &snapshot,
+            max_pixel_size.clamp(64, 480),
+        )
+        .map(|bytes| Arc::try_unwrap(bytes).unwrap_or_else(|bytes| (*bytes).clone()))
+        .unwrap_or_default())
+    }
+
     pub fn content(&self, id: u64) -> Result<ClipboardHistoryItem> {
         let mut snapshot = self.snapshot(id)?;
         let reference = crate::library_files::reference(&snapshot)?;
@@ -466,9 +498,11 @@ impl Library {
                 r.get(0)
             })
             .map_err(err)?;
-        let s: Summary = serde_json::from_str(&raw).map_err(err)?;
+        let mut s: Summary = serde_json::from_str(&raw).map_err(err)?;
+        project_image_file(&mut s);
         Ok(ClipboardHistoryItem {
             id,
+            source_app_id: s.source_app_id,
             copied_at_ms: s.copied_at_ms,
             mime: s.mime,
             length: s.length as usize,
@@ -490,13 +524,31 @@ impl Library {
     ) -> Result<Vec<(u64, PasteboardSnapshot, String, Option<u64>)>> {
         self.prune()?;
         let db = self.db.lock().map_err(err)?;
-        let rows=db.prepare("SELECT id,payload,summary FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL ORDER BY COALESCE(copied,imported) DESC,id DESC LIMIT ?1").map_err(err)?.query_map([limit],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?))).map_err(err)?.collect::<std::result::Result<Vec<_>,_>>().map_err(err)?;
-        rows.into_iter()
-            .map(|(id, bytes, raw)| {
-                let s: Summary = serde_json::from_str(&raw).map_err(err)?;
-                Ok((id, decode(&bytes)?, s.source, s.copied_at_ms))
-            })
-            .collect()
+        let mut statement = db.prepare("SELECT id,payload,summary FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL ORDER BY COALESCE(copied,imported) DESC,id DESC LIMIT ?1").map_err(err)?;
+        let mut rows = statement.query([limit]).map_err(err)?;
+        let mut recent = Vec::new();
+        let mut retained_bytes = 0usize;
+        while let Some(row) = rows.next().map_err(err)? {
+            let bytes: Vec<u8> = row.get(1).map_err(err)?;
+            let snapshot = decode(&bytes)?;
+            let size = crate::tokio_bridge::clipboard_snapshot_bytes(&snapshot);
+            if !recent.is_empty()
+                && retained_bytes.saturating_add(size)
+                    > crate::tokio_bridge::CLIPBOARD_HOT_CACHE_BYTES
+            {
+                break;
+            }
+            let raw: String = row.get(2).map_err(err)?;
+            let summary: Summary = serde_json::from_str(&raw).map_err(err)?;
+            recent.push((
+                row.get(0).map_err(err)?,
+                snapshot,
+                summary.source,
+                summary.copied_at_ms,
+            ));
+            retained_bytes = retained_bytes.saturating_add(size);
+        }
+        Ok(recent)
     }
     pub fn prune(&self) -> Result<()> {
         let mut db = self.db.lock().map_err(err)?;
@@ -580,9 +632,9 @@ impl Library {
         let needs_text = !query.is_empty()
             || selected.is_some_and(|list| list.rules.iter().any(|rule| rule.field == "text"));
         let sql = if needs_text {
-            "SELECT id,global_id,summary,search_text,payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
+            "SELECT id,global_id,summary,search_text,payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),COALESCE(copied,imported) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
         } else {
-            "SELECT id,global_id,summary,'',payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
+            "SELECT id,global_id,summary,'',payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),COALESCE(copied,imported) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
         };
         let mut stmt = db.prepare(sql).map_err(err)?;
         let rows = stmt
@@ -598,6 +650,7 @@ impl Library {
                     r.get::<_, String>(7)?,
                     r.get::<_, i64>(8)?,
                     r.get::<_, bool>(9)?,
+                    r.get::<_, i64>(10)?,
                 ))
             })
             .map_err(err)?;
@@ -605,11 +658,23 @@ impl Library {
         let mut total = 0usize;
         let mut items = vec![];
         for row in rows {
-            let (id, gid, raw, text, available, ordinary, title, ocr_text, ocr_version, remote) =
-                row.map_err(err)?;
+            let (
+                id,
+                gid,
+                raw,
+                text,
+                available,
+                ordinary,
+                title,
+                ocr_text,
+                ocr_version,
+                remote,
+                sort_at_ms,
+            ) = row.map_err(err)?;
             let title_lower = title.to_lowercase();
             let ocr_lower = ocr_text.to_lowercase();
-            let s: Summary = serde_json::from_str(&raw).map_err(err)?;
+            let mut s: Summary = serde_json::from_str(&raw).map_err(err)?;
+            project_image_file(&mut s);
             let member: Vec<_> = memberships
                 .iter()
                 .filter(|(_, v)| v == &gid || *v == format!("archive:{gid}"))
@@ -687,6 +752,9 @@ impl Library {
                 value["ocr_text"] = json!(ocr_text);
                 value["ocr_version"] = json!(ocr_version.max(0) as u64);
                 value["remote"] = json!(remote);
+                // Same key the page is ordered by, so the client can interleave
+                // snapshot-only records without reordering the page.
+                value["sort_at_ms"] = json!(sort_at_ms.max(0) as u64);
                 items.push(value);
             }
             total += 1;
@@ -1582,6 +1650,35 @@ fn digest(snapshot: &PasteboardSnapshot) -> Result<String> {
         bincode::DefaultOptions::new().serialize(&s).map_err(err)?,
     )))
 }
+/// File URL image records keep their original file restore semantics, but use
+/// the image presentation rather than a filename-only card. Never applies to
+/// plain text, even when that text happens to end in an image extension.
+pub(crate) fn image_file_mime(path: &str) -> Option<&'static str> {
+    match std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "heic" | "heif" => Some("image/heic"),
+        "tif" | "tiff" => Some("image/tiff"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+fn project_image_file(summary: &mut Summary) {
+    if summary.kind == "files"
+        && summary.file_count == 1
+        && let Some(mime) = image_file_mime(&summary.preview)
+    {
+        summary.kind = "image".into();
+        summary.mime = mime.into();
+        summary.has_image = true;
+    }
+}
 fn is_image_snapshot(s: &PasteboardSnapshot) -> bool {
     s.png.is_some()
         || s.items.iter().flat_map(|i| &i.representations).any(|r| {
@@ -1608,7 +1705,28 @@ fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
     digest(snapshot)
 }
 fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
-    let (kind, mime, preview, length) = if !s.file_urls.is_empty() {
+    let lan_photo = s
+        .items
+        .iter()
+        .flat_map(|item| &item.representations)
+        .find(|rep| rep.type_name == crate::clipboard_bundle::LAN_PHOTO_TYPE)
+        .and_then(|rep| serde_json::from_slice::<Value>(&rep.data).ok());
+    let (kind, mime, preview, length) = if s.file_urls.len() == 1 && lan_photo.is_some() {
+        let metadata = lan_photo.as_ref().unwrap();
+        (
+            "image",
+            metadata["mime"]
+                .as_str()
+                .unwrap_or("image/jpeg")
+                .to_string(),
+            std::path::Path::new(&s.file_urls[0])
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            metadata["size"].as_u64().unwrap_or(0) as usize,
+        )
+    } else if !s.file_urls.is_empty() {
         (
             "files",
             unidesk_transfer::CLIPBOARD_FILE_MIME.to_string(),
@@ -1653,7 +1771,7 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
             0,
         )
     };
-    Summary {
+    let mut result = Summary {
         id,
         copied_at_ms: o.copied_at_ms,
         mime,
@@ -1666,7 +1784,9 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
         source_app_id: o.app_id.clone(),
         source_app_name: o.app_name.clone(),
         kind: kind.into(),
-    }
+    };
+    project_image_file(&mut result);
+    result
 }
 
 // Rebuild active member projections after out-of-order delivery; reclaim only archives

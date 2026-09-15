@@ -40,10 +40,6 @@ struct MenuBarClipboardRow: View {
                     if requestFiles {
                         Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                    if fileUnavailable {
-                        Label("文件不可用", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 11)).foregroundStyle(.orange)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 15) {
@@ -75,18 +71,16 @@ struct MenuBarClipboardRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(item.clipboardTitle)\(fileUnavailable ? "，文件不可用" : "")")
+        .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .contextMenu {
-            Button("仅复制", action: onCopy).disabled(client == nil)
-            Divider()
-            Button("编辑标题") { editingTitle = true }
-            Divider()
-            ClipboardLibraryMembershipMenu(itemID: item.id, listIDs: memberships)
-            Divider()
-            Button("删除", role: .destructive, action: onDelete)
+        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
+            onCopy: onCopy, copyEnabled: client != nil,
+            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .sheet(isPresented: $editingTitle) {
+            ClipboardTitleEditor(title: title, onSave: onRename)
         }
         .task(id: loadKey) { await loadPreview() }
+        .onDisappear { image = nil; media = nil; loading = false }
     }
 
     @ViewBuilder private var appIcon: some View {
@@ -108,7 +102,7 @@ struct MenuBarClipboardRow: View {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
                         .frame(width: 108, height: 72)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                    if editingTitle || title?.isEmpty == false { titleEditor }
+                    if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { titleLabel }
                 }
             } else {
                 // Keep a stable slot while the thumbnail loads so rows never jump.
@@ -118,16 +112,15 @@ struct MenuBarClipboardRow: View {
                     .overlay { if loading { ProgressView().controlSize(.small) } }
             }
         } else {
-            titleEditor
+            titleLabel
         }
     }
 
-    private var titleEditor: some View {
-        ClipboardEditableTitle(
+    private var titleLabel: some View {
+        ClipboardTitleLabel(
             title: title,
             fallback: item.clipboardTitle,
-            editing: $editingTitle,
-            onCommit: onRename
+            editing: $editingTitle
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -212,40 +205,25 @@ struct MenuBarClipboardCard: View {
                 .overlay(alignment: .bottomTrailing) { watermark }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    // Cards show only a real user title; empty stays empty.
-                    ClipboardEditableTitle(
-                        title: title,
-                        fallback: "",
-                        editing: $editingTitle,
-                        onCommit: onRename
-                    )
-                    Spacer(minLength: 4)
-                    if ocrHit {
-                        Image(systemName: "text.viewfinder").font(.system(size: 11))
-                            .foregroundStyle(.secondary).help("由图片识别文字匹配")
-                    }
-                    if remoteUnavailable {
-                        Image(systemName: "arrow.down.circle").font(.system(size: 11))
-                            .foregroundStyle(.secondary).help("使用时从来源设备获取")
-                    }
-                    if let date = item.copiedDate {
-                        Text(Self.timeFormatter.string(from: date))
-                            .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                if hasTitle {
+                    HStack(spacing: 6) {
+                        ClipboardTitleLabel(title: title, fallback: "", editing: $editingTitle)
+                        Spacer(minLength: 4)
                     }
                 }
                 content
                 if requestFiles {
                     Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                if fileUnavailable {
-                    Label("文件不可用", systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 11)).foregroundStyle(.orange)
-                }
-                if index < 9 {
-                    Text("⌘ \(index + 1)").font(.system(size: 11)).monospacedDigit()
-                        .opacity(showShortcut ? 1 : 0).accessibilityHidden(!showShortcut)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                if hasMetadata || index < 9 {
+                    metadata
+                        .frame(maxWidth: .infinity)
+                        .overlay(alignment: .trailing) {
+                            if index < 9 {
+                                Text("⌘ \(index + 1)").font(.system(size: 11)).monospacedDigit()
+                                    .opacity(showShortcut ? 1 : 0).accessibilityHidden(!showShortcut)
+                            }
+                        }
                 }
             }
             .padding(10)
@@ -262,18 +240,42 @@ struct MenuBarClipboardCard: View {
         // rows, so the first click selects immediately.
         .onTapGesture(perform: onSelect)
         .simultaneousGesture(TapGesture(count: 2).onEnded { onSelect(); onPaste() })
-        .contextMenu {
-            Button("仅复制", action: onCopy).disabled(client == nil)
-            Divider()
-            Button("编辑标题") { editingTitle = true }
-            Divider()
-            ClipboardLibraryMembershipMenu(itemID: item.id, listIDs: memberships)
-            Divider()
-            Button("删除", role: .destructive, action: onDelete)
+        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
+            onCopy: onCopy, copyEnabled: client != nil,
+            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .sheet(isPresented: $editingTitle) {
+            ClipboardTitleEditor(title: title, onSave: onRename)
         }
-        .accessibilityLabel("\(item.clipboardTitle)\(fileUnavailable ? "，文件不可用" : "")")
+        .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)") { await loadPreview() }
+        .onDisappear { image = nil; media = nil; loading = false }
+    }
+
+    private var hasTitle: Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+    private var hasMetadata: Bool { item.copiedDate != nil || ocrHit || remoteUnavailable }
+
+    private var metadata: some View {
+        ZStack {
+            if let date = item.copiedDate {
+                Text(Self.timeFormatter.string(from: date))
+                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            HStack(spacing: 4) {
+                if ocrHit {
+                    Image(systemName: "text.viewfinder")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .help("由图片识别文字匹配")
+                }
+                if remoteUnavailable {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .help("使用时从来源设备获取")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// Bottom-right app icon, tilted 45° left, with roughly a quarter clipped off.
@@ -293,23 +295,20 @@ struct MenuBarClipboardCard: View {
         if item.hasImage {
             if let image {
                 Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: Self.maxContentHeight)
+                    .frame(maxWidth: .infinity).frame(height: Self.maxContentHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
-                    .frame(maxWidth: .infinity, minHeight: 96)
-                    .overlay { if loading { ProgressView().controlSize(.small) } }
+                    .frame(maxWidth: .infinity).frame(height: Self.maxContentHeight)
+                    .overlay {
+                        if loading { ProgressView().controlSize(.small) }
+                        else { Label(remoteUnavailable ? "待获取图片" : "图片不可用", systemImage: "photo.badge.exclamationmark")
+                            .font(.caption).foregroundStyle(.secondary) }
+                    }
             }
         } else {
-            Text(item.clipboardTitle)
-                .font(.system(size: 13))
-                .foregroundStyle(Color(nsColor: .labelColor))
-                .lineLimit(8)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(maxHeight: Self.maxContentHeight, alignment: .top)
-                .clipped()
+            ClipboardCardText(text: item.clipboardTitle, lineLimit: 8, maxHeight: Self.maxContentHeight)
         }
     }
 

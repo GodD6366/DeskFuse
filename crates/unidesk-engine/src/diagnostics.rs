@@ -129,6 +129,8 @@ pub(crate) use record;
 
 impl Diagnostics {
     pub fn new(capacity: usize) -> Self {
+        #[cfg(not(test))]
+        crate::diagnostics_file::initialize();
         let capacity = capacity.max(1);
         Self {
             inner: Arc::new(Mutex::new(DiagnosticStore {
@@ -168,18 +170,22 @@ impl Diagnostics {
             sequence: store.next_sequence,
             timestamp: timestamp_now(),
             level,
-            subsystem: subsystem.into(),
-            event: event.into(),
-            request_id,
+            subsystem: bounded_metadata(subsystem.into()),
+            event: bounded_metadata(event.into()),
+            request_id: request_id.map(bounded_metadata),
             duration_ms,
-            result,
-            error_code,
+            result: result.map(bounded_metadata),
+            error_code: error_code.map(bounded_metadata),
         };
         store.next_sequence = store.next_sequence.saturating_add(1);
         store.records.push_back(record.clone());
         while store.records.len() > store.capacity {
             store.records.pop_front();
         }
+        // Never perform file I/O while holding the in-memory store lock.
+        drop(store);
+        #[cfg(not(test))]
+        crate::diagnostics_file::record(&record);
         record
     }
 
@@ -218,6 +224,18 @@ impl Default for Diagnostics {
     fn default() -> Self {
         Self::new(128)
     }
+}
+
+// Bound each metadata field before cloning into either bounded store.
+fn bounded_metadata(mut value: String) -> String {
+    if value.len() > 1024 {
+        let mut end = 1024;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+    }
+    value
 }
 
 pub fn timestamp_now() -> String {

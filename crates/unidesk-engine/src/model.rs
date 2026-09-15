@@ -181,6 +181,8 @@ pub struct TransferItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardHistoryItem {
     pub id: u64,
+    /// Source application metadata travels with the first UI snapshot.
+    pub source_app_id: Option<String>,
     /// Last observed copy time on this Mac; absent for untimed retained entries.
     pub copied_at_ms: Option<u64>,
     pub mime: String,

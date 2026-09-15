@@ -89,7 +89,7 @@ fn format_order_and_remote_markers_are_ignored_but_latest_snapshot_is_retained()
 }
 
 #[test]
-fn complete_native_formats_and_item_boundaries_remain_distinct() {
+fn one_library_row_collapses_text_variants_to_one_cache_entry() {
     let (sender, _receiver) = unbounded();
     let mut history = ClipboardHistoryStore::default();
     let mut original = text("same visible text");
@@ -105,16 +105,21 @@ fn complete_native_formats_and_item_boundaries_remain_distinct() {
     ];
     let mut reversed_items = split_items.clone();
     reversed_items.items.reverse();
-    for snapshot in [
+    let variants = [
         original,
         changed_format,
         changed_private,
         split_items,
         reversed_items,
-    ] {
+    ];
+    let last = variants.last().cloned().unwrap();
+    for snapshot in variants {
         history.record(snapshot, "本机", &sender);
     }
-    assert_eq!(history.items.len(), 5);
+    // Plain text is keyed by its bytes, so every variant is the same library
+    // row and must stay a single cache entry carrying that one id.
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].1, last);
 }
 
 #[test]
@@ -161,6 +166,28 @@ fn image_identity_uses_original_bytes_not_preview() {
     assert_eq!(history.items.len(), 2);
     assert!(history.items[0].0.image_png.is_some());
     assert_eq!(history.items[0].0.image_png, history.items[1].0.image_png);
+}
+
+#[test]
+fn one_library_id_never_backs_two_cache_entries() {
+    let mut history = ClipboardHistoryStore::default();
+    // The presentation cache treats different pasteboard representations as
+    // distinct, while the library keys plain text by its bytes alone.
+    assert!(history.insert(text("same text"), "本机"));
+    history.adopt_front_id(7);
+    assert!(history.insert(
+        {
+            let mut richer = text("same text");
+            richer.items = vec![item(&[("public.rtf", b"bold")])];
+            richer
+        },
+        "本机",
+    ));
+    assert_eq!(history.items.len(), 2);
+    // The library collapses both snapshots onto the same row id.
+    history.adopt_front_id(7);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items.front().unwrap().0.id, 7);
 }
 
 // Deleted 2026-09-15: these cases asserted the pre-clipboard-library per-store

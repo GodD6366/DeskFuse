@@ -116,16 +116,6 @@ impl MacOSPermissionService {
         }
     }
 
-    fn input_monitoring_status() -> PermissionStatus {
-        if macos_input_monitoring_is_granted() {
-            PermissionStatus::Granted
-        } else {
-            // Preflight does not distinguish denial from an unanswered grant.
-            // Both require the user to allow this app in System Settings.
-            PermissionStatus::NeedsUserAction
-        }
-    }
-
     fn full_disk_access_status() -> PermissionStatus {
         if macos_full_disk_access_is_granted() {
             PermissionStatus::Granted
@@ -148,10 +138,8 @@ impl PermissionService for MacOSPermissionService {
         PermissionSnapshot::new(
             Self::accessibility_status(),
             Self::full_disk_access_status(),
-            // Report the actual listen-only grant for diagnostics. Production
-            // sharing uses an Accessibility-authorized modifying event tap and
-            // does not depend on this separate permission.
-            Self::input_monitoring_status(),
+            // Production taps use Accessibility. Do not probe an unused grant.
+            PermissionStatus::Unknown,
         )
     }
 
@@ -300,14 +288,6 @@ fn macos_accessibility_is_trusted() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-fn macos_input_monitoring_is_granted() -> bool {
-    // SAFETY: the public CoreGraphics preflight is a read-only, process-local
-    // permission check with no parameters, pointer lifetimes, or TCC prompt.
-    unsafe { CGPreflightListenEventAccess() != 0 }
-}
-
-#[cfg(target_os = "macos")]
 fn macos_full_disk_access_is_granted() -> bool {
     use std::{fs, path::PathBuf};
 
@@ -349,13 +329,6 @@ unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
 }
 
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGPreflightListenEventAccess() -> u8;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,23 +351,6 @@ mod tests {
         assert_eq!(
             provider.opened_settings().expect("memory state is valid"),
             vec![PermissionKind::InputMonitoring]
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_snapshot_reports_actual_input_monitoring_preflight() {
-        // Exercise the real provider, not a memory snapshot, so diagnostics
-        // report the actual listen-only permission instead of constant Unknown.
-        // This never opens Settings, asks for access, or captures input.
-        let expected = if macos_input_monitoring_is_granted() {
-            PermissionStatus::Granted
-        } else {
-            PermissionStatus::NeedsUserAction
-        };
-        assert_eq!(
-            MacOSPermissionService::new().snapshot().input_monitoring,
-            expected
         );
     }
 

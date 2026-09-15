@@ -103,10 +103,6 @@ import UniDeskEngine
         default: break
         }
     }
-    func addClipboard() {
-        let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        if urls.isEmpty { store.error = "剪贴板中没有本地文件" } else { append(urls) }
-    }
     private func releaseLease() { if let lease { try? store.engine?.releaseExport(id: lease.id, outcome: .cancelled) }; lease = nil }
     func stop() { if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }; dragMonitor = nil; close() }
     private func observeDrag(_ event: NSEvent) {
@@ -246,8 +242,11 @@ struct ShelfView: View {
                     shelfIcon("xmark", label: "清空并关闭")
                 }
                 .help("清空并关闭")
+                // The drag handle must not stretch the top row: without a fixed
+                // height the representable inflates the row and pushes all
+                // controls down, leaving a large blank strip above them.
                 ShelfWindowDragHandle()
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: 28)
                 Menu {
                     let targets = controller.store.snapshot?.devices.filter { $0.trusted && $0.connected } ?? []
                     if targets.isEmpty { Text("没有可发送的在线设备") }
@@ -297,10 +296,6 @@ struct ShelfView: View {
                     .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
                     .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
                 Text("拖出全部 · 点按展开").font(.caption).foregroundStyle(.secondary)
-            }
-            if controller.files.isEmpty {
-                Divider()
-                Button("加入已复制的文件") { controller.addClipboard() }.buttonStyle(.plain).font(.caption).padding(.bottom, 14)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

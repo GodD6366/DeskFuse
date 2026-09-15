@@ -14,6 +14,7 @@ pub struct EngineState {
     pub cache: TransferCacheSnapshot,
     pub cache_message: Option<String>,
     pub recording: bool,
+    pub file_paste_acquiring: std::collections::BTreeSet<String>,
     pub file_paste_sources: std::collections::BTreeMap<String, String>,
     pub file_paste_retryable: std::collections::BTreeSet<String>,
     pub file_paste_delivering: std::collections::BTreeSet<String>,
@@ -28,6 +29,7 @@ impl Default for EngineState {
             cache: Default::default(),
             cache_message: None,
             recording: false,
+            file_paste_acquiring: Default::default(),
             file_paste_sources: Default::default(),
             file_paste_retryable: Default::default(),
             file_paste_delivering: Default::default(),
@@ -39,11 +41,20 @@ impl EngineState {
         self.revision = self.revision.saturating_add(1);
         let model = &mut self.model;
         match event {
+            UiEvent::FilePasteAcquiring {
+                paste_id,
+                transfer_id,
+            } => {
+                self.file_paste_acquiring.insert(paste_id.to_string());
+                self.file_paste_sources
+                    .insert(paste_id.to_string(), transfer_id.to_string());
+            }
             UiEvent::FilePasteLinked {
                 paste_id,
                 transfer_id,
                 can_retry,
             } => {
+                self.file_paste_acquiring.remove(&paste_id.to_string());
                 self.file_paste_sources
                     .insert(paste_id.to_string(), transfer_id.to_string());
                 if can_retry {
@@ -100,6 +111,13 @@ impl EngineState {
                     direction,
                 };
                 model.apply_transfer_status(item.clone());
+                // Propagate the accepted state, never a rejected late producer event.
+                let item = model
+                    .transfer_queue
+                    .iter()
+                    .find(|t| t.id == item.id)
+                    .cloned()
+                    .unwrap_or(item);
                 // While a paste waits for its cache, show the actual underlying
                 // receive state on its row. Local delivery owns all later phases.
                 if matches!(direction, crate::model::TransferDirection::Receive) {
@@ -109,7 +127,8 @@ impl EngineState {
                         .filter(|(_, source)| **source == item.id)
                         .filter_map(|(id, _)| model.transfer_queue.iter().find(|t| &t.id == id))
                         .filter(|t| {
-                            !t.state.is_terminal()
+                            !self.file_paste_acquiring.contains(&t.id)
+                                && !t.state.is_terminal()
                                 && t.state != crate::model::TransferState::Delivering
                         })
                         .map(|t| t.id.clone())

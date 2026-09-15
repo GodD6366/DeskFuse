@@ -23,7 +23,7 @@ import UniDeskEngine
         }
         scheduleCancelledDismissals(transfers)
         let active = transfers.filter { $0.phase != .completed && !dismissed.contains($0.id) }
-        guard !active.isEmpty else { panel?.orderOut(nil); return }
+        guard !active.isEmpty else { closePanel(); return }
         if panel == nil {
             let panel = TransferProgressPanel(contentRect: .zero,
                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -80,11 +80,19 @@ import UniDeskEngine
         reconcile(store.snapshot?.transfers ?? [])
     }
 
+    private func closePanel() {
+        panel?.orderOut(nil)
+        panel?.contentView = nil
+        panel?.close()
+        host = nil
+        panel = nil
+    }
+
     func stop() {
         stopped = true
         for task in autoDismissTasks.values { task.cancel() }
         autoDismissTasks.removeAll()
-        panel?.orderOut(nil)
+        closePanel()
     }
 }
 
@@ -140,13 +148,13 @@ private struct TransferProgressPill: View {
                         .truncationMode(.middle)
                         .frame(maxWidth: 150, alignment: .leading)
                     Spacer(minLength: 4)
-                    Text(task.phase == .failed ? "失败" : task.phase == .cancelled ? "已取消" : task.phase == .queued ? "准备中" : "\(Int(fraction * 100))%")
+                    Text([.sending, .receiving, .delivering].contains(task.phase) ? "\(task.phaseTitle) \(Int(fraction * 100))%" : task.phaseTitle)
                         .font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
 
-                if task.phase == .queued {
+                if task.phase == .queued || task.phase == .verifying {
                     ProgressView()
                         .progressViewStyle(.linear)
                 } else {

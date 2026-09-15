@@ -40,7 +40,9 @@ pub(super) enum ReceiveEvent {
 pub(super) struct IncomingFileClipboard {
     sender: Option<tokio::sync::mpsc::Sender<ClipboardFileFrame>>,
     cancelled: Arc<AtomicBool>,
-    finishing: bool,
+    pub(super) finishing: bool,
+    pending_frame: Option<ClipboardFileFrame>,
+    accepted_frames: u64,
     cleaning: bool,
     pub(super) manifest: TransferManifest,
     pub(super) root_paths: Vec<PathBuf>,
@@ -52,11 +54,23 @@ pub(super) struct IncomingFileClipboard {
     last_progress: std::time::Instant,
 }
 impl IncomingFileClipboard {
+    pub(super) fn receipt(&self, transfer_id: TransferId) -> Option<ClipboardFileFrame> {
+        (!self.cancelled.load(Ordering::Acquire) && self.pending_frame.is_none()).then_some(
+            ClipboardFileFrame::Receipt {
+                transfer_id,
+                accepted_frames: self.accepted_frames,
+            },
+        )
+    }
+    pub(super) fn is_backpressured(&self) -> bool {
+        self.pending_frame.is_some()
+    }
     pub(super) fn cancel(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         // Wake a worker waiting for the next frame. Queued bodies are dropped by
         // the worker without writing them after it observes cancellation.
         self.sender.take();
+        self.pending_frame.take();
     }
 }
 impl Drop for IncomingFileClipboard {
@@ -64,6 +78,59 @@ impl Drop for IncomingFileClipboard {
         self.cancel();
     }
 }
+pub(super) async fn wait_for_receive_capacity(
+    incoming: &HashMap<ReceiveKey, IncomingFileClipboard>,
+) -> (
+    ReceiveKey,
+    Result<tokio::sync::mpsc::OwnedPermit<ClipboardFileFrame>, String>,
+) {
+    let pending = incoming.iter().find_map(|(key, state)| {
+        state.pending_frame.as_ref()?;
+        Some((*key, state.sender.as_ref()?.clone()))
+    });
+    let Some((key, sender)) = pending else {
+        return std::future::pending().await;
+    };
+    (
+        key,
+        sender
+            .reserve_owned()
+            .await
+            .map_err(|error| error.to_string()),
+    )
+}
+
+pub(super) fn flush_pending_receive(
+    key: ReceiveKey,
+    permit: Result<tokio::sync::mpsc::OwnedPermit<ClipboardFileFrame>, String>,
+    incoming: &mut HashMap<ReceiveKey, IncomingFileClipboard>,
+    ui: &UnboundedSender<UiEvent>,
+) {
+    let Some(state) = incoming.get_mut(&key) else {
+        return;
+    };
+    match permit {
+        Ok(permit) => {
+            if let Some(frame) = state.pending_frame.take() {
+                permit.send(frame);
+                state.accepted_frames = state.accepted_frames.saturating_add(1);
+            }
+        }
+        Err(error) => {
+            state.cancel();
+            emit_receive_transfer_status(
+                ui,
+                key.1,
+                state.name.clone(),
+                format!("文件磁盘接收已结束：{error}"),
+                TransferState::Failed,
+                state.received_bytes,
+                state.manifest.total_bytes(),
+            );
+        }
+    }
+}
+
 fn remove_receive_destination(path: &std::path::Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -146,6 +213,7 @@ fn run_receive_disk_worker(
     }
     result
 }
+#[cfg(test)]
 pub(super) fn apply_remote_file_clipboard(
     pasteboard: &impl Pasteboard,
     bytes: &[u8],
@@ -156,6 +224,18 @@ pub(super) fn apply_remote_file_clipboard(
     ui: &UnboundedSender<UiEvent>,
 ) -> Result<(), String> {
     let frame = ClipboardFileFrame::decode(bytes).map_err(|error| error.to_string())?;
+    apply_remote_file_clipboard_frame(pasteboard, frame, incoming, cache, peer_id, events, ui)
+}
+
+pub(super) fn apply_remote_file_clipboard_frame(
+    pasteboard: &impl Pasteboard,
+    frame: ClipboardFileFrame,
+    incoming: &mut HashMap<ReceiveKey, IncomingFileClipboard>,
+    cache: &mut TransferCache,
+    peer_id: DeviceId,
+    events: &ReceiveEventSender,
+    ui: &UnboundedSender<UiEvent>,
+) -> Result<(), String> {
     let id = frame.transfer_id();
     let key = (peer_id, id);
     match frame {
@@ -233,6 +313,8 @@ pub(super) fn apply_remote_file_clipboard(
                     sender: Some(sender),
                     cancelled,
                     finishing: false,
+                    pending_frame: None,
+                    accepted_frames: 1,
                     cleaning: false,
                     manifest,
                     root_paths,
@@ -274,9 +356,22 @@ pub(super) fn apply_remote_file_clipboard(
                 _ => 0,
             };
             let sender = state.sender.as_ref().ok_or("接收队列已关闭")?;
-            if let Err(error) = sender.try_send(frame) {
-                state.cancel();
-                return Err(format!("接收队列无法继续写入，请重试：{error}"));
+            match sender.try_send(frame) {
+                Ok(()) => {
+                    state.accepted_frames = state.accepted_frames.saturating_add(1);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(frame))
+                    if state.pending_frame.is_none() =>
+                {
+                    // Hold exactly one bounded frame. The engine stops draining
+                    // network events until this FIFO slot is sent, but continues
+                    // servicing cancellation, disk completion and permission ticks.
+                    state.pending_frame = Some(frame);
+                }
+                Err(error) => {
+                    state.cancel();
+                    return Err(format!("接收队列已关闭：{error}"));
+                }
             }
             let first_chunk = state.received_bytes == 0 && chunk_bytes > 0;
             state.received_bytes = state.received_bytes.saturating_add(chunk_bytes);

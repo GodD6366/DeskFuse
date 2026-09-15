@@ -28,6 +28,8 @@ struct ClipboardHistoryPane: View {
     let total: Int
     let memberships: [UInt64: [String]]
     let hasMore: Bool
+    let paginationOffset: Int
+    let paginationGeneration: UUID
     let loadMore: () -> Void
 
     var body: some View {
@@ -96,7 +98,7 @@ struct ClipboardHistoryPane: View {
         interact(
             List(selection: $selected) {
                 ForEach(items, id: \.id) { item in
-                    ClipboardHistoryRow(item: item, selectedImage: item.id == selected ? selectedImage : nil,
+                    ClipboardHistoryRow(item: item, selectedImage: nil,
                                         client: client, appID: appIDs[item.id], title: titles[item.id],
                                         meta: metas[item.id], ocrHit: ocrHit(item.id),
                                         memberships: memberships[item.id] ?? [],
@@ -114,8 +116,8 @@ struct ClipboardHistoryPane: View {
                         .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
                 }
                 if hasMore {
-                    Button("加载更多", action: loadMore)
-                        .frame(maxWidth: .infinity).disabled(searching)
+                    ClipboardPaginationTrigger(itemCount: paginationOffset, searching: searching, loadMore: loadMore)
+                            .id(paginationGeneration)
                 }
             }
             .listStyle(.inset)
@@ -128,11 +130,11 @@ struct ClipboardHistoryPane: View {
     private func gridContent(proxy: ScrollViewProxy) -> some View {
         interact(
             ClipboardMasonryGrid(items: items, selected: selected, columnCount: 2,
-                                 hasMore: hasMore, searching: searching, loadMore: loadMore) { item, isSelected in
+                                 hasMore: hasMore, paginationOffset: paginationOffset, paginationGeneration: paginationGeneration, searching: searching, loadMore: loadMore) { item, isSelected in
                 ClipboardHistoryCard(
                     item: item,
                     selected: isSelected,
-                    selectedImage: item.id == selected ? selectedImage : nil,
+                    selectedImage: nil,
                     client: client,
                     appID: appIDs[item.id],
                     title: titles[item.id],
@@ -296,26 +298,21 @@ private struct ClipboardHistoryRow: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .help(item.preview)
-        .contextMenu {
-            if let date = item.copiedDate {
-                Text("复制于 \(date.formatted(date: .abbreviated, time: .standard))")
-            }
-            Divider()
-            Button("编辑标题") { editingTitle = true }
-            Divider()
-            ClipboardLibraryMembershipMenu(itemID: item.id, listIDs: memberships)
-            Divider()
-            Button("删除", role: .destructive, action: onDelete)
+        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
+            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .sheet(isPresented: $editingTitle) {
+            ClipboardTitleEditor(title: title, onSave: onRename)
         }
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
             guard item.hasImage || item.fileCount > 0, let client else { return }
             // Reuse a previously decoded thumbnail so switching smart lists does
             // not read and re-decode every visible image again.
             if let cached = ClipboardThumbnailCache.shared.cached(item.id) { thumbnail = cached; return }
-            let image = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client)
+            let image = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, sourceIsImage: item.hasImage)
             guard !Task.isCancelled else { return }
             thumbnail = image
         }
+        .onDisappear { thumbnail = nil }
     }
 
     @ViewBuilder private var appIcon: some View {
@@ -331,27 +328,34 @@ private struct ClipboardHistoryRow: View {
     }
 
     @ViewBuilder private var content: some View {
-        if item.hasImage, let image = thumbnail ?? selectedImage {
+        if item.hasImage {
             VStack(alignment: .leading, spacing: 4) {
-                Image(nsImage: image).resizable().scaledToFit()
+                Group {
+                    if let image = thumbnail {
+                        Image(nsImage: image).resizable().scaledToFit()
+                    } else {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
+                            .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+                    }
+                }
                     .frame(width: 76, height: 76)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .frame(maxWidth: .infinity, alignment: .center)
-                if editingTitle || title?.isEmpty == false {
-                    titleEditor
+                if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    titleLabel
                 }
             }
         } else {
-            titleEditor
+            titleLabel
         }
     }
 
-    private var titleEditor: some View {
-        ClipboardEditableTitle(
+    private var titleLabel: some View {
+        ClipboardTitleLabel(
             title: title,
             fallback: item.clipboardTitle,
             editing: $editingTitle,
-            onCommit: onRename,
             font: .system(size: 14, weight: .semibold)
         )
         .frame(maxWidth: .infinity, alignment: .leading)

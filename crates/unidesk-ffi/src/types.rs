@@ -144,6 +144,7 @@ pub struct Pairing {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct HistoryItem {
     pub id: u64,
+    pub source_app_id: Option<String>,
     pub copied_at_ms: Option<u64>,
     pub mime: String,
     pub length: u64,
@@ -721,6 +722,7 @@ impl From<&EngineState> for EngineSnapshot {
                 .iter()
                 .map(|h| HistoryItem {
                     id: h.id,
+                    source_app_id: h.source_app_id.clone(),
                     copied_at_ms: h.copied_at_ms,
                     mime: h.mime.clone(),
                     length: h.length as u64,
@@ -800,7 +802,6 @@ impl From<&EngineState> for EngineSnapshot {
             permissions: [
                 (PermissionKind::Accessibility, "辅助功能"),
                 (PermissionKind::FullDiskAccess, "完全磁盘访问"),
-                (PermissionKind::InputMonitoring, "输入监控（诊断）"),
             ]
             .into_iter()
             .map(|(kind, name)| {

@@ -9,6 +9,12 @@ struct ClipboardLibraryRule: Codable, Equatable, Identifiable {
     var value = ""
     var value2 = ""
     enum CodingKeys: String, CodingKey { case field, op, value, value2 }
+
+    // The editor-only ID is regenerated on decoding and is not persisted.
+    // Compare rule values so an unchanged poll does not invalidate open menus.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.field == rhs.field && lhs.op == rhs.op && lhs.value == rhs.value && lhs.value2 == rhs.value2
+    }
 }
 struct ClipboardLibraryList: Codable, Equatable, Identifiable {
     var id = UUID().uuidString
@@ -18,7 +24,7 @@ struct ClipboardLibraryList: Codable, Equatable, Identifiable {
     var position: Int = 0
     var rules: [ClipboardLibraryRule] = []
 }
-struct ClipboardLibraryChoice: Codable, Identifiable { var id: String; var name: String }
+struct ClipboardLibraryChoice: Codable, Equatable, Identifiable { var id: String; var name: String }
 struct ClipboardLibraryApp: Codable, Equatable, Identifiable { var bundle_id: String; var name: String; var id: String { bundle_id } }
 struct ClipboardLibraryShortcut: Codable, Equatable { var enabled = true; var key_code: UInt16 = 9; var modifiers: UInt64 = 0x180000 }
 struct ClipboardLibrarySettings: Codable, Equatable { var retention_days = 30; var excluded_apps: [ClipboardLibraryApp] = []; var shortcut: ClipboardLibraryShortcut?; var sync_index: Bool? }
@@ -39,7 +45,10 @@ struct ClipboardLibraryItem: Codable {
     var ocr_version: UInt64?
     var remote: Bool?
     var available: Bool?
-    var native: HistoryItem { HistoryItem(id: id, copiedAtMs: copied_at_ms, mime: mime, length: length, preview: preview, source: source, hasImage: has_image, fileCount: file_count) }
+    /// Engine page order key: `COALESCE(copied, imported)`. Optional so a page
+    /// from an older engine still decodes and falls back to `copied_at_ms`.
+    var sort_at_ms: UInt64?
+    var native: HistoryItem { HistoryItem(id: id, sourceAppId: source_app_id, copiedAtMs: copied_at_ms, mime: mime, length: length, preview: preview, source: source, hasImage: has_image, fileCount: file_count) }
 }
 struct ClipboardLibraryPage: Codable {
     var items: [ClipboardLibraryItem]
@@ -149,8 +158,14 @@ struct ClipboardLibraryState: Codable {
     }
     private func apply(_ response: String) throws -> ClipboardLibrarySettings {
         let state = try JSONDecoder().decode(ClipboardLibraryState.self, from: Data(response.utf8))
-        lists = state.lists; settings = state.settings; devices = state.devices; apps = state.apps
-        error = nil; revision = state.revision
+        // Only publish changed projections. Replacing observed menu data every
+        // two seconds interrupts macOS submenu tracking even without mutations.
+        if lists != state.lists { lists = state.lists }
+        if settings != state.settings { settings = state.settings }
+        if devices != state.devices { devices = state.devices }
+        if apps != state.apps { apps = state.apps }
+        if error != nil { error = nil }
+        if revision != state.revision { revision = state.revision }
         let value = state.settings.shortcut ?? ClipboardLibraryShortcut()
         let key = value.enabled ? WorkflowKey(key_code: value.key_code, modifiers: value.modifiers) : nil
         if ClipboardPanelController.shared.shortcut != key { ClipboardPanelController.shared.configure(key) }

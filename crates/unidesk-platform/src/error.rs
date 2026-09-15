@@ -26,7 +26,7 @@ pub enum PlatformError {
     DisplayUnavailable,
     /// A global input capture tap could not be installed or stopped.
     InputCaptureUnavailable,
-    /// macOS TCC (Input Monitoring / Accessibility) permission is required.
+    /// macOS TCC Accessibility permission is required.
     InputPermissionRequired,
     /// A native input event could not be created or posted.
     InputInjectionFailed,
@@ -60,7 +60,7 @@ impl fmt::Display for PlatformError {
                 f.write_str("could not install a global input capture tap")
             }
             Self::InputPermissionRequired => {
-                f.write_str("macOS input permission is required (辅助功能 / 输入监控)")
+                f.write_str("macOS input permission is required (辅助功能)")
             }
             Self::InputInjectionFailed => {
                 f.write_str("could not create or post a native input event")
