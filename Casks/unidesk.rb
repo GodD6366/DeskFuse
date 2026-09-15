@@ -2,7 +2,7 @@
 # version and sha256 after a GitHub prerelease becomes public; edit the script.
 cask "unidesk" do
   version "0.1.0"
-  sha256 "fbbacd6d2e66043e1f97ef33ab48f7e3813c33f7d9d9329b031c5c77a7db3cd9"
+  sha256 "6c842583599e97a472d766ddffbbee9c6d1c9e9095969efacd70d753cfccdc79"
 
   url "https://github.com/GodD6366/uniDesk/releases/download/v#{version}/uniDesk-arm64.dmg"
   name "uniDesk"
