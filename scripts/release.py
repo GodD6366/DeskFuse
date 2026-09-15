@@ -116,6 +116,8 @@ def probe(repo: str, tag: str, commit: str) -> bool:
     release = validate(ROOT / "release.json", version(), tag)
     remote = api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=True)
     if remote is None:
+        if f"## [{version()}]" not in (ROOT / "CHANGELOG.md").read_text():
+            raise ValueError("CHANGELOG entry required for release version")
         return False
     if remote["draft"]:
         raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
