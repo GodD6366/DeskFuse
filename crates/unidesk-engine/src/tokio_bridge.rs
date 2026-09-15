@@ -1592,18 +1592,41 @@ async fn run_worker(
         input_signals.emergency,
     );
 
+    let public_updates = crate::github_update::is_public_bundle();
+    let mut github_updater = if public_updates {
+        match crate::github_update::GitHubUpdater::start() {
+            Ok(updater) => Some(updater),
+            Err(error) => {
+                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                    unidesk_runtime::updates::LanUpdateView {
+                        github: Some(Default::default()),
+                        message: "GitHub 更新检查暂不可用".into(),
+                        error: Some(error),
+                        ..Default::default()
+                    },
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
     #[cfg(not(test))]
-    let updater = match crate::app_update::start(runtime.clone()) {
-        Ok(updater) => Some(updater),
-        Err(error) => {
-            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
-                unidesk_runtime::updates::LanUpdateView {
-                    message: "自动更新暂不可用".into(),
-                    error: Some(error),
-                    ..Default::default()
-                },
-            ));
-            None
+    let updater = if public_updates {
+        None
+    } else {
+        match crate::app_update::start(runtime.clone()) {
+            Ok(updater) => Some(updater),
+            Err(error) => {
+                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                    unidesk_runtime::updates::LanUpdateView {
+                        message: "自动更新暂不可用".into(),
+                        error: Some(error),
+                        ..Default::default()
+                    },
+                ));
+                None
+            }
         }
     };
     #[cfg(test)]
@@ -1851,13 +1874,18 @@ async fn run_worker(
                         emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref());
                     }
                     Some(TokioCommand::CheckForUpdates) => {
-                        if let Some(updater) = &updater {
+                        if let Some(updater) = &mut github_updater {
+                            updater.check_now();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                        } else if let Some(updater) = &updater {
                             updater.check_now();
                             let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                         } else { command_error = Some("更新服务不可用".into()); }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
-                        if let Some(updater) = &updater {
+                        if public_updates {
+                            command_error = Some("公开版请通过 Homebrew 或 GitHub 发布页安装更新".into());
+                        } else if let Some(updater) = &updater {
                             updater.download_and_install_now();
                             update_tick.reset_immediately();
                             let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
@@ -1865,7 +1893,8 @@ async fn run_worker(
                     }
                     Some(TokioCommand::Snapshot) => {
                         clipboard_history.publish(&ui_sender);
-                        if let Some(updater) = &updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
+                        if let Some(updater) = &github_updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
+                        else if let Some(updater) = &updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
                         file_policy.emit(&ui_sender,None);
                         let _ = ui_sender.unbounded_send(UiEvent::RuntimeView(runtime.snapshot_view()));
                     }
@@ -2478,7 +2507,10 @@ async fn run_worker(
                 }
             }
             _ = update_tick.tick() => {
-                if let Some(updater) = &updater {
+                if let Some(updater) = &mut github_updater {
+                    updater.poll().await;
+                    let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                } else if let Some(updater) = &updater {
                     if stage_task.as_ref().is_some_and(|task| task.is_finished()) {
                         match stage_task.take().expect("completed staging").await {
                             Ok(Ok(())) => staged = true,
@@ -3595,35 +3627,34 @@ async fn stream_local_file_clipboard(
             }
             transferred_bytes = transferred_bytes.saturating_add(descriptor.length as u64);
             sent_frames = sent_frames.saturating_add(1);
-            if (sent_frames - 1).is_multiple_of(16) {
-                if let Err(error) =
+            if (sent_frames - 1).is_multiple_of(16)
+                && let Err(error) =
                     wait_for_file_receipts(&mut acknowledgement_receivers, sent_frames, cancelled)
                         .await
-                {
-                    remove_file_clipboard_acknowledgements(acknowledgements, peers, transfer_id);
-                    if cancelled.load(Ordering::Acquire) {
-                        emit_transfer_status(
-                            ui_sender,
-                            transfer_id,
-                            name.to_owned(),
-                            "已取消".into(),
-                            TransferState::Cancelled,
-                            transferred_bytes,
-                            total_bytes,
-                        );
-                    } else {
-                        emit_file_clipboard_failure(
-                            ui_sender,
-                            diagnostics,
-                            transfer_id,
-                            name.to_owned(),
-                            error,
-                            transferred_bytes,
-                            total_bytes,
-                        );
-                    }
-                    return false;
+            {
+                remove_file_clipboard_acknowledgements(acknowledgements, peers, transfer_id);
+                if cancelled.load(Ordering::Acquire) {
+                    emit_transfer_status(
+                        ui_sender,
+                        transfer_id,
+                        name.to_owned(),
+                        "已取消".into(),
+                        TransferState::Cancelled,
+                        transferred_bytes,
+                        total_bytes,
+                    );
+                } else {
+                    emit_file_clipboard_failure(
+                        ui_sender,
+                        diagnostics,
+                        transfer_id,
+                        name.to_owned(),
+                        error,
+                        transferred_bytes,
+                        total_bytes,
+                    );
                 }
+                return false;
             }
             if transferred_bytes == total_bytes
                 || last_progress.elapsed() >= Duration::from_millis(100)

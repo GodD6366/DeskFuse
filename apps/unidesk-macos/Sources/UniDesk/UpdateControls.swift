@@ -16,7 +16,8 @@ struct UpdateControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             LabeledContent("当前版本", value: "\(update.version) · build \(update.build)")
-            if (update.ready || update.downloading), let target = update.targetVersion {
+            LabeledContent("更新来源", value: update.github ? "GitHub / Homebrew" : "可信局域网")
+            if let target = update.targetVersion {
                 LabeledContent("更新版本", value: target)
             }
             Text(update.message).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -28,12 +29,26 @@ struct UpdateControls: View {
             if let error = update.error {
                 Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack { installButton; checkButton }
-                VStack(alignment: .leading) { installButton; checkButton }
+            if update.github {
+                HStack {
+                    if let address = update.releaseUrl, let url = URL(string: address) {
+                        Link("打开 GitHub 发布页", destination: url).buttonStyle(.borderedProminent)
+                    }
+                    checkButton
+                }
+                Text("Homebrew 安装请在终端执行：").font(.caption).foregroundStyle(.secondary)
+                Text("brew update && brew upgrade --cask unidesk")
+                    .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text("也可从发布页下载 DMG 手动安装。公开发行版不会调用局域网自动安装器；安装完成后重新启动 uniDesk。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack { installButton; checkButton }
+                    VStack(alignment: .leading) { installButton; checkButton }
+                }
+                Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 uniDesk；正在传输、粘贴或导出的文件会等待完成。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 uniDesk；正在传输、粘贴或导出的文件会等待完成。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 

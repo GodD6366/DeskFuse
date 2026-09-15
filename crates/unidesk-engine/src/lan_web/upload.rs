@@ -361,15 +361,14 @@ pub(super) async fn photo(
                 .into_bytes(),
         }];
         let preview_ok = unidesk_platform_macos::lan_web::image_png(&path, 320).is_ok();
-        if preview_ok {
-            if let (Some(kind), Ok(data)) =
+        if preview_ok
+            && let (Some(kind), Ok(data)) =
                 (super::content::image_kind(&string), std::fs::read(&path))
-            {
-                representations.push(PasteboardRepresentation {
-                    type_name: kind.into(),
-                    data,
-                });
-            }
+        {
+            representations.push(PasteboardRepresentation {
+                type_name: kind.into(),
+                data,
+            });
         }
         let kind = super::content::image_kind(&string).unwrap_or("public.jpeg");
         let mime = match kind {

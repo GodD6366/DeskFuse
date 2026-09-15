@@ -437,6 +437,8 @@ pub struct InputState {
 #[derive(Clone, Debug, uniffi::Record)]
 #[allow(clippy::struct_excessive_bools)] // Independent native status flags.
 pub struct UpdateState {
+    pub github: bool,
+    pub release_url: Option<String>,
     pub version: String,
     pub build: u64,
     pub checking: bool,
@@ -862,6 +864,12 @@ impl From<&EngineState> for EngineSnapshot {
                     .collect(),
             },
             update: UpdateState {
+                github: m.updates.github.is_some(),
+                release_url: m
+                    .updates
+                    .github
+                    .as_ref()
+                    .and_then(|github| github.release_url.clone()),
                 version: m.updates.installed.as_ref().map_or_else(
                     || env!("CARGO_PKG_VERSION").into(),
                     |i| i.version.to_string(),
@@ -889,9 +897,14 @@ impl From<&EngineState> for EngineSnapshot {
                 total_bytes: m.updates.status.as_ref().map_or(0, |s| s.artifact.size),
                 target_version: m
                     .updates
-                    .status
+                    .github
                     .as_ref()
-                    .map(|s| format!("{} · build {}", s.release.version, s.release.build_number)),
+                    .and_then(|github| github.target_version.clone())
+                    .or_else(|| {
+                        m.updates.status.as_ref().map(|s| {
+                            format!("{} · build {}", s.release.version, s.release.build_number)
+                        })
+                    }),
                 message: m.updates.message.clone(),
                 error: m.updates.error.clone(),
             },

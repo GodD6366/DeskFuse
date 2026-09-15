@@ -44,6 +44,13 @@ for resource in LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
+# The signed distribution marker selects the updater, independent of install path.
+[[ -f "$CONTENTS_DIR/Resources/update-channel" ]] || { echo "error: update channel missing" >&2; exit 1; }
+case "$(cat "$CONTENTS_DIR/Resources/update-channel")" in
+  github|lan) ;;
+  *) echo "error: invalid update channel" >&2; exit 1 ;;
+esac
+
 # Metadata is part of the signed payload. An empty placeholder does not prove
 # system discovery, but must never pass the package integrity check.
 python3 - "$CONTENTS_DIR/Resources/Metadata.appintents/extract.actionsdata" <<'PYINTENTS'

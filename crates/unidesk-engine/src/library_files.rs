@@ -34,9 +34,9 @@ pub struct Reference {
     pub total_bytes: u64,
 }
 fn db() -> Result<Connection> {
-    let db =
+    let mut db =
         Connection::open(unidesk_store::SQLiteStore::default_path().map_err(err)?).map_err(err)?;
-    db.busy_timeout(Duration::from_secs(5)).map_err(err)?;
+    unidesk_store::configure_connection(&mut db).map_err(err)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS cl_file_resources(id TEXT PRIMARY KEY,paths TEXT NOT NULL,manifest_hash TEXT NOT NULL)").map_err(err)?;
     Ok(db)
 }

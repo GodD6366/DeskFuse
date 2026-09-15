@@ -126,6 +126,11 @@ codesign --force --strict --timestamp=none --identifier com.unidesk.app.input-se
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/unidesk-update-helper" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 codesign --force --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
+if [[ "$PACKAGE_MODE" == bootstrap ]]; then
+  printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
+else
+  printf 'lan\n' > "$CONTENTS_DIR/Resources/update-channel"
+fi
 chmod 0755 "$CONTENTS_DIR/MacOS/$BINARY_NAME"
 cp "$ROOT_DIR/LICENSE-MIT" "$ROOT_DIR/LICENSE-APACHE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$CONTENTS_DIR/Resources/"
 cp "$ROOT_DIR/resources/icons/LICENSE" "$CONTENTS_DIR/Resources/LICENSE-LUCIDE"

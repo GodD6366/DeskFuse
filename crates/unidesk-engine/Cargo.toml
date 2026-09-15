@@ -9,6 +9,7 @@ publish.workspace = true
 
 
 [dependencies]
+semver = "1"
 axum = { version = "0.8", features = ["multipart"] }
 bytes.workspace = true
 tokio-util.workspace = true

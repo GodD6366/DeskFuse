@@ -55,6 +55,16 @@ sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"
 
 `brew trust` 执行一次即可（旧版本无此命令时跳过）。cask 固定对应 DMG 的 SHA-256。卸载：`brew uninstall --cask godd6366/unidesk/unidesk`，不再使用时 `brew untap godd6366/unidesk`。
 
+### 更新
+
+Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases（包括预发行版），发现新版后可打开对应发布页。Homebrew 安装请执行：
+
+```sh
+brew update && brew upgrade --cask unidesk
+```
+
+内部签名包继续使用可信局域网自动更新；公开包不使用该安装通道。尚未包含 GitHub 检查功能的旧版需要先通过 Homebrew 或手动下载安装新版。
+
 ### 手动安装 DMG
 
 1. 从同一 Release 下载 `uniDesk-arm64.dmg`、`SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。

@@ -31,7 +31,13 @@ const AUTOMATIC_SCAN_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 const ABANDONED_INSTALL: &str = "更新未安装，当前版本保持可用；退出并重新启动 uniDesk 后可重试";
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct GitHubUpdateView {
+    pub target_version: Option<String>,
+    pub release_url: Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LanUpdateView {
+    pub github: Option<GitHubUpdateView>,
     pub checking: bool,
     pub manual_requested: bool,
     pub installed: Option<ReleaseVersion>,

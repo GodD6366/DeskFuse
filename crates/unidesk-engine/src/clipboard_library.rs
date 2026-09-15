@@ -123,7 +123,16 @@ pub struct Library {
     generation: AtomicU64,
 }
 static LIBRARY: OnceLock<Arc<Library>> = OnceLock::new();
+static LIBRARY_INIT: Mutex<()> = Mutex::new(());
 pub fn global() -> Result<Arc<Library>> {
+    if let Some(v) = LIBRARY.get() {
+        return Ok(v.clone());
+    }
+    // FFI queries and the runtime can arrive together at startup. OnceLock::set
+    // alone only selects the winner after both initializers have already run
+    // migrations/import/pruning against the same file. Retry failures, but never
+    // execute two initializations concurrently.
+    let _initializing = LIBRARY_INIT.lock().map_err(err)?;
     if let Some(v) = LIBRARY.get() {
         return Ok(v.clone());
     }
@@ -135,10 +144,9 @@ impl Library {
     fn open() -> Result<Self> {
         // Ensure the canonical store has performed its own versioned migrations first.
         let _canonical = unidesk_store::SQLiteStore::new().map_err(err)?;
-        let db = Connection::open(unidesk_store::SQLiteStore::default_path().map_err(err)?)
+        let mut db = Connection::open(unidesk_store::SQLiteStore::default_path().map_err(err)?)
             .map_err(err)?;
-        db.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(err)?;
+        unidesk_store::configure_connection(&mut db).map_err(err)?;
         db.execute_batch("PRAGMA foreign_keys=ON;
    CREATE TABLE IF NOT EXISTS cl_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_items(id INTEGER PRIMARY KEY AUTOINCREMENT,global_id TEXT UNIQUE NOT NULL,digest TEXT NOT NULL,summary TEXT NOT NULL,payload BLOB,search_text TEXT NOT NULL DEFAULT '',copied INTEGER,imported INTEGER NOT NULL,ordinary INTEGER NOT NULL DEFAULT 1,blob_hash TEXT,origin_device TEXT);
@@ -1711,8 +1719,9 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
         .flat_map(|item| &item.representations)
         .find(|rep| rep.type_name == crate::clipboard_bundle::LAN_PHOTO_TYPE)
         .and_then(|rep| serde_json::from_slice::<Value>(&rep.data).ok());
-    let (kind, mime, preview, length) = if s.file_urls.len() == 1 && lan_photo.is_some() {
-        let metadata = lan_photo.as_ref().unwrap();
+    let (kind, mime, preview, length) = if s.file_urls.len() == 1
+        && let Some(metadata) = lan_photo.as_ref()
+    {
         (
             "image",
             metadata["mime"]

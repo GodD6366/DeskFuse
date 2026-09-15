@@ -17,10 +17,10 @@ use std::{
     env, fmt, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use unidesk_core::{
@@ -33,6 +33,23 @@ use unidesk_identity::{Fingerprint, TrustRecord, TrustStore};
 pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 const SETTINGS_PUBLIC_NETWORK_ENABLED: &str = "public_network_enabled";
+
+/// Apply the common policy to each connection to the local state database.
+///
+/// WAL lets history readers coexist with device/settings writes. Transactions
+/// reserve the writer before reading: upgrading a deferred read transaction can
+/// fail immediately (or with BUSY_SNAPSHOT in WAL), bypassing the busy timeout.
+/// In-memory stores retain SQLite's memory journal for isolated callers.
+pub fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let journal: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    if journal != "wal" && journal != "memory" {
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+    }
+    connection.pragma_update(None, "foreign_keys", true)?;
+    connection.set_transaction_behavior(TransactionBehavior::Immediate);
+    Ok(())
+}
 
 /// A result returned by persistence operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -642,7 +659,7 @@ impl SQLiteStore {
     }
 
     fn from_connection(mut connection: Connection) -> Result<Self> {
-        connection.pragma_update(None, "foreign_keys", true)?;
+        configure_connection(&mut connection)?;
         migrate_connection(&mut connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),

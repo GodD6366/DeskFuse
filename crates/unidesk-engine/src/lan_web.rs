@@ -63,6 +63,15 @@ struct Inner {
     error: Option<String>,
     tasks: VecDeque<UploadTask>,
 }
+type WatchedFile = (String, Option<(u64, std::time::SystemTime)>);
+type LiveServer = (
+    String,
+    u16,
+    CancellationToken,
+    Arc<AtomicBool>,
+    tokio::task::JoinHandle<()>,
+);
+
 struct Shared {
     inner: Mutex<Inner>,
     bridge: Weak<TokioBridge>,
@@ -71,7 +80,7 @@ struct Shared {
     stop: CancellationToken,
     uploads: Arc<Semaphore>,
     reads: Arc<Semaphore>,
-    watched_files: Mutex<VecDeque<(String, Option<(u64, std::time::SystemTime)>)>>,
+    watched_files: Mutex<VecDeque<WatchedFile>>,
     file_revision: AtomicU64,
 }
 #[derive(Clone)]
@@ -172,10 +181,9 @@ impl LanWebService {
         if enabled
             && interface != inner.settings.preferred_interface
             && let Some(name) = &interface
+            && !inner.interfaces.iter().any(|i| &i.name == name)
         {
-            if !inner.interfaces.iter().any(|i| &i.name == name) {
-                return Err("所选网络接口已不可用".into());
-            }
+            return Err("所选网络接口已不可用".into());
         }
         let next = Settings {
             enabled,
@@ -199,10 +207,10 @@ impl LanWebService {
     }
     pub fn shutdown(&self) {
         self.shared.stop.cancel();
-        if let Ok(mut w) = self.worker.lock() {
-            if let Some(w) = w.take() {
-                let _ = w.join();
-            }
+        if let Ok(mut w) = self.worker.lock()
+            && let Some(w) = w.take()
+        {
+            let _ = w.join();
         }
     }
 }
@@ -272,21 +280,15 @@ impl Shared {
         )
     }
     fn update_task(&self, id: &str, update: impl FnOnce(&mut UploadTask)) {
-        if let Ok(mut i) = self.inner.lock() {
-            if let Some(t) = i.tasks.iter_mut().find(|t| t.id == id) {
-                update(t);
-            }
+        if let Ok(mut i) = self.inner.lock()
+            && let Some(t) = i.tasks.iter_mut().find(|t| t.id == id)
+        {
+            update(t);
         }
     }
 }
 async fn serve(shared: Arc<Shared>) {
-    let mut live: Option<(
-        String,
-        u16,
-        CancellationToken,
-        Arc<AtomicBool>,
-        tokio::task::JoinHandle<()>,
-    )> = None;
+    let mut live: Option<LiveServer> = None;
     loop {
         let mut seen_interfaces = std::collections::BTreeSet::new();
         let interfaces = unidesk_platform_macos::lan_web::interfaces()

@@ -55,6 +55,16 @@ sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"
 
 Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/unidesk/unidesk`, then `brew untap godd6366/unidesk` if unused.
 
+### Updates
+
+Public Homebrew / GitHub packages check GitHub Releases (including prereleases) in Settings → Updates and link to the matching release. For Homebrew installations, run:
+
+```sh
+brew update && brew upgrade --cask unidesk
+```
+
+Internal signed packages retain trusted-LAN updates. Public packages do not use that installer. Older builds without GitHub checks need an initial update through Homebrew or a manually downloaded DMG.
+
 ### Manual DMG install
 
 1. Download `uniDesk-arm64.dmg`, `SHA256SUMS`, `release.json` and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
