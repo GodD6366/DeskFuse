@@ -2,21 +2,49 @@
 
 [中文](README.md) · [Contributing](CONTRIBUTING.md) · [Releasing](docs/RELEASING.md) · [TODO](TODO.md)
 
-A native **Rust 2024 + SwiftUI** desktop app for trusted-device clipboard sync, file transfer, a compact drag-out file shelf, and separately enabled keyboard/mouse sharing. macOS first.
+A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
 
-Real interface screenshots will be added after the first public build. This README intentionally contains no design mockups or illustrations; the interface follows the running app.
+> Early prerelease: macOS ships an Apple Silicon test build, Windows is an experimental implementation; a passing build is not two-device acceptance.
 
-## Status and downloads
+## What it does
 
-- **macOS 14+, Apple Silicon:** experimental arm64 DMG from [GitHub Releases](https://github.com/GodD6366/uniDesk/releases).
-- **Windows x64:** experimental native adapters and service checkpoint, **not** a complete GUI or installer.
-- Intel Mac and Linux are not first-release targets.
+- Discover or manually pair trusted devices over IPv4; connection state and blockers stay visible.
+- Sync text, images and native clipboard formats.
+- Transfer files on demand, with optional early transfer for small files; names and folder structure are preserved, and the history cache has a size limit and cleanup receipts.
+- A 240 × 240 pt file shelf: drag in, expand, drag out in batches, send via a secondary device menu.
+- A separate keyboard/mouse sharing workspace: real display layout, device activation, permission state and emergency reclaim.
 
-Download the DMG, `SHA256SUMS`, `release.json` and `build-info.json` from the same release. Run `shasum -a 256 -c SHA256SUMS`, open the DMG and drag uniDesk into Applications. Run only one instance.
+Behavior is defined by the [file transfer contract](docs/FILE_TRANSFER.md), [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md).
+
+## Compared with macOS Continuity and Deskflow
+
+| Feature | macOS Continuity | Deskflow | uniDesk |
+| --- | --- | --- | --- |
+| Keyboard/mouse crossing | ✅ same Apple Account only | ⚠️ screen positions cannot be freely arranged | ✅ |
+| Clipboard sync | ✅ relies on iCloud, often unstable | ⚠️ basic text and small images only | ✅ |
+| File transfer | ✅ AirDrop | ❌ | ✅ folders supported |
+| Staging shelf | ❌ | ❌ | ✅ |
+| Clipboard history | ❌ | ❌ | ✅ cross-device sync, image content search |
+| Encrypted transport | ✅ | ✅ TLS | ✅ QUIC |
+| Open source | ❌ | ✅ GPL-2.0 | ✅ MIT / Apache-2.0 |
+
+Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/HT212757), [Universal Clipboard](https://support.apple.com/en-us/102430), [Deskflow](https://github.com/deskflow/deskflow) (drag-and-drop removal in [#8459](https://github.com/deskflow/deskflow/issues/8459)).
+
+## Platforms
+
+| Platform | Status |
+| --- | --- |
+| macOS 14+, Apple Silicon | Main platform, arm64 DMG |
+| macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
+| Intel Mac | No release, no compatibility claim |
+| Windows x64 | Native adapters and service checkpoint; no GUI, installer or full cross-platform collaboration |
+| Linux | Not a first-release target |
+
+## Download and install
+
+Downloads: [GitHub Releases](https://github.com/GodD6366/uniDesk/releases).
 
 ### Homebrew (macOS 14+, Apple Silicon)
-
-The public repository also serves as a Homebrew tap whose cask points at the same GitHub release:
 
 ```sh
 brew trust --cask godd6366/unidesk/unidesk
@@ -24,23 +52,25 @@ brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk
 brew install --cask godd6366/unidesk/unidesk
 ```
 
-Homebrew 7 and newer require trusting a third-party tap once (skip that line on older versions without `brew trust`). The cask pins the SHA-256 of the matching DMG and is refreshed by the release workflow after a prerelease becomes public.
+Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/unidesk/unidesk`, then `brew untap godd6366/unidesk` if unused.
 
-The first-release build is ad-hoc signed and not notarized, and a Homebrew install stays quarantined. Clear the attribute before the first launch; never disable Gatekeeper or SIP:
+### Manual DMG install
+
+1. Download `uniDesk-arm64.dmg`, `SHA256SUMS`, `release.json` and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+2. Open the DMG and drag `uniDesk.app` into Applications; run only one instance per device.
+3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
+
+The build is **ad-hoc signed and not notarized**, so macOS may block it: verify the origin and checksum, then use the system's “Open Anyway” option if you choose. Never disable Gatekeeper or SIP. A Homebrew install also stays quarantined, so clear the attribute first:
 
 ```sh
 sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"
 ```
 
-Uninstall with `brew uninstall --cask godd6366/unidesk/unidesk`.
+Device identity lives in `~/Library/Application Support/uniDesk/identity.key` (`0600`, no Keychain). Switching from an older Keychain build creates a new identity and requires re-pairing; to fix pairing, do not delete the identity file, clear permissions or run old and new builds side by side.
 
-The first-release DMG is **ad-hoc signed and not notarized**. macOS may block it. Verify its origin and checksum first; use the system's Privacy & Security “Open Anyway” option only if offered and you choose to trust it. Do not disable Gatekeeper or SIP. Developer ID distribution is not configured.
+## Build from source
 
-Allow local network access when prompted. Input sharing also requires Accessibility permission, a trusted physical LAN session, enabled devices and valid display layout. Device identity is stored in `~/Library/Application Support/uniDesk/identity.key` with mode `0600`, without Keychain access. Switching from a Keychain build creates a new local identity and requires re-pairing; old Keychain entries are untouched. Never delete the identity file to repair pairing or work around permissions.
-
-## Build
-
-Requires an Apple Silicon Mac, full **Xcode 27+ with the macOS 27+ SDK**, Rustup and Python 3.11+. Command Line Tools alone are insufficient for the current SwiftUI / App Intents sources. The deployment target remains macOS 14; the build SDK is a separate requirement.
+Requires an Apple Silicon Mac, full **Xcode 27+ (macOS 27+ SDK)**, Rustup and Python 3.11+; Command Line Tools alone are not enough. The deployment target is macOS 14, with Rust and dependencies pinned in `rust-toolchain.toml` and `Cargo.lock`.
 
 ```sh
 git clone https://github.com/GodD6366/uniDesk.git
@@ -51,18 +81,32 @@ rustup component add rust-src
 CODESIGN_IDENTITY=- ./scripts/build_and_run.sh
 ```
 
-`./scripts/build_and_run.sh --build` only builds the development bundle. The native client does not expose the legacy fixture preview. The launcher replaces the running instance only after successfully building and signing its replacement. Rust is pinned in `rust-toolchain.toml`; always preserve the root lockfile.
+Without a signing certificate, add `CODESIGN_IDENTITY=-` explicitly; add `--build` to build without launching, and select a specific Xcode per command with `DEVELOPER_DIR=...`. For a standalone test DMG, run `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --bootstrap`, which writes to `dist/bootstrap/` and takes no part in LAN updates.
 
-## Boundaries
+## Layout
 
-CI verifies source and packaging, not physical two-device interaction, native Finder paste/drag-out, input permissions or Windows service installation. No LAN auto-update payload is published by this pipeline. See the Chinese [architecture](docs/ARCHITECTURE.md), [file contract](docs/FILE_TRANSFER.md), [release guide](docs/RELEASING.md) and [roadmap](docs/ROADMAP.md).
+```text
+apps/           SwiftUI app, Windows service, diagnostic probes
+crates/         Domain, protocol, identity, storage, network, transfer, input and platform modules
+scripts/        Development, checks, asset generation, packaging and release tools
+Casks/          Public Homebrew cask (also the tap)
+resources/      Source SVG, bundle metadata, third-party icons, public transfer guides
+design/current/ Current interface behavior and icon resources
+docs/           Architecture, feature contracts, release and support boundaries
+.github/        CI, prerelease workflow, contribution templates and dependency updates
+```
 
-Report vulnerabilities according to [SECURITY.md](SECURITY.md). Keep clipboard contents, private keys and credentials out of logs and issue attachments.
+`target/`, `dist/`, `artifacts/` and historical designs are not part of the public source.
 
-Contributors without an Apple signing certificate can explicitly use `CODESIGN_IDENTITY=-` for an ad-hoc build. Omit it to preserve an existing local signing configuration. Select Xcode per command with `DEVELOPER_DIR` when multiple versions are installed.
+## Known limitations
 
-For a standalone development DMG, run `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --bootstrap`. Output is isolated in `dist/bootstrap/`; this mode does not read the maintainer's release key, allocate a coordinator build number, upload to NAS, or seed LAN updates. See [open-source submission preparation](docs/OPEN_SOURCE.md) and [release documentation](docs/RELEASING.md).
+- The Windows service package is not a GUI or installer; real SCM, session switching and cross-platform features need separate acceptance.
+- Native Finder paste, drag-out, permission changes, Wi-Fi input crossing and real two-device behavior cannot be replaced by CI.
+- GitHub CI does not sign LAN update payloads; the coordinator build supports automatic macOS LAN updates, and older versions need one manual base install, see [RELEASING.md](docs/RELEASING.md).
+- Logs contain metadata, state and hashes only; check attachments before filing issues and never upload clipboard contents, device keys or credentials.
+
+Report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-Original code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Dependencies and third-party assets retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).
+Original code is dual-licensed under **MIT or Apache-2.0**, at your option; see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). Dependencies and third-party assets retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
