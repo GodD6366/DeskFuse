@@ -39,6 +39,8 @@ pub struct ContentData {
     pub mime: String,
     pub bytes: Vec<u8>,
     pub file_urls: Vec<String>,
+    /// Native representations, preserved when the host can round-trip them.
+    pub items: Vec<crate::PasteboardItem>,
 }
 
 impl ContentData {
@@ -49,6 +51,7 @@ impl ContentData {
             mime: "text/plain".into(),
             bytes: text.into_bytes(),
             file_urls: Vec::new(),
+            items: Vec::new(),
         }
     }
 

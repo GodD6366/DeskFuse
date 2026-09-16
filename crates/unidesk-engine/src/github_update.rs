@@ -144,8 +144,7 @@ impl GitHubUpdater {
         {
             status.phase = UpdatePhase::Cancelled;
         }
-        self.view.message =
-            "更新未安装，当前版本保持可用；退出并重新启动 uniDesk 后可重试".into();
+        self.view.message = "更新未安装，当前版本保持可用；退出并重新启动 uniDesk 后可重试".into();
         self.view.error = Some(reason.into());
     }
     pub(crate) async fn poll(&mut self) {
@@ -159,9 +158,11 @@ impl GitHubUpdater {
         }
         let step = match &self.task {
             Some(Task::Check(task)) if task.is_finished() => Step::Check,
-            Some(Task::Download { handle, path, expected }) if handle.is_finished() => {
-                Step::Download
-            }
+            Some(Task::Download {
+                handle,
+                path,
+                expected,
+            }) if handle.is_finished() => Step::Download,
             Some(Task::Download { path, expected, .. }) => Step::Progress {
                 path: path.clone(),
                 expected: *expected,
@@ -227,7 +228,8 @@ impl GitHubUpdater {
                 if is_quarantined(offer.release.release_id) {
                     self.offer = None;
                     self.view.manual_requested = false;
-                    self.view.message = "更新失败版本已隔离，当前版本保持可用；请等待后续 GitHub 发布".into();
+                    self.view.message =
+                        "更新失败版本已隔离，当前版本保持可用；请等待后续 GitHub 发布".into();
                     return;
                 }
                 if !offer.developer_id {
@@ -301,7 +303,12 @@ impl GitHubUpdater {
         });
     }
     async fn finish_download(&mut self) {
-        let Some(Task::Download { handle, path, expected }) = self.task.take() else {
+        let Some(Task::Download {
+            handle,
+            path,
+            expected,
+        }) = self.task.take()
+        else {
             return;
         };
         let result = handle
@@ -471,7 +478,10 @@ fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
         if name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err("SHA256SUMS 包含无效路径".into());
         }
-        if !matches!(name, "uniDesk-arm64.dmg" | "release.json" | "build-info.json") {
+        if !matches!(
+            name,
+            "uniDesk-arm64.dmg" | "release.json" | "build-info.json"
+        ) {
             continue;
         }
         if map.insert(name.to_owned(), hash.to_owned()).is_some() {
@@ -576,18 +586,13 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
         .filter(|release| {
             !release.draft
                 && release.published_at.is_some()
-                && [
-                    DMG_NAME,
-                    "release.json",
-                    "build-info.json",
-                    "SHA256SUMS",
-                ]
-                .iter()
-                .all(|name| {
-                    release.assets.iter().any(|asset| {
-                        asset.name == *name && asset.state == "uploaded" && asset.size > 0
+                && [DMG_NAME, "release.json", "build-info.json", "SHA256SUMS"]
+                    .iter()
+                    .all(|name| {
+                        release.assets.iter().any(|asset| {
+                            asset.name == *name && asset.state == "uploaded" && asset.size > 0
+                        })
                     })
-                })
         })
         .filter_map(|release| {
             let version: semver::Version = release.tag_name.strip_prefix('v')?.parse().ok()?;
@@ -609,9 +614,10 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
         })
         .max_by(|a, b| a.0.cmp_precedence(&b.0))
         .ok_or("GitHub 尚无完整的 macOS 发布包")?;
-    let sums = checksums(&String::from_utf8(
-        fetch_json(&format!("{DOWNLOAD}/{tag}/SHA256SUMS"), 65536).await?,
-    ).map_err(|_| "SHA256SUMS 不是有效文本")?)?;
+    let sums = checksums(
+        &String::from_utf8(fetch_json(&format!("{DOWNLOAD}/{tag}/SHA256SUMS"), 65536).await?)
+            .map_err(|_| "SHA256SUMS 不是有效文本")?,
+    )?;
     let release_bytes = fetch_json(&format!("{DOWNLOAD}/{tag}/release.json"), 65536).await?;
     if sha256_bytes(&release_bytes) != sums["release.json"] {
         return Err("GitHub 版本描述校验和不匹配".into());
@@ -666,10 +672,12 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
     #[test]
     fn checksums_reject_paths_and_missing_files() {
         assert!(checksums("zzzz  uniDesk-arm64.dmg\n").is_err());
-        assert!(checksums(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ../evil.dmg\n"
-        )
-        .is_err());
+        assert!(
+            checksums(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ../evil.dmg\n"
+            )
+            .is_err()
+        );
         assert!(checksums(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  uniDesk-arm64.dmg\n\
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  release.json\n"

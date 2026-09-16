@@ -20,6 +20,7 @@ uuid.workspace = true
 unidesk-update = { path = "../unidesk-update" }
 hex = "0.4"
 unidesk-platform = { path = "../unidesk-platform" }
+unidesk-collaboration = { path = "../unidesk-collaboration" }
 bincode = "1.3.3"
 flate2 = "1"
 anyhow = "1"

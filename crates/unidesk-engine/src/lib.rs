@@ -5,6 +5,7 @@ pub mod diagnostics;
 #[cfg(not(test))]
 mod diagnostics_file;
 mod github_update;
+pub mod host;
 pub mod input_coordinator;
 pub mod model;
 mod platform;

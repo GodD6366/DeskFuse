@@ -56,13 +56,13 @@ Run `brew trust` once (skip it on older Homebrew without the command). The cask 
 
 ### Updates
 
-Public Homebrew / GitHub packages check GitHub Releases (including prereleases) in Settings → Updates and link to the matching release. For Homebrew installations, run:
+Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates, then automatically download and install new Developer ID signed versions; ad-hoc packages require manual DMG download from the release page. Homebrew installations can also run:
 
 ```sh
 brew update && brew upgrade --cask unidesk
 ```
 
-Internal signed packages retain trusted-LAN updates. Public packages do not use that installer. Older builds without GitHub checks need an initial update through Homebrew or a manually downloaded DMG.
+Internal signed packages continue using trusted LAN automatic updates; public packages do not use that installer. Older builds without GitHub auto-install need an initial update through Homebrew or a manually downloaded DMG.
 
 ### Manual DMG install
 

@@ -25,14 +25,52 @@ TARGET_TRIPLE=aarch64-apple-darwin
 export UNIDESK_INPUT_BUILD_ID="${UNIDESK_INPUT_BUILD_ID:-dev-$(git rev-parse --short=12 HEAD)}"
 RELEASE_FLAG=""
 if [[ "$CONFIGURATION" == release ]]; then RELEASE_FLAG="--release"; fi
-"$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-ffi --lib --target "$TARGET_TRIPLE" $RELEASE_FLAG
-"$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-engine --bin unidesk-input-service --target "$TARGET_TRIPLE" $RELEASE_FLAG
 RUST_OUTPUT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/$TARGET_TRIPLE/$CONFIGURATION"
-mkdir -p apps/unidesk-macos/Generated apps/unidesk-macos/Sources/UniDeskEngine apps/unidesk-macos/Sources/UniDeskEngineFFI
-cargo run --locked -p unidesk-ffi --bin unidesk-bindgen -- generate --library "$RUST_OUTPUT/libunidesk_ffi.dylib" --language swift --out-dir "$ROOT_DIR/apps/unidesk-macos/Generated"
-cp apps/unidesk-macos/Generated/UniDeskEngine.swift apps/unidesk-macos/Sources/UniDeskEngine/
-cp apps/unidesk-macos/Generated/UniDeskEngineFFI.h apps/unidesk-macos/Sources/UniDeskEngineFFI/
-cp apps/unidesk-macos/Generated/UniDeskEngineFFI.modulemap apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
+SDK_DIR="$ROOT_DIR/apps/unidesk-macos/SDK"
+mkdir -p "$SDK_DIR" apps/unidesk-macos/Generated apps/unidesk-macos/Sources/UniDeskEngine apps/unidesk-macos/Sources/UniDeskEngineFFI
+RUST_FINGERPRINT="$(python3 - "$ROOT_DIR" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+hasher = hashlib.sha256()
+for relative in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml"):
+    hasher.update(relative.encode())
+    hasher.update((root / relative).read_bytes())
+for folder in (
+    "crates", "extensions", "tools",
+    "apps/unidesk-service", "apps/unidesk-probe",
+    "apps/unidesk-input-macos", "apps/unidesk-input-windows",
+):
+    base = root / folder
+    if not base.exists():
+        continue
+    for path in sorted(base.rglob("*")):
+        if path.suffix in {".rs", ".toml", ".sql"} and path.is_file():
+            hasher.update(str(path.relative_to(root)).encode())
+            hasher.update(path.read_bytes())
+print(hasher.hexdigest())
+PY
+)"
+FINGERPRINT_FILE="$SDK_DIR/.rust-fingerprint"
+SKIP_RUST=0
+if [[ "${UNIDESK_FORCE_RUST:-0}" != 1 \
+  && -f "$FINGERPRINT_FILE" \
+  && "$(cat "$FINGERPRINT_FILE")" == "$RUST_FINGERPRINT" \
+  && -f "$RUST_OUTPUT/libunidesk_ffi.dylib" \
+  && -f "$RUST_OUTPUT/libunidesk_ffi.a" \
+  && -f "$RUST_OUTPUT/unidesk-input-service" \
+  && -f "$ROOT_DIR/apps/unidesk-macos/Sources/UniDeskEngine/UniDeskEngine.swift" ]]; then
+  SKIP_RUST=1
+  echo "Rust SDK cache hit ($CONFIGURATION $TARGET_TRIPLE)"
+fi
+if [[ "$SKIP_RUST" -eq 0 ]]; then
+  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-ffi --lib --target "$TARGET_TRIPLE" $RELEASE_FLAG
+  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-engine --bin unidesk-input-service --target "$TARGET_TRIPLE" $RELEASE_FLAG
+  cargo run --locked -p unidesk-ffi --bin unidesk-bindgen -- generate --library "$RUST_OUTPUT/libunidesk_ffi.dylib" --language swift --out-dir "$ROOT_DIR/apps/unidesk-macos/Generated"
+  cp apps/unidesk-macos/Generated/UniDeskEngine.swift apps/unidesk-macos/Sources/UniDeskEngine/
+  cp apps/unidesk-macos/Generated/UniDeskEngineFFI.h apps/unidesk-macos/Sources/UniDeskEngineFFI/
+  cp apps/unidesk-macos/Generated/UniDeskEngineFFI.modulemap apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
+  printf '%s\n' "$RUST_FINGERPRINT" > "$FINGERPRINT_FILE"
+fi
 UNIDESK_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}"
 
 SWIFT_OUTPUT="$(UNIDESK_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --show-bin-path)"

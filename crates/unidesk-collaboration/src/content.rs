@@ -22,6 +22,12 @@ impl ContentHandle {
         for url in &data.file_urls {
             hasher.update(url.as_bytes());
         }
+        for item in &data.items {
+            for representation in &item.representations {
+                hasher.update(representation.type_name.as_bytes());
+                hasher.update(&representation.data);
+            }
+        }
         let digest = hasher.finalize();
         let mut bytes = [0_u8; 32];
         bytes.copy_from_slice(&digest);

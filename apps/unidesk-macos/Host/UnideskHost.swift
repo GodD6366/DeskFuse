@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 /// macOS host assembly. Swift UI talks to this layer; Rust collaboration owns policy.

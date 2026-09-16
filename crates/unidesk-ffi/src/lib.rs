@@ -67,6 +67,9 @@ enum Control {
 pub struct Engine {
     #[cfg(target_os = "macos")]
     lan_web: unidesk_engine::lan_web::LanWebService,
+    /// Collaboration host. Clipboard I/O still runs in TokioBridge until cutover.
+    #[allow(dead_code)]
+    host: unidesk_engine::host::EngineHost,
     bridge: Arc<TokioBridge>,
     workflows: Arc<unidesk_engine::workflow::WorkflowService>,
     workflow_hotkeys: Arc<Mutex<unidesk_platform_macos::WorkflowHotkeys>>,
@@ -112,6 +115,14 @@ impl Engine {
             RUNNING.store(false, Ordering::Release);
             failure(e)
         })?;
+        let host = match unidesk_engine::host::EngineHost::assemble() {
+            Ok(host) => host,
+            Err(e) => {
+                bridge.shutdown();
+                RUNNING.store(false, Ordering::Release);
+                return Err(failure(e));
+            }
+        };
         let workflows =
             unidesk_engine::workflow::WorkflowService::new(bridge.clone()).map_err(|e| {
                 bridge.shutdown();
@@ -214,6 +225,7 @@ impl Engine {
         Ok(Arc::new(Self {
             #[cfg(target_os = "macos")]
             lan_web,
+            host,
             workflows,
             workflow_hotkeys,
             workflow_dispatch_stop,

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 struct NativeRevision: Equatable {
     var value: Int
@@ -27,8 +28,7 @@ enum ApplyResult {
 final class MacOSClipboardCapture: @unchecked Sendable {
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int = 0
-    private let lock = NSLock()
-    private var remoteWrite = false
+    private let remoteWrite = OSAllocatedUnfairLock(initialState: false)
 
     func startMonitoring() async throws {
         lastChangeCount = pasteboard.changeCount
@@ -37,17 +37,16 @@ final class MacOSClipboardCapture: @unchecked Sendable {
     func stopMonitoring() async throws {}
 
     func markAsRemoteWrite() {
-        lock.lock()
-        remoteWrite = true
-        lock.unlock()
+        remoteWrite.withLock { $0 = true }
     }
 
     func capture() async throws -> CapturedContent {
         let changeCount = pasteboard.changeCount
-        lock.lock()
-        let isRemote = remoteWrite
-        if isRemote { remoteWrite = false }
-        lock.unlock()
+        let isRemote = remoteWrite.withLock { flag in
+            let current = flag
+            flag = false
+            return current
+        }
         return CapturedContent(
             revision: NativeRevision(value: changeCount),
             types: pasteboard.types ?? [],

@@ -62,6 +62,7 @@ identity.key
 /apps/unidesk-macos/SDK/*.modulemap
 /apps/unidesk-macos/SDK/unidesk-input-macos
 /apps/unidesk-macos/SDK/manifest.json
+/apps/unidesk-macos/SDK/.rust-fingerprint
 
 # Historical development plans remain local; active contracts stay in docs/.
 /docs/INPUT_DATAGRAM_PLAN.md

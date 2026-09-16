@@ -17,11 +17,20 @@ switching to the split stores.
 
 ## Still on the production path
 
-The shipping macOS app still links `unidesk-ffi` → `unidesk-engine`. That worker
-is the next cut: clipboard/file/input loops should call
-`unidesk-collaboration` instead of the in-engine copies. The new input binaries
-(`unidesk-input-macos`, `unidesk-input-windows`) compile with the input-only
-graph; they do not yet replace `unidesk-input-service`.
+The shipping macOS app still links `unidesk-ffi` → `unidesk-engine`. The desktop
+host (`unidesk-engine::host::EngineHost`) injects Host Ports at startup. Remote
+native clipboard applies in `TokioBridge` go through `apply_clipboard` (revision
+check, remote-origin mark, superseded-by-local-copy). File clipboard frames and
+the wire protocol still live in the engine worker until they call
+`CollaborationCore`.
+
+`scripts/build-native-macos.sh` skips Rust and UniFFI generation when the
+crate fingerprint in `apps/unidesk-macos/SDK/.rust-fingerprint` matches.
+Force a rebuild with `UNIDESK_FORCE_RUST=1` or
+`./scripts/build-client-macos.sh --rebuild-rust`.
+
+The new input binaries (`unidesk-input-macos`, `unidesk-input-windows`) compile
+with the input-only graph; they do not yet replace `unidesk-input-service`.
 
 ## Local data
 
