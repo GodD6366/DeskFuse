@@ -726,7 +726,7 @@ impl From<&EngineState> for EngineSnapshot {
                 .map(|h| HistoryItem {
                     id: h.id,
                     source_app_id: h.source_app_id.clone(),
-                    source_device_id: None,  // Legacy clipboard history doesn't track origin device
+                    source_device_id: None, // Legacy clipboard history doesn't track origin device
                     copied_at_ms: h.copied_at_ms,
                     mime: h.mime.clone(),
                     length: h.length as u64,

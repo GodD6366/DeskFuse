@@ -2547,9 +2547,7 @@ impl Actor {
             RuntimeCommand::SystemWoke => self.system_woke().await,
             RuntimeCommand::RefreshNativeObserver => {
                 // Request immediate permission check by notifying input_coordinator
-                let _ = self
-                    .event_tx
-                    .send(RuntimeEvent::RefreshNativeObserver);
+                let _ = self.event_tx.send(RuntimeEvent::RefreshNativeObserver);
             }
             RuntimeCommand::RefreshPeers => {
                 for hint in self.hints.values_mut() {
