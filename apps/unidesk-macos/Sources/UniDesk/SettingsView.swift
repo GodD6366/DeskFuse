@@ -101,7 +101,7 @@ struct SettingsView: View, Equatable {
                 if let update = presentation.update {
                     UpdateControls(store: store, update: update)
                 }
-                Text("可随时手动检查；后台每 12 小时检查一次。公开版通过 GitHub 提示更新，内部签名版沿用局域网下载和空闲安装流程。").font(.caption).foregroundStyle(.secondary)
+                Text("可随时手动检查；后台每 12 小时检查一次。GitHub 签名包自动下载安装，内部签名版沿用局域网下载和空闲安装流程。").font(.caption).foregroundStyle(.secondary)
             }.formStyle(.grouped)
         }
     }

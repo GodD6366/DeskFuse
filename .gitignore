@@ -72,6 +72,3 @@ identity.key
 # Windows native desktop build outputs.
 /apps/unidesk-windows/bin/
 /apps/unidesk-windows/obj/
-
-# Local one-click release and NAS upload entry point.
-/scripts/build-upload-nas.local.sh

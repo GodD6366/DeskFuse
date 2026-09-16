@@ -9,10 +9,11 @@ impl Engine {
         &self,
         enabled: bool,
         interface_name: Option<String>,
+        port: u16,
     ) -> Result<String, EngineError> {
         self.active()?;
         self.lan_web
-            .configure(enabled, interface_name)
+            .configure(enabled, interface_name, port)
             .map_err(failure)
     }
 }

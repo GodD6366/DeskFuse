@@ -12,6 +12,7 @@ use core_foundation::{
     url::CFURL,
 };
 use core_foundation_sys::{
+    array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef},
     base::CFRelease,
     data::{CFDataCreateMutable, CFDataRef, CFMutableDataRef},
     dictionary::CFDictionaryRef,
@@ -19,6 +20,7 @@ use core_foundation_sys::{
     url::CFURLRef,
 };
 use std::{
+    collections::BTreeSet,
     ffi::{CStr, c_char, c_int, c_uint, c_void},
     net::Ipv4Addr,
     path::Path,
@@ -72,9 +74,73 @@ impl Drop for InterfaceList {
     }
 }
 
-/// Up, non-loopback Darwin `en<digits>` IPv4 interfaces only. Virtual bridges,
-/// AWDL and tunnel interfaces cannot become LAN HTTP listening candidates.
+#[link(name = "SystemConfiguration", kind = "framework")]
+unsafe extern "C" {
+    fn SCNetworkInterfaceCopyAll() -> CFArrayRef;
+    fn SCNetworkInterfaceGetBSDName(interface: CFTypeRef) -> CFStringRef;
+    fn SCNetworkInterfaceGetLocalizedDisplayName(interface: CFTypeRef) -> CFStringRef;
+}
+
+fn thunderbolt_bridges() -> Result<BTreeSet<String>, String> {
+    // SAFETY: CopyAll takes no arguments and returns a Create-owned CFArray
+    // of SCNetworkInterface objects, kept alive throughout this traversal.
+    let interfaces = OwnedCf::new(
+        unsafe { SCNetworkInterfaceCopyAll() }.cast(),
+        "无法读取系统网络接口配置",
+    )?;
+    let array = interfaces.0.cast();
+    let mut bridges = BTreeSet::new();
+    // SAFETY: array is the live CFArray returned by CopyAll.
+    for index in 0..unsafe { CFArrayGetCount(array) } {
+        // SAFETY: index is in bounds; the array retains each interface.
+        let interface = unsafe { CFArrayGetValueAtIndex(array, index) };
+        // SAFETY: both getters receive a live SCNetworkInterface. Nullable
+        // borrowed strings are checked and retained before conversion.
+        let (name, label) = unsafe {
+            (
+                SCNetworkInterfaceGetBSDName(interface),
+                SCNetworkInterfaceGetLocalizedDisplayName(interface),
+            )
+        };
+        if name.is_null() || label.is_null() {
+            continue;
+        }
+        // SAFETY: non-null Get-owned CFStrings are alive with the array.
+        let (name, label) = unsafe {
+            (
+                CFString::wrap_under_get_rule(name).to_string(),
+                CFString::wrap_under_get_rule(label).to_string(),
+            )
+        };
+        if name.starts_with("bridge")
+            && ["Thunderbolt", "雷雳", "雷電", "雷电"]
+                .iter()
+                .any(|kind| label.contains(kind))
+        {
+            bridges.insert(name);
+        }
+    }
+    Ok(bridges)
+}
+
+/// Up, non-loopback IPv4 interfaces: Darwin `en<digits>` and system-identified
+/// Thunderbolt bridges. Other virtual bridges, AWDL and tunnels stay excluded.
 pub fn interfaces() -> Result<Vec<LanInterface>, String> {
+    collect_interfaces(false)
+}
+
+/// All assigned IPv4 addresses, including loopback and virtual interfaces,
+/// for validating requests to a wildcard listener.
+pub fn all_ipv4_interfaces() -> Result<Vec<LanInterface>, String> {
+    collect_interfaces(true)
+}
+
+fn collect_interfaces(all: bool) -> Result<Vec<LanInterface>, String> {
+    let thunderbolt_bridges = if all {
+        BTreeSet::new()
+    } else {
+        thunderbolt_bridges()?
+    };
     let mut raw = ptr::null_mut();
     // SAFETY: valid writable out pointer; Darwin allocates the linked list.
     if unsafe { getifaddrs(&mut raw) } != 0 {
@@ -92,7 +158,7 @@ pub fn interfaces() -> Result<Vec<LanInterface>, String> {
         let item = unsafe { &*current };
         current = item.next;
         if item.flags & 0x1 == 0
-            || item.flags & 0x8 != 0
+            || (!all && item.flags & 0x8 != 0)
             || item.address.is_null()
             || item.name.is_null()
         {
@@ -100,10 +166,10 @@ pub fn interfaces() -> Result<Vec<LanInterface>, String> {
         }
         // SAFETY: getifaddrs names are NUL-terminated and alive with their node.
         let name = unsafe { CStr::from_ptr(item.name) }.to_string_lossy();
-        let Some(index) = name.strip_prefix("en") else {
-            continue;
-        };
-        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        let ethernet = name
+            .strip_prefix("en")
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()));
+        if !all && !ethernet && !thunderbolt_bridges.contains(name.as_ref()) {
             continue;
         }
         // SAFETY: non-null sockaddr belongs to the live node. The family and
@@ -116,7 +182,7 @@ pub fn interfaces() -> Result<Vec<LanInterface>, String> {
         let ipv4 = unsafe { &*item.address.cast::<SockaddrIn>() };
         let address = Ipv4Addr::from(ipv4.address.to_ne_bytes());
         if address.is_unspecified()
-            || address.is_loopback()
+            || (!all && address.is_loopback())
             || address.is_multicast()
             || address.is_broadcast()
         {
@@ -130,7 +196,15 @@ pub fn interfaces() -> Result<Vec<LanInterface>, String> {
             address,
         });
     }
-    result.sort_by(|a, b| (&a.name, &a.address).cmp(&(&b.name, &b.address)));
+    // Preserve the existing automatic selection order; newly supported bridges
+    // remain explicitly selectable without displacing the default LAN address.
+    result.sort_by(|a, b| {
+        (thunderbolt_bridges.contains(&a.name), &a.name, &a.address).cmp(&(
+            thunderbolt_bridges.contains(&b.name),
+            &b.name,
+            &b.address,
+        ))
+    });
     result.dedup_by(|a, b| a.name == b.name && a.address == b.address);
     Ok(result)
 }

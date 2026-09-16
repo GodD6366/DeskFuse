@@ -1883,8 +1883,10 @@ async fn run_worker(
                         } else { command_error = Some("更新服务不可用".into()); }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
-                        if public_updates {
-                            command_error = Some("公开版请通过 Homebrew 或 GitHub 发布页安装更新".into());
+                        if let Some(updater) = &mut github_updater {
+                            updater.download_and_install_now();
+                            update_tick.reset_immediately();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                         } else if let Some(updater) = &updater {
                             updater.download_and_install_now();
                             update_tick.reset_immediately();
@@ -2509,6 +2511,55 @@ async fn run_worker(
             _ = update_tick.tick() => {
                 if let Some(updater) = &mut github_updater {
                     updater.poll().await;
+                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                        install_handoff = None;
+                        if let Some(mut helper) = install_helper.take() {
+                            let _ = helper.kill();
+                            let _ = helper.wait();
+                        }
+                        if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
+                        updater.abandon_install(&format!(
+                            "更新安装未在 {} 秒内启动，安装器已取消",
+                            INSTALL_HANDOFF.as_secs()
+                        ));
+                        input_coordinator.resume_after_update();
+                    }
+                    if !updater.install_abandoned() && install_handoff.is_none() && updater.ready() {
+                        let files_idle = incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
+                            && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
+                            && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty();
+                        updater.installation_waiting(if !files_idle {
+                            "已请求安装，等待当前文件传输或粘贴完成"
+                        } else {
+                            "已请求安装，正在结束键鼠共享并等待本地导出完成"
+                        });
+                        if files_idle {
+                            if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
+                                let admitted = {
+                                    let mut closed = input_signals.update_admission.lock().unwrap();
+                                    if cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire) {
+                                        *closed = true; true
+                                    } else { false }
+                                };
+                                if admitted {
+                                    match unidesk_update::installer::launch_helper() {
+                                        Ok(helper) => {
+                                            install_helper = Some(helper);
+                                            updater.installing();
+                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                                            let _ = ui_sender.unbounded_send(UiEvent::Quit);
+                                            install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
+                                        }
+                                        Err(error) => {
+                                            if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
+                                            updater.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
+                                            input_coordinator.resume_after_update();
+                                        }
+                                    }
+                                }
+                            }
+                        } else { input_coordinator.resume_after_update(); }
+                    }
                     let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                 } else if let Some(updater) = &updater {
                     if stage_task.as_ref().is_some_and(|task| task.is_finished()) {

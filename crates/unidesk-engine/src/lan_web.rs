@@ -1,4 +1,4 @@
-//! Owner-controlled, physical-LAN-only HTTP projection of the existing library.
+//! Owner-controlled HTTP projection of the existing library.
 //! No device trust is created here: web clients can only read content and submit uploads.
 mod content;
 mod upload;
@@ -34,6 +34,8 @@ const MAX_TEXT_BODY: usize = 1024 * 1024;
 struct Settings {
     enabled: bool,
     preferred_interface: Option<String>,
+    // The legacy `port` was the last randomly assigned port, not user intent.
+    #[serde(default, rename = "configured_port")]
     port: u16,
 }
 #[derive(Clone, Serialize)]
@@ -59,6 +61,9 @@ struct Inner {
     settings_epoch: u64,
     running: bool,
     address: Option<String>,
+    addresses: Vec<String>,
+    local_addresses: Vec<String>,
+    listen_address: Option<String>,
     interfaces: Vec<Interface>,
     error: Option<String>,
     tasks: VecDeque<UploadTask>,
@@ -86,7 +91,9 @@ struct Shared {
 #[derive(Clone)]
 struct HttpState {
     shared: Arc<Shared>,
-    authority: String,
+    bind_ip: String,
+    port: u16,
+    settings_epoch: u64,
     cancel: CancellationToken,
     cancelled: Arc<AtomicBool>,
 }
@@ -129,6 +136,9 @@ impl LanWebService {
                 settings_epoch: 0,
                 running: false,
                 address: None,
+                addresses: vec![],
+                local_addresses: vec![],
+                listen_address: None,
                 interfaces: vec![],
                 error,
                 tasks: VecDeque::new(),
@@ -173,7 +183,7 @@ impl LanWebService {
             .projection()
             .and_then(|v| serde_json::to_string(&v).map_err(|e| e.to_string()))
     }
-    pub fn configure(&self, enabled: bool, interface: Option<String>) -> Result<String> {
+    pub fn configure(&self, enabled: bool, interface: Option<String>, port: u16) -> Result<String> {
         if self.shared.stop.is_cancelled() {
             return Err("引擎已停止".into());
         }
@@ -188,16 +198,19 @@ impl LanWebService {
         let next = Settings {
             enabled,
             preferred_interface: interface,
-            port: inner.settings.port,
+            port,
         };
         save_settings(&self.shared.path, &next)?;
         // Hide the old QR immediately. Reconciliation below publishes only a bound listener.
         if inner.settings.enabled != enabled
             || inner.settings.preferred_interface != next.preferred_interface
+            || inner.settings.port != next.port
         {
             inner.settings_epoch = inner.settings_epoch.wrapping_add(1);
             inner.running = false;
             inner.address = None;
+            inner.addresses.clear();
+            inner.listen_address = None;
         }
         inner.settings = next;
         inner.error = None;
@@ -276,7 +289,7 @@ impl Shared {
     fn projection(&self) -> Result<Value> {
         let i = self.inner.lock().map_err(|_| "网页服务状态不可用")?;
         Ok(
-            json!({"enabled":i.settings.enabled,"running":i.running,"address":i.address,"preferred_interface":i.settings.preferred_interface,"interfaces":i.interfaces,"error":i.error,"tasks":i.tasks}),
+            json!({"enabled":i.settings.enabled,"running":i.running,"address":i.address,"addresses":i.addresses,"listen_address":i.listen_address,"port":i.settings.port,"preferred_interface":i.settings.preferred_interface,"interfaces":i.interfaces,"error":i.error,"tasks":i.tasks}),
         )
     }
     fn update_task(&self, id: &str, update: impl FnOnce(&mut UploadTask)) {
@@ -307,13 +320,20 @@ async fn serve(shared: Arc<Shared>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             i.interfaces = interfaces;
+            i.local_addresses = unidesk_platform_macos::lan_web::all_ipv4_interfaces()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| v.address)
+                .collect();
             let desired = if i.settings.enabled {
-                i.settings
-                    .preferred_interface
-                    .as_ref()
-                    .and_then(|n| i.interfaces.iter().find(|v| &v.name == n))
-                    .or_else(|| i.interfaces.first())
-                    .map(|v| (v.address.clone(), i.settings.port))
+                match &i.settings.preferred_interface {
+                    None => Some(("0.0.0.0".to_owned(), i.settings.port)),
+                    Some(name) => i
+                        .interfaces
+                        .iter()
+                        .find(|v| &v.name == name)
+                        .map(|v| (v.address.clone(), i.settings.port)),
+                }
             } else {
                 None
             };
@@ -344,30 +364,27 @@ async fn serve(shared: Arc<Shared>) {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             i.running = false;
             i.address = None;
+            i.addresses.clear();
+            i.listen_address = None;
         }
         if shared.stop.is_cancelled() {
             break;
         }
         if live.is_none() {
             if let Some((ip, port)) = desired {
-                let listener = match tokio::net::TcpListener::bind((ip.as_str(), port)).await {
-                    Ok(l) => Ok(l),
-                    Err(e) if port != 0 && e.kind() == std::io::ErrorKind::AddrInUse => {
-                        tokio::net::TcpListener::bind((ip.as_str(), 0)).await
-                    }
-                    Err(e) => Err(e),
-                };
+                let listener = tokio::net::TcpListener::bind((ip.as_str(), port)).await;
                 match listener {
                     Ok(listener) => {
                         let Ok(local) = listener.local_addr() else {
                             continue;
                         };
-                        let authority = local.to_string();
                         let cancel = CancellationToken::new();
                         let cancelled = Arc::new(AtomicBool::new(false));
                         let state = HttpState {
                             shared: shared.clone(),
-                            authority: authority.clone(),
+                            bind_ip: ip.clone(),
+                            port: local.port(),
+                            settings_epoch,
                             cancel: cancel.clone(),
                             cancelled: cancelled.clone(),
                         };
@@ -393,10 +410,9 @@ async fn serve(shared: Arc<Shared>) {
                             handle.abort();
                             continue;
                         }
-                        i.settings.port = local.port();
-                        i.error = save_settings(&shared.path, &i.settings).err();
+                        i.error = None;
                         i.running = true;
-                        i.address = Some(format!("http://{authority}"));
+                        i.listen_address = Some(local.to_string());
                         live = Some((ip, local.port(), cancel, cancelled, handle));
                     }
                     Err(e) => {
@@ -413,8 +429,47 @@ async fn serve(shared: Arc<Shared>) {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if i.settings.enabled {
-                    i.error = Some("没有可用的 Wi-Fi 或以太网 IPv4 地址".into());
+                    i.error =
+                        Some("所选网络接口没有可用的 IPv4 地址，请选择其他接口或所有接口".into());
                 }
+            }
+        }
+        if let Some((ip, port, _, _, _)) = &live {
+            let mut i = shared
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if i.running {
+                // Prefer physical LAN addresses for QR display, then include all
+                // other assigned addresses accepted by the wildcard listener.
+                let candidates = i
+                    .interfaces
+                    .iter()
+                    .map(|v| v.address.clone())
+                    .chain(i.local_addresses.iter().cloned());
+                let mut addresses = Vec::new();
+                for address in candidates {
+                    // Loopback is accepted locally but cannot be scanned by a phone.
+                    if address
+                        .parse::<std::net::Ipv4Addr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+                    {
+                        continue;
+                    }
+                    if ip != "0.0.0.0" && &address != ip {
+                        continue;
+                    }
+                    let url = if *port == 80 {
+                        format!("http://{address}")
+                    } else {
+                        format!("http://{address}:{port}")
+                    };
+                    if !addresses.contains(&url) {
+                        addresses.push(url);
+                    }
+                }
+                i.address = addresses.first().cloned();
+                i.addresses = addresses;
             }
         }
         tokio::select! {_ = shared.stop.cancelled()=>{},_ = shared.changed.notified()=>{},_ = tokio::time::sleep(Duration::from_secs(1))=>{}}
@@ -484,8 +539,22 @@ async fn guard(State(s): State<HttpState>, request: Request, next: Next) -> Resp
         .headers()
         .get(header::ORIGIN)
         .and_then(|h| h.to_str().ok());
-    let expected = format!("http://{}", s.authority);
-    if host != Some(s.authority.as_str())
+    let authority = host.and_then(|h| h.parse::<axum::http::uri::Authority>().ok());
+    let allowed_host = authority.as_ref().is_some_and(|a| {
+        a.port_u16().unwrap_or(80) == s.port
+            && a.host().parse::<std::net::Ipv4Addr>().is_ok()
+            && if s.bind_ip == "0.0.0.0" {
+                s.shared
+                    .inner
+                    .lock()
+                    .map(|i| i.local_addresses.iter().any(|ip| ip == a.host()))
+                    .unwrap_or(false)
+            } else {
+                a.host() == s.bind_ip
+            }
+    });
+    let expected = format!("http://{}", host.unwrap_or_default());
+    if !allowed_host
         || origin.is_some_and(|o| o != expected)
         || request
             .headers()
@@ -498,7 +567,7 @@ async fn guard(State(s): State<HttpState>, request: Request, next: Next) -> Resp
         .shared
         .inner
         .lock()
-        .map(|i| i.settings.enabled && i.running && i.address.as_deref() == Some(expected.as_str()))
+        .map(|i| i.settings.enabled && i.running && i.settings_epoch == s.settings_epoch)
         .unwrap_or(false);
     if !active || s.cancelled.load(Ordering::Acquire) {
         return error(
