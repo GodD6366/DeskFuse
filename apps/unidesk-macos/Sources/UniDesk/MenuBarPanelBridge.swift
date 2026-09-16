@@ -43,8 +43,10 @@ struct MenuBarPanelBridge: NSViewRepresentable {
                     let willClose = notification.name == NSWindow.willCloseNotification
                     let closing = willClose || notification.name == NSWindow.didResignKeyNotification
                     let menuFocusChange = MainActor.assumeIsolated {
+                        let sheetIsActive = window.attachedSheet?.isVisible == true
+                            || NSApp.keyWindow?.sheetParent === window
                         let ignore = !willClose
-                            && ClipboardHistoryMenuSession.isTracking
+                            && (ClipboardHistoryMenuSession.isTracking || sheetIsActive)
                         if closing && !ignore { self?.owner.handle.generation &+= 1 }
                         return ignore
                     }
@@ -77,10 +79,11 @@ struct MenuBarPanelBridge: NSViewRepresentable {
             Task { @MainActor [weak self] in self?.reconcile() }
         }
         func reconcile(forceClosed: Bool = false) {
-            // Opening a native submenu is not the end of the clipboard session.
-            // Do not clear its rows, invalidate copy, or steal its keyboard input.
             if ClipboardHistoryMenuSession.isTracking, window?.isVisible == true { return }
-            let next = !forceClosed && window?.isVisible == true && window?.isKeyWindow == true
+            let sheetIsActive = window?.attachedSheet?.isVisible == true
+                || NSApp.keyWindow?.sheetParent === window
+            let next = !forceClosed && window?.isVisible == true
+                && (window?.isKeyWindow == true || sheetIsActive)
             guard next != active else { return }
             active = next
             if next { owner.opened() } else { owner.closed() }

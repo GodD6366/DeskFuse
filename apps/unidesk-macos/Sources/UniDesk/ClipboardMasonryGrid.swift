@@ -45,8 +45,145 @@ struct ClipboardHeaderButtonStyle: ButtonStyle {
 }
 
 /// Natural-height column grid shared by the main history pane and the menu bar
-/// panel. Cards cap their own content height so one long text or tall image
-/// cannot dominate a column.
+/// panel.
+enum ClipboardMasonryBlock {
+    case columns([[HistoryItem]])
+    case fullWidth(HistoryItem)
+}
+
+enum ClipboardMasonryLayout {
+    static func blocks(for items: [HistoryItem], columnCount: Int) -> [ClipboardMasonryBlock] {
+        let count = max(1, columnCount)
+        var result: [ClipboardMasonryBlock] = []
+        var columns = Array(repeating: [HistoryItem](), count: count)
+        var heights = Array(repeating: CGFloat.zero, count: count)
+
+        func flushColumns() {
+            guard columns.contains(where: { !$0.isEmpty }) else { return }
+            result.append(.columns(columns))
+            columns = Array(repeating: [HistoryItem](), count: count)
+            heights = Array(repeating: CGFloat.zero, count: count)
+        }
+
+        for item in items {
+            if count > 1, spansFullWidth(item) {
+                flushColumns()
+                result.append(.fullWidth(item))
+                continue
+            }
+            let index = heights.indices.min { heights[$0] < heights[$1] } ?? 0
+            columns[index].append(item)
+            heights[index] += estimatedHeight(item) + 12
+        }
+        flushColumns()
+        return result
+    }
+
+    static func spansFullWidth(_ item: HistoryItem) -> Bool {
+        guard !item.hasImage, item.fileCount == 0 else { return false }
+        let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        let visualLength = text.unicodeScalars.reduce(0) { length, scalar in
+            length + (scalar.isASCII ? 1 : 2)
+        }
+        return explicitLines >= 4 || visualLength >= 96
+    }
+
+    static func estimatedHeight(_ item: HistoryItem) -> CGFloat {
+        if item.hasImage { return 236 }
+        if item.fileCount > 0 { return 96 }
+        let lines = min(8, max(1, item.preview.count / 36))
+        return 70 + CGFloat(lines) * 18
+    }
+}
+
+private struct ClipboardMasonryPosition {
+    let id: UInt64
+    let blockIndex: Int
+    let column: Int?
+    let centerY: CGFloat
+}
+
+enum ClipboardMasonryNavigation {
+    enum Direction: Equatable {
+        case left, right, up, down
+    }
+
+    static func target(items: [HistoryItem], selected: UInt64?, columnCount: Int, direction: Direction) -> UInt64? {
+        let allPositions = positions(items: items, columnCount: columnCount)
+        guard let selected, let current = allPositions.first(where: { $0.id == selected }) else {
+            return nil
+        }
+        let layout = ClipboardMasonryLayout.blocks(for: items, columnCount: columnCount)
+
+        switch direction {
+        case .left, .right:
+            guard let currentColumn = current.column,
+                  layout.indices.contains(current.blockIndex),
+                  case .columns(let columns) = layout[current.blockIndex] else { return nil }
+            let targetColumn = direction == .left ? currentColumn - 1 : currentColumn + 1
+            guard columns.indices.contains(targetColumn) else { return nil }
+            return allPositions
+                .filter { $0.blockIndex == current.blockIndex && $0.column == targetColumn }
+                .min { abs($0.centerY - current.centerY) < abs($1.centerY - current.centerY) }?.id
+        case .up, .down:
+            let sameColumn = allPositions.filter { position in
+                position.blockIndex == current.blockIndex && position.column == current.column
+            }
+            let inDirection: (ClipboardMasonryPosition) -> Bool = { position in
+                direction == .up ? position.centerY < current.centerY : position.centerY > current.centerY
+            }
+            if let nearby = sameColumn.filter(inDirection).min(by: { verticalDistance($0, from: current) < verticalDistance($1, from: current) }) {
+                return nearby.id
+            }
+            return allPositions
+                .filter { $0.blockIndex != current.blockIndex && inDirection($0) }
+                .min {
+                    let left = verticalDistance($0, from: current)
+                    let right = verticalDistance($1, from: current)
+                    return left == right ? columnDistance($0, from: current) < columnDistance($1, from: current) : left < right
+                }?.id
+        }
+    }
+
+    private static func positions(items: [HistoryItem], columnCount: Int) -> [ClipboardMasonryPosition] {
+        let blocks = ClipboardMasonryLayout.blocks(for: items, columnCount: columnCount)
+        var result: [ClipboardMasonryPosition] = []
+        var baseY: CGFloat = 0
+
+        for (blockIndex, block) in blocks.enumerated() {
+            switch block {
+            case .columns(let columns):
+                var columnHeights: [CGFloat] = []
+                for (columnIndex, column) in columns.enumerated() {
+                    var currentY = baseY
+                    for item in column {
+                        let height = ClipboardMasonryLayout.estimatedHeight(item)
+                        result.append(ClipboardMasonryPosition(id: item.id, blockIndex: blockIndex, column: columnIndex, centerY: currentY + height / 2))
+                        currentY += height + 12
+                    }
+                    columnHeights.append(currentY > baseY ? currentY - 12 - baseY : 0)
+                }
+                baseY += columnHeights.max() ?? 0
+                baseY += 12
+            case .fullWidth(let item):
+                let height = ClipboardMasonryLayout.estimatedHeight(item)
+                result.append(ClipboardMasonryPosition(id: item.id, blockIndex: blockIndex, column: nil, centerY: baseY + height / 2))
+                baseY += height + 12
+            }
+        }
+        return result
+    }
+
+    private static func verticalDistance(_ position: ClipboardMasonryPosition, from current: ClipboardMasonryPosition) -> CGFloat {
+        abs(position.centerY - current.centerY)
+    }
+
+    private static func columnDistance(_ position: ClipboardMasonryPosition, from current: ClipboardMasonryPosition) -> Int {
+        abs((position.column ?? 0) - (current.column ?? 0))
+    }
+}
+
 struct ClipboardMasonryGrid<Card: View>: View {
     let items: [HistoryItem]
     let selected: UInt64?
@@ -58,56 +195,41 @@ struct ClipboardMasonryGrid<Card: View>: View {
     let loadMore: () -> Void
     @ViewBuilder let card: (HistoryItem, Bool) -> Card
 
-    private var buckets: [[HistoryItem]] {
-        let count = max(1, columnCount)
-        var result = Array(repeating: [HistoryItem](), count: count)
-        var heights = Array(repeating: CGFloat.zero, count: count)
-        for item in items {
-            let index = heights.indices.min { heights[$0] < heights[$1] } ?? 0
-            result[index].append(item)
-            heights[index] += Self.estimatedHeight(item) + 12
-        }
-        return result
+    private var blocks: [ClipboardMasonryBlock] {
+        ClipboardMasonryLayout.blocks(for: items, columnCount: columnCount)
     }
 
     var body: some View {
-        // Balance once per body evaluation. `buckets` is a computed property, so
-        // reading it per column re-ran the whole assignment for every column on
-        // every selection change.
-        let columns = buckets
-        let longestColumn = columns.indices.max {
-            columns[$0].reduce(CGFloat.zero) { $0 + Self.estimatedHeight($1) + 12 }
-                < columns[$1].reduce(CGFloat.zero) { $0 + Self.estimatedHeight($1) + 12 }
-        } ?? 0
+        let layout = blocks
         ScrollView {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(columns.indices, id: \.self) { index in
-                    LazyVStack(spacing: 12) {
-                        ForEach(columns[index], id: \.id) { item in
-                            card(item, item.id == selected)
-                                .id(item.id)
+            LazyVStack(spacing: 12) {
+                ForEach(Array(layout.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .columns(let columns):
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(columns.indices, id: \.self) { index in
+                                LazyVStack(spacing: 12) {
+                                    ForEach(columns[index], id: \.id) { item in
+                                        card(item, item.id == selected)
+                                            .id(item.id)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .top)
+                            }
                         }
-                        // Keep the sentinel INSIDE a lazy column; an eager footer
-                        // can appear before the user has scrolled to the bottom.
-                        if hasMore && index == longestColumn {
-                            ClipboardPaginationTrigger(itemCount: paginationOffset, searching: searching, loadMore: loadMore)
-                            .id(paginationGeneration)
-                        }
+                    case .fullWidth(let item):
+                        card(item, item.id == selected)
+                            .id(item.id)
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                if hasMore {
+                    ClipboardPaginationTrigger(itemCount: paginationOffset, searching: searching, loadMore: loadMore)
+                        .id(paginationGeneration)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-    }
-
-    /// Rough column balancing only; real heights settle once cards render.
-    private static func estimatedHeight(_ item: HistoryItem) -> CGFloat {
-        if item.hasImage { return 236 }
-        if item.fileCount > 0 { return 96 }
-        let lines = min(8, max(1, item.preview.count / 36))
-        return 70 + CGFloat(lines) * 18
     }
 }
 

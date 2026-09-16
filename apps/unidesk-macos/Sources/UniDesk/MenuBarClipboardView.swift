@@ -390,7 +390,11 @@ struct MenuBarClipboardView: View {
         commandHeld = false
         panelActive = false; session = UUID(); copying = false
         pageRequest = UUID(); searching = false
-        pageItems = []; nextOffset = nil; fileAvailability = [:]
+        if pageItems.count > 50 {
+            pageItems = Array(pageItems.prefix(50))
+            nextOffset = 50
+        }
+        fileAvailability = [:]
         cancelPreparation()
     }
 
@@ -534,11 +538,25 @@ struct MenuBarClipboardView: View {
             if editingText { return false }
             guard let id = selectedID else { return true }
             deleteItem(id); return true
-        case 125, 126:
+        case 123, 124, 125, 126:
             guard !items.isEmpty else { return true }
-            let old = items.firstIndex { $0.id == selectedID } ?? 0
-            let next = min(items.count - 1, max(0, old + (event.keyCode == 125 ? 1 : -1)))
-            selectedID = items[next].id; searchFocused = false; copyError = nil; return true
+            if displayMode == .grid {
+                let direction: ClipboardMasonryNavigation.Direction
+                switch event.keyCode {
+                case 123: direction = .left
+                case 124: direction = .right
+                case 125: direction = .down
+                default: direction = .up
+                }
+                if let id = ClipboardMasonryNavigation.target(items: items, selected: selectedID, columnCount: 2, direction: direction) {
+                    selectedID = id
+                }
+            } else if event.keyCode == 125 || event.keyCode == 126 {
+                let old = items.firstIndex { $0.id == selectedID } ?? 0
+                let next = min(items.count - 1, max(0, old + (event.keyCode == 125 ? 1 : -1)))
+                selectedID = items[next].id
+            }
+            searchFocused = false; copyError = nil; return true
         default: return false
         }
     }

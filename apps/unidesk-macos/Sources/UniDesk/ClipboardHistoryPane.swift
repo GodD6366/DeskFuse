@@ -193,13 +193,25 @@ struct ClipboardHistoryPane: View {
 
     private func moveSelection(_ direction: MoveCommandDirection) {
         guard !items.isEmpty else { return }
+        if displayMode == .grid {
+            let navigationDirection: ClipboardMasonryNavigation.Direction
+            switch direction {
+            case .left: navigationDirection = .left
+            case .right: navigationDirection = .right
+            case .up: navigationDirection = .up
+            case .down: navigationDirection = .down
+            default: return
+            }
+            if let id = ClipboardMasonryNavigation.target(items: items, selected: selected, columnCount: 2, direction: navigationDirection) {
+                selected = id
+            }
+            return
+        }
         let current = items.firstIndex(where: { $0.id == selected }) ?? 0
         let step: Int
         switch direction {
-        case .up: step = displayMode == .grid ? -2 : -1
-        case .down: step = displayMode == .grid ? 2 : 1
-        case .left: step = -1
-        case .right: step = 1
+        case .up: step = -1
+        case .down: step = 1
         default: return
         }
         let next = min(max(current + step, 0), items.count - 1)
