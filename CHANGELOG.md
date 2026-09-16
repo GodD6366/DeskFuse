@@ -4,7 +4,14 @@
 
 ## [Unreleased]
 
-- 公开 tag 预发行接入 Developer ID、hardened runtime 与 `notarytool` 公证；所需 GitHub Actions secrets 及获取步骤见 `docs/NOTARIZE.md`。main 分支 bootstrap 与贡献者本机仍可 ad-hoc。
+## [0.2.0] — Developer ID 签名与公证发行
+
+- 公开 tag 预发行改用 Developer ID Application 签名、hardened runtime 与 `notarytool` 公证，打包后 staple 票据；缺少 Apple 凭据时打包失败，不再退回 ad-hoc 公开包。main 分支 bootstrap 与贡献者本机仍为 ad-hoc。
+- `verify-dmg.sh` 在 `UNIDESK_REQUIRE_NOTARIZE=1` 时额外校验 Developer ID 签名、hardened runtime 和已 staple 的票据；`build-info.json`、发行说明和 `release.py` 记录实际签名类型及公证状态。
+- 新增 `docs/NOTARIZE.md` 与 Developer ID 导入／清理脚本，说明 GitHub Actions secrets 的申请、注入与发行后清理步骤。
+- 修复 macOS bash 3.2 在 `set -u` 下将空签名参数数组视为未绑定变量，导致 bootstrap 打包在 update helper 处中断。
+
+发行边界：公证流水线尚未经真实 Gatekeeper 首次启动实机确认；本轮未执行 UI、Finder 粘贴/拖出或真实两机验收。Homebrew cask 校验和在公开预发行后由 cask job 或本地脚本刷新。
 
 ## [0.1.5] — Windows 普通桌面输入与剪贴板增强
 
