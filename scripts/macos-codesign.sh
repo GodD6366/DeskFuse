@@ -30,20 +30,24 @@ unidesk_codesign() {
     echo "error: unidesk_codesign requires a target" >&2
     return 2
   fi
-  # bash 3.2 on macOS: last positional via ${!#}, no ${*: -1}.
-  local target extra i
+  # bash 3.2 + set -u treats an empty "${array[@]}" as unbound. Build one
+  # argv that always has the codesign prefix so helpers with no extra flags
+  # (update helper) do not abort after input-service signs.
+  local target i
+  local -a cmd
   target="${!#}"
-  extra=()
+  if [[ "${SIGNING_KIND:-}" == "developer-id" ]]; then
+    cmd=(codesign --force --strict --timestamp --options runtime)
+  else
+    cmd=(codesign --force --strict --timestamp=none)
+  fi
   i=1
   while [[ "$i" -lt "$#" ]]; do
-    extra+=("${!i}")
+    cmd+=("${!i}")
     i=$((i + 1))
   done
-  if [[ "${SIGNING_KIND:-}" == "developer-id" ]]; then
-    codesign --force --strict --timestamp --options runtime "${extra[@]}" --sign "$CODESIGN_IDENTITY" "$target"
-  else
-    codesign --force --strict --timestamp=none "${extra[@]}" --sign "$CODESIGN_IDENTITY" "$target"
-  fi
+  cmd+=(--sign "$CODESIGN_IDENTITY" "$target")
+  "${cmd[@]}"
 }
 
 unidesk_write_signing_status() {
