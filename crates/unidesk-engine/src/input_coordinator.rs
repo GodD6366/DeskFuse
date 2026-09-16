@@ -912,6 +912,7 @@ async fn run(
                         next_refresh=Instant::now();
                     }
                     RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
+                        let receive_arrived = Instant::now();
                         // Runtime has already checked token, role, transport identity,
                         // topology generation, sequence and lease before this event.
                         if !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input) || state.retired.contains(&session_id) || !state.available || !state.effective.enabled || state.effective.role!=InputShareRole::Controlled {continue;}
@@ -937,6 +938,7 @@ async fn run(
                         if state.inbound.as_ref().is_some_and(|p|p.expired(Instant::now())) || state.injector.as_ref().is_none_or(|i|i.lease_expired()) {
                             state.retired.insert(session_id);state.reclaim(&runtime,Some(state.anchor)).await;continue;
                         }
+                        let precheck_time = receive_arrived.elapsed();
                         if timing::enabled() {
                             let inbound_motion = events
                                 .iter()
@@ -947,7 +949,12 @@ async fn run(
                             }
                         }
                         if let Some(injector)=&state.injector {
+                            let enqueue_start = Instant::now();
                             let error=injector.enqueue_batch(session_id,display,state_epoch,&events).err();
+                            let enqueue_time = enqueue_start.elapsed();
+                            if timing::enabled() && (precheck_time >= Duration::from_millis(2) || enqueue_time >= Duration::from_millis(2)) {
+                                timing::record!("receive_slow_path", receive_arrived.elapsed(), format!("session={session_id:?} precheck={}us enqueue={}us events={}", precheck_time.as_micros(), enqueue_time.as_micros(), events.len()));
+                            }
                             if let Some(error)=error {state.error(&ui,error.to_string());state.native_failed(&runtime,error.to_string()).await;next_refresh=Instant::now();}
                         }
                     }

@@ -636,13 +636,17 @@ fn inject_batch(
     input: &PendingInput,
     debug_enabled: bool,
 ) -> PlatformResult<()> {
+    let batch_start = debug_enabled.then(Instant::now);
     let mut executed = 0_u64;
+    let mut total_lock_time = Duration::ZERO;
+    let mut total_inject_time = Duration::ZERO;
     let result = (|| {
         for event in input.events() {
             if deadline.expired() {
                 return Err(PlatformError::InputInjectionDisabled);
             }
             {
+                let lock_start = debug_enabled.then(Instant::now);
                 let mut state = mailbox
                     .state
                     .lock()
@@ -652,9 +656,16 @@ fn inject_batch(
                 }
                 if debug_enabled {
                     state.metrics.observe_wait(input.enqueued_at.elapsed());
+                    if let Some(lock_start) = lock_start {
+                        total_lock_time += lock_start.elapsed();
+                    }
                 }
             }
+            let inject_start = debug_enabled.then(Instant::now);
             native.inject(&input.display, event)?;
+            if let Some(inject_start) = inject_start {
+                total_inject_time += inject_start.elapsed();
+            }
             executed += 1;
         }
         Ok(())
@@ -667,6 +678,26 @@ fn inject_batch(
             .counters
             .executed_events
             .saturating_add(executed);
+    }
+    if let Some(batch_start) = batch_start {
+        let batch_time = batch_start.elapsed();
+        if batch_time >= Duration::from_millis(8)
+            || total_lock_time >= Duration::from_millis(2)
+            || total_inject_time >= Duration::from_millis(4)
+        {
+            super::timing::record!(
+                "inject_batch_slow",
+                batch_time,
+                format!(
+                    "session={:?} events={} executed={} lock={}us inject={}us",
+                    input.session,
+                    input.event_count(),
+                    executed,
+                    total_lock_time.as_micros(),
+                    total_inject_time.as_micros()
+                ),
+            );
+        }
     }
     result
 }
@@ -725,6 +756,7 @@ impl NativeInjector {
         display: &DisplayDescriptor,
         event: &SharedInputEvent,
     ) -> PlatformResult<()> {
+        let inject_start = super::timing::enabled().then(Instant::now);
         event
             .validate()
             .map_err(|_| PlatformError::InputInjectionFailed)?;
@@ -872,6 +904,16 @@ impl NativeInjector {
                     *dx,
                 );
                 self.post(event);
+            }
+        }
+        if let Some(inject_start) = inject_start {
+            let inject_time = inject_start.elapsed();
+            if inject_time >= Duration::from_micros(500) {
+                super::timing::record!(
+                    "inject_single_slow",
+                    inject_time,
+                    format!("event={:?}", event),
+                );
             }
         }
         Ok(())

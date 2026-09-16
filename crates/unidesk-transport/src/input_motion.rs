@@ -481,6 +481,8 @@ impl InputHub {
             // draining it here handles every slot covered by one Notify wake without
             // imposing an application-level frame rate.  The receiver performs the
             // final adjacent-motion coalescing when data is already queued.
+            let mut drain_count = 0u64;
+            let mut wake_count = 0u64;
             while session.live() {
                 tokio::select! {
                     _ = session.motion.wake.notified() => {},
@@ -491,44 +493,145 @@ impl InputHub {
                 if !session.live() {
                     break;
                 }
+                wake_count += 1;
+                let drain_started = Instant::now();
+                let mut batch_sent = 0usize;
 
-                loop {
+                // Double-check drain loop: prevents Notify merge from losing samples.
+                // After exhausting the mailbox, check once more that nothing arrived
+                // during the final pop_first(), because concurrent enqueue + notify
+                // between our empty check and the outer notified().await would merge
+                // into one permit and skip a wake cycle.
+                'drain: loop {
+                    if !session.live() {
+                        break 'drain;
+                    }
+
                     let motion = session
                         .motion
                         .pending
                         .lock()
                         .ok()
                         .and_then(|mut pending| pending.pop_first().map(|(_, motion)| motion));
-                    let Some(motion) = motion else {
-                        break;
-                    };
-                    if !session.live() {
-                        break;
-                    }
 
+                    let Some(motion) = motion else {
+                        // Final check: if mailbox became non-empty between our last
+                        // pop_first() and here, drain again instead of sleeping.
+                        if session
+                            .motion
+                            .pending
+                            .lock()
+                            .ok()
+                            .is_some_and(|pending| !pending.is_empty())
+                        {
+                            continue 'drain;
+                        }
+                        break 'drain;
+                    };
+
+                    let encode_start = Instant::now();
+                    let encoded = encode_motion_datagram(&motion).ok();
+                    let encode_time = encode_start.elapsed();
+
+                    let send_start = Instant::now();
                     let sent = session.motion.ready.load(Ordering::Acquire)
-                        && encode_motion_datagram(&motion).ok().is_some_and(|bytes| {
+                        && encoded.is_some_and(|bytes| {
                             session.connection.send_datagram(bytes.into()).is_ok()
                         });
+                    let send_time = send_start.elapsed();
+
                     let health_lost = if sent {
                         session.motion.sent.fetch_add(1, Ordering::Relaxed);
+                        batch_sent += 1;
                         false
                     } else {
                         session.motion.dropped.fetch_add(1, Ordering::Relaxed);
                         session.motion.ready.store(false, Ordering::Release);
                         true
                     };
+
+                    if unidesk_core::debug_logging::enabled()
+                        && (health_lost
+                            || encode_time >= Duration::from_micros(500)
+                            || send_time >= Duration::from_micros(500))
+                    {
+                        crate::motion_diag::record(crate::motion_diag::MotionDiagRecord {
+                            timestamp_ms: crate::motion_diag::timestamp_ms(),
+                            event: if health_lost {
+                                "send_health_lost"
+                            } else {
+                                "send_slow"
+                            },
+                            peer: crate::motion_diag::short_peer(session.peer),
+                            transport_session: crate::motion_diag::short_session(
+                                session.context.session_id,
+                            ),
+                            ready: session.motion.ready.load(Ordering::Acquire),
+                            sent: session.motion.sent.load(Ordering::Relaxed),
+                            received: session.motion.received.load(Ordering::Relaxed),
+                            send_replaced: session.motion.send_replaced.load(Ordering::Relaxed),
+                            receive_replaced: session
+                                .motion
+                                .receive_replaced
+                                .load(Ordering::Relaxed),
+                            dropped: session.motion.dropped.load(Ordering::Relaxed),
+                            pending_send: 0,
+                            rtt_micros: 0,
+                            sent_packets: 0,
+                            lost_packets: 0,
+                            congestion_events: 0,
+                        });
+                    }
+
                     session.motion.sample_diagnostics(
                         &session,
                         if health_lost { "health_lost" } else { "send" },
                         health_lost,
                     );
+
                     // Give cancellation and the QUIC driver a scheduling point, but
                     // never sleep to manufacture a motion frame rate.
                     tokio::task::yield_now().await;
+
                     if health_lost {
-                        break;
+                        break 'drain;
                     }
+                }
+
+                drain_count += 1;
+                let drain_time = drain_started.elapsed();
+
+                // Log slow or large drain cycles to correlate sender pacing with
+                // receiver gaps. A long drain or high batch count may indicate that
+                // motion enqueue is outpacing the async executor's yield scheduling.
+                if unidesk_core::debug_logging::enabled()
+                    && (drain_time >= Duration::from_millis(8) || batch_sent >= 16)
+                {
+                    crate::motion_diag::record(crate::motion_diag::MotionDiagRecord {
+                        timestamp_ms: crate::motion_diag::timestamp_ms(),
+                        event: "drain_cycle",
+                        peer: crate::motion_diag::short_peer(session.peer),
+                        transport_session: crate::motion_diag::short_session(
+                            session.context.session_id,
+                        ),
+                        ready: session.motion.ready.load(Ordering::Acquire),
+                        sent: batch_sent as u64,
+                        received: 0,
+                        send_replaced: 0,
+                        receive_replaced: 0,
+                        dropped: 0,
+                        pending_send: session
+                            .motion
+                            .pending
+                            .lock()
+                            .ok()
+                            .map(|p| p.len())
+                            .unwrap_or(0),
+                        rtt_micros: drain_time.as_micros().min(u128::from(u64::MAX)) as u64,
+                        sent_packets: wake_count,
+                        lost_packets: drain_count,
+                        congestion_events: 0,
+                    });
                 }
             }
             session.motion.close();
