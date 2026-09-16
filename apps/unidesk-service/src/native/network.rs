@@ -99,7 +99,7 @@ impl Network {
             .set_advertisement(
                 ServiceRecord::v1(
                     identity.device_id(),
-                    "uniDesk Windows".into(),
+                    "uniDesk Windows",
                     INPUT_CAPABILITIES,
                     input_port,
                 )
@@ -185,7 +185,7 @@ async fn bind_transport(
     let mut nonce = [0_u8; 32];
     nonce[..16].copy_from_slice(RequestId::new().into_uuid().as_bytes());
     nonce[16..].copy_from_slice(RequestId::new().into_uuid().as_bytes());
-    let hello = PeerHello::signed(identity, "uniDesk Windows".into(), capabilities, nonce)?;
+    let hello = PeerHello::signed(identity, "uniDesk Windows", capabilities, nonce)?;
     let config = QuinnTransportConfig::new(
         SocketAddr::from(([0, 0, 0, 0], port)),
         SocketAddr::from(([127, 0, 0, 1], 0)),

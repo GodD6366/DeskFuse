@@ -775,16 +775,16 @@ impl NativeObservation {
     }
 }
 
-/// Native permission/session/display queries may block in macOS. Keep them on
-/// their own thread and publish only the latest observation, never an input
-/// work item. A stalled observer fails closed through the freshness check.
-fn native_observer(
-    stopping: Arc<AtomicBool>,
-) -> (
+type NativeObserver = (
     tokio::sync::watch::Receiver<Option<NativeObservation>>,
     Option<thread::JoinHandle<()>>,
     Option<Arc<thread::Thread>>,
-) {
+);
+
+/// Native permission/session/display queries may block in macOS. Keep them on
+/// their own thread and publish only the latest observation, never an input
+/// work item. A stalled observer fails closed through the freshness check.
+fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
     let (tx, rx) = tokio::sync::watch::channel(None);
     let worker = thread::Builder::new()
         .name("unidesk-input-observer".into())

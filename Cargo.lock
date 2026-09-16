@@ -2655,6 +2655,7 @@ dependencies = [
  "unidesk-core",
  "unidesk-discovery",
  "unidesk-identity",
+ "unidesk-platform",
  "unidesk-platform-windows",
  "unidesk-protocol",
  "unidesk-runtime",
