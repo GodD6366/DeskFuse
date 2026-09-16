@@ -1,15 +1,35 @@
-//! Real service-owned transport/discovery; no GUI-owned identity/runtime fallback.
-use std::{io, net::SocketAddr};
-use unidesk_core::{Capabilities, NetworkConfig, RequestId};
-use unidesk_discovery::{PlatformDiscovery, ServiceRecord};
+//! Service-owned control and input transports; no GUI identity/runtime fallback.
+use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
+use unidesk_core::{
+    Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
+};
+use unidesk_discovery::{DiscoveryHandle, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
 use unidesk_identity::{TrustStore, WindowsServiceDataDirectory, WindowsServiceIdentityProvider};
-use unidesk_runtime::{RuntimeBuilder, RuntimeConfig, RuntimeHandle};
+use unidesk_runtime::{
+    ControlTransportAdapter, InputOnlyRuntime, RuntimeBuilder, RuntimeConfig, RuntimeHandle,
+    SnapshotView,
+};
 use unidesk_store::{PeerStore, SQLiteStore, SettingsStore};
-use unidesk_transport::{PeerHello, QuinnTransport, QuinnTransportConfig};
+use unidesk_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
+
+const CONTROL_PORT: u16 = 42424;
+const INPUT_PORT: u16 = 42425;
+const INPUT_CAPABILITIES: Capabilities = Capabilities::from_bits(
+    Capabilities::INPUT_SHARING.bits()
+        | Capabilities::DEVICE_NETWORK.bits()
+        | Capabilities::INPUT_ACTIVATION.bits()
+        | Capabilities::INPUT_MOTION_DATAGRAM_V1.bits(),
+);
 
 pub struct Network {
     pub runtime: RuntimeHandle,
+    pub input_runtime: InputOnlyRuntime,
     pub control_port: u16,
+    pub input_port: u16,
+    input_transport: QuinnTransport,
+    input_authorized: Mutex<BTreeSet<unidesk_core::DeviceId>>,
+    _input_discovery: Mutex<PlatformDiscovery>,
+    input_discovery_events: Mutex<DiscoveryHandle>,
     // Keep the parent directories and exclusive runtime lease pinned for SQLite.
     _directory: WindowsServiceDataDirectory,
 }
@@ -17,61 +37,39 @@ impl Network {
     pub async fn start() -> io::Result<Self> {
         let directory = WindowsServiceDataDirectory::open().map_err(|_| stage(20))?;
         let provider = WindowsServiceIdentityProvider::new();
-        let identity = provider.load_or_create().map_err(|_| stage(21))?;
+        let identity = std::sync::Arc::new(provider.load_or_create().map_err(|_| stage(21))?);
         let store = SQLiteStore::open(directory.database_path()).map_err(|_| stage(22))?;
-        // Validate persistent authority before opening a network listener. The
-        // actor normally reports load errors asynchronously; the service must
-        // not start with a silently ignored malformed trust/state database.
         store.list_peers().map_err(|_| stage(22))?;
         store.get_settings().map_err(|_| stage(22))?;
         TrustStore::list(&store).map_err(|_| stage(22))?;
-        // Desktop clipboard uses acknowledged v2 epochs; service drops all user
-        // content while no authenticated, unlocked desktop bridge is active.
-        // File/input/update adapters remain unadvertised.
+
+        let control_capabilities = Capabilities::NETWORK
+            | Capabilities::DEVICE_NETWORK
+            | Capabilities::CLIPBOARD
+            | Capabilities::CLIPBOARD_SYNC_V2;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
                 .with_public_network_enabled(false),
             display_name: "uniDesk Windows".into(),
-            capabilities: Capabilities::NETWORK
-                | Capabilities::DEVICE_NETWORK
-                | Capabilities::CLIPBOARD
-                | Capabilities::CLIPBOARD_SYNC_V2,
+            capabilities: control_capabilities,
             ..RuntimeConfig::default()
         };
-        let mut nonce = [0_u8; 32];
-        nonce[..16].copy_from_slice(RequestId::new().into_uuid().as_bytes());
-        nonce[16..].copy_from_slice(RequestId::new().into_uuid().as_bytes());
-        let hello = PeerHello::signed(
-            &identity,
-            config.display_name.clone(),
-            config.capabilities,
-            nonce,
-        )
-        .map_err(|_| stage(23))?;
-        // Existing project transport certificate, not the machine Ed25519 key.
-        // Remote identity still requires signed hello and persisted pairing trust.
-        let transport = QuinnTransport::bind(
-            hello,
-            QuinnTransportConfig::new(
-                SocketAddr::from(([0, 0, 0, 0], 42424)),
-                SocketAddr::from(([127, 0, 0, 1], 0)),
-                "unidesk.local",
-                include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
-                include_bytes!("../../../../resources/unidesk-transport-key.der").to_vec(),
-                include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
-            ),
-        )
-        .await
-        .map_err(|_| stage(24))?;
-        let control_port = transport.local_addr().map_err(|_| stage(24))?.port();
+        let control_transport =
+            bind_transport(identity.as_ref(), control_capabilities, CONTROL_PORT, false)
+                .await
+                .map_err(|_| stage(24))?;
+        let control_port = control_transport
+            .local_addr()
+            .map_err(|_| stage(24))?
+            .port();
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(
                 ServiceRecord::v1(
                     identity.device_id(),
                     config.display_name.clone(),
-                    config.capabilities,
+                    control_capabilities,
                     control_port,
                 )
                 .map_err(|_| stage(25))?,
@@ -81,17 +79,157 @@ impl Network {
             .config(config)
             .with_identity_provider(provider)
             .with_store(store.clone())
-            .with_trust_store(store)
+            .with_trust_store(store.clone())
             .with_external_discovery(discovery)
-            .with_control_transport(transport)
+            .with_control_transport(control_transport)
             .build()
             .map_err(|_| stage(26))?;
-        Ok(Self {
+
+        let input_transport =
+            bind_transport(identity.as_ref(), INPUT_CAPABILITIES, INPUT_PORT, true)
+                .await
+                .map_err(|_| stage(24))?;
+        input_transport
+            .configure_identity(identity.clone())
+            .map_err(|_| stage(23))?;
+        let input_port = input_transport.local_addr().map_err(|_| stage(24))?.port();
+        let mut input_discovery =
+            PlatformDiscovery::for_input_service(identity.device_id()).map_err(|_| stage(25))?;
+        input_discovery
+            .set_advertisement(
+                ServiceRecord::v1(
+                    identity.device_id(),
+                    "uniDesk Windows".into(),
+                    INPUT_CAPABILITIES,
+                    input_port,
+                )
+                .map_err(|_| stage(25))?,
+            )
+            .map_err(|_| stage(25))?;
+        let input_events = input_discovery.start().map_err(|_| stage(25))?;
+        let initial = input_view(runtime.snapshot_view());
+        let input_runtime = InputOnlyRuntime::start(
+            std::sync::Arc::new(ControlTransportAdapter::new(input_transport.clone())),
+            std::sync::Arc::new(store),
+            initial,
+        )
+        .map_err(|_| stage(26))?;
+        let network = Self {
             runtime,
+            input_runtime,
             control_port,
+            input_port,
+            input_transport,
+            input_authorized: Mutex::new(BTreeSet::new()),
+            _input_discovery: Mutex::new(input_discovery),
+            input_discovery_events: Mutex::new(input_events),
             _directory: directory,
-        })
+        };
+        network.sync_input_authority().await?;
+        Ok(network)
     }
+
+    pub async fn sync_input_authority(&self) -> io::Result<()> {
+        if let Ok(events) = self.input_discovery_events.lock() {
+            for _ in 0..64 {
+                if events.try_recv().ok().flatten().is_none() {
+                    break;
+                }
+            }
+        }
+        let view = input_view(self.runtime.snapshot_view());
+        let allowed = view
+            .snapshot
+            .peers
+            .iter()
+            .map(|peer| peer.id)
+            .collect::<BTreeSet<_>>();
+        let previous = self
+            .input_authorized
+            .lock()
+            .map_err(|_| io::Error::other("input authority lock poisoned"))?
+            .clone();
+        for id in previous.difference(&allowed) {
+            self.input_transport
+                .revoke_peer(*id)
+                .await
+                .map_err(io::Error::other)?;
+        }
+        for peer in &view.snapshot.peers {
+            if !previous.contains(&peer.id) {
+                self.input_transport
+                    .restore_peer(peer.id)
+                    .await
+                    .map_err(io::Error::other)?;
+                self.input_transport
+                    .register_peer_identity(peer.id, peer.public_key)
+                    .await
+                    .map_err(io::Error::other)?;
+            }
+        }
+        *self
+            .input_authorized
+            .lock()
+            .map_err(|_| io::Error::other("input authority lock poisoned"))? = allowed;
+        self.input_runtime.update_view(view);
+        Ok(())
+    }
+}
+
+async fn bind_transport(
+    identity: &unidesk_identity::LocalIdentity,
+    capabilities: Capabilities,
+    port: u16,
+    input: bool,
+) -> Result<QuinnTransport, unidesk_transport::TransportError> {
+    let mut nonce = [0_u8; 32];
+    nonce[..16].copy_from_slice(RequestId::new().into_uuid().as_bytes());
+    nonce[16..].copy_from_slice(RequestId::new().into_uuid().as_bytes());
+    let hello = PeerHello::signed(identity, "uniDesk Windows".into(), capabilities, nonce)?;
+    let config = QuinnTransportConfig::new(
+        SocketAddr::from(([0, 0, 0, 0], port)),
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        "unidesk.local",
+        include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
+        include_bytes!("../../../../resources/unidesk-transport-key.der").to_vec(),
+        include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
+    );
+    QuinnTransport::bind(
+        hello,
+        if input {
+            config.for_input_service()
+        } else {
+            config
+        },
+    )
+    .await
+}
+
+fn input_view(mut view: SnapshotView) -> SnapshotView {
+    view.device_network.pending.clear();
+    let local = view.snapshot.local_device_id;
+    view.snapshot.peers.retain(|peer| {
+        peer.trust == TrustState::Trusted
+            && view.device_network.allows(local, peer.id)
+            && !view.device_network.blocked_peer_ids.contains(&peer.id)
+    });
+    for peer in &mut view.snapshot.peers {
+        peer.connection = ConnectionState::Disconnected;
+        peer.selected_route = None;
+        peer.routes.retain(|route| !route.source.is_public());
+        for route in &mut peer.routes {
+            route.endpoint.port = INPUT_PORT;
+            route.health = RouteHealth::Unknown;
+            route.last_success_unix_ms = None;
+            route.failure_count = 0;
+            route.capabilities = INPUT_CAPABILITIES;
+            route.rtt_ms = None;
+            route.last_probe_unix_ms = None;
+            route.probe_error = None;
+        }
+    }
+    view.discovered_peers.clear();
+    view
 }
 
 fn stage(code: i32) -> io::Error {

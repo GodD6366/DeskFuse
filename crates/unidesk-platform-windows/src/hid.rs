@@ -148,6 +148,162 @@ pub fn scan_code_to_keyboard_usage(scan: ScanCode) -> Option<u16> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HidModifiers(pub u8);
 
+pub const LEGACY_SHIFT: u64 = 1 << 17;
+pub const LEGACY_CONTROL: u64 = 1 << 18;
+pub const LEGACY_OPTION: u64 = 1 << 19;
+pub const LEGACY_COMMAND: u64 = 1 << 20;
+
+/// Bridge the current Quartz-keycode wire contract at the Windows adapter edge.
+/// The protocol remains physical: layout and IME interpretation stay on the receiver.
+const LEGACY_KEYS: &[(u16, u16)] = &[
+    (0x04, 0),
+    (0x16, 1),
+    (0x07, 2),
+    (0x09, 3),
+    (0x0b, 4),
+    (0x0a, 5),
+    (0x1d, 6),
+    (0x1b, 7),
+    (0x06, 8),
+    (0x19, 9),
+    (0x64, 10),
+    (0x05, 11),
+    (0x14, 12),
+    (0x1a, 13),
+    (0x08, 14),
+    (0x15, 15),
+    (0x1c, 16),
+    (0x17, 17),
+    (0x1e, 18),
+    (0x1f, 19),
+    (0x20, 20),
+    (0x21, 21),
+    (0x23, 22),
+    (0x22, 23),
+    (0x2e, 24),
+    (0x26, 25),
+    (0x24, 26),
+    (0x2d, 27),
+    (0x25, 28),
+    (0x27, 29),
+    (0x30, 30),
+    (0x12, 31),
+    (0x18, 32),
+    (0x2f, 33),
+    (0x0c, 34),
+    (0x13, 35),
+    (0x28, 36),
+    (0x0f, 37),
+    (0x0d, 38),
+    (0x34, 39),
+    (0x0e, 40),
+    (0x33, 41),
+    (0x31, 42),
+    (0x36, 43),
+    (0x38, 44),
+    (0x11, 45),
+    (0x10, 46),
+    (0x37, 47),
+    (0x2b, 48),
+    (0x2c, 49),
+    (0x35, 50),
+    (0x2a, 51),
+    (0x29, 53),
+    (0x63, 65),
+    (0x55, 67),
+    (0x57, 69),
+    (0x53, 71),
+    (0x54, 75),
+    (0x58, 76),
+    (0x56, 78),
+    (0x62, 82),
+    (0x59, 83),
+    (0x5a, 84),
+    (0x5b, 85),
+    (0x5c, 86),
+    (0x5d, 87),
+    (0x5e, 88),
+    (0x5f, 89),
+    (0x60, 91),
+    (0x61, 92),
+    (0x3e, 96),
+    (0x3f, 97),
+    (0x40, 98),
+    (0x3c, 99),
+    (0x41, 100),
+    (0x42, 101),
+    (0x44, 103),
+    (0x68, 105),
+    (0x6b, 106),
+    (0x69, 107),
+    (0x43, 109),
+    (0x45, 111),
+    (0x6a, 113),
+    (0x75, 114),
+    (0x4a, 115),
+    (0x4b, 116),
+    (0x4c, 117),
+    (0x3d, 118),
+    (0x4d, 119),
+    (0x3b, 120),
+    (0x4e, 121),
+    (0x3a, 122),
+    (0x50, 123),
+    (0x4f, 124),
+    (0x51, 125),
+    (0x52, 126),
+];
+
+#[must_use]
+pub fn keyboard_usage_to_legacy_keycode(usage: u16) -> Option<u16> {
+    LEGACY_KEYS
+        .iter()
+        .find_map(|(candidate, keycode)| (*candidate == usage).then_some(*keycode))
+}
+
+#[must_use]
+pub fn legacy_keycode_to_keyboard_usage(keycode: u16) -> Option<u16> {
+    LEGACY_KEYS
+        .iter()
+        .find_map(|(usage, candidate)| (*candidate == keycode).then_some(*usage))
+}
+
+#[must_use]
+pub fn hid_modifiers_to_legacy(modifiers: HidModifiers) -> u64 {
+    let mut legacy = 0;
+    if modifiers.0 & (HidModifiers::LEFT_SHIFT | HidModifiers::RIGHT_SHIFT) != 0 {
+        legacy |= LEGACY_SHIFT;
+    }
+    if modifiers.0 & (HidModifiers::LEFT_CONTROL | HidModifiers::RIGHT_CONTROL) != 0 {
+        legacy |= LEGACY_CONTROL;
+    }
+    if modifiers.0 & (HidModifiers::LEFT_ALT | HidModifiers::RIGHT_ALT) != 0 {
+        legacy |= LEGACY_OPTION;
+    }
+    if modifiers.0 & (HidModifiers::LEFT_GUI | HidModifiers::RIGHT_GUI) != 0 {
+        legacy |= LEGACY_COMMAND;
+    }
+    legacy
+}
+
+#[must_use]
+pub fn legacy_modifiers_to_hid(modifiers: u64) -> HidModifiers {
+    let mut hid = 0;
+    if modifiers & LEGACY_SHIFT != 0 {
+        hid |= HidModifiers::LEFT_SHIFT;
+    }
+    if modifiers & LEGACY_CONTROL != 0 {
+        hid |= HidModifiers::LEFT_CONTROL;
+    }
+    if modifiers & LEGACY_OPTION != 0 {
+        hid |= HidModifiers::LEFT_ALT;
+    }
+    if modifiers & LEGACY_COMMAND != 0 {
+        hid |= HidModifiers::LEFT_GUI;
+    }
+    HidModifiers(hid)
+}
+
 impl HidModifiers {
     pub const LEFT_CONTROL: u8 = 1 << 0;
     pub const LEFT_SHIFT: u8 = 1 << 1;
@@ -261,6 +417,25 @@ mod tests {
             Some(0x53)
         );
         assert_eq!(scan_code_to_keyboard_usage(ScanCode::extended(0xff)), None);
+    }
+
+    #[test]
+    fn legacy_bridge_preserves_physical_keys_and_modifier_semantics() {
+        for (usage, keycode) in LEGACY_KEYS {
+            assert_eq!(keyboard_usage_to_legacy_keycode(*usage), Some(*keycode));
+            assert_eq!(legacy_keycode_to_keyboard_usage(*keycode), Some(*usage));
+        }
+        let hid = HidModifiers(
+            HidModifiers::RIGHT_CONTROL | HidModifiers::LEFT_ALT | HidModifiers::RIGHT_GUI,
+        );
+        let legacy = hid_modifiers_to_legacy(hid);
+        assert_eq!(legacy, LEGACY_CONTROL | LEGACY_OPTION | LEGACY_COMMAND);
+        assert!(legacy_modifiers_to_hid(legacy).control());
+        assert!(legacy_modifiers_to_hid(legacy).alt());
+        assert_ne!(
+            legacy_modifiers_to_hid(legacy).0 & HidModifiers::LEFT_GUI,
+            0
+        );
     }
 
     #[test]

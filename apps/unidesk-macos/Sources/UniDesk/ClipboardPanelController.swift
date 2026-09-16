@@ -20,6 +20,7 @@ import UniDeskEngine
     @ObservationIgnored private var target: NSRunningApplication?
     @ObservationIgnored private var hotKey: EventHotKeyRef?
     @ObservationIgnored private var handler: EventHandlerRef?
+    @ObservationIgnored private var resignObserver: NSObjectProtocol?
     @ObservationIgnored private var pasteTask: Task<Void, Never>?
     @ObservationIgnored private var closingForPaste = false
     @ObservationIgnored private var suspended = false
@@ -37,7 +38,15 @@ import UniDeskEngine
         item.button?.toolTip = "uniDesk 剪贴板"
         item.button?.target = self
         item.button?.action = #selector(toggle)
-        popover.behavior = .transient
+        // Open on press. The status button accepts the first click of an inactive
+        // app, but only the mouse-up sends the action; anything that ends the
+        // tracking early (the activation the same click performs) would leave the
+        // panel closed until a second click. Native menu bar items open on press.
+        item.button?.sendAction(on: [.leftMouseDown])
+        // Own the popover lifecycle. A `.transient` popover closes on the status
+        // item's own mouse-down, so the toggle below never receives the click that
+        // was meant to close it and the panel only flickers.
+        popover.behavior = .applicationDefined
         popover.animates = false
         popover.delegate = self
         hosting = NSHostingController(rootView: MenuBarClipboardView(store: store))
@@ -61,7 +70,7 @@ import UniDeskEngine
             Task { @MainActor in
                 // Any click outside the app collapses the popup, whichever
                 // presentation (status item or global shortcut) opened it.
-                if self.pointerPanel?.isVisible == true || self.popover.isShown { self.close() }
+                if self.isPresenting { self.close() }
             }
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { event in
@@ -70,8 +79,7 @@ import UniDeskEngine
                 guard !ClipboardHistoryMenuSession.isTracking else { return }
                 let panel = self.pointerPanel
                 let popoverWindow = self.popover.contentViewController?.view.window
-                let visible = panel?.isVisible == true || self.popover.isShown
-                if visible, let clicked = event.window,
+                if self.isPresenting, let clicked = event.window,
                    clicked !== panel, clicked.sheetParent !== panel,
                    clicked !== popoverWindow,
                    clicked !== self.item?.button?.window {
@@ -79,6 +87,17 @@ import UniDeskEngine
                 }
             }
             return event
+        }
+        // Replaces the dismissal `.transient` used to perform when the app lost
+        // focus (for example ⌘-Tab). A paste hand-off closes the panel itself and
+        // must keep its session while it activates the destination app.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.closingForPaste, self.isPresenting else { return }
+                self.close()
+            }
         }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
@@ -142,9 +161,36 @@ import UniDeskEngine
 
     func toggleAtPointer() { present(atPointer: true) }
 
+    /// True only while a presentation is really on screen. A popover can still
+    /// report `isShown` after its window is gone; treating that as open would
+    /// spend the next click on closing an invisible panel.
+    private var isPresenting: Bool {
+        if pointerPanel?.isVisible == true { return true }
+        guard popover.isShown else { return false }
+        return popover.contentViewController?.view.window?.isVisible == true
+    }
+
+    /// One SwiftUI host serves both presentations; move it only when it is
+    /// somewhere else, so a presentation never re-parents a live panel view.
+    private func moveHosting(toPopover: Bool) {
+        guard let hosting else { return }
+        if toPopover {
+            guard popover.contentViewController !== hosting else { return }
+            pointerPanel?.contentViewController = nil
+            popover.contentViewController = hosting
+        } else {
+            guard let panel = pointerPanel, panel.contentViewController !== hosting else { return }
+            popover.contentViewController = nil
+            panel.contentViewController = hosting
+        }
+    }
+
     private func present(atPointer: Bool) {
         guard !suspended else { return }
-        if popover.isShown || pointerPanel?.isVisible == true { close(); return }
+        if isPresenting { close(); return }
+        // A popover that still reports itself as shown ignores a later `show`;
+        // reset that stale state before this presentation.
+        if popover.isShown { popover.performClose(nil) }
         pasteTask?.cancel()
         closingForPaste = false
         session = UUID()
@@ -161,8 +207,7 @@ import UniDeskEngine
         if atPointer {
             guard let panel = pointerPanel else { return }
             // Move the same SwiftUI host; there is never a second clipboard session.
-            popover.contentViewController = nil
-            panel.contentViewController = hosting
+            moveHosting(toPopover: false)
             panel.setContentSize(NSSize(width: 440, height: panelHeight))
             let size = panel.frame.size
             let preferredX = mouse.x + 12 + size.width <= visible.maxX ? mouse.x + 12 : mouse.x - size.width - 12
@@ -172,9 +217,14 @@ import UniDeskEngine
             panel.makeKeyAndOrderFront(nil)
         } else {
             guard let button = item?.button else { return }
-            pointerPanel?.contentViewController = nil
-            popover.contentViewController = hosting
+            moveHosting(toPopover: true)
             popover.contentSize = NSSize(width: 440, height: panelHeight)
+            // A popover window only receives the click that follows it when its
+            // app owns the keyboard focus. Without this the click that activates
+            // the app is spent on activation and the first click inside the panel
+            // (list/grid switch, group tab, search field) is lost. This panel
+            // already wants the keyboard; the shortcut panel stays non-activating.
+            NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

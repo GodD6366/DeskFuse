@@ -174,8 +174,20 @@ async fn worker(
                 if ready && receiving.is_none() {
                     // Payloads requested on demand from the UI are queued in the
                     // store and picked up here for the next peer request.
-                    if let Ok(wanted) = library.take_wanted_blobs() { for hash in wanted { pending.insert(hash); } }
-                    if let Some(hash) = pending.first() { send(&runtime, peer, generation, Frame::BlobRequest { hash: hash.clone() }).await?; }
+                    if let Ok(wanted) = library.take_wanted_blobs() {
+                        for hash in wanted {
+                            if unidesk_core::debug_logging::enabled() {
+                                eprintln!("[library_sync] peer={:?} requesting blob hash={}", peer, hash);
+                            }
+                            pending.insert(hash);
+                        }
+                    }
+                    if let Some(hash) = pending.first() {
+                        if unidesk_core::debug_logging::enabled() {
+                            eprintln!("[library_sync] peer={:?} sending BlobRequest hash={}", peer, hash);
+                        }
+                        send(&runtime, peer, generation, Frame::BlobRequest { hash: hash.clone() }).await?;
+                    }
                 }
             }
             bytes = rx.recv() => {
@@ -234,19 +246,32 @@ async fn worker(
                     Frame::Blob { hash, total, offset, data } => {
                         if !valid_hash(&hash) || !pending.contains(&hash) || total > MAX_BLOB || data.len() > CHUNK * 2 { continue; }
                         let data = hex::decode(data).map_err(|_| "无效归档分块")?;
-                        if offset == 0 { receiving = Some((hash.clone(), total, Vec::new())); }
+                        if offset == 0 {
+                            if unidesk_core::debug_logging::enabled() {
+                                eprintln!("[library_sync] peer={:?} receiving blob hash={} total={} bytes", peer, hash, total);
+                            }
+                            receiving = Some((hash.clone(), total, Vec::new()));
+                        }
                         let Some((id, expected, bytes)) = receiving.as_mut() else { continue; };
                         if *id != hash || *expected != total || bytes.len() != offset || offset.checked_add(data.len()).is_none_or(|end| end > total) { receiving = None; continue; }
                         bytes.extend(data);
                         receive_updated = std::time::Instant::now();
                         if bytes.len() == total {
                             if hex::encode(Sha256::digest(&*bytes)) != hash { return Err("归档 SHA-256 校验失败".into()); }
+                            if unidesk_core::debug_logging::enabled() {
+                                eprintln!("[library_sync] peer={:?} blob complete hash={} size={}", peer, hash, bytes.len());
+                            }
                             library.write_blob(&hash, bytes)?;
                             pending.remove(&hash);
                             receiving = None;
                         }
                     }
-                    Frame::Missing { hash } => { if receiving.as_ref().is_some_and(|(id, _, _)| *id == hash) { receiving = None; } }
+                    Frame::Missing { hash } => {
+                        if unidesk_core::debug_logging::enabled() {
+                            eprintln!("[library_sync] peer={:?} blob missing hash={}", peer, hash);
+                        }
+                        if receiving.as_ref().is_some_and(|(id, _, _)| *id == hash) { receiving = None; }
+                    }
                 }
             }
         }

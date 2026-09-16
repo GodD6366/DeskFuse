@@ -10,6 +10,7 @@ struct MenuBarClipboardRow: View {
     let client: EngineClient?
     let appID: String?
     let title: String?
+    let meta: ClipboardItemMeta?
     let memberships: [String]
     let remoteUnavailable: Bool
     let ocrHit: Bool
@@ -74,7 +75,7 @@ struct MenuBarClipboardRow: View {
         .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            onCopy: onCopy, copyEnabled: client != nil,
+            meta: meta, onCopy: onCopy, copyEnabled: client != nil,
             onEdit: { editingTitle = true }, onDelete: onDelete)
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
@@ -175,6 +176,7 @@ struct MenuBarClipboardCard: View {
     let selected: Bool
     let client: EngineClient?
     let appID: String?
+    let meta: ClipboardItemMeta?
     let memberships: [String]
     let title: String?
     let index: Int
@@ -241,7 +243,7 @@ struct MenuBarClipboardCard: View {
         .onTapGesture(perform: onSelect)
         .simultaneousGesture(TapGesture(count: 2).onEnded { onSelect(); onPaste() })
         .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            onCopy: onCopy, copyEnabled: client != nil,
+            meta: meta, onCopy: onCopy, copyEnabled: client != nil,
             onEdit: { editingTitle = true }, onDelete: onDelete)
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)

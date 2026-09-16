@@ -11,12 +11,13 @@ import SwiftUI
 extension View {
     func clipboardHistoryContextMenu(
         itemID: UInt64, memberships: [String],
+        meta: ClipboardItemMeta?,
         onCopy: (() -> Void)? = nil, copyEnabled: Bool = true,
         onEdit: @escaping () -> Void, onDelete: @escaping () -> Void
     ) -> some View {
         overlay {
             ClipboardHistoryContextMenu(itemID: itemID, memberships: memberships,
-                onCopy: onCopy, copyEnabled: copyEnabled, onEdit: onEdit, onDelete: onDelete)
+                meta: meta, onCopy: onCopy, copyEnabled: copyEnabled, onEdit: onEdit, onDelete: onDelete)
                 .accessibilityHidden(true)
         }
     }
@@ -25,6 +26,7 @@ extension View {
 private struct ClipboardHistoryContextMenu: NSViewRepresentable {
     let itemID: UInt64
     let memberships: [String]
+    let meta: ClipboardItemMeta?
     let onCopy: (() -> Void)?
     let copyEnabled: Bool
     let onEdit: () -> Void
@@ -80,6 +82,23 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                 add("仅复制", to: menu, enabled: value.copyEnabled, action: copy)
                 menu.addItem(.separator())
             }
+
+            // Show origin device and availability status for remote items
+            if let meta = value.meta, meta.remote {
+                let deviceName = meta.originDevice ?? "未知设备"
+                let statusIcon: String
+                let statusText: String
+                if meta.available {
+                    statusIcon = "✓"
+                    statusText = "来自 \(deviceName)（已获取）"
+                } else {
+                    statusIcon = "↓"
+                    statusText = "来自 \(deviceName)（使用时自动获取）"
+                }
+                add("\(statusIcon) \(statusText)", to: menu, enabled: false, action: {})
+                menu.addItem(.separator())
+            }
+
             add("编辑标题", to: menu, action: value.onEdit)
             menu.addItem(.separator())
             let membershipMenu = NSMenu(title: "手动列表")

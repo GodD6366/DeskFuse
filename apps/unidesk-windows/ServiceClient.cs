@@ -12,7 +12,7 @@ namespace UniDesk.Windows;
 // LocalSystem service is the only network/identity owner, even while offline.
 public sealed class ServiceClient(Dispatcher dispatcher) : IDisposable
 {
-    private const int MaxFrame = 4 * 1024 * 1024;
+    private const int MaxFrame = 24 * 1024 * 1024;
     private const string Pipe = @"\\.\pipe\com.unidesk.app.desktop.v2";
     private readonly CancellationTokenSource stop = new();
     private readonly SemaphoreSlim requests = new(1, 1);

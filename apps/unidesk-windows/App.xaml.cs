@@ -14,6 +14,7 @@ public partial class App : System.Windows.Application
     private System.Drawing.Icon? trayIcon;
     private ServiceClient? service;
     private DesktopClipboardController? clipboard;
+    private InputHelperProcess? inputHelper;
     internal bool Exiting { get; private set; }
 
     protected override void OnStartup(StartupEventArgs e)
@@ -64,6 +65,7 @@ public partial class App : System.Windows.Application
         var token = activationStop.Token;
         _ = Task.Run(() => { while (WaitHandle.WaitAny([activate, token.WaitHandle]) == 0) Dispatcher.BeginInvoke(ShowMain); });
         service.Start();
+        inputHelper = new InputHelperProcess(Dispatcher);
         if (e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase)) window.Hide();
     }
     private void ShowMain()
@@ -81,6 +83,7 @@ public partial class App : System.Windows.Application
     protected override void OnExit(ExitEventArgs e)
     {
         activationStop?.Cancel();
+        inputHelper?.Dispose();
         clipboard?.Dispose();
         service?.Dispose();
         tray?.Dispose();

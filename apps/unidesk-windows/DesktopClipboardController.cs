@@ -134,7 +134,7 @@ public sealed class DesktopClipboardController : IDisposable
             if (!snapshot.Value.TryGetProperty("capabilities", out var capabilities) || !capabilities.Bool("clipboard")) return;
             if (content.Files is { Count: > 0 }) { Error?.Invoke("本机文件已记录；Windows 跨设备文件传输尚未接入。"); return; }
             var representations = content.Representations ?? [new ClipboardRepresentation(content.Mime, content.Data)];
-            if (representations.Sum(r => (long)r.Data.Length) > 1024 * 1024) { Error?.Invoke("内容已保存在本机历史；当前桌面同步通道最多支持 1 MiB。"); return; }
+            if (representations.Sum(r => (long)r.Data.Length) > NativeClipboard.MaxContentBytes) { Error?.Invoke("内容已保存在本机历史；当前桌面同步通道最多支持 16 MiB。"); return; }
             await service.SendAsync(ServiceClient.Command("PublishClipboard", new { session_epoch = epoch, sequence = ++publishSequence, formats = representations.Select(r => new { mime = r.Mime, data_base64 = Convert.ToBase64String(r.Data) }).ToArray() }));
         }
         catch (Exception) { if (!disposed && generation == epoch) Error?.Invoke("本机剪贴板保留，但服务未接受同步状态。请检查连接；旧内容不会作为新复制重发。"); }
@@ -150,7 +150,7 @@ public sealed class DesktopClipboardController : IDisposable
             if (SyncEnabled && !paused && pollNativeSequence is uint expected)
             {
                 var formats = item.Array("formats").Select(f => new ClipboardRepresentation(f.String("mime"), Convert.FromBase64String(f.String("data_base64")))).ToArray();
-                if (formats.Length is 0 or > 4 || formats.Sum(f => (long)f.Data.Length) > 1024 * 1024) throw new InvalidDataException();
+                if (formats.Length is 0 or > 4 || formats.Sum(f => (long)f.Data.Length) > NativeClipboard.MaxContentBytes) throw new InvalidDataException();
                 var primary = formats.FirstOrDefault(f => f.Mime == "image/png") ?? formats.FirstOrDefault(f => f.Mime == "text/plain") ?? formats[0];
                 var content = new ClipboardContent(primary.Mime, primary.Data, Representations: formats);
                 // Check native sequence before committing; a newer user copy wins.
@@ -179,6 +179,7 @@ public sealed class DesktopClipboardController : IDisposable
         _ = InvalidateAndPublishAsync(entry.Content);
     }
     public void Clear() => history.Clear();
+    public void Remove(ClipboardEntry entry) => history.Remove(entry);
     public void ShowShelf(ClipboardEntry? entry = null)
     {
         if (shelf is null) { shelf = new ShelfWindow(native, history); shelf.Closed += (_, _) => shelf = null; }

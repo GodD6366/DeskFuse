@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Service tests failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Service lint failed' }
 & cargo build --locked --release --target x86_64-pc-windows-msvc -p unidesk-service --bins
 if ($LASTEXITCODE -ne 0) { throw 'Service release build failed' }
-foreach ($name in @('unidesk-service.exe', 'unidesk-service-client.exe')) {
+foreach ($name in @('unidesk-service.exe', 'unidesk-service-client.exe', 'unidesk-input-helper.exe')) {
     Get-FileHash (Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name") -Algorithm SHA256
 }
-Write-Output 'Service/client build checks passed. No service was installed or started; GUI/helper/installer are not included.'
+Write-Output 'Service/client/input-helper build checks passed. No service was installed or started; GUI/installer are not included.'

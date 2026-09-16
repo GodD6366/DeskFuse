@@ -111,7 +111,7 @@ try {
     if (!$?) { throw 'Desktop build failed' }
     Assert-Snapshot
     $executableImports = [ordered]@{}
-    foreach ($name in @('UniDesk.Windows.exe', 'unidesk-service.exe', 'unidesk-service-client.exe')) {
+    foreach ($name in @('UniDesk.Windows.exe', 'unidesk-service.exe', 'unidesk-service-client.exe', 'unidesk-input-helper.exe')) {
         Assert-X64PE (Join-Path $payload $name)
         $executableImports[$name] = Assert-ExecutableImports (Join-Path $payload $name) $payload
     }

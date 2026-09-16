@@ -35,6 +35,7 @@ public sealed class ClipboardHistory : IDisposable
 {
     private const int MaxEntries = 200;
     private const long MaxBytes = 64 * 1024 * 1024;
+    private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private readonly string directory;
     private readonly string file;
     private readonly Channel<ClipboardEntry[]> saves = Channel.CreateBounded<ClipboardEntry[]>(new BoundedChannelOptions(1)
@@ -57,7 +58,8 @@ public sealed class ClipboardHistory : IDisposable
                 var entries = JsonSerializer.Deserialize<ClipboardEntry[]>(File.ReadAllText(file)) ?? [];
                 var seen = new HashSet<(string Source, string Fingerprint)>();
                 foreach (var entry in entries.Take(MaxEntries))
-                    if (Valid(entry) && seen.Add((entry.SourceId, entry.Content.Fingerprint()))) Entries.Add(entry);
+                    if (Valid(entry) && DateTimeOffset.Now - entry.CreatedAt <= Retention
+                        && seen.Add((entry.SourceId, entry.Content.Fingerprint()))) Entries.Add(entry);
                 Trim();
             }
         }
@@ -94,7 +96,7 @@ public sealed class ClipboardHistory : IDisposable
         for (var i = 0; i < Entries.Count;)
         {
             size += Entries[i].SizeBytes;
-            if (i >= MaxEntries || size > MaxBytes) Entries.RemoveAt(i);
+            if (DateTimeOffset.Now - Entries[i].CreatedAt > Retention || i >= MaxEntries || size > MaxBytes) Entries.RemoveAt(i);
             else i++;
         }
     }

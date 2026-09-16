@@ -6,6 +6,7 @@ use crate::{
     protocol,
 };
 use std::{
+    collections::VecDeque,
     io,
     net::Ipv4Addr,
     os::windows::io::AsRawHandle,
@@ -26,6 +27,12 @@ pub(super) struct State {
     sync: clipboard_sync::Sync,
     pairing_status: Option<String>,
     last_error: Option<String>,
+    input_heartbeat: Option<Instant>,
+    input_topology: Option<unidesk_core::DisplayTopology>,
+    input_deliveries: VecDeque<ipc::InputDelivery>,
+    input_sequence: u64,
+    input_reported_activation: Option<String>,
+    input_last_lease: Option<(String, u64)>,
 }
 impl State {
     pub(super) fn clear(&mut self) {
@@ -41,12 +48,166 @@ impl State {
                 .owner
                 .is_some_and(|owner| security::session_still_active(owner))
     }
+    fn input_active(&self, control: &Control) -> bool {
+        self.active(control)
+            && self
+                .input_heartbeat
+                .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1))
+    }
+    fn push_input(&mut self, delivery: impl FnOnce(u64) -> ipc::InputDelivery) {
+        self.input_sequence = self.input_sequence.saturating_add(1).max(1);
+        if self.input_deliveries.len() >= 512 {
+            self.input_deliveries.clear();
+            self.input_sequence = self.input_sequence.saturating_add(1);
+            self.input_deliveries
+                .push_back(ipc::InputDelivery::Release {
+                    sequence: self.input_sequence,
+                    reason: "input helper queue overflow; all held input released".into(),
+                });
+            return;
+        }
+        self.input_deliveries
+            .push_back(delivery(self.input_sequence));
+    }
+    fn release_input(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.input_deliveries.clear();
+        self.push_input(|sequence| ipc::InputDelivery::Release { sequence, reason });
+        self.input_last_lease = None;
+    }
+    fn input_state(&self, network: &Network) -> ipc::InputState {
+        let snapshot = network.input_runtime.handle.input_snapshot();
+        let managed = snapshot.managed_control.as_ref();
+        ipc::InputState {
+            helper_connected: self
+                .input_heartbeat
+                .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+            managed: managed.is_some(),
+            status: managed.map_or_else(|| "standby".into(), |value| enum_string(&value.status)),
+            reason: managed.and_then(|value| value.reason.clone()),
+            controller_id: managed.map(|value| value.controller.to_string()),
+            display_count: snapshot
+                .local_topology
+                .as_ref()
+                .map_or(0, |topology| topology.displays.len()),
+        }
+    }
+    pub(super) fn input_event(
+        &mut self,
+        event: RuntimeEvent,
+        network: &Network,
+        control: &Control,
+    ) {
+        if !self.input_active(control) {
+            if let RuntimeEvent::SharedInputReceived { session_id, .. } = event {
+                let _ = network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::ReleaseInputControl { session_id });
+            }
+            return;
+        }
+        match event {
+            RuntimeEvent::SharedInputReceived {
+                session_id,
+                target_display,
+                state_epoch,
+                events,
+                ..
+            } => self.push_input(|sequence| ipc::InputDelivery::Batch {
+                sequence,
+                session_id: session_id.to_string(),
+                target_display: target_display.to_string(),
+                state_epoch,
+                events,
+            }),
+            RuntimeEvent::InputControlReleased { reason, .. }
+            | RuntimeEvent::InputDeliveryInvalidated { reason }
+            | RuntimeEvent::InputLinkUnavailable { reason, .. } => self.release_input(reason),
+            _ => {}
+        }
+    }
     pub(super) fn tick(&mut self, network: &Network, control: &Control) {
         if !self.active(control) {
+            if let Some(managed) = network
+                .input_runtime
+                .handle
+                .input_snapshot()
+                .managed_control
+                && managed.status != unidesk_core::InputActivationStatus::Unavailable
+            {
+                let _ = network.input_runtime.handle.try_send(
+                    RuntimeCommand::SetManagedInputAvailability {
+                        activation_id: managed.activation_id,
+                        status: unidesk_core::InputActivationStatus::Unavailable,
+                        reason: Some("Windows interactive desktop session unavailable".into()),
+                    },
+                );
+            }
             self.clear();
             return;
         }
         self.sync.tick(&network.runtime);
+        let input_active = self.input_active(control);
+        let snapshot = network.input_runtime.handle.input_snapshot();
+        if input_active {
+            if let Some(topology) = self.input_topology.clone()
+                && snapshot.local_topology.as_ref() != Some(&topology)
+            {
+                let _ = network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::PublishDisplayTopology(topology));
+            }
+            if let Some(managed) = snapshot.managed_control.as_ref()
+                && managed.status != unidesk_core::InputActivationStatus::PausedByUser
+                && snapshot.local_topology.is_some()
+            {
+                let activation = managed.activation_id.to_string();
+                if self.input_reported_activation.as_deref() != Some(&activation) {
+                    let _ = network.input_runtime.handle.try_send(
+                        RuntimeCommand::SetManagedInputAvailability {
+                            activation_id: managed.activation_id,
+                            status: unidesk_core::InputActivationStatus::Ready,
+                            reason: None,
+                        },
+                    );
+                    self.input_reported_activation = Some(activation);
+                }
+                if let Some(link) = snapshot.links.iter().find(|link| {
+                    link.peer_id == managed.controller
+                        && link.ready
+                        && link.control_session.is_some()
+                }) {
+                    let session = link.control_session.expect("filtered control session");
+                    let identity = (session.to_string(), link.lease_revision);
+                    if self.input_last_lease.as_ref() != Some(&identity) {
+                        self.push_input(|sequence| ipc::InputDelivery::Lease {
+                            sequence,
+                            session_id: session.to_string(),
+                            lease_revision: link.lease_revision,
+                        });
+                        self.input_last_lease = Some(identity);
+                    }
+                }
+            } else {
+                self.input_reported_activation = None;
+                self.input_last_lease = None;
+            }
+        } else if let Some(reported) = self.input_reported_activation.take() {
+            if let Some(managed) = snapshot.managed_control.as_ref()
+                && managed.activation_id.to_string() == reported
+            {
+                let _ = network.input_runtime.handle.try_send(
+                    RuntimeCommand::SetManagedInputAvailability {
+                        activation_id: managed.activation_id,
+                        status: unidesk_core::InputActivationStatus::Unavailable,
+                        reason: Some("Windows input helper disconnected".into()),
+                    },
+                );
+            }
+            self.release_input("Windows input helper disconnected");
+        }
     }
     pub(super) fn event(&mut self, event: RuntimeEvent, network: &Network, control: &Control) {
         if !self.active(control) {
@@ -151,9 +312,12 @@ impl State {
             capabilities: ipc::Capabilities {
                 clipboard: self.owner == Some(auth) && self.epoch == epoch,
                 files: false,
-                input: false,
+                input: self
+                    .input_heartbeat
+                    .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
                 updater: false,
             },
+            input: self.input_state(network),
             peers,
             pending,
             pairing_status: self
@@ -176,7 +340,7 @@ impl State {
         auth: ClientSession,
         epoch: u64,
     ) -> ipc::Reply {
-        if matches!(command, ipc::Command::Snapshot) {
+        if matches!(&command, ipc::Command::Snapshot) {
             self.clear();
             self.owner = Some(auth);
             self.epoch = epoch;
@@ -188,7 +352,15 @@ impl State {
         if !owner_matches {
             return ipc::Reply::rejected("session_expired", "open a fresh desktop snapshot");
         }
-        self.heartbeat = Some(Instant::now());
+        let input_command = matches!(
+            &command,
+            ipc::Command::RegisterInput { .. }
+                | ipc::Command::PollInput { .. }
+                | ipc::Command::InputFault { .. }
+        );
+        if !input_command {
+            self.heartbeat = Some(Instant::now());
+        }
         match command {
             ipc::Command::Poll {
                 session_epoch,
@@ -258,6 +430,83 @@ impl State {
                     );
                 }
                 ipc::Reply::queued()
+            }
+            ipc::Command::RegisterInput { topology } => {
+                if topology.validate().is_err() {
+                    return ipc::Reply::rejected("invalid_input", "invalid display topology");
+                }
+                self.input_heartbeat = Some(Instant::now());
+                self.input_topology = Some(topology.clone());
+                self.input_reported_activation = None;
+                self.input_last_lease = None;
+                self.release_input("Windows input helper generation opened");
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::PublishDisplayTopology(topology))
+                {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::PollInput { after_sequence } => {
+                if self.input_topology.is_none() {
+                    return ipc::Reply::rejected(
+                        "input_unregistered",
+                        "register the Windows input helper first",
+                    );
+                }
+                self.input_heartbeat = Some(Instant::now());
+                while self
+                    .input_deliveries
+                    .front()
+                    .is_some_and(|delivery| delivery.sequence() <= after_sequence)
+                {
+                    self.input_deliveries.pop_front();
+                }
+                let deliveries = self
+                    .input_deliveries
+                    .iter()
+                    .take(64)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let sequence = deliveries
+                    .last()
+                    .map_or(after_sequence, ipc::InputDelivery::sequence);
+                ipc::Reply::InputPoll {
+                    state: self.input_state(network),
+                    deliveries,
+                    sequence,
+                }
+            }
+            ipc::Command::InputFault { message } => {
+                self.input_heartbeat = None;
+                self.input_last_lease = None;
+                self.release_input("Windows input helper reported a native failure");
+                let snapshot = network.input_runtime.handle.input_snapshot();
+                if let Some(managed) = snapshot.managed_control {
+                    let _ = network.input_runtime.handle.try_send(
+                        RuntimeCommand::SetManagedInputAvailability {
+                            activation_id: managed.activation_id,
+                            status: unidesk_core::InputActivationStatus::Unavailable,
+                            reason: Some(message.chars().take(256).collect()),
+                        },
+                    );
+                }
+                self.input_reported_activation = None;
+                ipc::Reply::queued()
+            }
+            ipc::Command::ReclaimInput => {
+                self.release_input("Windows user reclaimed local input");
+                self.input_reported_activation = None;
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::PauseCurrentManagedActivation)
+                {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
             }
             ipc::Command::Rename { .. } => ipc::Reply::rejected(
                 "unsupported",
@@ -356,14 +605,23 @@ pub(super) async fn handle(
         if request.version != ipc::VERSION {
             ipc::Reply::UnsupportedVersion
         } else {
-            if matches!(request.command, ipc::Command::Snapshot) {
+            if matches!(&request.command, ipc::Command::Snapshot) {
                 // Fresh application generation; stale requests cannot cross a reconnect.
                 epoch = control.epoch.fetch_add(1, Ordering::AcqRel) + 1;
             } else if !state.active(control) {
                 state.clear();
             }
-            // No await in command admission: session epoch checked with lock held.
-            if !matches!(request.command, ipc::Command::Snapshot)
+            let helper_request = matches!(
+                &request.command,
+                ipc::Command::RegisterInput { .. }
+                    | ipc::Command::PollInput { .. }
+                    | ipc::Command::InputFault { .. }
+            );
+            // Helper polling has an independent process-local request sequence.
+            // Its commands are idempotent and remain bound to the authenticated
+            // desktop generation, so they do not share the GUI monotonic cursor.
+            if !helper_request
+                && !matches!(&request.command, ipc::Command::Snapshot)
                 && request.request_id <= state.last_request_id
             {
                 ipc::Reply::rejected(
@@ -372,7 +630,9 @@ pub(super) async fn handle(
                 )
             } else {
                 let result = state.command(request.command, network, before, epoch);
-                state.last_request_id = request.request_id;
+                if !helper_request {
+                    state.last_request_id = request.request_id;
+                }
                 result
             }
         }

@@ -237,6 +237,7 @@ struct State {
     anchor: (f64, f64),
     available: bool,
     last_error: Option<String>,
+    observer_thread: Option<Arc<thread::Thread>>,
     /// Positions this machine forwarded to a peer, and positions it injected for a
     /// peer. Motion is forwarded as absolute positions and every stage keeps only
     /// the newest one, so the *update rate and its regularity* is what a user
@@ -782,6 +783,7 @@ fn native_observer(
 ) -> (
     tokio::sync::watch::Receiver<Option<NativeObservation>>,
     Option<thread::JoinHandle<()>>,
+    Option<Arc<thread::Thread>>,
 ) {
     let (tx, rx) = tokio::sync::watch::channel(None);
     let worker = thread::Builder::new()
@@ -801,11 +803,15 @@ fn native_observer(
                 if tx.send(Some(observation)).is_err() {
                     break;
                 }
-                thread::park_timeout(Duration::from_millis(250));
+                // Check permissions every 100ms for responsive UI. When a user grants
+                // a permission in System Settings and returns to the app, this interval
+                // determines the maximum delay before the UI reflects the new state.
+                thread::park_timeout(Duration::from_millis(100));
             }
         })
         .ok();
-    (rx, worker)
+    let thread_handle = worker.as_ref().map(|w| Arc::new(w.thread().clone()));
+    (rx, worker, thread_handle)
 }
 
 /// Shutdown must not wait for a stuck macOS status query. The caller has already
@@ -852,11 +858,13 @@ async fn run(
         anchor: (0.0, 0.0),
         available: false,
         last_error: None,
+        observer_thread: None,
         out_motion: MotionCadence::default(),
         in_motion: MotionCadence::default(),
         cadence_at: Instant::now(),
     };
-    let (mut observations, observer) = native_observer(stopping.clone());
+    let (mut observations, observer, observer_thread) = native_observer(stopping.clone());
+    state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
     let mut recording_active = false;
@@ -909,6 +917,13 @@ async fn run(
                         state.reclaim(&runtime,Some(state.anchor)).await;
                         state.available=false;
                         state.last_report=None;
+                        next_refresh=Instant::now();
+                    }
+                    RuntimeEvent::RefreshNativeObserver => {
+                        // User requested immediate permission check (e.g., clicked refresh button)
+                        if let Some(thread) = &state.observer_thread {
+                            thread.unpark();
+                        }
                         next_refresh=Instant::now();
                     }
                     RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
@@ -1139,7 +1154,14 @@ async fn run(
                     state.report_native(&runtime,&snapshot,status,reason).await;
                     if recording_active {let _=ui.unbounded_send(UiEvent::InputRecordingReady(true));}
                     let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(snapshot.clone())));
-                    if previous_permission != Some(permission) { let _=ui.unbounded_send(UiEvent::PermissionSnapshot(permission)); previous_permission=Some(permission); }
+                    if previous_permission != Some(permission) {
+                        let _=ui.unbounded_send(UiEvent::PermissionSnapshot(permission));
+                        previous_permission=Some(permission);
+                        // Permission changed: immediately check again to avoid waiting for the next 100ms tick
+                        if let Some(thread) = &state.observer_thread {
+                            thread.unpark();
+                        }
+                    }
                     let _ = ui.unbounded_send(UiEvent::InputLockStatus(state.policy.is_locked()));
                 }
                 state.grants.retain(|session,_| snapshot.links.iter().any(|l|l.control_session==Some(*session)));

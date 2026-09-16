@@ -1,5 +1,6 @@
-//! Machine-service boundary: v1 metadata and v2 authenticated desktop operations.
-//! Files, input, shell and installation commands are not exposed by desktop IPC.
+//! Machine-service boundary: metadata, authenticated desktop operations and a
+//! fixed ordinary-desktop input-helper stream. Files, shell and installation
+//! commands are not exposed by desktop IPC.
 // The Windows service boundary is still experimental. These pedantic lints are
 // allowed crate-wide so the release pipeline stays green while the service API
 // stabilises; tighten them back as the service is finished. Tracked in TODO.md.

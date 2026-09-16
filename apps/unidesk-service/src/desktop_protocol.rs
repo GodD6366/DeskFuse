@@ -1,8 +1,8 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
 use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 2;
-pub const MAX_FRAME: usize = 4 * 1024 * 1024;
-pub const MAX_CONTENT: usize = 1024 * 1024;
+pub const MAX_FRAME: usize = 24 * 1024 * 1024;
+pub const MAX_CONTENT: usize = 16 * 1024 * 1024;
 pub const PIPE_NAME: &str = r"\\.\pipe\com.unidesk.app.desktop.v2";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +54,16 @@ pub enum Command {
         sequence: u64,
         applied: bool,
     },
+    RegisterInput {
+        topology: unidesk_core::DisplayTopology,
+    },
+    PollInput {
+        after_sequence: u64,
+    },
+    InputFault {
+        message: String,
+    },
+    ReclaimInput,
 }
 // Intentionally no Debug: user clipboard body is not diagnostic data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,6 +91,11 @@ pub enum Reply {
         snapshot: Snapshot,
         clipboard: Option<Clipboard>,
         clipboard_sequence: u64,
+    },
+    InputPoll {
+        state: InputState,
+        deliveries: Vec<InputDelivery>,
+        sequence: u64,
     },
     Queued {
         message: String,
@@ -115,6 +130,7 @@ pub struct Snapshot {
     pub network_running: bool,
     pub control_port: u16,
     pub capabilities: Capabilities,
+    pub input: InputState,
     pub peers: Vec<Peer>,
     pub pending: Vec<Pending>,
     pub pairing_status: Option<String>,
@@ -126,6 +142,44 @@ pub struct Capabilities {
     pub files: bool,
     pub input: bool,
     pub updater: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct InputState {
+    pub helper_connected: bool,
+    pub managed: bool,
+    pub status: String,
+    pub reason: Option<String>,
+    pub controller_id: Option<String>,
+    pub display_count: usize,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub enum InputDelivery {
+    Lease {
+        sequence: u64,
+        session_id: String,
+        lease_revision: u64,
+    },
+    Batch {
+        sequence: u64,
+        session_id: String,
+        target_display: String,
+        state_epoch: u64,
+        events: Vec<unidesk_core::SharedInputEvent>,
+    },
+    Release {
+        sequence: u64,
+        reason: String,
+    },
+}
+impl InputDelivery {
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        match self {
+            Self::Lease { sequence, .. }
+            | Self::Batch { sequence, .. }
+            | Self::Release { sequence, .. } => *sequence,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Peer {

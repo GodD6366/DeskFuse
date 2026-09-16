@@ -3,12 +3,14 @@
 mod clipboard_codec;
 mod clipboard_sync;
 mod desktop;
+mod input_helper;
 mod network;
 mod security;
 use crate::{
     policy::same_session,
     protocol::{self, Command, Reply, Request, Response, Status},
 };
+use futures::StreamExt;
 use network::Network;
 use std::{
     io,
@@ -44,6 +46,7 @@ struct Control {
     desktop: Mutex<desktop::State>,
 }
 static CONTROL: OnceLock<Arc<Control>> = OnceLock::new();
+pub use input_helper::run_input_helper;
 
 /// Enter SCM dispatch; running this directly never silently starts a console service.
 /// # Errors
@@ -180,6 +183,8 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
     let running_report = status.report(SERVICE_RUNNING, 0, 0);
     let mut clients = JoinSet::new();
     let mut events = network.runtime.subscribe_events();
+    let mut input_events = network.input_runtime.handle.input_event_stream();
+    let mut input_sync_tick = tokio::time::interval(Duration::from_secs(1));
     let mut desktop_tick = tokio::time::interval(Duration::from_millis(200));
     let outcome = if let Err(error) = running_report {
         Err(error)
@@ -218,6 +223,14 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                         let _ = timeout(Duration::from_secs(3), desktop::handle(connected, &network, &control)).await;
                     });
                 }
+                input_event = input_events.next() => {
+                    let Some(input_event) = input_event else {
+                        break Err(io::Error::other("input event stream closed"));
+                    };
+                    if let Ok(mut state) = control.desktop.lock() {
+                        state.input_event(input_event, &network, &control);
+                    }
+                }
                 event = events.recv() => {
                     if let Ok(mut state) = control.desktop.lock() {
                         match event {
@@ -225,6 +238,11 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => state.lagged(),
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break Err(io::Error::other("network event stream closed")),
                         }
+                    }
+                }
+                _ = input_sync_tick.tick() => {
+                    if let Err(error) = network.sync_input_authority().await {
+                        break Err(error);
                     }
                 }
                 _ = clients.join_next(), if !clients.is_empty() => {},
@@ -244,6 +262,18 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
     }
     clients.abort_all();
     while clients.join_next().await.is_some() {}
+    // Stop the input-only listener before the ordinary runtime and directory lease.
+    if let Ok(result) = timeout(
+        Duration::from_secs(10),
+        network.input_runtime.handle.shutdown_and_wait(),
+    )
+    .await
+    {
+        result.map_err(io::Error::other)?;
+    } else {
+        let _ = status.report(SERVICE_STOPPED, 0, 30);
+        std::process::abort();
+    }
     // Stop listeners and runtime before dropping its pinned SQLite directory.
     if let Ok(result) = timeout(Duration::from_secs(10), network.runtime.shutdown_and_wait()).await
     {
@@ -280,7 +310,7 @@ async fn handle_client(
                     control_port: network.control_port,
                     peer_count: snapshot.peers.len(),
                     desktop_bridge_available: true,
-                    input_helper_available: false,
+                    input_helper_available: true,
                     installer_available: false,
                 })
             }

@@ -86,7 +86,15 @@ struct ClipboardView: View {
                     (item.title?.isEmpty == false) ? (item.id, item.title!) : nil
                 }, uniquingKeysWith: { _, latest in latest }),
                 metas: Dictionary(pageItems.map { item in
-                    (item.id, ClipboardItemMeta(remote: item.remote ?? false, available: item.available ?? true, ocrText: item.ocr_text))
+                    let originDevice = item.source_device_id.flatMap { deviceId in
+                        library.devices.first(where: { $0.id == deviceId })?.name
+                    }
+                    return (item.id, ClipboardItemMeta(
+                        remote: item.remote ?? false,
+                        available: item.available ?? true,
+                        originDevice: originDevice,
+                        ocrText: item.ocr_text
+                    ))
                 }, uniquingKeysWith: { _, latest in latest }),
                 onRename: { id, title in library.rename(id, title: title) },
                 previewing: previewing,

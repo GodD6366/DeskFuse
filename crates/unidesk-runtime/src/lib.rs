@@ -1111,6 +1111,7 @@ pub enum RuntimeCommand {
     ReleaseInputControl {
         session_id: InputSessionId,
     },
+    RefreshNativeObserver,
     RefreshPeers,
     Connect {
         peer_id: DeviceId,
@@ -1342,6 +1343,7 @@ pub enum RuntimeEvent {
         outcome: String,
     },
     InputSharingSettingsChanged(InputSharingSettings),
+    RefreshNativeObserver,
     RemoteDisplayTopology {
         peer_id: DeviceId,
         topology: DisplayTopology,
@@ -1973,6 +1975,79 @@ impl RuntimeHandle {
     }
 }
 
+/// Standalone input actor for platforms whose native helper is supervised by
+/// their own service boundary. It owns no clipboard, updater or pairing actor;
+/// authority is replaced explicitly through [`Self::update_view`].
+pub struct InputOnlyRuntime {
+    pub handle: RuntimeHandle,
+    view: watch::Sender<SnapshotView>,
+}
+impl InputOnlyRuntime {
+    /// Start a dedicated input actor from an externally authenticated authority view.
+    ///
+    /// # Errors
+    /// Returns when the input worker thread cannot be created.
+    pub fn start(
+        transport: Arc<dyn TransportProvider>,
+        store: Arc<dyn RuntimeStore>,
+        initial: SnapshotView,
+    ) -> Result<Self, RuntimeError> {
+        let (input_tx, input_rx) = mpsc::channel(256);
+        let overflow = Arc::new(AtomicBool::new(false));
+        let delivery = Arc::new(input_delivery::InputDelivery::new(overflow.clone()));
+        let (snapshot_tx, snapshot_rx) = watch::channel(InputSharingSnapshot::default());
+        let (view, network) = watch::channel(initial.clone());
+        let (_, general) = watch::channel(initial.snapshot);
+        let (events, _) = broadcast::channel(128);
+        let worker_transport = transport.clone();
+        let worker_delivery = delivery.clone();
+        let worker_overflow = overflow.clone();
+        let worker_events = events.clone();
+        let worker_network = network.clone();
+        let join = thread::Builder::new()
+            .name("unidesk-input-runtime".into())
+            .spawn(move || {
+                unidesk_transport::input_executor::prioritize_current_thread();
+                if let Ok(executor) = TokioRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    executor.block_on(input_sharing::run(
+                        input_rx,
+                        snapshot_tx,
+                        worker_network,
+                        worker_transport,
+                        store,
+                        worker_events,
+                        worker_overflow,
+                        worker_delivery,
+                    ));
+                }
+            })
+            .map_err(|error| RuntimeError::ThreadStart(error.to_string()))?;
+        let handle = RuntimeHandle {
+            #[cfg(unix)]
+            input_service: None,
+            clipboard_results: application_delivery::Receipts::default(),
+            update_transport: transport,
+            input_tx: input_tx.clone(),
+            input_snapshot_rx: snapshot_rx,
+            input_overflow: overflow,
+            input_delivery: delivery,
+            command_tx: input_tx,
+            event_tx: events,
+            snapshot_rx: general,
+            view_rx: network,
+            join: Arc::new(Mutex::new(Some(join))),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
+        };
+        Ok(Self { handle, view })
+    }
+    pub fn update_view(&self, view: SnapshotView) {
+        self.view.send_replace(view);
+    }
+}
+
 impl Drop for RuntimeHandle {
     fn drop(&mut self) {
         if Arc::strong_count(&self.join) == 1
@@ -2470,6 +2545,12 @@ impl Actor {
     async fn handle_command(&mut self, command: RuntimeCommand) {
         match command {
             RuntimeCommand::SystemWoke => self.system_woke().await,
+            RuntimeCommand::RefreshNativeObserver => {
+                // Request immediate permission check by notifying input_coordinator
+                let _ = self
+                    .event_tx
+                    .send(RuntimeEvent::RefreshNativeObserver);
+            }
             RuntimeCommand::RefreshPeers => {
                 for hint in self.hints.values_mut() {
                     for route in hint.routes.values_mut() {

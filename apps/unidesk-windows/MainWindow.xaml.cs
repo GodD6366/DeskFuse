@@ -127,6 +127,13 @@ public partial class MainWindow : Window
         }
     }
     private void HistoryDoubleClick(object sender, MouseButtonEventArgs args) { /* Selection is preview only. */ }
+    private void DeleteHistoryClick(object sender, RoutedEventArgs args) => DeleteSelectedHistory();
+    private void DeleteSelectedHistory()
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
+        clipboard.Remove(entry);
+        ShowNotice("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。");
+    }
     private void CopyClick(object sender, RoutedEventArgs args)
     {
         if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
@@ -158,8 +165,9 @@ public partial class MainWindow : Window
         SyncCheck.IsEnabled = supportsClipboard || clipboard.SyncEnabled;
         SyncCheck.IsChecked = clipboard.SyncEnabled;
         updatingSync = false;
-        SyncStatus.Text = supportsClipboard ? (clipboard.SyncEnabled ? "文字 / PNG / HTML / RTF · 最多 1 MiB" : "同步已关闭；远端新内容会明确拒收") : "桌面同步尚未就绪；本机历史可用";
+        SyncStatus.Text = supportsClipboard ? (clipboard.SyncEnabled ? "文字 / PNG / HTML / RTF · 最多 16 MiB" : "同步已关闭；远端新内容会明确拒收") : "桌面同步尚未就绪；本机历史可用";
         PairIpButton.IsEnabled = !busy && snapshot.Bool("network_running");
+        RefreshInputState(snapshot);
         string raw = snapshot.GetRawText();
         if (raw != lastDeviceSnapshot)
         {
@@ -182,12 +190,48 @@ public partial class MainWindow : Window
             updatingSync = false;
             SyncStatus.Text = "同步暂停；重新连接不会重发旧历史";
             PairIpButton.IsEnabled = false;
+            InputAvailability.Text = "普通桌面输入 helper 正在等待服务重连；不会接受新的远端输入。";
+            InputReceiverReady.IsChecked = false;
+            ReclaimInputButton.IsEnabled = false;
             lastDeviceSnapshot = "";
             RebuildDevices();
             ShowNotice(message);
         }
         else if (!wasConnected) ShowNotice("uniDesk 已就绪。关闭窗口后仍在托盘运行；从托盘菜单可以退出。");
         wasConnected = connected;
+    }
+    private void RefreshInputState(JsonElement snapshot)
+    {
+        bool capable = snapshot.TryGetProperty("capabilities", out var capabilities) && capabilities.Bool("input");
+        if (!snapshot.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Object)
+        {
+            InputAvailability.Text = "当前服务未提供 Windows 输入 helper 状态。";
+            InputReceiverReady.IsChecked = false;
+            ReclaimInputButton.IsEnabled = false;
+            return;
+        }
+        bool managed = input.Bool("managed");
+        string status = input.String("status", "standby");
+        string reason = input.String("reason");
+        string controllerId = input.String("controller_id");
+        string controller = snapshot.Array("peers").FirstOrDefault(peer => peer.String("peer_id") == controllerId).String("display_name", controllerId);
+        bool ready = capable && status.Equals("Ready", StringComparison.OrdinalIgnoreCase);
+        InputReceiverReady.IsChecked = ready;
+        ReclaimInputButton.IsEnabled = managed;
+        InputAvailability.Text = !capable
+            ? "普通桌面输入 helper 尚未就绪；远端输入保持关闭。"
+            : managed
+                ? $"{(ready ? "正在被控" : "被控准备中")} · 主控：{(controller.Length > 0 ? controller : "已授权设备")}{(reason.Length > 0 ? $"\n{reason}" : "")}"
+                : $"输入 helper 已连接 · {input.Number("display_count")} 个本机显示器 · 等待设备网络中的主控。";
+    }
+    private async void ReclaimInputClick(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            await service.SendAsync("ReclaimInput");
+            ShowNotice("已请求停止被控并释放远端按键、鼠标与控制租约。");
+        }
+        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "停止被控请求未完成。"); }
     }
     private void DeviceSearchChanged(object sender, TextChangedEventArgs args) { if (service is not null && DevicesList is not null) RebuildDevices(); }
     private void RebuildDevices()
@@ -359,6 +403,7 @@ public partial class MainWindow : Window
         if (Keyboard.Modifiers == ModifierKeys.Control && args.Key == Key.F) { if (Navigation.SelectedIndex == 2) DeviceSearch.Focus(); else { Navigation.SelectedIndex = 0; HistorySearch.Focus(); } args.Handled = true; }
         else if (Keyboard.Modifiers == ModifierKeys.Control && args.Key == Key.OemComma) { ShowSettings(); args.Handled = true; }
         else if (args.Key == Key.Enter && HistoryList.IsKeyboardFocusWithin) { CopyClick(this, args); args.Handled = true; }
+        else if ((args.Key is Key.Delete or Key.Back) && HistoryList.IsKeyboardFocusWithin) { DeleteSelectedHistory(); args.Handled = true; }
     }
     private void OnClosing(object? sender, CancelEventArgs args)
     {

@@ -41,6 +41,7 @@ pub type PlatformDiscovery = MdnsDiscovery;
 
 /// The DNS-SD service type used by uniDesk.
 pub const SERVICE_TYPE: &str = "_unidesk._udp.local.";
+pub const INPUT_SERVICE_TYPE: &str = "_unidesk-input._udp.local.";
 /// Compatibility alias for callers that use a more explicit name.
 pub const UNIDESK_SERVICE_TYPE: &str = SERVICE_TYPE;
 /// The TXT key carrying the protocol version.
@@ -1035,6 +1036,7 @@ fn validate_hostname(host: String) -> Result<String, DiscoveryError> {
 pub struct MdnsDiscovery {
     local_device_id: DeviceId,
     daemon_port: u16,
+    service_type: &'static str,
     daemon: Option<ServiceDaemon>,
     sender: Option<Sender<DiscoveryEvent>>,
     handle: DiscoveryHandle,
@@ -1059,6 +1061,7 @@ impl fmt::Debug for MdnsDiscovery {
             .debug_struct("MdnsDiscovery")
             .field("local_device_id", &self.local_device_id)
             .field("daemon_port", &self.daemon_port)
+            .field("service_type", &self.service_type)
             .field("started", &self.started)
             .field("stopped", &self.stopped)
             .field("advertised_count", &self.advertised.len())
@@ -1069,7 +1072,12 @@ impl fmt::Debug for MdnsDiscovery {
 impl MdnsDiscovery {
     /// Create a provider using the standard mDNS daemon port.
     pub fn new(local_device_id: DeviceId) -> Result<Self, DiscoveryError> {
-        Self::new_with_port(local_device_id, mdns_sd::MDNS_PORT)
+        Self::new_with_type(local_device_id, mdns_sd::MDNS_PORT, SERVICE_TYPE)
+    }
+
+    /// Create the isolated input-service browser/advertiser.
+    pub fn for_input_service(local_device_id: DeviceId) -> Result<Self, DiscoveryError> {
+        Self::new_with_type(local_device_id, mdns_sd::MDNS_PORT, INPUT_SERVICE_TYPE)
     }
 
     /// Create a provider with a custom daemon port, useful for isolated tests.
@@ -1079,10 +1087,19 @@ impl MdnsDiscovery {
     /// daemon, sockets, browse subscription, and bridge threads are created by
     /// [`DiscoveryProvider::start`] instead.
     pub fn new_with_port(local_device_id: DeviceId, port: u16) -> Result<Self, DiscoveryError> {
+        Self::new_with_type(local_device_id, port, SERVICE_TYPE)
+    }
+
+    fn new_with_type(
+        local_device_id: DeviceId,
+        port: u16,
+        service_type: &'static str,
+    ) -> Result<Self, DiscoveryError> {
         let (sender, receiver) = mpsc::channel();
         Ok(Self {
             local_device_id,
             daemon_port: port,
+            service_type,
             daemon: None,
             sender: Some(sender),
             handle: DiscoveryHandle::new(receiver),
@@ -1193,7 +1210,7 @@ impl MdnsDiscovery {
         // be used as an instance name; the authoritative full id stays in TXT.
         let instance = service_instance_label(&record.id);
         let service = ServiceInfo::new(
-            SERVICE_TYPE,
+            self.service_type,
             &instance,
             &hostname,
             &addresses[..],
@@ -1265,12 +1282,12 @@ impl DiscoveryProvider for MdnsDiscovery {
         let pending_advertisement = self
             .advertisement
             .as_ref()
-            .map(automatic_service_info)
+            .map(|record| automatic_service_info(record, self.service_type))
             .transpose()?;
 
         self.stop.store(false, Ordering::Release);
         let daemon = ServiceDaemon::new_with_port(self.daemon_port)?;
-        let browse = match daemon.browse(SERVICE_TYPE) {
+        let browse = match daemon.browse(self.service_type) {
             Ok(receiver) => receiver,
             Err(error) => {
                 let _ = daemon.shutdown();
@@ -1354,8 +1371,8 @@ impl DiscoveryProvider for MdnsDiscovery {
             .map_err(|_| DiscoveryError::ProviderUnavailable("browse is poisoned"))?;
         // stop_browse clears mdns-sd's browse cache and pending queries. Keep
         // the daemon and advertisement alive, and replace only the receiver.
-        daemon.stop_browse(SERVICE_TYPE)?;
-        browse.receiver = daemon.browse(SERVICE_TYPE)?;
+        daemon.stop_browse(self.service_type)?;
+        browse.receiver = daemon.browse(self.service_type)?;
         browse.generation = browse.generation.wrapping_add(1);
         Ok(())
     }
@@ -1405,12 +1422,15 @@ impl DiscoveryProvider for MdnsDiscovery {
 /// DNS label's length limit; the service instance still carries the full device
 /// id.  `daemon_port` is intentionally not involved here because it is the mDNS
 /// socket port, whereas `record.port` is the application service's SRV port.
-fn automatic_service_info(record: &ServiceRecord) -> Result<(ServiceInfo, String), DiscoveryError> {
+fn automatic_service_info(
+    record: &ServiceRecord,
+    service_type: &'static str,
+) -> Result<(ServiceInfo, String), DiscoveryError> {
     record.validate()?;
     let hostname = unidesk_core::device_hostname(record.id);
     let instance = service_instance_label(&record.id);
     let service = ServiceInfo::new(
-        SERVICE_TYPE,
+        service_type,
         &instance,
         &hostname,
         "",

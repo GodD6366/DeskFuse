@@ -154,7 +154,7 @@ struct ClipboardHistoryCard: View {
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture(perform: onSelect)
         .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            onEdit: { editingTitle = true }, onDelete: onDelete)
+            meta: meta, onEdit: { editingTitle = true }, onDelete: onDelete)
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }

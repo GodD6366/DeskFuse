@@ -12,11 +12,18 @@ pub mod hid;
 pub mod input;
 #[cfg(windows)]
 pub mod session;
+#[cfg(windows)]
+pub mod sharing;
 
 #[cfg(windows)]
 pub use clipboard::WindowsPasteboard;
 #[cfg(windows)]
 pub use display::{NativeDisplay, display_topology, main_display_geometry, native_displays};
+#[cfg(windows)]
+pub use sharing::{
+    WindowsSharingCapture, WindowsSharingInjector, create_permission_service, session_is_active,
+    warp_pointer,
+};
 pub use unidesk_platform::{MainDisplayGeometry, PlatformError, PlatformResult};
 
 #[cfg(windows)]

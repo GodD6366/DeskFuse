@@ -1,8 +1,8 @@
-//! Ordinary Default-desktop capture. This checkpoint is **`ObserverOnly`**:
-//! dedicated low-level hooks and bounded nonblocking forwarding, no suppression.
-//! Every native callback always continues the local hook chain. Suppression
-//! requests explicitly fail until the service/control coordinator implements an
-//! atomic handoff of held-key/button ownership and drains pre-handoff events.
+//! Ordinary Default-desktop capture with bounded exclusive handoff.
+//! Dedicated low-level hooks forward through a nonblocking queue. Exclusive
+//! suppression starts only when no physical key/button already delivered locally
+//! is held, and expires after at most 1.5 seconds without renewal. Queue faults,
+//! desktop changes, callback failures and the emergency chord always fail open.
 //!
 //! Always poll faults before consuming further input and release the remote
 //! injector/control lease on any fault. Faults are latched outside the event
@@ -15,11 +15,13 @@ use crate::{hid::HidModifiers, input::MouseButton};
 use std::{
     fmt,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, TryRecvError, TrySendError},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
+use tokio::sync::Notify;
 
 const HEARTBEAT_TIMEOUT_MS: u64 = 750;
 
@@ -93,8 +95,8 @@ pub enum CaptureError {
     },
     ThreadStartFailed,
     StartupTimedOut,
-    /// This checkpoint has no ownership-safe input-suppression handoff.
-    SuppressionUnsupported,
+    /// Exclusive capture cannot start while input already delivered locally is held.
+    SuppressionBlockedByHeldInput,
     Faulted(CaptureFault),
     Stopped,
 }
@@ -118,6 +120,7 @@ pub enum CapturePoll {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureMode {
     ObserverOnly,
+    Exclusive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,12 +132,45 @@ pub struct CaptureStatus {
     pub fault: Option<CaptureFault>,
 }
 
+struct SuppressionState {
+    until: Option<(Instant, SystemTime)>,
+    physical_keys: [bool; 256],
+    physical_buttons: u8,
+}
+impl Default for SuppressionState {
+    fn default() -> Self {
+        Self {
+            until: None,
+            physical_keys: [false; 256],
+            physical_buttons: 0,
+        }
+    }
+}
+impl SuppressionState {
+    fn expire(&mut self) {
+        if self.until.is_some_and(|(monotonic, wall)| {
+            Instant::now() >= monotonic || SystemTime::now() >= wall
+        }) {
+            self.until = None;
+        }
+    }
+    fn active(&mut self) -> bool {
+        self.expire();
+        self.until.is_some()
+    }
+    fn held(&self) -> bool {
+        self.physical_keys.iter().any(|down| *down) || self.physical_buttons != 0
+    }
+}
+
 struct Shared {
     origin: Instant,
     stop: AtomicBool,
     alive: AtomicBool,
     heartbeat_ms: AtomicU64,
     fault: AtomicU8,
+    suppression: Mutex<SuppressionState>,
+    notification: Arc<Notify>,
 }
 impl Shared {
     fn new() -> Self {
@@ -144,6 +180,8 @@ impl Shared {
             alive: AtomicBool::new(false),
             heartbeat_ms: AtomicU64::new(0),
             fault: AtomicU8::new(0),
+            suppression: Mutex::new(SuppressionState::default()),
+            notification: Arc::new(Notify::new()),
         }
     }
     fn now_ms(&self) -> u64 {
@@ -153,15 +191,85 @@ impl Shared {
         CaptureFault::from_byte(self.fault.load(Ordering::Acquire))
     }
     fn trip(&self, fault: CaptureFault) {
+        if let Ok(mut suppression) = self.suppression.lock() {
+            suppression.until = None;
+        }
         // The fault latch is independent of queue capacity and cannot be renewed away.
         let _ = self
             .fault
             .compare_exchange(0, fault as u8, Ordering::AcqRel, Ordering::Acquire);
+        self.notification.notify_one();
     }
-    fn request_suppression(&self, _duration: Duration) -> Result<(), CaptureError> {
-        match self.status().mode {
-            CaptureMode::ObserverOnly => Err(CaptureError::SuppressionUnsupported),
+    fn request_suppression(&self, duration: Duration) -> Result<(), CaptureError> {
+        let Ok(mut suppression) = self.suppression.lock() else {
+            self.trip(CaptureFault::CallbackFailed);
+            return Err(CaptureError::Faulted(CaptureFault::CallbackFailed));
+        };
+        suppression.expire();
+        if duration.is_zero() || suppression.held() {
+            return Err(CaptureError::SuppressionBlockedByHeldInput);
         }
+        let duration = duration.min(Duration::from_millis(1_500));
+        suppression.until = Some((Instant::now() + duration, SystemTime::now() + duration));
+        Ok(())
+    }
+    fn renew_suppression(&self, duration: Duration) -> bool {
+        let Ok(mut suppression) = self.suppression.lock() else {
+            self.trip(CaptureFault::CallbackFailed);
+            return false;
+        };
+        if !suppression.active() || duration.is_zero() {
+            suppression.until = None;
+            return false;
+        }
+        let duration = duration.min(Duration::from_millis(1_500));
+        suppression.until = Some((Instant::now() + duration, SystemTime::now() + duration));
+        true
+    }
+    fn stop_suppression(&self) {
+        if let Ok(mut suppression) = self.suppression.lock() {
+            suppression.until = None;
+        }
+    }
+    fn observe_key(&self, usage: u16, down: bool) -> bool {
+        let Ok(mut suppression) = self.suppression.try_lock() else {
+            self.trip(CaptureFault::CallbackFailed);
+            return false;
+        };
+        let active = suppression.active();
+        if let Some(key) = suppression.physical_keys.get_mut(usize::from(usage)) {
+            *key = down;
+        }
+        active
+    }
+    fn observe_button(&self, button: MouseButton, down: bool) -> bool {
+        let Ok(mut suppression) = self.suppression.try_lock() else {
+            self.trip(CaptureFault::CallbackFailed);
+            return false;
+        };
+        let active = suppression.active();
+        let bit = match button {
+            MouseButton::Left => 1,
+            MouseButton::Right => 2,
+            MouseButton::Middle => 4,
+            MouseButton::Back => 8,
+            MouseButton::Forward => 16,
+        };
+        if down {
+            suppression.physical_buttons |= bit;
+        } else {
+            suppression.physical_buttons &= !bit;
+        }
+        active
+    }
+    fn should_suppress(&self) -> bool {
+        self.suppression
+            .try_lock()
+            .map(|mut suppression| suppression.active())
+            .unwrap_or_else(|_| {
+                self.trip(CaptureFault::CallbackFailed);
+                false
+            })
     }
     fn status(&self) -> CaptureStatus {
         let now = self.now_ms();
@@ -171,10 +279,19 @@ impl Shared {
         {
             self.trip(CaptureFault::HeartbeatTimedOut);
         }
+        let suppressing = self
+            .suppression
+            .lock()
+            .map(|mut suppression| suppression.active())
+            .unwrap_or(false);
         CaptureStatus {
-            mode: CaptureMode::ObserverOnly,
+            mode: if suppressing {
+                CaptureMode::Exclusive
+            } else {
+                CaptureMode::ObserverOnly
+            },
             thread_alive: alive,
-            suppressing: false,
+            suppressing,
             fault: self.fault(),
         }
     }
@@ -183,7 +300,10 @@ impl Shared {
             return false;
         }
         match sender.try_send(event) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.notification.notify_one();
+                true
+            }
             Err(TrySendError::Full(_)) => {
                 self.trip(CaptureFault::QueueOverflow);
                 false
@@ -229,7 +349,7 @@ pub use native::WindowsInputCapture;
 mod native {
     use super::{
         AtomicBool, CaptureError, CaptureEvent, CaptureFault, CapturePoll, CaptureStatus, Duration,
-        HidModifiers, Instant, MouseButton, Ordering, Receiver, Shared, SyncSender,
+        HidModifiers, Instant, MouseButton, Notify, Ordering, Receiver, Shared, SyncSender,
         emergency_chord,
     };
     use crate::{
@@ -250,8 +370,9 @@ mod native {
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
             Input::KeyboardAndMouse::{
-                GetAsyncKeyState, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_PAUSE, VK_RCONTROL,
-                VK_RMENU, VK_RSHIFT, VK_RWIN,
+                GetAsyncKeyState, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+                VK_MBUTTON, VK_PAUSE, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+                VK_XBUTTON1, VK_XBUTTON2,
             },
             WindowsAndMessaging::{
                 CallNextHookEx, DispatchMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT,
@@ -281,10 +402,16 @@ mod native {
     }
     impl WindowsInputCapture {
         /// Install real hooks on a dedicated ordinary-user Default-desktop thread.
-        /// Always observer-only; suppression requests explicitly fail.
+        /// Observation starts immediately; exclusive suppression requires a bounded lease.
         /// # Errors
         /// Returns invalid configuration, a native failure, or a latched capture fault.
         pub fn start(queue_capacity: usize) -> Result<Self, CaptureError> {
+            Self::start_with_notification(queue_capacity, Arc::new(Notify::new()))
+        }
+        pub fn start_with_notification(
+            queue_capacity: usize,
+            notification: Arc<Notify>,
+        ) -> Result<Self, CaptureError> {
             if !(16..=16_384).contains(&queue_capacity) {
                 return Err(CaptureError::InvalidQueueCapacity);
             }
@@ -294,7 +421,9 @@ mod native {
             {
                 return Err(CaptureError::AlreadyRunning);
             }
-            let shared = Arc::new(Shared::new());
+            let mut shared = Shared::new();
+            shared.notification = notification;
+            let shared = Arc::new(shared);
             let worker_shared = Arc::clone(&shared);
             let (sender, receiver) = sync_channel(queue_capacity);
             let (ready_sender, ready_receiver) = sync_channel(1);
@@ -347,19 +476,35 @@ mod native {
             self.shared.status()
         }
 
-        /// Suppression is deliberately unsupported in this observer-only checkpoint.
-        /// A future implementation must atomically hand off key/button ownership,
-        /// including keys already pressed before capture and queued observe events.
+        /// Begin bounded exclusive capture after verifying that no physical key or
+        /// mouse button already delivered locally is held.
         /// # Errors
-        /// Always returns `CaptureError::SuppressionUnsupported`; never changes mode.
-        pub fn renew_suppression_lease(&self, duration: Duration) -> Result<(), CaptureError> {
+        /// Returns a fault or `SuppressionBlockedByHeldInput` when handoff is unsafe.
+        pub fn begin_suppression_lease(&self, duration: Duration) -> Result<(), CaptureError> {
             self.shared.request_suppression(duration)
+        }
+        /// Renew an already-active lease. An elapsed lease cannot be revived.
+        /// # Errors
+        /// Returns `Stopped` after expiry; callers must obtain a fresh control session.
+        pub fn renew_suppression_lease(&self, duration: Duration) -> Result<(), CaptureError> {
+            if self.shared.renew_suppression(duration) {
+                Ok(())
+            } else {
+                Err(CaptureError::Stopped)
+            }
+        }
+        pub fn stop_suppression(&self) {
+            self.shared.stop_suppression();
+        }
+        pub fn notification(&self) -> Arc<Notify> {
+            Arc::clone(&self.shared.notification)
         }
 
         /// Stop observation and uninstall the owned hooks.
         /// # Errors
         /// Returns a worker-thread failure if shutdown could not join cleanly.
         pub fn stop(&mut self) -> Result<(), CaptureError> {
+            self.shared.stop_suppression();
             self.shared.stop.store(true, Ordering::Release);
             // SAFETY: scalar message to the worker's own queue. A finished thread
             // may reject it; the worker also wakes/checks stop every 50ms.
@@ -542,6 +687,27 @@ mod native {
                 // SAFETY: reads scalar virtual-key state, no injection or pointers.
                 context.keys[0xe0 + index] = unsafe { GetAsyncKeyState(i32::from(vk)) < 0 };
             }
+            if let Ok(mut suppression) = context.shared.suppression.lock() {
+                suppression.physical_keys = context.keys;
+                for (button, vk) in [
+                    (MouseButton::Left, VK_LBUTTON),
+                    (MouseButton::Right, VK_RBUTTON),
+                    (MouseButton::Middle, VK_MBUTTON),
+                    (MouseButton::Back, VK_XBUTTON1),
+                    (MouseButton::Forward, VK_XBUTTON2),
+                ] {
+                    // SAFETY: reads scalar virtual-key state, no injection or pointers.
+                    if unsafe { GetAsyncKeyState(i32::from(vk)) < 0 } {
+                        suppression.physical_buttons |= match button {
+                            MouseButton::Left => 1,
+                            MouseButton::Right => 2,
+                            MouseButton::Middle => 4,
+                            MouseButton::Back => 8,
+                            MouseButton::Forward => 16,
+                        };
+                    }
+                }
+            }
             context
         }
 
@@ -554,11 +720,8 @@ mod native {
                 }
             }))
         }
-        fn emit(&self, event: CaptureEvent) -> bool {
-            // Observation only. Even a successfully forwarded event must continue
-            // locally: its paired down/up may belong to the local application.
-            let _ = self.shared.publish(&self.sender, event);
-            false
+        fn emit(&self, event: CaptureEvent, suppress: bool) -> bool {
+            self.shared.publish(&self.sender, event) && suppress
         }
         fn keyboard(&mut self, message: u32, data: &KBDLLHOOKSTRUCT) -> bool {
             // Capture physical keys only. Other accessibility/automation injection
@@ -596,15 +759,19 @@ mod native {
                 self.shared.trip(CaptureFault::SecureAttentionRequested);
                 return false;
             }
+            let suppress = self.shared.observe_key(usage, down);
             if (0xe0..=0xe7).contains(&usage) {
-                self.emit(CaptureEvent::Modifiers(modifiers))
+                self.emit(CaptureEvent::Modifiers(modifiers), suppress)
             } else {
-                self.emit(CaptureEvent::Key {
-                    usage,
-                    down,
-                    repeat,
-                    modifiers,
-                })
+                self.emit(
+                    CaptureEvent::Key {
+                        usage,
+                        down,
+                        repeat,
+                        modifiers,
+                    },
+                    suppress,
+                )
             }
         }
         fn mouse(&self, message: u32, data: &MSLLHOOKSTRUCT) -> bool {
@@ -654,21 +821,26 @@ mod native {
                     CaptureEvent::MouseButton { button, down, x, y }
                 }
             };
-            self.emit(event)
+            let suppress = match event {
+                CaptureEvent::MouseButton { button, down, .. } => {
+                    self.shared.observe_button(button, down)
+                }
+                _ => self.shared.should_suppress(),
+            };
+            self.emit(event, suppress)
         }
     }
 
-    fn dispatch(callback: impl FnOnce(&mut HookContext) -> bool) {
+    fn dispatch(callback: impl FnOnce(&mut HookContext) -> bool) -> bool {
         let shared = SHARED.with(|cell| cell.borrow().clone());
         let Some(shared) = shared else {
-            return;
+            return false;
         };
         if shared.fault().is_some() || shared.stop.load(Ordering::Acquire) {
-            return;
+            return false;
         }
+        let mut suppress = false;
         // Never allow Rust panic/reentrant mutable access across the Win32 ABI.
-        // Callback results cannot affect the native hook return value: this
-        // checkpoint always continues the local chain, including all key-ups.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             CONTEXT.with(|cell| {
                 let Ok(mut context) = cell.try_borrow_mut() else {
@@ -676,14 +848,16 @@ mod native {
                     return;
                 };
                 if let Some(context) = context.as_mut() {
-                    let _ = callback(context);
+                    suppress = callback(context);
                 }
             });
         }))
         .is_err()
         {
             shared.trip(CaptureFault::CallbackFailed);
+            return false;
         }
+        suppress && shared.fault().is_none()
     }
     unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code == HC_ACTION.cast_signed()
@@ -693,7 +867,9 @@ mod native {
             // SAFETY: Windows guarantees KBDLLHOOKSTRUCT for HC_ACTION, valid for
             // callback duration. We only borrow; no pointer is retained.
             let data = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            dispatch(|context| context.keyboard(message, data));
+            if dispatch(|context| context.keyboard(message, data)) {
+                return 1;
+            }
         }
         // SAFETY: pass original hook arguments unchanged; null handle is ignored.
         unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
@@ -705,7 +881,9 @@ mod native {
         {
             // SAFETY: Windows supplies MSLLHOOKSTRUCT for HC_ACTION for this call.
             let data = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
-            dispatch(|context| context.mouse(message, data));
+            if dispatch(|context| context.mouse(message, data)) {
+                return 1;
+            }
         }
         // SAFETY: original arguments unchanged; no retained native pointers.
         unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
@@ -809,7 +987,7 @@ mod native {
                 context
                     .shared
                     .request_suppression(Duration::from_millis(500)),
-                Err(CaptureError::SuppressionUnsupported)
+                Err(CaptureError::SuppressionBlockedByHeldInput)
             );
             assert!(!context.keyboard(WM_KEYUP, &raw_key(0x1d)));
             assert_eq!(
@@ -834,7 +1012,7 @@ mod native {
                 context
                     .shared
                     .request_suppression(Duration::from_millis(500)),
-                Err(CaptureError::SuppressionUnsupported)
+                Err(CaptureError::SuppressionBlockedByHeldInput)
             );
             assert!(!context.mouse(WM_LBUTTONUP, &mouse));
             assert!(matches!(
@@ -860,17 +1038,36 @@ mod native {
             let (mut context, receiver) = context(8);
             // Model the startup snapshot of a Ctrl already delivered locally.
             context.keys[0xe0] = true;
+            context.shared.suppression.lock().unwrap().physical_keys[0xe0] = true;
             assert_eq!(
                 context
                     .shared
                     .request_suppression(Duration::from_millis(500)),
-                Err(CaptureError::SuppressionUnsupported)
+                Err(CaptureError::SuppressionBlockedByHeldInput)
             );
             assert!(!context.keyboard(WM_KEYUP, &raw_key(0x1d)));
             assert_eq!(
                 receiver.try_recv(),
                 Ok(CaptureEvent::Modifiers(HidModifiers(0)))
             );
+        }
+
+        #[test]
+        fn exclusive_capture_suppresses_only_successfully_forwarded_events() {
+            let (mut context, receiver) = context(1);
+            assert_eq!(
+                context
+                    .shared
+                    .request_suppression(Duration::from_millis(500)),
+                Ok(())
+            );
+            assert!(context.keyboard(WM_KEYDOWN, &raw_key(0x1e)));
+            assert!(!context.keyboard(WM_KEYUP, &raw_key(0x1e)));
+            assert_eq!(
+                context.shared.poll(&receiver),
+                CapturePoll::Fault(CaptureFault::QueueOverflow)
+            );
+            assert!(!context.shared.status().suppressing);
         }
 
         #[test]
@@ -911,22 +1108,28 @@ mod tests {
         }
     }
     #[test]
-    fn suppression_requests_are_always_explicitly_unsupported() {
+    fn suppression_is_bounded_and_cannot_start_with_held_input() {
         let shared = Shared::new();
         shared.alive.store(true, Ordering::Release);
-        for duration in [
-            Duration::ZERO,
-            Duration::from_millis(1),
-            Duration::from_millis(500),
-            Duration::MAX,
-        ] {
-            assert_eq!(
-                shared.request_suppression(duration),
-                Err(CaptureError::SuppressionUnsupported)
-            );
-            assert_eq!(shared.status().mode, CaptureMode::ObserverOnly);
-            assert!(!shared.status().suppressing);
-        }
+        assert_eq!(
+            shared.request_suppression(Duration::ZERO),
+            Err(CaptureError::SuppressionBlockedByHeldInput)
+        );
+        assert_eq!(
+            shared.request_suppression(Duration::from_millis(500)),
+            Ok(())
+        );
+        assert_eq!(shared.status().mode, CaptureMode::Exclusive);
+        assert!(shared.status().suppressing);
+        assert!(shared.renew_suppression(Duration::from_millis(500)));
+        shared.stop_suppression();
+        assert_eq!(shared.status().mode, CaptureMode::ObserverOnly);
+        assert!(!shared.renew_suppression(Duration::from_millis(500)));
+        shared.suppression.lock().unwrap().physical_buttons = 1;
+        assert_eq!(
+            shared.request_suppression(Duration::from_millis(500)),
+            Err(CaptureError::SuppressionBlockedByHeldInput)
+        );
     }
     #[test]
     fn lost_key_up_has_out_of_band_fault_and_discards_queued_down() {

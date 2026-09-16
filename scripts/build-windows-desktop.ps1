@@ -54,7 +54,7 @@ try {
     if ($Offline) { $publishArgs += '--no-restore' }
     & dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw 'Windows desktop publish failed' }
-    foreach ($name in @('unidesk-service.exe', 'unidesk-service-client.exe')) {
+    foreach ($name in @('unidesk-service.exe', 'unidesk-service-client.exe', 'unidesk-input-helper.exe')) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name") -Destination $OutputDirectory -Force
     }
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseMetadata).Hash -ne $releaseHash) { throw 'Shared release descriptor changed during build' }

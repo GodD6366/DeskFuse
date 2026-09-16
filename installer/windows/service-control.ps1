@@ -17,6 +17,7 @@ try {
     $firewallGroup = 'uniDesk Desktop Installer'
     $firewallRules = @(
         @{ Name='UniDesk.Installer.Private.QUIC.UDP42424'; Port=42424; Label='uniDesk private LAN QUIC' },
+        @{ Name='UniDesk.Installer.Private.Input.UDP42425'; Port=42425; Label='uniDesk private LAN input' },
         @{ Name='UniDesk.Installer.Private.mDNS.UDP5353'; Port=5353; Label='uniDesk private LAN discovery' }
     )
     function Assert-NoAncestorLinks([string]$Path) {
@@ -155,7 +156,8 @@ namespace UniDeskInstaller {
     if ($service -and $Action -ne 'Remove') { Protect-Service }
     if ($Action -eq 'Prepare' -or $Action -eq 'Remove') {
         $desktop = @(Get-Process -Name 'UniDesk.Windows' -ErrorAction SilentlyContinue)
-        if ($desktop.Count -gt 0) { throw 'Quit uniDesk from its tray menu before installing or uninstalling.' }
+        $inputHelpers = @(Get-Process -Name 'unidesk-input-helper' -ErrorAction SilentlyContinue)
+        if ($desktop.Count -gt 0 -or $inputHelpers.Count -gt 0) { throw 'Quit uniDesk from its tray menu before installing or uninstalling.' }
         if ($service) {
             $controller = Get-Service -Name UniDeskService
             if ($controller.Status -ne 'Stopped') {

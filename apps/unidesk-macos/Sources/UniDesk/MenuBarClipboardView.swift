@@ -221,6 +221,17 @@ struct MenuBarClipboardView: View {
                                 selected: isSelected,
                                 client: store.client,
                                 appID: item.sourceAppId,
+                                meta: rows[item.id].map { row in
+                                    let originDevice = row.source_device_id.flatMap { deviceId in
+                                        library.devices.first(where: { $0.id == deviceId })?.name
+                                    }
+                                    return ClipboardItemMeta(
+                                        remote: row.remote ?? false,
+                                        available: row.available ?? true,
+                                        originDevice: originDevice,
+                                        ocrText: row.ocr_text
+                                    )
+                                },
                                 memberships: rows[item.id]?.memberships ?? [],
                                 title: titles[item.id],
                                 index: positions[item.id] ?? 99,
@@ -248,6 +259,17 @@ struct MenuBarClipboardView: View {
                                     MenuBarClipboardRow(item: item, index: index, showShortcuts: commandHeld, selected: selectedID == item.id,
                                         client: store.client, appID: item.sourceAppId,
                                         title: titles[item.id],
+                                        meta: rows[item.id].map { row in
+                                            let originDevice = row.source_device_id.flatMap { deviceId in
+                                                library.devices.first(where: { $0.id == deviceId })?.name
+                                            }
+                                            return ClipboardItemMeta(
+                                                remote: row.remote ?? false,
+                                                available: row.available ?? true,
+                                                originDevice: originDevice,
+                                                ocrText: row.ocr_text
+                                            )
+                                        },
                                         memberships: rows[item.id]?.memberships ?? [],
                                         remoteUnavailable: isRemoteUnavailable(rows[item.id]),
                                         ocrHit: isOCRHit(rows[item.id], needle: needle),

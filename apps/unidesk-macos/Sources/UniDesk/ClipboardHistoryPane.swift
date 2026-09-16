@@ -299,7 +299,7 @@ private struct ClipboardHistoryRow: View {
         .contentShape(Rectangle())
         .help(item.preview)
         .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            onEdit: { editingTitle = true }, onDelete: onDelete)
+            meta: meta, onEdit: { editingTitle = true }, onDelete: onDelete)
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }

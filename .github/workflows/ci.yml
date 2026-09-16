@@ -113,3 +113,5 @@ jobs:
         run: ./scripts/check-windows-native.ps1
       - name: Service checks (no SCM installation)
         run: ./scripts/check-windows-service.ps1
+      - name: WPF desktop compile (no launch)
+        run: dotnet build apps/unidesk-windows/UniDesk.Windows.csproj -c Release

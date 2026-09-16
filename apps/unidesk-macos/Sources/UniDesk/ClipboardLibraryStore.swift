@@ -48,7 +48,7 @@ struct ClipboardLibraryItem: Codable {
     /// Engine page order key: `COALESCE(copied, imported)`. Optional so a page
     /// from an older engine still decodes and falls back to `copied_at_ms`.
     var sort_at_ms: UInt64?
-    var native: HistoryItem { HistoryItem(id: id, sourceAppId: source_app_id, copiedAtMs: copied_at_ms, mime: mime, length: length, preview: preview, source: source, hasImage: has_image, fileCount: file_count) }
+    var native: HistoryItem { HistoryItem(id: id, sourceAppId: source_app_id, sourceDeviceId: source_device_id, copiedAtMs: copied_at_ms, mime: mime, length: length, preview: preview, source: source, hasImage: has_image, fileCount: file_count) }
 }
 struct ClipboardLibraryPage: Codable {
     var items: [ClipboardLibraryItem]
@@ -60,6 +60,7 @@ struct ClipboardLibraryPage: Codable {
 struct ClipboardItemMeta: Equatable {
     var remote = false
     var available = true
+    var originDevice: String?
     var ocrText: String?
 }
 struct ClipboardLibraryState: Codable {

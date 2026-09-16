@@ -164,7 +164,7 @@ fn tiff_to_png(data: &[u8], max_output: usize) -> Result<Vec<u8>, ()> {
         .into_dimensions()
         .map_err(|_| ())?;
     // Validate pixel count before allocating a decoded surface. Encoded TIFF
-    // and zlib/bincode input have already passed the common 1 MiB input budget.
+    // and zlib/bincode input have already passed the common 16 MiB input budget.
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 4_194_304 {
         return Err(());
     }

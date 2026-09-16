@@ -439,8 +439,12 @@ from pending platform/build and user-owned physical-device validation.
 clipboard previews, device pairing and a local file shelf. The service remains the
 only network/identity owner. Bounded desktop v2 IPC binds user SID/logon LUID,
 console session and generation; clipboard-sync-v2 receipts follow actual native
-clipboard writes. Files, input helpers and the Windows updater remain unavailable.
-See [Windows client implementation matrix](WINDOWS_CLIENT.md) and
+clipboard writes. An isolated input-only runtime advertises `_unidesk-input._udp`
+on UDP 42425, while a GUI-supervised ordinary-user helper performs only Default-
+desktop injection with native lease expiry and emergency reclaim. This checkpoint
+supports Mac controller to Windows receiver on the unlocked ordinary desktop;
+Windows controller capture, files, elevated/secure-desktop input and the Windows
+updater remain unavailable. See [Windows client implementation matrix](WINDOWS_CLIENT.md) and
 [desktop IPC](WINDOWS_DESKTOP_IPC.md). Local build/package evidence is not
 Windows installation, Explorer or two-machine acceptance.
 
@@ -451,7 +455,11 @@ Windows installation, Explorer or two-machine acceptance.
 desktop HID input adapters. `unidesk-identity::WindowsServiceIdentityProvider` is
 service-only (LocalSystem, session 0) and is deliberately not selected by the GUI.
 The app clipboard worker now uses `platform::create_worker_pasteboard`; Windows
-clipboard/pairing business IPC is connected; the native input coordinator remains pending. Service network ownership is implemented in the checkpoint below.
+clipboard/pairing business IPC is connected. Windows capture/injection implement
+the shared platform traits, including bounded fail-open suppression, stable monitor
+mapping and ordinary-desktop injection. The installed product currently wires only
+the receiver half through the service-owned input-only runtime and user helper;
+Windows controller composition remains pending. Service network ownership is implemented in the checkpoint below.
 See section 10 of the Windows contract for unsupported native cases and the
 read-only `scripts/check-windows-native.ps1` validation entry point.
 
@@ -459,14 +467,16 @@ read-only `scripts/check-windows-native.ps1` validation entry point.
 
 `apps/unidesk-service` owns SCM lifecycle, the machine DPAPI identity, protected
 SQLite state/trust, QUIC and mDNS. `WindowsServiceDataDirectory` retains directory
-handles and an exclusive runtime lease until network shutdown. The original service checkpoint only advertised `NETWORK`. The desktop extension
-adds acknowledged clipboard capability while an authenticated desktop owns the
-application session; file, input and updater capabilities remain unavailable.
-The fixed, local-only Named Pipe exposes bounded metadata `Status` requests only;
-SCM PID verification, concrete client data rights and per-request token/logon-LUID,
-console/unlock and epoch checks guard the boundary. No GUI fallback identity exists.
-See [service checkpoint](WINDOWS_SERVICE_CHECKPOINT.md) for the protocol, lifecycle,
-validation and gaps. The two-EXE development ZIP is not a GUI or offline installer.
+handles and an exclusive runtime lease until network shutdown. The original service checkpoint only advertised `NETWORK`; the desktop extension adds acknowledged
+clipboard on the control runtime and ordinary-desktop receiver input on the isolated
+input runtime. File and updater capabilities remain unavailable.
+The fixed, local-only Named Pipe exposes bounded desktop commands and the helper's
+session-bound input stream. SCM PID verification, concrete client data rights and per-request token/logon-LUID,
+console/unlock and epoch checks guard the boundary. The control runtime advertises
+clipboard only; input uses a separate 42425 runtime and never receives clipboard,
+file or updater commands. File and updater capabilities remain unavailable.
+See [service checkpoint](WINDOWS_SERVICE_CHECKPOINT.md) for the historical two-EXE
+package boundary; that development ZIP still excludes the WPF client and input helper.
 
 ### 多接口自动选路
 
