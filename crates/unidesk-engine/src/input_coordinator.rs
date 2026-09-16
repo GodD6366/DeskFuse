@@ -894,6 +894,76 @@ async fn run(
             .as_ref()
             .map(|injector| injector.error_notification());
         tokio::select! {
+            biased;
+            event = events.next() => {
+                let Some(event)=event else {break;};
+                match event {
+                    RuntimeEvent::InputDeliveryInvalidated {reason} => {
+                        state.error(&ui,reason.clone());
+                        state.native_failed(&runtime,reason).await;
+                        next_refresh=Instant::now();
+                    }
+                    RuntimeEvent::InputSharingSettingsChanged(_) => {
+                        // Also emitted when settings validation/persistence fails:
+                        // re-evaluate the native gate instead of retaining a cached true.
+                        state.reclaim(&runtime,Some(state.anchor)).await;
+                        state.available=false;
+                        state.last_report=None;
+                        next_refresh=Instant::now();
+                    }
+                    RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
+                        // Runtime has already checked token, role, transport identity,
+                        // topology generation, sequence and lease before this event.
+                        if !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input) || state.retired.contains(&session_id) || !state.available || !state.effective.enabled || state.effective.role!=InputShareRole::Controlled {continue;}
+                        let live=runtime.input_snapshot();
+                        if !native_report_is_current(&state.snapshot,&live) || !live.effective_settings().enabled {continue;}
+                        let Some(link)=live.links.iter().find(|l| l.control_session==Some(session_id) && l.ready) else {continue;};
+                        let Some(display)=live.local_topology.as_ref().and_then(|t|t.displays.iter().find(|d| d.id==target_display)) else {continue;};
+                        if state.inbound.as_ref().is_none_or(|p|p.session!=session_id) {
+                            let entry_started = Instant::now();
+                            timing::record!("receive_entry", Duration::ZERO, format!("session={session_id:?} epoch={state_epoch:?} motion_mode={:?}", link.motion_mode));
+                            let now=Instant::now();
+                            let progress=state.grants.entry(session_id).or_insert(LeaseProgress{session:session_id,revision:link.lease_revision,advanced_at:now,advanced_wall:SystemTime::now()});
+                            if progress.expired(now) {state.retired.insert(session_id);let _=runtime.send(RuntimeCommand::ReleaseInputControl{session_id}).await;continue;}
+                            progress.observe(session_id,link.lease_revision,now);
+                            if let Some(injector)=&state.injector {
+                                let _=injector.release_all_nowait();
+                                let armed = injector.arm_session(session_id,progress.remaining(Instant::now()));
+                                timing::record!("receive_native_arm", entry_started.elapsed(), format!("session={session_id:?} ok={armed}"));
+                                if !armed {state.retired.insert(session_id);let _=runtime.send(RuntimeCommand::ReleaseInputControl{session_id}).await;continue;}
+                            }
+                            state.inbound=Some(progress.clone());
+                        }
+                        if state.inbound.as_ref().is_some_and(|p|p.expired(Instant::now())) || state.injector.as_ref().is_none_or(|i|i.lease_expired()) {
+                            state.retired.insert(session_id);state.reclaim(&runtime,Some(state.anchor)).await;continue;
+                        }
+                        if timing::enabled() {
+                            let inbound_motion = events
+                                .iter()
+                                .filter(|event| matches!(event, SharedInputEvent::Motion { .. }))
+                                .count() as u64;
+                            if inbound_motion > 0 {
+                                state.in_motion.observe(inbound_motion, Instant::now());
+                            }
+                        }
+                        if let Some(injector)=&state.injector {
+                            let error=injector.enqueue_batch(session_id,display,state_epoch,&events).err();
+                            if let Some(error)=error {state.error(&ui,error.to_string());state.native_failed(&runtime,error.to_string()).await;next_refresh=Instant::now();}
+                        }
+                    }
+                    RuntimeEvent::InputControlReleased {session_id,reason,..} => {
+                        if !reason.contains("left display") { state.retired.insert(session_id); }
+                        if state.outbound.as_ref().is_some_and(|p|p.session==session_id) { state.outbound=None; state.policy.reclaim(); let _=ui.unbounded_send(UiEvent::InputLockStatus(false)); let _=state.capture.exit_remote(Some(state.anchor)); }
+                        if state.inbound.as_ref().is_some_and(|p|p.session==session_id) { state.inbound=None; if let Some(injector)=&state.injector {let _=injector.release_all_nowait();} }
+                    }
+                    RuntimeEvent::InputLinkUnavailable {peer_id,..} => {
+                        let active=[state.outbound.as_ref(),state.inbound.as_ref()].into_iter().flatten().any(|lease|state.snapshot.links.iter().any(|link|link.peer_id==peer_id && link.control_session==Some(lease.session)));
+                        if active {state.reclaim(&runtime,Some(state.anchor)).await;}
+                    }
+                    RuntimeEvent::InputReceived {..} => {state.error(&ui,"已拒绝旧版未授权输入协议".into());}
+                    _=>{}
+                }
+            }
             changed = observations.changed(), if observer_open => {
                 observer_open = changed.is_ok();
                 next_refresh = Instant::now();
@@ -1137,75 +1207,7 @@ async fn run(
                     state.actions(actions,&runtime,&ui).await;
                 }
             }
-            event = events.next() => {
-                let Some(event)=event else {break;};
-                match event {
-                    RuntimeEvent::InputDeliveryInvalidated {reason} => {
-                        state.error(&ui,reason.clone());
-                        state.native_failed(&runtime,reason).await;
-                        next_refresh=Instant::now();
-                    }
-                    RuntimeEvent::InputSharingSettingsChanged(_) => {
-                        // Also emitted when settings validation/persistence fails:
-                        // re-evaluate the native gate instead of retaining a cached true.
-                        state.reclaim(&runtime,Some(state.anchor)).await;
-                        state.available=false;
-                        state.last_report=None;
-                        next_refresh=Instant::now();
-                    }
-                    RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
-                        // Runtime has already checked token, role, transport identity,
-                        // topology generation, sequence and lease before this event.
-                        if !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input) || state.retired.contains(&session_id) || !state.available || !state.effective.enabled || state.effective.role!=InputShareRole::Controlled {continue;}
-                        let live=runtime.input_snapshot();
-                        if !native_report_is_current(&state.snapshot,&live) || !live.effective_settings().enabled {continue;}
-                        let Some(link)=live.links.iter().find(|l| l.control_session==Some(session_id) && l.ready) else {continue;};
-                        let Some(display)=live.local_topology.as_ref().and_then(|t|t.displays.iter().find(|d| d.id==target_display)) else {continue;};
-                        if state.inbound.as_ref().is_none_or(|p|p.session!=session_id) {
-                            let entry_started = Instant::now();
-                            timing::record!("receive_entry", Duration::ZERO, format!("session={session_id:?} epoch={state_epoch:?} motion_mode={:?}", link.motion_mode));
-                            let now=Instant::now();
-                            let progress=state.grants.entry(session_id).or_insert(LeaseProgress{session:session_id,revision:link.lease_revision,advanced_at:now,advanced_wall:SystemTime::now()});
-                            if progress.expired(now) {state.retired.insert(session_id);let _=runtime.send(RuntimeCommand::ReleaseInputControl{session_id}).await;continue;}
-                            progress.observe(session_id,link.lease_revision,now);
-                            if let Some(injector)=&state.injector {
-                                let _=injector.release_all_nowait();
-                                let armed = injector.arm_session(session_id,progress.remaining(Instant::now()));
-                                timing::record!("receive_native_arm", entry_started.elapsed(), format!("session={session_id:?} ok={armed}"));
-                                if !armed {state.retired.insert(session_id);let _=runtime.send(RuntimeCommand::ReleaseInputControl{session_id}).await;continue;}
-                            }
-                            state.inbound=Some(progress.clone());
-                        }
-                        if state.inbound.as_ref().is_some_and(|p|p.expired(Instant::now())) || state.injector.as_ref().is_none_or(|i|i.lease_expired()) {
-                            state.retired.insert(session_id);state.reclaim(&runtime,Some(state.anchor)).await;continue;
-                        }
-                        if timing::enabled() {
-                            let inbound_motion = events
-                                .iter()
-                                .filter(|event| matches!(event, SharedInputEvent::Motion { .. }))
-                                .count() as u64;
-                            if inbound_motion > 0 {
-                                state.in_motion.observe(inbound_motion, Instant::now());
-                            }
-                        }
-                        if let Some(injector)=&state.injector {
-                            let error=injector.enqueue_batch(session_id,display,state_epoch,&events).err();
-                            if let Some(error)=error {state.error(&ui,error.to_string());state.native_failed(&runtime,error.to_string()).await;next_refresh=Instant::now();}
-                        }
-                    }
-                    RuntimeEvent::InputControlReleased {session_id,reason,..} => {
-                        if !reason.contains("left display") { state.retired.insert(session_id); }
-                        if state.outbound.as_ref().is_some_and(|p|p.session==session_id) { state.outbound=None; state.policy.reclaim(); let _=ui.unbounded_send(UiEvent::InputLockStatus(false)); let _=state.capture.exit_remote(Some(state.anchor)); }
-                        if state.inbound.as_ref().is_some_and(|p|p.session==session_id) { state.inbound=None; if let Some(injector)=&state.injector {let _=injector.release_all_nowait();} }
-                    }
-                    RuntimeEvent::InputLinkUnavailable {peer_id,..} => {
-                        let active=[state.outbound.as_ref(),state.inbound.as_ref()].into_iter().flatten().any(|lease|state.snapshot.links.iter().any(|link|link.peer_id==peer_id && link.control_session==Some(lease.session)));
-                        if active {state.reclaim(&runtime,Some(state.anchor)).await;}
-                    }
-                    RuntimeEvent::InputReceived {..} => {state.error(&ui,"已拒绝旧版未授权输入协议".into());}
-                    _=>{}
-                }
-            }
+
         }
     }
     stopping.store(true, Ordering::Release);

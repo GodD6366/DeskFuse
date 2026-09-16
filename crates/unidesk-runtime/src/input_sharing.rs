@@ -182,9 +182,13 @@ pub(crate) async fn run(
         }
         let mut publish_snapshot = true;
         let lease_count = actor.leases.len();
+        // Keep control/state commands ahead of motion, then consume inbound motion
+        // before housekeeping. This mirrors Deskflow's event-driven loop: motion
+        // must not lose a turn merely because the capture, timer, or snapshot
+        // branch is also ready. Control branches remain first so renew/release
+        // cannot be starved by a continuous motion stream.
         tokio::select! {
-            _ = environment_save.tick() => actor.start_environment_save(),
-            _ = async { match motion_deadline {Some(deadline)=>tokio::time::sleep_until(deadline.into()).await,None=>std::future::pending::<()>().await} } => actor.tick_motion(),
+            biased;
             command = async {
                 match pending_command.take() {
                     Some(command) => Some(command),
@@ -204,6 +208,8 @@ pub(crate) async fn run(
                 publish_snapshot = !matches!(&event, InputTransportEvent::Motion { .. });
                 actor.inbound(event);
             } else { break },
+            _ = environment_save.tick() => actor.start_environment_save(),
+            _ = async { match motion_deadline {Some(deadline)=>tokio::time::sleep_until(deadline.into()).await,None=>std::future::pending::<()>().await} } => actor.tick_motion(),
             _=interval.tick()=>{if overflow.swap(false,Ordering::AcqRel){actor.deactivate_all("input command queue overflow");}actor.tick();},
             changed=actor.network.changed()=>{if changed.is_err(){break}actor.tick();},
         }

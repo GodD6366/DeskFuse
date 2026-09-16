@@ -19,15 +19,6 @@ use unidesk_core::{
 use unidesk_protocol::{MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, encode_motion_datagram};
 
 const MAX_CONTROL_SLOTS: usize = 8;
-/// Upper bound on outgoing position datagrams for one transport session, i.e.
-/// one datagram every 8.33 ms. Above roughly this rate extra samples buy no
-/// visible smoothness: the receiver keeps a single newest-position slot, so
-/// anything it has not consumed yet is replaced, while every extra datagram
-/// still costs Wi-Fi airtime that the reliable control stream shares. A field
-/// capture showed 600-745 positions/s arriving with ~53% replaced and RTT
-/// inflated to 5-22 ms at zero packet loss; the excess was pure self-inflicted
-/// queueing. State anchors and final snapshots are not paced here.
-const MOTION_MIN_INTERVAL: Duration = Duration::from_micros(8_333);
 const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_RECEIVE_SLOTS: usize = 128;
@@ -485,28 +476,14 @@ impl InputHub {
             }
         });
         executor.spawn(async move {
-            // Pacing deadline for the next position. `None` lets a sample leave
-            // immediately, so an idle pointer still starts moving without delay.
-            let mut next_send: Option<tokio::time::Instant> = None;
+            // Match Deskflow's motion path: writes are event-driven and immediate.
+            // The mailbox already keeps only the newest position per input session;
+            // draining it here handles every slot covered by one Notify wake without
+            // imposing an application-level frame rate.  The receiver performs the
+            // final adjacent-motion coalescing when data is already queued.
             while session.live() {
                 tokio::select! {
-                    _ = session.motion.wake.notified() => {
-                        // The mailbox keeps only the newest position per input
-                        // session, so waiting here discards samples instead of
-                        // queueing stale ones behind a saturated receiver.
-                        if let Some(deadline) = next_send {
-                            tokio::select! {
-                                _ = tokio::time::sleep_until(deadline) => {},
-                                _ = session.cancel.notified() => break,
-                            }
-                        }
-                    }
-                    _ = async {
-                        match next_send {
-                            Some(deadline) => tokio::time::sleep_until(deadline).await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {},
+                    _ = session.motion.wake.notified() => {},
                     _ = session.cancel.notified() => break,
                     // Bound shutdown even if Notify cancellation races registration.
                     _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
@@ -514,40 +491,45 @@ impl InputHub {
                 if !session.live() {
                     break;
                 }
-                let mut health_lost = false;
-                let mut sent_any = false;
-                if let Ok(mut pending) = session.motion.pending.lock() {
-                    let samples = std::mem::take(&mut *pending);
-                    for (_, motion) in samples {
-                        let sent = session.motion.ready.load(Ordering::Acquire)
-                            && encode_motion_datagram(&motion).ok().is_some_and(|bytes| {
-                                session.connection.send_datagram(bytes.into()).is_ok()
-                            });
-                        if sent {
-                            session.motion.sent.fetch_add(1, Ordering::Relaxed);
-                            sent_any = true;
-                        } else {
-                            session.motion.dropped.fetch_add(1, Ordering::Relaxed);
-                            session.motion.ready.store(false, Ordering::Release);
-                            health_lost = true;
-                        }
+
+                loop {
+                    let motion = session
+                        .motion
+                        .pending
+                        .lock()
+                        .ok()
+                        .and_then(|mut pending| pending.pop_first().map(|(_, motion)| motion));
+                    let Some(motion) = motion else {
+                        break;
+                    };
+                    if !session.live() {
+                        break;
+                    }
+
+                    let sent = session.motion.ready.load(Ordering::Acquire)
+                        && encode_motion_datagram(&motion).ok().is_some_and(|bytes| {
+                            session.connection.send_datagram(bytes.into()).is_ok()
+                        });
+                    let health_lost = if sent {
+                        session.motion.sent.fetch_add(1, Ordering::Relaxed);
+                        false
+                    } else {
+                        session.motion.dropped.fetch_add(1, Ordering::Relaxed);
+                        session.motion.ready.store(false, Ordering::Release);
+                        true
+                    };
+                    session.motion.sample_diagnostics(
+                        &session,
+                        if health_lost { "health_lost" } else { "send" },
+                        health_lost,
+                    );
+                    // Give cancellation and the QUIC driver a scheduling point, but
+                    // never sleep to manufacture a motion frame rate.
+                    tokio::task::yield_now().await;
+                    if health_lost {
+                        break;
                     }
                 }
-                // Pace only after real traffic. An empty mailbox must clear the
-                // deadline, otherwise an already-elapsed deadline would spin
-                // this task against the pending lock.
-                next_send = sent_any.then(|| tokio::time::Instant::now() + MOTION_MIN_INTERVAL);
-                session.motion.sample_diagnostics(
-                    &session,
-                    if health_lost { "health_lost" } else { "send" },
-                    health_lost,
-                );
-                // Event-driven, not a fixed-rate timer. The mailbox still
-                // replaces stale absolute positions while QUIC's bounded
-                // datagram buffer drops old samples under backpressure. Yield
-                // only if work is already ready so cancellation and reliable
-                // state remain live.
-                tokio::task::yield_now().await;
             }
             session.motion.close();
         });
