@@ -4,7 +4,7 @@
 
 | 产物 | 用途 |
 | --- | --- |
-| `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub bootstrap 为 ad-hoc，维护者本机保留其签名；均未公证 |
+| `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 bootstrap 仍可 ad-hoc |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
 | `dist/build-info.json` | 源 commit、工具链、架构、签名状态和 DMG 哈希 |
 | `dist/SHA256SUMS` | 上述三个文件的 SHA-256；校验和本身不是发行签名 |
@@ -15,9 +15,11 @@
 
 ## 首次启用 GitHub
 
-现有工作流用于 `GodD6366/uniDesk`，不依赖 Apple 凭据或外部构建服务器。维护者确认仓库公开文件清单后，自行启用 Actions、private vulnerability reporting，并按实际协作需要设置 main 检查规则和发行 tag 管理。初期可限制 tag 创建／更新给维护者；不要强制要求个人项目必须有第二位审批人。
+现有工作流用于 `GodD6366/uniDesk`。**公开 tag 预发行**需要 Apple Developer ID 与公证凭据，见 [公证凭据](NOTARIZE.md)；main 分支检查和贡献者 bootstrap 不读取这些 secret。维护者确认仓库公开文件清单后，自行启用 Actions、private vulnerability reporting，并按实际协作需要设置 main 检查规则和发行 tag 管理。初期可限制 tag 创建／更新给维护者；不要强制要求个人项目必须有第二位审批人。
 
 工作流不会修改仓库 public/private 状态，也不会自动推送 tag。私有仓库的 Actions 运行使用账户可用额度；实际额度与设置以 GitHub 为准。
+
+在推送发行 tag 之前，于仓库 **Settings → Secrets and variables → Actions** 写入 `APPLE_DEVELOPER_ID_P12`、`APPLE_DEVELOPER_ID_P12_PASSWORD`、`APPLE_TEAM_ID`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`。逐步操作见 [公证凭据](NOTARIZE.md)。缺一项则 `package` job 失败，不会再上传 ad-hoc 公开包。
 
 ## 准备版本（协调端，仅一次）
 
@@ -55,9 +57,9 @@ UNIDESK_DMG_FINDER_LAYOUT=0 \
 UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
 ```
 
-无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认使用 Finder 布局；开发签名选择保持不变，公开预发行必须显式设 `CODESIGN_IDENTITY=-`。
+无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
-打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；不证明 Apple 公证或原生两机行为。
+打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 
 本机每次成功打包后，自动归档 DMG、原始 update ZIP、签名 `manifest.json`、`release.json` 和 `SHA256SUMS` 到
 `/Volumes/Share/MAC软件/uniDesk/uniDesk-{version}-build{build_number}/`。
@@ -86,7 +88,7 @@ git push origin v0.1.0
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
 2. 调用相同 CI：macOS 检查、Windows 原生适配器和服务检查均成功才继续。
-3. `xcode-27` Apple Silicon runner 使用已提交 descriptor 和固定 Rust target，显式 `--bootstrap` + headless + ad-hoc 打包，验证 DMG，再生成四件套。
+3. `xcode-27` Apple Silicon runner 使用已提交 descriptor 和固定 Rust target，导入 Developer ID、`--bootstrap` + headless 打包、hardened runtime、`notarytool` 公证并 staple，验证 DMG，再生成四件套。缺少 Apple secret 时失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
 
@@ -116,7 +118,7 @@ git commit -m 'chore(cask): pin v0.1.0 DMG checksum'
 - 同 tag 已公开：只校验已有资产；冲突则失败，不覆盖、不移动 tag。修复应用需新版本和新发行号。
 - 撤回有问题的预发行版：由维护者取消其公开发行并在说明中标明原因；不自动降级用户、不删除用户身份。已下载旧包的行为需另行沟通。
 
-GitHub CI 仍不持有 Apple 凭据或 LAN 发行私钥，不发布自动安装用的签名清单。Apple 公证尚未接入。本机签名与 LAN 分发流程见下文。
+GitHub CI 用 Actions secrets 持有 Developer ID 与公证凭据，不持有 LAN 发行私钥，不发布自动安装用的签名清单。本机签名与 LAN 分发流程见下文；Apple 凭据操作见 [公证凭据](NOTARIZE.md)。
 
 
 ## 本机 LAN 自动更新

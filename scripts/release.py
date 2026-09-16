@@ -60,13 +60,32 @@ def prepare(out: Path) -> None:
     validate(out, version())
 
 
+def signing_status(directory: Path) -> tuple[str, bool]:
+    allowed = {"ad-hoc", "apple-development", "developer-id"}
+    sidecar = directory / ".signing"
+    if sidecar.is_file():
+        lines = [line.strip() for line in sidecar.read_text().splitlines() if line.strip()]
+        if len(lines) != 2 or lines[0] not in allowed or lines[1] not in {"true", "false"}:
+            raise ValueError("invalid packaging signing sidecar")
+        kind, notarized = lines[0], lines[1] == "true"
+    else:
+        kind = os.environ.get("UNIDESK_SIGNING", "ad-hoc")
+        if kind not in allowed:
+            raise ValueError("UNIDESK_SIGNING must be ad-hoc, apple-development, or developer-id")
+        notarized = os.environ.get("UNIDESK_NOTARIZED", "").lower() in {"1", "true", "yes"}
+    if notarized and kind != "developer-id":
+        raise ValueError("only Developer ID Application builds can be notarized")
+    return kind, notarized
+
+
 def inventory(directory: Path, commit: str) -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("expected full source commit SHA")
     release = validate(directory / "release.json", version())
+    kind, notarized = signing_status(directory)
     write_json(directory / "build-info.json", {
         "commit": commit, "release": release, "target": "aarch64-apple-darwin",
-        "minimum_macos": "14.0", "signing": "ad-hoc", "notarized": False,
+        "minimum_macos": "14.0", "signing": kind, "notarized": notarized,
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
         "dmg_sha256": checksum(directory / ASSETS[0]),
     })
@@ -87,9 +106,15 @@ def verify_inventory(directory: Path, release: dict, commit: str) -> None:
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
     info = json.loads((directory / "build-info.json").read_text())
+    kind = info.get("signing")
+    notarized = info.get("notarized")
+    if kind not in {"ad-hoc", "apple-development", "developer-id"} or not isinstance(notarized, bool):
+        raise ValueError("existing build information conflicts with source")
+    if notarized and kind != "developer-id":
+        raise ValueError("existing build information conflicts with source")
     if (info.get("commit") != commit or info.get("release") != release
-            or info.get("dmg_sha256") != actual[ASSETS[0]] or info.get("signing") != "ad-hoc"
-            or info.get("notarized") is not False or info.get("target") != "aarch64-apple-darwin"):
+            or info.get("dmg_sha256") != actual[ASSETS[0]]
+            or info.get("target") != "aarch64-apple-darwin"):
         raise ValueError("existing build information conflicts with source")
 
 
@@ -135,8 +160,13 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
     if probe(repo, tag, commit):
         print("Existing published release verified; unchanged.")
         return
+    info = json.loads((directory / "build-info.json").read_text())
+    if info.get("signing") == "developer-id" and info.get("notarized") is True:
+        signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
+    else:
+        signing_note = "**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations."
     notes = (f"macOS 14+ · Apple Silicon (arm64)\n\n"
-             f"**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations.\n\n"
+             f"{signing_note}\n\n"
              f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"
              "Windows remains experimental source/service work, not an installable desktop release. "
              "Build/package checks do not establish Finder paste, drag-out, native input permissions or physical two-device acceptance. "

@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- 公开 tag 预发行接入 Developer ID、hardened runtime 与 `notarytool` 公证；所需 GitHub Actions secrets 及获取步骤见 `docs/NOTARIZE.md`。main 分支 bootstrap 与贡献者本机仍可 ad-hoc。
+
 ## [0.1.5] — Windows 普通桌面输入与剪贴板增强
 
 - Windows 新增独立 `_unidesk-input._udp` / UDP 42425 输入运行时和用户态 helper，首阶段支持已授权 Mac 主控 Windows 普通桌面，并提供 1.5 秒原生释放看门狗、界面收回及紧急快捷键。
