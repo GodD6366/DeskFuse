@@ -17,3 +17,7 @@ pub use permissions::{PermissionKind, PermissionService, PermissionSnapshot, Per
 mod shared_input;
 pub use shared_input::*;
 pub mod timing;
+
+/// Host Ports injected by the application host. Collaboration depends only on these traits.
+pub mod ports;
+pub use ports::{HostPorts, NativeRevision};

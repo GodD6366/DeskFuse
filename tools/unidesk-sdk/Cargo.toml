@@ -1,0 +1,21 @@
+[package]
+name = "unidesk-sdk"
+description = "Package a cached native SDK (core staticlib, bindings, helper, manifest)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "unidesk-sdk"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+
+[lints]
+workspace = true

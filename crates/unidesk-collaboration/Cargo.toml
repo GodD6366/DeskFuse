@@ -1,0 +1,28 @@
+[package]
+name = "unidesk-collaboration"
+description = "Cross-platform collaboration core (K3/K5/K6/K7). No OS, axum, image, or product-extension dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "=0.1.92"
+serde = { version = "1", features = ["derive"] }
+sha2.workspace = true
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+unidesk-core = { path = "../unidesk-core" }
+unidesk-platform = { path = "../unidesk-platform" }
+unidesk-transfer = { path = "../unidesk-transfer" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "test-util"] }
+tempfile = "3"
+
+[lints]
+workspace = true

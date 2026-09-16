@@ -16,8 +16,19 @@ members = [
     "crates/unidesk-input",
     "crates/unidesk-engine",
     "crates/unidesk-ffi",
+    "crates/unidesk-collaboration",
+    "crates/unidesk-store-core",
+    "crates/unidesk-store-library",
+    "extensions/unidesk-content-library",
+    "extensions/unidesk-workflow",
+    "extensions/unidesk-lan-web",
+    "extensions/unidesk-update",
+    "tools/unidesk-bindgen",
+    "tools/unidesk-sdk",
     "apps/unidesk-service",
     "apps/unidesk-probe",
+    "apps/unidesk-input-macos",
+    "apps/unidesk-input-windows",
 ]
 default-members = ["crates/unidesk-ffi"]
 

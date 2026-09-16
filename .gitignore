@@ -57,6 +57,11 @@ identity.key
 /apps/unidesk-macos/Sources/UniDeskEngine/*.swift
 /apps/unidesk-macos/Sources/UniDeskEngineFFI/*.h
 /apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
+/apps/unidesk-macos/SDK/*.a
+/apps/unidesk-macos/SDK/*.h
+/apps/unidesk-macos/SDK/*.modulemap
+/apps/unidesk-macos/SDK/unidesk-input-macos
+/apps/unidesk-macos/SDK/manifest.json
 
 # Historical development plans remain local; active contracts stay in docs/.
 /docs/INPUT_DATAGRAM_PLAN.md
