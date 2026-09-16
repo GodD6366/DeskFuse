@@ -62,8 +62,29 @@ class ReleaseTests(unittest.TestCase):
     def test_inventory_round_trip_and_wrong_source(self):
         self.make_inventory()
         release.verify_inventory(self.root, self.data, self.commit)
+        info = json.loads((self.root / "build-info.json").read_text())
+        self.assertEqual(info["signing"], "ad-hoc")
+        self.assertFalse(info["notarized"])
         with self.assertRaises(ValueError):
             release.verify_inventory(self.root, self.data, "b" * 40)
+
+    def test_inventory_records_developer_id_and_notarization(self):
+        (self.root / ".signing").write_text("developer-id\ntrue\n")
+        self.make_inventory()
+        info = json.loads((self.root / "build-info.json").read_text())
+        self.assertEqual(info["signing"], "developer-id")
+        self.assertTrue(info["notarized"])
+        release.verify_inventory(self.root, self.data, self.commit)
+
+    def test_notarized_ad_hoc_is_rejected(self):
+        (self.root / ".signing").write_text("ad-hoc\ntrue\n")
+        with self.assertRaises(ValueError):
+            self.make_inventory()
+
+    def test_invalid_signing_sidecar_is_rejected(self):
+        (self.root / ".signing").write_text("unknown\nfalse\n")
+        with self.assertRaises(ValueError):
+            self.make_inventory()
 
     def test_corrupt_asset(self):
         self.make_inventory()
@@ -136,12 +157,30 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_order_and_confirmation(self):
         self.make_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory"):
+        notes = []
+        def run(command, **kwargs):
+            if command[2] == "create":
+                notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run", side_effect=run) as runner, patch.object(release, "verify_inventory"):
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
             self.assertEqual([call.args[0][2] for call in runner.call_args_list], ["create", "upload", "download", "edit"])
             self.assertEqual(probe.call_count, 2)
             self.assertIn("--prerelease", runner.call_args_list[-1].args[0])
             self.assertNotIn("--clobber", runner.call_args_list[1].args[0])
+            self.assertIn("ad-hoc signed, not notarized", notes[0])
+
+    def test_publish_notes_for_notarized_build(self):
+        (self.root / ".signing").write_text("developer-id\ntrue\n")
+        self.make_inventory()
+        (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
+        notes = []
+        def run(command, **kwargs):
+            if command[2] == "create":
+                notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "verify_inventory"):
+            release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
+        self.assertIn("Developer ID signed and notarized", notes[0])
+        self.assertNotIn("ad-hoc signed", notes[0])
 
 
 if __name__ == "__main__":

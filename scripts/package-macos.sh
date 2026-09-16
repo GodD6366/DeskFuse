@@ -43,6 +43,8 @@ if [[ -n "${BUILD_VERSION:-}" && -z "$RELEASE_METADATA" ]]; then
 fi
 [[ -z "${BUILD_VERSION:-}" ]] || { echo "error: use only RELEASE_METADATA, not BUILD_VERSION" >&2; exit 1; }
 source "$ROOT_DIR/scripts/codesign-identity.sh"
+source "$ROOT_DIR/scripts/macos-codesign.sh"
+unidesk_resolve_signing_kind
 DEFAULT_DIST_DIR="$ROOT_DIR/dist"
 if [[ "$PACKAGE_MODE" == bootstrap && "${CI:-false}" != "true" ]]; then
   DEFAULT_DIST_DIR="$ROOT_DIR/dist/bootstrap"
@@ -54,9 +56,23 @@ ASSET_DIR="$ROOT_DIR/resources/generated"
 if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
   echo "signing: ad-hoc (CODESIGN_IDENTITY=-)"
 else
-  echo "signing: $CODESIGN_IDENTITY"
+  echo "signing: $SIGNING_KIND ($CODESIGN_IDENTITY)"
 fi
-echo "notarization: not performed"
+if [[ "$SIGNING_KIND" == "developer-id" ]]; then
+  echo "codesign: hardened runtime and secure timestamp"
+else
+  echo "notarization: skipped (requires Developer ID Application)"
+fi
+if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
+  if [[ "$SIGNING_KIND" != "developer-id" ]]; then
+    echo "error: UNIDESK_REQUIRE_NOTARIZE=1 requires a Developer ID Application identity" >&2
+    exit 1
+  fi
+  if ! unidesk_notarize_credentials_ready; then
+    echo "error: UNIDESK_REQUIRE_NOTARIZE=1 needs APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER, or APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID. See docs/NOTARIZE.md" >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$DIST_DIR"
 DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
@@ -122,9 +138,9 @@ mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_SOURCE_DIR/.backg
 cp "$BINARY_PATH" "$CONTENTS_DIR/MacOS/$BINARY_NAME"
 ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/Metadata.appintents"
 cp "$CARGO_OUTPUT_DIR/native-macos/release/unidesk-input-service" "$CONTENTS_DIR/MacOS/unidesk-input-service"
-codesign --force --strict --timestamp=none --identifier com.unidesk.app.input-service --sign "$CODESIGN_IDENTITY" "$CONTENTS_DIR/MacOS/unidesk-input-service"
+unidesk_codesign --identifier com.unidesk.app.input-service "$CONTENTS_DIR/MacOS/unidesk-input-service"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/unidesk-update-helper" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
-codesign --force --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
+unidesk_codesign "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
 if [[ "$PACKAGE_MODE" == bootstrap ]]; then
   printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
@@ -148,13 +164,9 @@ sed \
   -e "s/@VERSION@/$APP_VERSION/g" \
   -e "s/@BUILD_VERSION@/$BUILD_VERSION/g" \
   "$ROOT_DIR/resources/Info.plist.in" > "$CONTENTS_DIR/Info.plist"
-codesign \
-  --force \
+unidesk_codesign \
   --deep \
-  --strict \
-  --timestamp=none \
   --entitlements "$ROOT_DIR/resources/uniDesk.entitlements" \
-  --sign "$CODESIGN_IDENTITY" \
   "$APP_BUNDLE"
 
 codesign --verify --deep --strict "$APP_BUNDLE"
@@ -186,9 +198,10 @@ PYMANIFEST
   # embedding the wrapper in its own ZIP would create a recursive artifact.
   mkdir -p "$CONTENTS_DIR/Resources/LanUpdate"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$CONTENTS_DIR/Resources/LanUpdate/"
-  codesign --force --deep --strict --timestamp=none \
+  unidesk_codesign \
+    --deep \
     --entitlements "$ROOT_DIR/resources/uniDesk.entitlements" \
-    --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE"
+    "$APP_BUNDLE"
   codesign --verify --deep --strict "$APP_BUNDLE"
   SIGNED_UPDATE=1
 elif [[ "$PACKAGE_MODE" == lan ]]; then
@@ -262,7 +275,21 @@ ATTACHED=0
 # Validate before replacing an existing deliverable.
 FINAL_DMG="$STAGING_DIR/uniDesk-arm64.dmg"
 hdiutil convert "$RW_DMG" -ov -format UDZO -o "$FINAL_DMG" >/dev/null
-"$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
+if [[ "$SIGNING_KIND" == "developer-id" ]]; then
+  codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$FINAL_DMG"
+fi
+# Staple is attached after Apple returns a ticket; the first pass only checks
+# the signed app. A required notarization re-runs the verifier afterwards.
+UNIDESK_REQUIRE_NOTARIZE=0 "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
+NOTARIZED=false
+if [[ "$SIGNING_KIND" == "developer-id" ]] && unidesk_notarize_credentials_ready; then
+  "$ROOT_DIR/scripts/notarize-macos.sh" "$FINAL_DMG"
+  NOTARIZED=true
+  "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
+else
+  echo "notarization: not performed"
+fi
+unidesk_write_signing_status "$DIST_DIR" "$NOTARIZED"
 mv "$FINAL_DMG" "$DMG_PATH"
 mv "$UPDATE_ZIP" "$DIST_DIR/uniDesk-arm64-update.zip"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then

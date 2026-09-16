@@ -17,9 +17,10 @@
 
 ## 分发与签名
 
-- [ ] 接入 Developer ID 与 hardened runtime
-- [ ] Apple 公证，并在真实 Gatekeeper 下验证首次启动
-- [ ] 从 README 与发行说明移除 ad-hoc、未公证的临时说明
+- [x] 接入 Developer ID 与 hardened runtime（公开 tag 预发行；缺凭据则失败）
+- [x] Apple 公证流水线（`notarytool` + staple）；真实 Gatekeeper 首次启动仍待实机确认
+- [x] README／发行说明改为描述公证包，并保留旧 ad-hoc 预发行的打开方式
+- [ ] 在真实 Gatekeeper 下验证已公证 DMG 的首次启动
 
 ## macOS 功能验收
 

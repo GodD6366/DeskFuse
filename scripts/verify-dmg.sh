@@ -169,10 +169,28 @@ fi
 SIGNING_INFO="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
 SIGNING_AUTHORITY="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Authority=//p' | head -n 1)"
 TEAM_ID="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+RUNTIME_FLAG="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^CodeDirectory.*flags=//p' | head -n 1)"
 if [[ -n "$SIGNING_AUTHORITY" && "$TEAM_ID" != "not set" ]]; then
   SIGNING_STATUS="$SIGNING_AUTHORITY (Team ID $TEAM_ID)"
 else
   SIGNING_STATUS="ad-hoc"
+fi
+if [[ "$SIGNING_STATUS" != "ad-hoc" && "$SIGNING_AUTHORITY" == Developer\ ID\ Application:* ]]; then
+  if [[ "$RUNTIME_FLAG" != *runtime* ]]; then
+    echo "error: Developer ID app is missing the hardened runtime flag" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$SIGNING_INFO" | grep -q '^Timestamp='; then
+    echo "error: Developer ID app is missing a secure timestamp" >&2
+    exit 1
+  fi
+fi
+if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
+  if [[ "$SIGNING_AUTHORITY" != Developer\ ID\ Application:* ]]; then
+    echo "error: notarized package must be signed with Developer ID Application" >&2
+    exit 1
+  fi
+  xcrun stapler validate "$DMG_PATH"
 fi
 
 if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
@@ -220,4 +238,10 @@ PYMETA
 echo "verified: $DMG_PATH"
 echo "architecture: $ARCHES"
 echo "signing: $SIGNING_STATUS"
-echo "notarization: not assessed; this verifier does not establish Gatekeeper acceptance"
+if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
+  echo "notarization: stapled ticket validated"
+elif [[ "$SIGNING_AUTHORITY" == Developer\ ID\ Application:* ]]; then
+  echo "notarization: Developer ID signed; staple is checked when UNIDESK_REQUIRE_NOTARIZE=1"
+else
+  echo "notarization: not assessed; this verifier does not establish Gatekeeper acceptance"
+fi

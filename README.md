@@ -50,7 +50,6 @@ uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：�
 brew trust --cask godd6366/unidesk/unidesk
 brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk
 brew install --cask godd6366/unidesk/unidesk
-sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"
 ```
 
 `brew trust` 执行一次即可（旧版本无此命令时跳过）。cask 固定对应 DMG 的 SHA-256。卸载：`brew uninstall --cask godd6366/unidesk/unidesk`，不再使用时 `brew untap godd6366/unidesk`。
@@ -71,7 +70,7 @@ brew update && brew upgrade --cask unidesk
 2. 打开 DMG，把 `uniDesk.app` 拖进 Applications；同一设备只运行一份实例。
 3. 按提示允许局域网访问；键鼠共享还需辅助功能授权、可信局域网会话、设备激活和可用显示器布局。
 
-包为 **ad-hoc 签名、未公证**，macOS 可能阻止启动：核对来源与校验和后，可用系统“隐私与安全性 → 仍要打开”自行确认；不要关闭 Gatekeeper 或 SIP。上方 Homebrew 安装命令已包含隔离属性清除步骤。
+配置 Apple 凭据后的 GitHub 预发行使用 Developer ID 签名并公证，可直接打开；不要关闭 Gatekeeper 或 SIP。更早的 ad-hoc 预发行若被拦截，用系统“隐私与安全性 → 仍要打开”，或 `sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"`。维护者凭据准备见 [公证凭据](docs/NOTARIZE.md)。
 
 ## 从源码运行
 

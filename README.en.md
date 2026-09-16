@@ -50,7 +50,6 @@ Downloads: [GitHub Releases](https://github.com/GodD6366/uniDesk/releases).
 brew trust --cask godd6366/unidesk/unidesk
 brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk
 brew install --cask godd6366/unidesk/unidesk
-sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"
 ```
 
 Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/unidesk/unidesk`, then `brew untap godd6366/unidesk` if unused.
@@ -71,7 +70,7 @@ Internal signed packages retain trusted-LAN updates. Public packages do not use 
 2. Open the DMG and drag `uniDesk.app` into Applications; run only one instance per device.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
 
-The build is **ad-hoc signed and not notarized**, so macOS may block it: verify the origin and checksum, then use the system's “Open Anyway” option if you choose. Never disable Gatekeeper or SIP. The Homebrew commands above already include the quarantine removal step.
+GitHub prereleases built with Apple credentials are Developer ID signed and notarized, and should open normally. Never disable Gatekeeper or SIP. Older ad-hoc builds may still be blocked: use the system's “Open Anyway” option, or `sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"`. Maintainer credentials: [notarization secrets](docs/NOTARIZE.md).
 
 ## Build from source
 

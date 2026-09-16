@@ -30,7 +30,8 @@ class UpdateCaskTests(unittest.TestCase):
         self.assertIn('app "uniDesk.app"', rendered)
         self.assertIn("depends_on arch: :arm64", rendered)
         self.assertIn("depends_on macos: :sonoma", rendered)
-        self.assertIn("xattr -rd com.apple.quarantine", rendered)
+        self.assertNotIn("xattr", rendered)
+        self.assertNotIn("caveats", rendered)
         self.assertTrue(rendered.endswith("end\n"))
 
     def test_render_rejects_invalid_values(self):
