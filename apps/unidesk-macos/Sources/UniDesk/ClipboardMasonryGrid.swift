@@ -66,27 +66,12 @@ enum ClipboardMasonryLayout {
         }
 
         for item in items {
-            if count > 1, spansFullWidth(item) {
-                flushColumns()
-                result.append(.fullWidth(item))
-                continue
-            }
             let index = heights.indices.min { heights[$0] < heights[$1] } ?? 0
             columns[index].append(item)
             heights[index] += estimatedHeight(item) + 12
         }
         flushColumns()
         return result
-    }
-
-    static func spansFullWidth(_ item: HistoryItem) -> Bool {
-        guard !item.hasImage, item.fileCount == 0 else { return false }
-        let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
-        let explicitLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
-        let visualLength = text.unicodeScalars.reduce(0) { length, scalar in
-            length + (scalar.isASCII ? 1 : 2)
-        }
-        return explicitLines >= 4 || visualLength >= 96
     }
 
     static func estimatedHeight(_ item: HistoryItem) -> CGFloat {

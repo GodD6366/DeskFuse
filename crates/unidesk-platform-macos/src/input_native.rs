@@ -43,6 +43,8 @@ pub fn post_paste_shortcut() -> PlatformResult<()> {
     }
     Ok(())
 }
+use std::cell::RefCell;
+
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 
@@ -50,6 +52,26 @@ use crate::{
     ButtonState, GlobalInputCapture, InputEvent, InputInjector, KeyCode, MouseButton,
     PlatformError, PlatformResult,
 };
+
+thread_local! {
+    /// Thread-local cached CGEventSource for better performance.
+    /// Creating a new CGEventSource on every mouse move is expensive.
+    static EVENT_SOURCE: RefCell<Option<CGEventSource>> = const { RefCell::new(None) };
+}
+
+fn get_event_source() -> PlatformResult<CGEventSource> {
+    EVENT_SOURCE.with(|source| {
+        let mut source = source.borrow_mut();
+        if let Some(existing) = source.as_ref() {
+            Ok(existing.clone())
+        } else {
+            let new_source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                .map_err(|()| PlatformError::InputInjectionFailed)?;
+            *source = Some(new_source.clone());
+            Ok(new_source)
+        }
+    })
+}
 
 #[allow(unsafe_code)]
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -61,9 +83,7 @@ unsafe extern "C" {
 
 /// Native macOS input injector backed by `CGEvent` HID posting.
 ///
-/// A fresh `CGEventSource` is created per posted event: the source is a
-/// process-wide HID state handle and this keeps the injector `Send` without
-/// asserting thread safety for an opaque Core Graphics object.
+/// Uses a thread-local cached `CGEventSource` for better performance.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MacOSInputInjector;
 
@@ -71,11 +91,6 @@ impl MacOSInputInjector {
     #[must_use]
     pub const fn new() -> Self {
         Self
-    }
-
-    fn source() -> PlatformResult<CGEventSource> {
-        CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-            .map_err(|()| PlatformError::InputInjectionFailed)
     }
 }
 
@@ -87,7 +102,7 @@ impl InputInjector for MacOSInputInjector {
         }
         match event {
             InputEvent::MouseMoved { x, y } => {
-                let source = Self::source()?;
+                let source = get_event_source()?;
                 let event = CGEvent::new_mouse_event(
                     source,
                     CGEventType::MouseMoved,
@@ -139,7 +154,7 @@ impl InputInjector for MacOSInputInjector {
                     ),
                 };
                 let position = CGPoint::new(0.0, 0.0);
-                let source = Self::source()?;
+                let source = get_event_source()?;
                 let event = CGEvent::new_mouse_event(source, event_type, position, native_button)
                     .map_err(|()| PlatformError::InputInjectionFailed)?;
                 if let Some(number) = explicit_number {
@@ -157,7 +172,7 @@ impl InputInjector for MacOSInputInjector {
                 state,
             } => {
                 let pressed = state == ButtonState::Pressed;
-                let source = Self::source()?;
+                let source = get_event_source()?;
                 let event = CGEvent::new_keyboard_event(source, keycode, pressed)
                     .map_err(|()| PlatformError::InputInjectionFailed)?;
                 event.set_integer_value_field(
@@ -174,7 +189,7 @@ impl InputInjector for MacOSInputInjector {
                 operation: "character-key injection (capture emits raw key codes)",
             }),
             InputEvent::Scroll { delta_x, delta_y } => {
-                let source = Self::source()?;
+                let source = get_event_source()?;
                 let event = CGEvent::new_scroll_event(
                     source,
                     ScrollEventUnit::LINE,

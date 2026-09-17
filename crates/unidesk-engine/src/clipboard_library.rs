@@ -183,6 +183,8 @@ impl Library {
             "remote",
             "ALTER TABLE cl_items ADD COLUMN remote INTEGER NOT NULL DEFAULT 0",
         )?;
+        add_column("last_used", "ALTER TABLE cl_items ADD COLUMN last_used INTEGER")?;
+        db.execute_batch("CREATE INDEX IF NOT EXISTS cl_items_usage_order ON cl_items(MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);").map_err(err)?;
         let this = Self {
             db: Mutex::new(db),
             device: Mutex::new(String::new()),
@@ -290,6 +292,18 @@ impl Library {
     fn changed(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
+    /// Local reuse changes ordering, never the original source/copy metadata.
+    /// Called only after the native pasteboard write has succeeded.
+    pub fn mark_used(&self, id: u64) -> Result<()> {
+        let db = self.db.lock().map_err(err)?;
+        let updated = db.execute(
+            "UPDATE cl_items SET last_used=MAX(?1,COALESCE((SELECT MAX(last_used)+1 FROM cl_items),0)) WHERE id=?2",
+            params![now_ms(), id],
+        ).map_err(err)?;
+        if updated > 0 { self.changed(); }
+        Ok(())
+    }
+
     pub fn set_local_device(&self, id: String) -> Result<()> {
         *self.device.lock().map_err(err)? = id;
         Ok(())
@@ -532,7 +546,7 @@ impl Library {
     ) -> Result<Vec<(u64, PasteboardSnapshot, String, Option<u64>)>> {
         self.prune()?;
         let db = self.db.lock().map_err(err)?;
-        let mut statement = db.prepare("SELECT id,payload,summary FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL ORDER BY COALESCE(copied,imported) DESC,id DESC LIMIT ?1").map_err(err)?;
+        let mut statement = db.prepare("SELECT id,payload,summary FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC LIMIT ?1").map_err(err)?;
         let mut rows = statement.query([limit]).map_err(err)?;
         let mut recent = Vec::new();
         let mut retained_bytes = 0usize;
@@ -640,9 +654,9 @@ impl Library {
         let needs_text = !query.is_empty()
             || selected.is_some_and(|list| list.rules.iter().any(|rule| rule.field == "text"));
         let sql = if needs_text {
-            "SELECT id,global_id,summary,search_text,payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),COALESCE(copied,imported) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
+            "SELECT id,global_id,summary,search_text,payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) FROM cl_items ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC"
         } else {
-            "SELECT id,global_id,summary,'',payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),COALESCE(copied,imported) FROM cl_items ORDER BY COALESCE(copied,imported) DESC,id DESC"
+            "SELECT id,global_id,summary,'',payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) FROM cl_items ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC"
         };
         let mut stmt = db.prepare(sql).map_err(err)?;
         let rows = stmt

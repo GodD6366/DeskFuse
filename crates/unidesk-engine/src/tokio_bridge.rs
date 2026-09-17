@@ -680,6 +680,7 @@ struct ClipboardPrepared {
     result: Result<PasteboardSnapshot, String>,
 }
 struct ClipboardPreparation {
+    id: u64,
     session: String,
     baseline: i64,
     cancel: Arc<AtomicBool>,
@@ -730,6 +731,7 @@ impl ClipboardPreparations {
         self.jobs.insert(
             token,
             ClipboardPreparation {
+                id,
                 session,
                 baseline,
                 cancel: cancel.clone(),
@@ -1816,6 +1818,7 @@ async fn run_worker(
                         clipboard_sync.invalidate_copy(&ui_sender);
                         file_policy.protect_clipboard(&pasteboard);
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(count){return Err("剪贴板已被其他复制替换，未发出粘贴请求".into())}
+                        crate::clipboard_library::global()?.mark_used(job.id)?;
                         Ok(count)
                     });
                     if let Some(destination)=job.destination.take() {

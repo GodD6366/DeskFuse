@@ -11,6 +11,8 @@ struct MenuBarClipboardView: View {
     @State private var query = ""
     @State private var source: String?
     @State private var selectedID: UInt64?
+    @State private var keyboardScrollID: UInt64?
+    @State private var presentationOrder: [UInt64] = []
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var listID: String?
     @AppStorage("unidesk.clipboard.displayMode") private var displayMode: ClipboardDisplayMode = .list
@@ -70,7 +72,15 @@ struct MenuBarClipboardView: View {
     /// disables copy instead of removing a row that already rendered.
     private var items: [HistoryItem] {
         let unavailable = Set(pageItems.lazy.filter { $0.remote == true && $0.available == false }.map(\.id))
-        return baseItems.filter { item in
+        let ranks = Dictionary(uniqueKeysWithValues: presentationOrder.enumerated().map { ($0.element, $0.offset) })
+        let ordered = presentationOrder.isEmpty ? baseItems : baseItems.sorted {
+            let left = ranks[$0.id], right = ranks[$1.id]
+            if let left, let right { return left < right }
+            if left != nil { return false }
+            if right != nil { return true }
+            return ($0.copiedAtMs ?? 0, $0.id) > ($1.copiedAtMs ?? 0, $1.id)
+        }
+        return ordered.filter { item in
             guard item.fileCount > 0 else { return true }
             return !unavailable.contains(item.id)
         }
@@ -83,7 +93,6 @@ struct MenuBarClipboardView: View {
     private var selectedItem: HistoryItem? { items.first { $0.id == selectedID } }
     private var canCopy: Bool {
         selectedItem != nil && store.client != nil && !copying &&
-        !searching && searchError == nil &&
         selectedID.map { id in pageItems.first(where: { $0.id == id })?.available != false } == true &&
         selectedID.map { fileAvailability[$0] != false } == true
     }
@@ -120,6 +129,9 @@ struct MenuBarClipboardView: View {
         .onChange(of: selectedID) { _, _ in dismissPreview() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in calendarRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in calendarRevision += 1 }
+        .onChange(of: query) { _, _ in presentationOrder = [] }
+        .onChange(of: source) { _, _ in presentationOrder = [] }
+        .onChange(of: listID) { _, _ in presentationOrder = [] }
         .onDisappear { endSession() }
     }
 
@@ -242,8 +254,8 @@ struct MenuBarClipboardView: View {
                                 active: panelActive,
                                 availability: { fileAvailability[item.id] = $0 },
                                 onSelect: { selectedID = item.id; searchFocused = false; copyError = nil; requestPayloadIfNeeded(item.id) },
-                                onPaste: { copySelected(paste: true) },
-                                onCopy: { copySelected(paste: false) },
+                                onPaste: { copySelected(paste: true, id: item.id) },
+                                onCopy: { copySelected(paste: false, id: item.id) },
                                 onRename: { library.rename(item.id, title: $0) },
                                 onDelete: { deleteItem(item.id) }
                             )
@@ -276,10 +288,10 @@ struct MenuBarClipboardView: View {
                                         presentation: session, active: panelActive, availability: { available in
                                             fileAvailability[item.id] = available
                                         }, select: { selectedID = item.id; searchFocused = false; copyError = nil; requestPayloadIfNeeded(item.id) },
-                                        onCopy: { selectedID = item.id; copySelected(paste: false) },
+                                        onCopy: { copySelected(paste: false, id: item.id) },
                                         onRename: { library.rename(item.id, title: $0) },
                                         onDelete: { deleteItem(item.id) })
-                                    .simultaneousGesture(TapGesture(count: 2).onEnded { selectedID = item.id; copySelected(paste: true) })
+                                    .simultaneousGesture(TapGesture(count: 2).onEnded { copySelected(paste: true, id: item.id) })
                                     .id(item.id)
                                 }
                             }
@@ -297,7 +309,7 @@ struct MenuBarClipboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onChange(of: selectedID) { _, id in
+            .onChange(of: keyboardScrollID) { _, id in
                 if let id { proxy.scrollTo(id) }
             }
         }
@@ -364,11 +376,24 @@ struct MenuBarClipboardView: View {
         do {
             // Debounce typing, not panel presentation or history refresh.
             if !append && !query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
-            let result = try await library.query(listID: listID, search: query, source: source, offset: append ? (nextOffset ?? 0) : 0)
+            let retainedCount = presentationOrder.isEmpty ? 0 : pageItems.count
+            var result = try await library.query(listID: listID, search: query, source: source, offset: append ? (nextOffset ?? 0) : 0)
+            // A reuse revision must not collapse an already paged presentation
+            // back to 50 rows, moving or dropping the record just clicked.
+            while !append, result.items.count < retainedCount, let offset = result.next_offset {
+                guard !Task.isCancelled, pageRequest == request, requested == searchKey, panelActive else { return }
+                let next = try await library.query(listID: listID, search: query, source: source, offset: offset)
+                result.items += next.items
+                result.next_offset = next.next_offset
+            }
             guard !Task.isCancelled, pageRequest == request, requested == searchKey, panelActive else { return }
             if append {
                 let existing = Set(pageItems.map(\.id)); pageItems += result.items.filter { !existing.contains($0.id) }
             } else { pageItems = result.items }
+            if !presentationOrder.isEmpty {
+                let known = Set(presentationOrder)
+                presentationOrder += result.items.map(\.id).filter { !known.contains($0) }
+            }
             nextOffset = result.next_offset
             for item in result.items where item.has_image && (item.ocr_version ?? 0) < ClipboardOCRIndexer.version {
                 ClipboardOCRIndexer.shared.schedule(item.id, client: store.client)
@@ -381,6 +406,8 @@ struct MenuBarClipboardView: View {
     }
 
     private func beginSession() {
+        presentationOrder = []
+        keyboardScrollID = nil
         commandHeld = NSEvent.modifierFlags.contains(.command)
         session = UUID(); panelActive = true; copying = false; copyError = nil; searchFocused = true
         selectedID = items.first?.id
@@ -464,8 +491,19 @@ struct MenuBarClipboardView: View {
         guard !needle.isEmpty, let text = row?.ocr_text?.lowercased() else { return false }
         return text.contains(needle)
     }
-    private func copySelected(paste: Bool) {
-        guard canCopy, let item = selectedItem, let client = store.client else { return }
+    private func copySelected(paste: Bool, id: UInt64? = nil) {
+        // Resolve the clicked identity directly, not a selection captured by the
+        // previous render. Background metadata refresh must not swallow a copy.
+        guard let id = id ?? selectedID, let item = items.first(where: { $0.id == id }),
+              let client = store.client, !copying else { return }
+        selectedID = id
+        guard pageItems.first(where: { $0.id == id })?.available != false,
+              fileAvailability[id] != false else {
+            requestPayloadIfNeeded(id)
+            copyError = "内容尚未就绪，请等待获取完成后重试。"
+            return
+        }
+        if presentationOrder.isEmpty { presentationOrder = items.map(\.id) }
         let operation = session
         let nativeSession = ClipboardPanelController.shared.session
         let token = nativeSession.uuidString
@@ -556,6 +594,7 @@ struct MenuBarClipboardView: View {
                 let next = min(items.count - 1, max(0, old + (event.keyCode == 125 ? 1 : -1)))
                 selectedID = items[next].id
             }
+            keyboardScrollID = selectedID
             searchFocused = false; copyError = nil; return true
         default: return false
         }
