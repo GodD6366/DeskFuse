@@ -36,7 +36,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::{
     UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender, unbounded_channel,
@@ -2930,7 +2930,11 @@ impl ClipboardLoopGuard {
         }
     }
 
-    fn should_suppress(&mut self, pasteboard: &impl Pasteboard, snapshot: &PasteboardSnapshot) -> bool {
+    fn should_suppress(
+        &mut self,
+        pasteboard: &impl Pasteboard,
+        snapshot: &PasteboardSnapshot,
+    ) -> bool {
         let marker = pasteboard.read_remote_origin_marker().ok().flatten();
         if !snapshot.file_urls.is_empty() {
             // File paths change when a peer receives them into its private

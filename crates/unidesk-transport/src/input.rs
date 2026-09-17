@@ -307,10 +307,7 @@ impl InputHub {
                 return;
             };
             let Some(chosen) = sessions.get(&selected).filter(|s| {
-                s.peer == peer
-                    && s.live()
-                    && s.context.input_eligible()
-                    && s.motion.is_ready()
+                s.peer == peer && s.live() && s.context.input_eligible() && s.motion.is_ready()
             }) else {
                 return;
             };

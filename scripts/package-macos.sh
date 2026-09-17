@@ -17,7 +17,7 @@ for command_name in cargo swift codesign hdiutil lipo security python3 ditto sha
 done
 
 # Public/bootstrap packages never read the maintainer's LAN signing key, allocate
-# a coordinator build number, upload to NAS, or seed the running app's updater.
+# a coordinator build number or seed the running app's updater.
 PACKAGE_MODE=lan
 [[ "${CI:-false}" != "true" ]] || PACKAGE_MODE=bootstrap
 case "${1:-}" in
@@ -94,14 +94,11 @@ if [[ "$PACKAGE_MODE" == bootstrap && -z "$RELEASE_METADATA" ]]; then
   RELEASE_METADATA="$ROOT_DIR/release.json"
 fi
 if [[ "$PACKAGE_MODE" == bootstrap ]]; then
-  echo "distribution: bootstrap (no LAN signing, NAS archive, or local update seed)"
+  echo "distribution: bootstrap (no LAN signing or local update seed)"
 fi
 if [[ -z "$RELEASE_METADATA" ]]; then
-  RELEASE_LEDGER="${UNIDESK_RELEASE_LEDGER:-$HOME/Library/Application Support/uniDesk-release/build-ledger}"
-  mkdir -p "$(dirname "$RELEASE_LEDGER")"
   RELEASE_METADATA="$STAGING_DIR/release.json"
-  cargo run --locked --quiet --package unidesk-update --bin unidesk-release -- \
-    next "$APP_VERSION" "$RELEASE_LEDGER" "$RELEASE_METADATA"
+  "$ROOT_DIR/scripts/prepare-release.sh" --descriptor "$RELEASE_METADATA"
 fi
 python3 "$ROOT_DIR/scripts/release.py" validate --descriptor "$RELEASE_METADATA"
 BUILD_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_number"])' "$RELEASE_METADATA")"
@@ -120,6 +117,21 @@ mkdir -p "$DIST_DIR"
 DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
 printf 'output directory: %s\n' "$DIST_DIR"
+
+if [[ "$PACKAGE_MODE" == lan ]]; then
+  if [[ -e "$DMG_PATH" ]]; then
+    echo "error: package already exists: $DMG_PATH; unset RELEASE_METADATA to allocate a new build" >&2
+    exit 1
+  fi
+  # Preserve the allocated identity even if compilation or signing fails.
+  # The repository descriptor is reserved for prepared public releases.
+  if [[ ! "$RELEASE_METADATA" -ef "$DIST_DIR/release.json" ]]; then
+    cp "$RELEASE_METADATA" "$DIST_DIR/release.json"
+  fi
+  RELEASE_METADATA="$DIST_DIR/release.json"
+  echo "release descriptor: $RELEASE_METADATA"
+  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" ./scripts/package-macos.sh"
+fi
 
 "$ROOT_DIR/scripts/generate-assets.sh"
 
@@ -323,13 +335,7 @@ printf 'update payload: %s\n' "$DIST_DIR/uniDesk-arm64-update.zip"
 printf 'created: %s\n' "$DMG_PATH"
 shasum -a 256 "$DMG_PATH"
 
-# Local releases are also delivered to the user's mounted NAS. CI runners do
-# not have that volume. Failure keeps dist intact so upload can be retried.
-if [[ "$PACKAGE_MODE" == lan && "${CI:-false}" != "true" && "${UNIDESK_NAS_ARCHIVE:-1}" != "0" ]]; then
-  python3 "$ROOT_DIR/scripts/archive-macos.py" --dist "$DIST_DIR" --dmg "$DMG_PATH"
-fi
-
-# Seed the running coordinator only after the full package and NAS delivery pass.
+# Seed the running coordinator only after the full package passes verification.
 # Move a complete sidecar directory; readers never observe a partial manifest.
 if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
   UPDATE_ROOT="$HOME/Library/Application Support/uniDesk/updates"

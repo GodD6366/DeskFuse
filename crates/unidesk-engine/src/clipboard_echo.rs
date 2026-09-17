@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
+use unidesk_core::ClipboardPayload;
 use unidesk_platform::PasteboardSnapshot;
-use unidesk_protocol::ClipboardPayload;
 
 const TTL: Duration = Duration::from_secs(10);
 const CAPACITY: usize = 512;

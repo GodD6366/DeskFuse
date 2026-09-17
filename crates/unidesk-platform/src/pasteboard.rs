@@ -256,9 +256,10 @@ impl Pasteboard for MemoryPasteboard {
         state.file_urls.clear();
         state.items = items.to_vec();
         state.remote_origin_marker = None;
-        state.universal_clipboard = items.iter().flat_map(|item| &item.representations).any(|r| {
-            r.type_name == UNIVERSAL_CLIPBOARD_TYPE
-        });
+        state.universal_clipboard = items
+            .iter()
+            .flat_map(|item| &item.representations)
+            .any(|r| r.type_name == UNIVERSAL_CLIPBOARD_TYPE);
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -286,9 +287,12 @@ impl Pasteboard for MemoryPasteboard {
     }
 
     fn contains_type(&self, type_name: &str) -> PlatformResult<bool> {
-        let state = self.state.lock().map_err(|_| PlatformError::StatePoisoned {
-            provider: "MemoryPasteboard",
-        })?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| PlatformError::StatePoisoned {
+                provider: "MemoryPasteboard",
+            })?;
         if type_name == UNIVERSAL_CLIPBOARD_TYPE && state.universal_clipboard {
             return Ok(true);
         }

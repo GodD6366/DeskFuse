@@ -42,32 +42,30 @@ CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --boo
 ./scripts/verify-dmg.sh dist/bootstrap/uniDesk-arm64.dmg
 ```
 
-本地输出默认位于 `dist/bootstrap/`，使用已提交的根 `release.json`，不分配维护者构建号、不读取 LAN 发行私钥、不上传 NAS、不投递运行中应用的自动更新。显式设置 `DIST_DIR` 可以改输出目录。bootstrap 不是 LAN 自动安装包；`manifest.json` 不生成，也不保留旧清单。所有发行包仍须记录实际签名、公证和验收边界。
+本地输出默认位于 `dist/bootstrap/`，使用已提交的根 `release.json`，不分配维护者构建号、不读取 LAN 发行私钥、不投递运行中应用的自动更新。显式设置 `DIST_DIR` 可以改输出目录。bootstrap 不是 LAN 自动安装包；`manifest.json` 不生成，也不保留旧清单。所有发行包仍须记录实际签名、公证和验收边界。
 
 ## 维护者本地构建／验证
 
 Python 3.11+；已安装仓库固定 Rust 工具链及 aarch64-apple-darwin target。
 
 ```sh
-python3 scripts/release.py validate --tag v0.1.0
-CODESIGN_IDENTITY=- \
-RELEASE_METADATA="$PWD/release.json" \
-UNIDESK_DMG_FINDER_LAYOUT=0 \
 ./scripts/package-macos.sh
-UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/verify-dmg.sh dist/0.1.0-build1/uniDesk-arm64.dmg
 ```
+
+`package-macos.sh` 是唯一打包入口：普通本地打包每次从协调端 ledger 分配新构建号与发行 ID，自动完成构建、签名和 DMG 完整性检查，不需要先运行 prepare，也不读取或修改根 `release.json`。语义版本取自 Cargo.toml；本地打包只递增 build。
+
+新 descriptor 在编译前保存至 `dist/{version}-build{number}/release.json`。失败后可用该文件显式重试，例如：
+
+```sh
+RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
+./scripts/package-macos.sh
+```
+
+此命令仅适用于尚未生成 DMG 的失败构建。已有 DMG 时拒绝覆盖；需要新包就取消 `RELEASE_METADATA`，重新运行默认命令。失败编号不回收，因此构建号跳号本身不代表缺少流程。根 `release.json` 是公开发行输入，不代表最新本地构建；以打包输出目录中的 descriptor 和包内版本为准。`build_and_run.sh` 是开发运行入口，使用 build 0，不分配发行构建号。
 
 无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 bootstrap 的 `dist/bootstrap/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
 打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
-
-本机每次成功打包后，自动归档 DMG、原始 update ZIP、签名 `manifest.json`、`release.json` 和 `SHA256SUMS` 到
-`/Volumes/Share/MAC软件/uniDesk/uniDesk-{version}-build{build_number}/`。
-归档先写入临时目录，核对复制后的 SHA-256 后才发布版本目录；相同内容可重复执行，冲突不会覆盖已有包。
-NAS 未挂载或复制失败时命令报错，本地 `dist/` 产物保留；挂载后可用
-`python3 scripts/archive-macos.py` 补传，无须重新构建或分配构建号。
-CI 不执行 NAS 归档；其他本机可通过 `UNIDESK_NAS_DIR` 指定归档根目录，或显式设置
-`UNIDESK_NAS_ARCHIVE=0` 仅打本地包。
 
 只有从已提交、与产物一致的源码构建后，才能生成对外构建信息：
 
@@ -98,7 +96,7 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-公开仓库同时作为 Homebrew tap（`brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk`）。`Casks/unidesk.rb` 固定 `uniDesk-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 NAS 归档或 LAN 自动更新。
+公开仓库同时作为 Homebrew tap（`brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk`）。`Casks/unidesk.rb` 固定 `uniDesk-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
 
 cask job 下载刚发布的 DMG、重新渲染 cask 并提交到默认分支。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 
@@ -123,9 +121,9 @@ GitHub CI 用 Actions secrets 持有 Developer ID 与公证凭据，不持有 LA
 
 ## 本机 LAN 自动更新
 
-本机协调端的发行私钥固定存于 `~/Library/Application Support/uniDesk-release/signing-key.hex`（0600），公钥固定编译自 `resources/unidesk-release-public-key.hex`。不要重新生成或自动轮换；密钥不随源码、DMG 或 NAS 上传。`UNIDESK_RELEASE_KEY` 仅用于指定同一发行密钥的位置。
+本机协调端的发行私钥固定存于 `~/Library/Application Support/uniDesk-release/signing-key.hex`（0600），公钥固定编译自 `resources/unidesk-release-public-key.hex`。不要重新生成或自动轮换；密钥不随源码或 DMG 分发。`UNIDESK_RELEASE_KEY` 仅用于指定同一发行密钥的位置。
 
-`package-macos.sh` 构建并嵌入 `unidesk-update-helper`，先保留现有 Apple Development 签名，再生成 ZIP、签署并验证发布清单。DMG 内 `.updates/` 保留原始 ZIP 和清单；验证和 NAS 归档通过后，完整资源目录原子发布到 `~/Library/Application Support/uniDesk/updates/inbox/`。运行中的正式应用自动导入并向已配对的物理局域网设备分发。开发包 build 0 不充当安装目标。
+`package-macos.sh` 构建并嵌入 `unidesk-update-helper`，先保留现有 Apple Development 签名，再生成 ZIP、签署并验证发布清单。DMG 内 `.updates/` 保留原始 ZIP 和清单；包完整性验证通过后，完整资源目录原子发布到 `~/Library/Application Support/uniDesk/updates/inbox/`。运行中的正式应用自动导入并向已配对的物理局域网设备分发。开发包 build 0 不充当安装目标。
 
 首次升级到支持此协议的基础包，需要每台 Mac 手动安装一次。之后没有更新开关或逐次确认：下载、验签、安全点安装和重启自动进行；在「设置 → 传输与存储 → 版本与自动更新」查看本机进度、对端版本和真实安装回执。版本列表尚未返回时显示未取得状态。
 

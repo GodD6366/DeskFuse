@@ -183,7 +183,10 @@ impl Library {
             "remote",
             "ALTER TABLE cl_items ADD COLUMN remote INTEGER NOT NULL DEFAULT 0",
         )?;
-        add_column("last_used", "ALTER TABLE cl_items ADD COLUMN last_used INTEGER")?;
+        add_column(
+            "last_used",
+            "ALTER TABLE cl_items ADD COLUMN last_used INTEGER",
+        )?;
         db.execute_batch("CREATE INDEX IF NOT EXISTS cl_items_usage_order ON cl_items(MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);").map_err(err)?;
         let this = Self {
             db: Mutex::new(db),
@@ -300,7 +303,9 @@ impl Library {
             "UPDATE cl_items SET last_used=MAX(?1,COALESCE((SELECT MAX(last_used)+1 FROM cl_items),0)) WHERE id=?2",
             params![now_ms(), id],
         ).map_err(err)?;
-        if updated > 0 { self.changed(); }
+        if updated > 0 {
+            self.changed();
+        }
         Ok(())
     }
 
