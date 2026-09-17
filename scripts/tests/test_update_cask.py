@@ -45,8 +45,17 @@ class UpdateCaskTests(unittest.TestCase):
     def test_expected_cask_uses_workspace_version(self):
         content = update_cask.expected_cask(self.dmg, root=self.root)
         self.assertIn(f'sha256 "{hashlib.sha256(self.dmg.read_bytes()).hexdigest()}"', content)
-        with self.assertRaises(ValueError):
-            update_cask.expected_cask(self.dmg, "0.2.0", self.root)
+        self.assertIn('version "0.1.0"', content)
+
+    def test_explicit_release_version_is_independent_of_default_branch(self):
+        for version in ("0.0.9", "0.2.1"):
+            content = update_cask.expected_cask(self.dmg, version, self.root)
+            self.assertIn(f'version "{version}"', content)
+
+    def test_explicit_invalid_version_is_not_replaced_by_workspace_default(self):
+        for version in ("", "v0.2.1", "0.2"):
+            with self.assertRaises(ValueError):
+                update_cask.expected_cask(self.dmg, version, self.root)
 
     def test_update_writes_then_reports_current(self):
         self.assertTrue(update_cask.update(self.dmg, self.cask, root=self.root))
