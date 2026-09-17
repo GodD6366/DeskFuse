@@ -19,6 +19,8 @@ struct GeneralSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 SettingsGroupCard("系统") {
+                    LoginItemSettingsView()
+                    Divider()
                     settingsToggle("隐藏 Dock 图标", isOn: $hideDockIcon)
                     Divider()
                     Text("隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。")
