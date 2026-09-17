@@ -29,6 +29,7 @@ image = { version = "0.25.9", default-features = false, features = ["tiff", "png
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2.workspace = true
+unicode-normalization = "0.1"
 tokio = { version = "1", features = ["macros", "process", "rt", "sync", "time"] }
 unidesk-input = { path = "../unidesk-input" }
 unidesk-core = { path = "../unidesk-core" }

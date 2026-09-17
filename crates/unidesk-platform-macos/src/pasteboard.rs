@@ -14,13 +14,13 @@ use crate::{PlatformError, PlatformResult};
 
 pub use unidesk_platform::{
     MemoryPasteboard, Pasteboard, PasteboardItem, PasteboardRepresentation, PasteboardSnapshot,
-    REMOTE_ORIGIN_MARKER_TYPE,
+    REMOTE_ORIGIN_MARKER_TYPE, UNIVERSAL_CLIPBOARD_TYPE,
 };
 
 fn is_remote_bookkeeping(type_name: &str) -> bool {
     matches!(
         type_name,
-        REMOTE_ORIGIN_MARKER_TYPE | "com.apple.is-remote-clipboard"
+        REMOTE_ORIGIN_MARKER_TYPE | UNIVERSAL_CLIPBOARD_TYPE
     )
 }
 
@@ -338,6 +338,26 @@ impl Pasteboard for MacOSPasteboard {
         Ok(pasteboard
             .dataForType(&marker_type)
             .and_then(|data| String::from_utf8(data.to_vec()).ok()))
+    }
+
+    fn contains_type(&self, type_name: &str) -> PlatformResult<bool> {
+        let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
+        if pasteboard.types().is_some_and(|types| {
+            (0..types.count()).any(|index| types.objectAtIndex(index).to_string() == type_name)
+        }) {
+            return Ok(true);
+        }
+        if let Some(items) = pasteboard.pasteboardItems() {
+            for index in 0..items.count() {
+                let types = items.objectAtIndex(index).types();
+                if (0..types.count())
+                    .any(|type_index| types.objectAtIndex(type_index).to_string() == type_name)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn write_remote_origin_marker(&self, marker: &str) -> PlatformResult<()> {

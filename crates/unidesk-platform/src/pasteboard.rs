@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /// behalf of a peer. The value is only a content digest; it never contains
 /// clipboard text, image bytes, or a peer identity.
 pub const REMOTE_ORIGIN_MARKER_TYPE: &str = "com.unidesk.clipboard-origin";
+/// Apple Universal Clipboard / 接力在系统剪贴板上打的标记。
+pub const UNIVERSAL_CLIPBOARD_TYPE: &str = "com.apple.is-remote-clipboard";
 
 /// One native representation of a clipboard item. Bytes stay opaque; the
 /// originating application's type identifier is preserved without a whitelist.
@@ -98,6 +100,15 @@ pub trait Pasteboard: Send {
     /// # Errors
     /// Returns an unsupported-operation, native clipboard, permission, or provider-state error.
     fn write_remote_origin_marker(&self, marker: &str) -> PlatformResult<()>;
+
+    /// Whether the current pasteboard declares `type_name`, including types
+    /// omitted from [`Self::read`] snapshots as bookkeeping.
+    ///
+    /// # Errors
+    /// Returns an unsupported-operation, native clipboard, permission, or provider-state error.
+    fn contains_type(&self, _type_name: &str) -> PlatformResult<bool> {
+        Ok(false)
+    }
 }
 
 /// Deterministic pasteboard used by unit tests.
@@ -114,6 +125,7 @@ struct MemoryPasteboardState {
     file_urls: Vec<String>,
     remote_origin_marker: Option<String>,
     items: Vec<PasteboardItem>,
+    universal_clipboard: bool,
 }
 
 impl MemoryPasteboard {
@@ -123,6 +135,17 @@ impl MemoryPasteboard {
             change_count: AtomicI64::new(0),
             state: std::sync::Mutex::new(MemoryPasteboardState::default()),
         }
+    }
+
+    /// 测试用：把当前内容标成接力回写，不新增一代剪贴板。
+    pub fn mark_universal_clipboard(&self) -> PlatformResult<()> {
+        self.state
+            .lock()
+            .map_err(|_| PlatformError::StatePoisoned {
+                provider: "MemoryPasteboard",
+            })?
+            .universal_clipboard = true;
+        Ok(())
     }
 }
 
@@ -159,6 +182,7 @@ impl Pasteboard for MemoryPasteboard {
         state.file_urls.clear();
         state.remote_origin_marker = None;
         state.items.clear();
+        state.universal_clipboard = false;
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -175,6 +199,7 @@ impl Pasteboard for MemoryPasteboard {
         state.file_urls.clear();
         state.remote_origin_marker = None;
         state.items.clear();
+        state.universal_clipboard = false;
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -191,6 +216,7 @@ impl Pasteboard for MemoryPasteboard {
         state.file_urls = paths.to_vec();
         state.remote_origin_marker = None;
         state.items.clear();
+        state.universal_clipboard = false;
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -230,6 +256,9 @@ impl Pasteboard for MemoryPasteboard {
         state.file_urls.clear();
         state.items = items.to_vec();
         state.remote_origin_marker = None;
+        state.universal_clipboard = items.iter().flat_map(|item| &item.representations).any(|r| {
+            r.type_name == UNIVERSAL_CLIPBOARD_TYPE
+        });
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -254,5 +283,19 @@ impl Pasteboard for MemoryPasteboard {
             .remote_origin_marker = Some(marker.to_owned());
         self.change_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn contains_type(&self, type_name: &str) -> PlatformResult<bool> {
+        let state = self.state.lock().map_err(|_| PlatformError::StatePoisoned {
+            provider: "MemoryPasteboard",
+        })?;
+        if type_name == UNIVERSAL_CLIPBOARD_TYPE && state.universal_clipboard {
+            return Ok(true);
+        }
+        Ok(state
+            .items
+            .iter()
+            .flat_map(|item| &item.representations)
+            .any(|rep| rep.type_name == type_name))
     }
 }

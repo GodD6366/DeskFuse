@@ -36,7 +36,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::{
     UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender, unbounded_channel,
@@ -2895,12 +2895,15 @@ fn trusted_connected_peer_ids(view: &SnapshotView) -> Vec<DeviceId> {
 #[derive(Debug)]
 struct ClipboardLoopGuard {
     recent_remote_fingerprints: VecDeque<(i64, String)>,
+    /// 本地/远端/marker 共用的等价指纹账本。接力会剥掉自定义 type。
+    ledger: crate::clipboard_echo::ContentLedger,
 }
 
 impl Default for ClipboardLoopGuard {
     fn default() -> Self {
         Self {
             recent_remote_fingerprints: VecDeque::with_capacity(64),
+            ledger: crate::clipboard_echo::ContentLedger::default(),
         }
     }
 }
@@ -2913,6 +2916,8 @@ impl ClipboardLoopGuard {
             clipboard_fingerprint(&payload.mime, &payload.data),
             change_count,
         );
+        self.ledger
+            .observe(crate::clipboard_echo::payload_equivalent_ids(payload));
     }
 
     fn remember(&mut self, fingerprint: String, change_count: i64) {
@@ -2925,7 +2930,7 @@ impl ClipboardLoopGuard {
         }
     }
 
-    fn should_suppress(&self, pasteboard: &impl Pasteboard, snapshot: &PasteboardSnapshot) -> bool {
+    fn should_suppress(&mut self, pasteboard: &impl Pasteboard, snapshot: &PasteboardSnapshot) -> bool {
         let marker = pasteboard.read_remote_origin_marker().ok().flatten();
         if !snapshot.file_urls.is_empty() {
             // File paths change when a peer receives them into its private
@@ -2944,9 +2949,16 @@ impl ClipboardLoopGuard {
         if marker.is_some_and(|marker| marker == fingerprint) {
             return true;
         }
-        self.recent_remote_fingerprints
+        if self
+            .recent_remote_fingerprints
             .iter()
             .any(|(count, candidate)| *count == snapshot.change_count && candidate == &fingerprint)
+        {
+            return true;
+        }
+        // 第 3 层：不依赖接力是否保留自定义 type。命中任一等价指纹即回声。
+        self.ledger
+            .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot))
     }
 }
 
@@ -4686,14 +4698,31 @@ mod tests {
         let local = pasteboard.read().expect("read local clipboard");
         assert!(!loop_guard.should_suppress(&pasteboard, &local));
 
-        // A user may copy content received earlier after another network copy.
-        // Its new pasteboard generation must be allowed back to every member.
+        // 10 秒账本窗口内，同一段文字的再次出现视为回声（含接力改写）。
         pasteboard
             .write_text("from peer")
             .expect("recopy old remote text");
         let recopied = pasteboard.read().unwrap();
         assert!(recopied.change_count > received.change_count);
-        assert!(!loop_guard.should_suppress(&pasteboard, &recopied));
+        assert!(loop_guard.should_suppress(&pasteboard, &recopied));
+    }
+
+    #[test]
+    fn handoff_echo_of_a_local_copy_is_suppressed() {
+        let pasteboard = MemoryPasteboard::new();
+        let mut loop_guard = ClipboardLoopGuard::default();
+        pasteboard.write_text("帮我安装 kimi code").unwrap();
+        let local = pasteboard.read().unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+
+        pasteboard.write_text("帮我安装 kimi code\r\n").unwrap();
+        let echoed = pasteboard.read().unwrap();
+        assert!(echoed.change_count > local.change_count);
+        assert!(loop_guard.should_suppress(&pasteboard, &echoed));
+
+        pasteboard.write_text("另一段文字").unwrap();
+        let incoming = pasteboard.read().unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &incoming));
     }
 
     #[test]

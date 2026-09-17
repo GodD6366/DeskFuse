@@ -382,7 +382,7 @@ impl Library {
         let bytes = encode(snapshot, source)?;
         let mut db = self.db.lock().map_err(err)?;
         let tx = db.transaction().map_err(err)?;
-        let found: Option<u64> = tx
+        let mut found: Option<u64> = tx
             .query_row(
                 "SELECT id FROM cl_items WHERE digest=?1 AND ordinary=1 LIMIT 1",
                 [&fingerprint],
@@ -390,6 +390,21 @@ impl Library {
             )
             .optional()
             .map_err(err)?;
+        // 接力回写可能带上 TIFF 预览，digest 方案变了；用已有纯文本行兜底合并。
+        if found.is_none()
+            && snapshot.file_urls.is_empty()
+            && snapshot.png.is_none()
+            && let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty())
+        {
+            found = tx
+                .query_row(
+                    "SELECT id FROM cl_items WHERE ordinary=1 AND search_text=?1 AND json_extract(summary,'$.kind')='text' LIMIT 1",
+                    [crate::clipboard_echo::normalize_clipboard_text(text).to_lowercase()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(err)?;
+        }
         let id = if let Some(id) = found {
             id
         } else {
@@ -402,7 +417,13 @@ impl Library {
         };
         let s = summary(id, snapshot, &origin);
         let blob_hash = hex::encode(Sha256::digest(&bytes));
-        tx.execute("UPDATE cl_items SET payload=?1,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7 WHERE id=?8",params![bytes,serde_json::to_string(&s).map_err(err)?,snapshot.text.as_deref().unwrap_or("").to_lowercase(),origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id]).map_err(err)?;
+        let search = snapshot
+            .text
+            .as_deref()
+            .map(crate::clipboard_echo::normalize_clipboard_text)
+            .unwrap_or_default()
+            .to_lowercase();
+        tx.execute("UPDATE cl_items SET payload=?1,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7 WHERE id=?8",params![bytes,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id]).map_err(err)?;
         tx.commit().map_err(err)?;
         drop(db);
         self.changed();
@@ -1701,30 +1722,35 @@ fn project_image_file(summary: &mut Summary) {
         summary.has_image = true;
     }
 }
-fn is_image_snapshot(s: &PasteboardSnapshot) -> bool {
-    s.png.is_some()
-        || s.items.iter().flat_map(|i| &i.representations).any(|r| {
-            ["public.png", "public.jpeg", "public.tiff", "public.heic"]
-                .contains(&r.type_name.as_str())
-        })
-}
 /// Identity used to collapse the same logical content into one history row.
 ///
 /// The exact `digest` covers every pasted representation, so a synced copy and
 /// a richer local capture of the same text get different digests and used to
-/// create two rows. Plain text is therefore keyed by its bytes; files keep the
-/// exact digest because equal names can still mean different content.
+/// create two rows. Plain text is therefore keyed by its bytes even when a
+/// TIFF preview is attached (Handoff often adds one). Real PNG/JPEG/HEIC
+/// copies keep the full digest so captions do not merge different images.
+/// Files keep the exact digest because equal names can still mean different content.
 fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
     if snapshot.file_urls.is_empty()
-        && !is_image_snapshot(snapshot)
-        && let Some(text) = &snapshot.text
+        && !is_primary_image(snapshot)
+        && let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty())
     {
-        let mut buf = Vec::with_capacity(text.len() + 5);
+        let normalized = crate::clipboard_echo::normalize_clipboard_text(text);
+        let mut buf = Vec::with_capacity(normalized.len() + 5);
         buf.extend_from_slice(b"text\0");
-        buf.extend_from_slice(text.as_bytes());
+        buf.extend_from_slice(normalized.as_bytes());
         return Ok(hex::encode(Sha256::digest(&buf)));
     }
     digest(snapshot)
+}
+fn is_primary_image(s: &PasteboardSnapshot) -> bool {
+    s.png.is_some()
+        || s.items.iter().flat_map(|i| &i.representations).any(|r| {
+            matches!(
+                r.type_name.as_str(),
+                "public.png" | "public.jpeg" | "public.heic"
+            )
+        })
 }
 fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
     let lan_photo = s
@@ -1913,4 +1939,46 @@ fn member_winner(db: &Connection, key: &str) -> Result<Value> {
                 ))
         })
         .ok_or_else(|| "成员操作缺失".into())
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    use unidesk_platform::{PasteboardItem, PasteboardRepresentation};
+
+    fn text(value: &str) -> PasteboardSnapshot {
+        PasteboardSnapshot {
+            text: Some(value.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tiff_preview_shares_plain_text_digest() {
+        let mut with_preview = text("帮我安装 kimi code");
+        with_preview.items = vec![PasteboardItem {
+            representations: vec![PasteboardRepresentation {
+                type_name: "public.tiff".into(),
+                data: vec![0, 1, 2],
+            }],
+        }];
+        assert_eq!(
+            content_digest(&text("帮我安装 kimi code")).unwrap(),
+            content_digest(&with_preview).unwrap()
+        );
+        assert_eq!(
+            content_digest(&text("a\r\nb")).unwrap(),
+            content_digest(&text("a\nb")).unwrap()
+        );
+    }
+
+    #[test]
+    fn real_png_keeps_its_own_digest() {
+        let mut image = text("caption");
+        image.png = Some(vec![137, 80, 78, 71]);
+        assert_ne!(
+            content_digest(&text("caption")).unwrap(),
+            content_digest(&image).unwrap()
+        );
+    }
 }

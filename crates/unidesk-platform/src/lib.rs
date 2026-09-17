@@ -10,7 +10,7 @@ mod permissions;
 pub use error::{PlatformError, PlatformResult};
 pub use pasteboard::{
     MemoryPasteboard, Pasteboard, PasteboardItem, PasteboardRepresentation, PasteboardSnapshot,
-    REMOTE_ORIGIN_MARKER_TYPE,
+    REMOTE_ORIGIN_MARKER_TYPE, UNIVERSAL_CLIPBOARD_TYPE,
 };
 pub use permissions::{PermissionKind, PermissionService, PermissionSnapshot, PermissionStatus};
 
