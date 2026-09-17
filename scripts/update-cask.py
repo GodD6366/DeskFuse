@@ -54,9 +54,10 @@ end
 
 
 def expected_cask(dmg: Path, version: str | None = None, root: Path = ROOT) -> str:
-    resolved = version or workspace_version(root)
-    if resolved != workspace_version(root):
-        raise ValueError("cask version must match the workspace version")
+    # The post-release job runs on the default branch, which may be ahead of
+    # or behind the published tag. An explicit version identifies the release;
+    # only local calls without --version inherit the workspace version.
+    resolved = workspace_version(root) if version is None else version
     if not dmg.is_file():
         raise FileNotFoundError(f"DMG not found: {dmg}")
     return render(resolved, checksum(dmg))
