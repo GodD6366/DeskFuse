@@ -32,6 +32,7 @@ struct PendingApply {
     expected_revision: NativeRevision,
 }
 
+#[derive(Default)]
 struct SyncState {
     local_generation: u64,
     last_local_capture_ms: u64,
@@ -40,20 +41,6 @@ struct SyncState {
     received_operations: HashMap<DeviceId, u64>,
     applying: bool,
     last_error: Option<String>,
-}
-
-impl Default for SyncState {
-    fn default() -> Self {
-        Self {
-            local_generation: 0,
-            last_local_capture_ms: 0,
-            active_operation: None,
-            pending_applies: VecDeque::new(),
-            received_operations: HashMap::new(),
-            applying: false,
-            last_error: None,
-        }
-    }
 }
 
 /// Clipboard synchronization shared by every host.

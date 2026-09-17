@@ -8,20 +8,11 @@ use tokio::sync::{RwLock, mpsc};
 use unidesk_core::{DeviceId, SharedInputEvent};
 use unidesk_platform::ports::InputExecutionPort;
 
+#[derive(Default)]
 struct LeaseState {
     controller: Option<DeviceId>,
     pressed_keys: BTreeSet<u16>,
     generation: u64,
-}
-
-impl Default for LeaseState {
-    fn default() -> Self {
-        Self {
-            controller: None,
-            pressed_keys: BTreeSet::new(),
-            generation: 0,
-        }
-    }
 }
 
 /// Coordinates a single active input lease and releases keys on expiry.
