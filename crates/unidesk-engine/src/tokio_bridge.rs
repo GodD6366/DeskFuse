@@ -4715,7 +4715,7 @@ mod tests {
     fn handoff_echo_of_a_local_copy_is_suppressed() {
         let pasteboard = MemoryPasteboard::new();
         let mut loop_guard = ClipboardLoopGuard::default();
-        pasteboard.write_text("帮我安装 kimi code").unwrap();
+        pasteboard.write_text("帮我安装 kimi code\n").unwrap();
         let local = pasteboard.read().unwrap();
         assert!(!loop_guard.should_suppress(&pasteboard, &local));
 
@@ -4723,6 +4723,10 @@ mod tests {
         let echoed = pasteboard.read().unwrap();
         assert!(echoed.change_count > local.change_count);
         assert!(loop_guard.should_suppress(&pasteboard, &echoed));
+
+        // Adding/removing a trailing newline changes the actual content.
+        pasteboard.write_text("帮我安装 kimi code").unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();

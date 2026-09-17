@@ -132,7 +132,17 @@ fn whitespace_and_text_beyond_display_limit_are_not_discarded() {
     let prefix = "x".repeat(32_000);
     history.record(text(&format!("{prefix}a")), "本机", &sender);
     history.record(text(&format!("{prefix}b")), "远端", &sender);
-    assert_eq!(history.items.len(), 6);
+    // LF and CRLF are equivalent; trailing spaces/newlines and the full
+    // (untruncated) text still distinguish different history entries.
+    assert_eq!(history.items.len(), 5);
+    let stored: Vec<_> = history
+        .items
+        .iter()
+        .filter_map(|(_, s)| s.text.as_deref())
+        .collect();
+    assert!(stored.contains(&"A"));
+    assert!(stored.contains(&"A "));
+    assert!(stored.contains(&"A\r\n"));
     assert_eq!(history.items[0].0.content, history.items[1].0.content);
     assert!(history.items[0].0.content_truncated);
 }
