@@ -2442,14 +2442,14 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unidesk-bindgen"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "uniffi",
 ]
 
 [[package]]
 name = "unidesk-collaboration"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-content-library"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "tempfile",
  "tokio",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-discovery"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "mdns-sd",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-extension-update"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "unidesk-collaboration",
  "unidesk-update",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-ffi"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "serde_json",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-identity"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-input"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-input-macos"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "tokio",
  "unidesk-collaboration",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-input-windows"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "tokio",
  "unidesk-collaboration",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-lan-web"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "axum",
  "tokio",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-platform"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-platform-macos"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "block2",
  "core-foundation",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-platform-windows"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "png",
  "serde",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-probe"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "prost",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-protocol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bytes",
  "ed25519-dalek",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-runtime"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-sdk"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2733,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-service"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64",
  "bincode",
@@ -2759,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-store"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rusqlite",
  "serde",
@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-store-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-store-library"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-transfer"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "flate2",
  "rustix",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-transport"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -2825,7 +2825,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-update"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-workflow"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "thiserror",
  "unidesk-collaboration",
