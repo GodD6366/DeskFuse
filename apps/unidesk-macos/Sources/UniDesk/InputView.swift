@@ -27,9 +27,8 @@ struct InputView: View {
                         }
                         if let error = snapshot.input.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                         if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
-                        layout(height: max(300, geometry.size.height - 260))
+                        layout(height: max(300, geometry.size.height - 220))
                         participantList
-                        reclaimBar
                     }.padding(28).frame(maxWidth: .infinity, alignment: .topLeading)
                 } else {
                     receiverState
@@ -74,7 +73,7 @@ struct InputView: View {
                     .modifier(NativeGlassAction())
                     .disabled(snapshot.input.managedPaused)
             } else {
-                Button("在此 Mac 启用主控") { setControllerEnabled(true) }
+                Button("在此 Mac 启用主控") { enableAsController() }
                     .modifier(NativeGlassAction())
             }
         }.frame(maxWidth: 520)
@@ -88,29 +87,43 @@ struct InputView: View {
     }
 
     private var headerActions: some View {
-        NativeGlassGroup {
-            HStack(alignment: .center, spacing: 12) {
-                WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
-                    showSettings = true
+        HStack(alignment: .center, spacing: 12) {
+            NativeGlassGroup {
+                HStack(alignment: .center, spacing: 12) {
+                    WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
+                        showSettings = true
+                    }
+                    sharingControl
                 }
-                sharingControl
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(updatingSettings)
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .disabled(updatingSettings)
+            WorkspaceChromeButton("紧急收回", systemImage: "arrow.uturn.backward", help: "立即收回键鼠控制（⌃⌥⌘ Esc）", prominent: true) {
+                store.reclaim()
+            }
         }
     }
 
     private var sharingControl: some View {
-        Toggle("共享键鼠", isOn: Binding(get: { snapshot.input.settings.enabled }, set: setControllerEnabled))
+        Toggle("共享键鼠", isOn: Binding(get: { snapshot.input.settings.enabled }, set: setSharingEnabled))
             .toggleStyle(.switch).controlSize(.small).fixedSize()
             .modifier(WorkspaceControlLabel())
             .modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
     }
 
-    private func setControllerEnabled(_ enabled: Bool) {
+    /// 只打开共享开关。未担任主控时一并设为主控，否则无法共享。
+    private func setSharingEnabled(_ enabled: Bool) {
         var settings = (store.snapshot ?? snapshot).input.settings
         settings.enabled = enabled
+        if enabled { settings.controller = true }
+        applySettings(settings)
+    }
+
+    /// 成为主控但不自动打开共享，避免新设备默认开始注入键鼠。
+    private func enableAsController() {
+        var settings = (store.snapshot ?? snapshot).input.settings
         settings.controller = true
+        settings.enabled = false
         applySettings(settings)
     }
 
@@ -224,15 +237,6 @@ struct InputView: View {
                     .help("从排布移除 \(name) 的全部屏幕，停止向该设备共享键鼠；不会解除配对。")
             }
         }.padding(.vertical, 12)
-    }
-
-    private var reclaimBar: some View {
-        HStack(spacing: 12) {
-            Text("紧急收回").font(.callout.weight(.semibold))
-            Text("⌃⌥⌘ Esc").font(.caption.monospaced()).foregroundStyle(.secondary)
-            Spacer()
-            Button("现在收回") { store.reclaim() }
-        }.padding(14).modifier(NativeGlassSurface(cornerRadius: 12))
     }
 }
 

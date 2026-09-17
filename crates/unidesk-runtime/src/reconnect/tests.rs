@@ -266,7 +266,7 @@ async fn failed_routes_retry_with_backoff_and_reset_after_success() {
 }
 
 #[tokio::test]
-async fn manual_disconnect_is_temporary_and_connected_discovery_is_idempotent() {
+async fn connected_discovery_is_idempotent() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
     let (peer, _) = add_peer(&mut actor, &transport, 83);
@@ -274,12 +274,28 @@ async fn manual_disconnect_is_temporary_and_connected_discovery_is_idempotent() 
     actor.reconnect_after_discovery(peer).await;
     actor.system_woke().await;
     assert_eq!(transport.started.load(Ordering::Relaxed), 1);
+    assert_eq!(actor.peers[&peer].connection, ConnectionState::Connected);
+}
+
+#[tokio::test]
+async fn manual_disconnect_holds_until_explicit_connect() {
+    let transport = ProbeTransport::default();
+    let mut actor = actor(transport.clone());
+    let (peer, _) = add_peer(&mut actor, &transport, 83);
+    connect(&mut actor, peer).await;
     actor
         .handle_command(RuntimeCommand::Disconnect { peer_id: peer })
         .await;
+    assert_eq!(actor.peers[&peer].connection, ConnectionState::Disconnected);
+    actor.reconnect_after_discovery(peer).await;
+    actor.system_woke().await;
+    actor.auto_connect_trusted_peers().await;
     actor.recovery_tick().await;
-    expire(&mut actor, peer);
-    actor.recovery_tick().await;
+    assert_eq!(actor.peers[&peer].connection, ConnectionState::Disconnected);
+    assert!(actor.recovery.attempts.is_empty());
+    actor
+        .handle_command(RuntimeCommand::Connect { peer_id: peer })
+        .await;
     complete(&mut actor).await;
     assert_eq!(actor.peers[&peer].connection, ConnectionState::Connected);
 }

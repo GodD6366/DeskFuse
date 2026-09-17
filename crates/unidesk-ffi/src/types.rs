@@ -630,7 +630,7 @@ impl From<&EngineState> for EngineSnapshot {
         let m = &s.model;
         let input = &m.input_sharing;
         let local = m.local.id.clone();
-        let devices = m
+        let mut devices = m
             .network_graph_peers()
             .into_iter()
             .chain(m.discovered_peers.iter())
@@ -663,6 +663,13 @@ impl From<&EngineState> for EngineSnapshot {
                 }
                 devices
             });
+        // 已连接排在前面；同组再按名称，避免刷新时跳动。
+        devices.sort_by(|a, b| {
+            b.connected
+                .cmp(&a.connected)
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         let displays = local
             .parse::<core::DeviceId>()
             .ok()

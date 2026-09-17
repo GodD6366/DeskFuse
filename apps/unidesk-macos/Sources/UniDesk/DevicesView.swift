@@ -15,7 +15,16 @@ struct DevicesView: View {
     @FocusState private var searchFocused: Bool
 
     private var matches: [Device] {
-        snapshot.devices.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.endpoint.localizedCaseInsensitiveContains(search) || $0.routes.contains { $0.endpoint.localizedCaseInsensitiveContains(search) } }
+        snapshot.devices.filter {
+            search.isEmpty
+                || $0.name.localizedCaseInsensitiveContains(search)
+                || $0.endpoint.localizedCaseInsensitiveContains(search)
+                || $0.routes.contains { $0.endpoint.localizedCaseInsensitiveContains(search) }
+        }
+        .sorted { lhs, rhs in
+            if lhs.connected != rhs.connected { return lhs.connected && !rhs.connected }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     var body: some View {
@@ -73,6 +82,13 @@ struct DevicesView: View {
                         TextField("192.168.1.10", text: $ip).textFieldStyle(.roundedBorder).onSubmit(pairByIP)
                         Button("配对", action: pairByIP).disabled(ip.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                    if snapshot.networkId != nil {
+                        Divider().padding(.vertical, 6)
+                        Button("退出设备网络", role: .destructive) { confirmLeave = true }
+                            .buttonStyle(.plain)
+                        Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }.padding(20)
             }
             .frame(minWidth: 240, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
@@ -102,10 +118,6 @@ struct DevicesView: View {
                                                description: Text("选择设备查看详情，或搜索附近设备。"))
                             .frame(maxWidth: .infinity)
                     }
-                    if snapshot.networkId != nil {
-                        Divider()
-                        Button("退出设备网络", role: .destructive) { confirmLeave = true }.buttonStyle(.plain)
-                    }
                 }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
@@ -123,6 +135,8 @@ struct DevicesView: View {
         }
         .confirmationDialog("退出当前设备网络？", isPresented: $confirmLeave) {
             Button("退出网络", role: .destructive) { store.send(.leaveNetwork) }
+        } message: {
+            Text("这会解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
         }
     }
 

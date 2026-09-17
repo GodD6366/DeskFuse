@@ -640,6 +640,12 @@ pub trait RuntimeStore: Send + Sync {
     ) -> Result<(), RuntimeError> {
         Err(RuntimeError::Store("route preferences unavailable".into()))
     }
+    fn reconnect_suspended(&self) -> Result<BTreeSet<DeviceId>, RuntimeError> {
+        Ok(BTreeSet::new())
+    }
+    fn set_reconnect_suspended(&self, _peers: BTreeSet<DeviceId>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 
     fn set_input_sharing_settings_and_policy(
         &self,
@@ -724,6 +730,13 @@ where
         preferences: BTreeMap<DeviceId, unidesk_core::RoutePreference>,
     ) -> Result<(), RuntimeError> {
         SettingsStore::set_route_preferences(self, preferences)
+            .map_err(|e| RuntimeError::Store(e.to_string()))
+    }
+    fn reconnect_suspended(&self) -> Result<BTreeSet<DeviceId>, RuntimeError> {
+        SettingsStore::get_reconnect_suspended(self).map_err(|e| RuntimeError::Store(e.to_string()))
+    }
+    fn set_reconnect_suspended(&self, peers: BTreeSet<DeviceId>) -> Result<(), RuntimeError> {
+        SettingsStore::set_reconnect_suspended(self, peers)
             .map_err(|e| RuntimeError::Store(e.to_string()))
     }
     fn set_input_sharing_settings_and_policy(
@@ -2627,7 +2640,7 @@ impl Actor {
             RuntimeCommand::RequestPairingAt { endpoint } => self.request_pairing_at(endpoint),
             RuntimeCommand::LeaveDeviceNetwork => self.leave_device_network().await,
             RuntimeCommand::RequestPairing { peer_id } => {
-                self.resume_reconnect(peer_id);
+                self.resume_reconnect(peer_id).await;
                 self.request_network_pairing(peer_id).await
             }
             RuntimeCommand::SetRoutePreference {
@@ -2641,7 +2654,7 @@ impl Actor {
                 match task::spawn_blocking(move || store.set_route_preferences(saved)).await {
                     Ok(Ok(())) => {
                         self.device_network.route_preferences = preferences;
-                        self.resume_reconnect(peer_id);
+                        self.resume_reconnect(peer_id).await;
                         self.restart_after_active_route_change(peer_id, true).await;
                     }
                     Ok(Err(error)) => self.emit_error(error),
@@ -2650,7 +2663,7 @@ impl Actor {
                 self.publish();
             }
             RuntimeCommand::Connect { peer_id } => {
-                self.resume_reconnect(peer_id);
+                self.resume_reconnect(peer_id).await;
                 if self.transport.supports_network_pairing() && !self.trusted.contains(&peer_id) {
                     self.request_network_pairing(peer_id).await;
                 } else {
@@ -2661,7 +2674,8 @@ impl Actor {
                 if !self.peers.contains_key(&peer_id) {
                     self.emit_error(RuntimeError::UnknownPeer(peer_id));
                 } else {
-                    self.cancel_reconnect(peer_id).await;
+                    // 用户主动断开后保持挂起：发现、唤醒、刷新都不会自动连回。
+                    self.suspend_reconnect(peer_id).await;
                     let result = self.transport.disconnect(peer_id).await;
                     if let Err(error) = result {
                         self.emit_error(error);
@@ -3373,6 +3387,7 @@ impl Actor {
     }
 
     async fn revoke_peer(&mut self, peer_id: DeviceId) {
+        self.resume_reconnect(peer_id).await;
         self.cancel_reconnect(peer_id).await;
         // Block first, before awaiting either persistence or transport. This
         // closes the race where a queued hint/bootstrap could otherwise
@@ -3412,6 +3427,7 @@ impl Actor {
     }
 
     async fn forget_peer(&mut self, peer_id: DeviceId) {
+        self.resume_reconnect(peer_id).await;
         self.cancel_reconnect(peer_id).await;
         if !self.peers.contains_key(&peer_id) {
             self.emit_error(RuntimeError::UnknownPeer(peer_id));

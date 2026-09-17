@@ -211,6 +211,12 @@ impl Actor {
             Ok(Err(error)) => self.emit_error(error),
             Err(error) => self.emit_error(RuntimeError::Store(error.to_string())),
         }
+        let store = self.persistence.clone();
+        match task::spawn_blocking(move || store.reconnect_suspended()).await {
+            Ok(Ok(suspended)) => self.restore_reconnect_suspended(suspended),
+            Ok(Err(error)) => self.emit_error(error),
+            Err(error) => self.emit_error(RuntimeError::Store(error.to_string())),
+        }
 
         let store = self.persistence.clone();
         match task::spawn_blocking(move || {
@@ -1036,7 +1042,7 @@ impl Actor {
             .await
             .map_err(invalid)?
             .map_err(invalid)?;
-        self.resume_reconnect(peer);
+        self.resume_reconnect(peer).await;
         self.trusted.insert(peer);
         self.register_peer_identity(peer, member.public_key).await?;
         let existing_route = self

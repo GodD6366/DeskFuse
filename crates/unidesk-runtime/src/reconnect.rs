@@ -252,12 +252,28 @@ impl Actor {
                 .is_some_and(|p| p.trust == TrustState::Trusted)
     }
 
-    pub(super) fn resume_reconnect(&mut self, peer: DeviceId) {
-        self.recovery.suspended.remove(&peer);
+    pub(super) fn restore_reconnect_suspended(&mut self, peers: BTreeSet<DeviceId>) {
+        self.recovery.suspended = peers;
+    }
+    pub(super) async fn resume_reconnect(&mut self, peer: DeviceId) {
+        if self.recovery.suspended.remove(&peer) {
+            self.persist_reconnect_suspended().await;
+        }
     }
     pub(super) async fn suspend_reconnect(&mut self, peer: DeviceId) {
         self.cancel_reconnect(peer).await;
-        self.recovery.suspended.insert(peer);
+        if self.recovery.suspended.insert(peer) {
+            self.persist_reconnect_suspended().await;
+        }
+    }
+    async fn persist_reconnect_suspended(&mut self) {
+        let suspended = self.recovery.suspended.clone();
+        let store = self.persistence.clone();
+        match task::spawn_blocking(move || store.set_reconnect_suspended(suspended)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => self.emit_error(error),
+            Err(error) => self.emit_error(RuntimeError::Store(error.to_string())),
+        }
     }
     fn recovery_event(
         &self,

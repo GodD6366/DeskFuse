@@ -312,6 +312,14 @@ pub trait SettingsStore: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+    /// Load peers the user explicitly disconnected until they click connect.
+    fn get_reconnect_suspended(&self) -> Result<std::collections::BTreeSet<DeviceId>> {
+        Ok(Default::default())
+    }
+    /// Persist the manual-disconnect hold set.
+    fn set_reconnect_suspended(&self, _peers: std::collections::BTreeSet<DeviceId>) -> Result<()> {
+        Ok(())
+    }
     /// Load settings, applying safe defaults for missing legacy keys.
     fn get_settings(&self) -> Result<Settings>;
     /// Replace settings.
@@ -937,6 +945,25 @@ impl SettingsStore for SQLiteStore {
     ) -> Result<()> {
         let value = serde_json::to_string(&preferences).map_err(StoreError::Serialization)?;
         self.lock_connection()?.execute("INSERT INTO settings (key,value) VALUES ('route_preferences',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])?;
+        Ok(())
+    }
+    fn get_reconnect_suspended(&self) -> Result<std::collections::BTreeSet<DeviceId>> {
+        let connection = self.lock_connection()?;
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'reconnect_suspended'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        value
+            .map(|value| serde_json::from_str(&value).map_err(StoreError::Serialization))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+    fn set_reconnect_suspended(&self, peers: std::collections::BTreeSet<DeviceId>) -> Result<()> {
+        let value = serde_json::to_string(&peers).map_err(StoreError::Serialization)?;
+        self.lock_connection()?.execute("INSERT INTO settings (key,value) VALUES ('reconnect_suspended',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])?;
         Ok(())
     }
     fn get_settings(&self) -> Result<Settings> {
@@ -1958,6 +1985,24 @@ mod input_store_tests {
             )
             .unwrap();
         assert!(!store.get_input_sharing_settings().unwrap().enabled);
+    }
+
+    #[test]
+    fn reconnect_suspended_round_trips_and_defaults_empty() {
+        let store = SQLiteStore::in_memory().unwrap();
+        assert!(store.get_reconnect_suspended().unwrap().is_empty());
+        let peer = DeviceId::from_bytes([9; 32]);
+        store
+            .set_reconnect_suspended(std::collections::BTreeSet::from([peer]))
+            .unwrap();
+        assert_eq!(
+            store.get_reconnect_suspended().unwrap(),
+            std::collections::BTreeSet::from([peer])
+        );
+        store
+            .set_reconnect_suspended(std::collections::BTreeSet::new())
+            .unwrap();
+        assert!(store.get_reconnect_suspended().unwrap().is_empty());
     }
 }
 
