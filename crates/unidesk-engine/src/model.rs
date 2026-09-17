@@ -917,10 +917,11 @@ fn local_device(id: DeviceId, status: RuntimeStatus) -> Device {
 }
 
 fn device_from_peer(peer: &unidesk_core::PeerSnapshot) -> Device {
+    // Display the actually selected route, not a fallback candidate.
+    // When connected, selected_route must exist and be valid per core validation.
     let route = peer
         .selected_route
-        .and_then(|id| peer.routes.iter().find(|route| route.id == id))
-        .or_else(|| peer.routes.first());
+        .and_then(|id| peer.routes.iter().find(|route| route.id == id));
     let route_source = route.map_or(RouteSource::Direct, |route| map_route_source(route.source));
     let endpoint = route.map_or_else(
         || "无可用端点".to_owned(),

@@ -21,7 +21,7 @@ use unidesk_protocol::{MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, encode_
 const MAX_CONTROL_SLOTS: usize = 8;
 const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
-const MAX_RECEIVE_SLOTS: usize = 128;
+const MAX_RECEIVE_SLOTS: usize = 512;  // Increased from 128 to reduce event replacement
 // Disjoint from the protocol's motion framing; exact length and nonce are checked.
 const PROBE_MAGIC: &[u8; 8] = b"UDPROBE1";
 const PROBE_SIZE: usize = 41;
