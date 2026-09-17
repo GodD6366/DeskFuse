@@ -339,7 +339,11 @@ fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
 /// app's designated code-signing requirement. Never write a LAN manifest here.
 /// # Errors
 /// Returns a verification, storage, or platform operation failure.
-pub fn prepare_github(payload: &Path, release: &ReleaseVersion, status: &UpdateStatus) -> Result<()> {
+pub fn prepare_github(
+    payload: &Path,
+    release: &ReleaseVersion,
+    status: &UpdateStatus,
+) -> Result<()> {
     if status.release != *release
         || status.artifact.kind != PackageKind::MacosDmg
         || status.artifact.target != Target::MacosArm64
