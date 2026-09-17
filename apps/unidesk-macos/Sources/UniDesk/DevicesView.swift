@@ -82,13 +82,6 @@ struct DevicesView: View {
                         TextField("192.168.1.10", text: $ip).textFieldStyle(.roundedBorder).onSubmit(pairByIP)
                         Button("配对", action: pairByIP).disabled(ip.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    if snapshot.networkId != nil {
-                        Divider().padding(.vertical, 6)
-                        Button("退出设备网络", role: .destructive) { confirmLeave = true }
-                            .buttonStyle(.plain)
-                        Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                 }.padding(20)
             }
             .frame(minWidth: 240, idealWidth: 280, maxWidth: 320, maxHeight: .infinity)
@@ -111,6 +104,15 @@ struct DevicesView: View {
                             Divider()
                             infoRow("键鼠", symbol: "computermouse", value: snapshot.input.summary)
                         }.padding(20).modifier(DeviceDetailsSurface())
+                        if snapshot.networkId != nil {
+                            VStack(alignment: .leading, spacing: 10) {
+                                WorkspaceChromeButton("退出设备网络", systemImage: "rectangle.portrait.and.arrow.right", destructive: true) {
+                                    confirmLeave = true
+                                }
+                                Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     } else if let device = snapshot.devices.first(where: { $0.id == selected }) {
                         detail(device)
                     } else {

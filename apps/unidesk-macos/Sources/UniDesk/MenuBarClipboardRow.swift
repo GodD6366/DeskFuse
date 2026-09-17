@@ -295,20 +295,12 @@ struct MenuBarClipboardCard: View {
 
     @ViewBuilder private var content: some View {
         if item.hasImage {
-            if let image {
-                Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity).frame(height: Self.maxContentHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
-                    .frame(maxWidth: .infinity).frame(height: Self.maxContentHeight)
-                    .overlay {
-                        if loading { ProgressView().controlSize(.small) }
-                        else { Label(remoteUnavailable ? "待获取图片" : "图片不可用", systemImage: "photo.badge.exclamationmark")
-                            .font(.caption).foregroundStyle(.secondary) }
-                    }
-            }
+            ClipboardCardImage(
+                image: image,
+                loading: loading,
+                maxHeight: Self.maxContentHeight,
+                unavailable: remoteUnavailable ? "待获取图片" : "图片不可用"
+            )
         } else {
             ClipboardCardText(text: item.clipboardTitle, lineLimit: 8, maxHeight: Self.maxContentHeight)
         }

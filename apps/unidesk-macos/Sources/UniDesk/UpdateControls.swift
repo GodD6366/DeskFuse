@@ -1,6 +1,13 @@
 import SwiftUI
 import UniDeskEngine
 
+extension UpdateState {
+    /// 已发现可安装版本或正在下载/待重启，供侧栏快速更新入口使用。
+    var showsQuickUpdate: Bool {
+        targetVersion != nil || ready || downloading || manualRequested
+    }
+}
+
 /// Both entry points use the engine's single updater and its real progress.
 struct UpdateControls: View {
     let store: AppStore

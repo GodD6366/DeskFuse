@@ -75,7 +75,7 @@ enum ClipboardMasonryLayout {
     }
 
     static func estimatedHeight(_ item: HistoryItem) -> CGFloat {
-        if item.hasImage { return 236 }
+        if item.hasImage { return 128 }
         if item.fileCount > 0 { return 96 }
         let lines = min(8, max(1, item.preview.count / 36))
         return 70 + CGFloat(lines) * 18
@@ -326,27 +326,15 @@ struct ClipboardHistoryCard: View {
 
     @ViewBuilder private var content: some View {
         if item.hasImage {
-            if let image = thumbnail ?? selectedImage {
-                Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Self.maxContentHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else if loading {
-                ProgressView().controlSize(.small)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Self.maxContentHeight)
-            } else {
-                fallbackTitle.frame(height: Self.maxContentHeight)
-            }
+            ClipboardCardImage(
+                image: thumbnail ?? selectedImage,
+                loading: loading,
+                maxHeight: Self.maxContentHeight,
+                unavailable: meta?.remote == true && meta?.available == false ? "待获取图片" : "图片不可用"
+            )
         } else {
             ClipboardCardText(text: item.clipboardTitle, lineLimit: 10, maxHeight: Self.maxContentHeight)
         }
-    }
-
-    private var fallbackTitle: some View {
-        Label(meta?.remote == true && meta?.available == false ? "待获取图片" : "图片不可用", systemImage: "photo.badge.exclamationmark")
-            .font(.caption).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -355,6 +343,43 @@ struct ClipboardHistoryCard: View {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+/// 按图片自身比例占位，只限制最大高度，避免横图被塞进竖向空框。
+struct ClipboardCardImage: View {
+    let image: NSImage?
+    let loading: Bool
+    let maxHeight: CGFloat
+    let unavailable: String
+
+    /// 未加载时按常见截图比例占位，减少竖向留白。
+    private static let placeholderAspect: CGFloat = 16 / 10
+
+    var body: some View {
+        Group {
+            if let image, image.size.width > 1, image.size.height > 1 {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(image.size, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: maxHeight)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
+                    if loading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(unavailable, systemImage: "photo.badge.exclamationmark")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .aspectRatio(Self.placeholderAspect, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: maxHeight)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .fixedSize(horizontal: false, vertical: true)
+    }
 }
 
 /// Fit against the actual column width, not a character-count estimate.

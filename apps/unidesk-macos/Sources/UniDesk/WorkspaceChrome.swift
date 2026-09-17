@@ -31,20 +31,22 @@ struct WorkspaceControlLabel: ViewModifier {
 
 private struct WorkspaceControlSurface: ViewModifier {
     let prominent: Bool
+    let destructive: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @ViewBuilder func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: WorkspaceControlMetrics.cornerRadius)
-        if prominent {
+        let tint: Color? = destructive ? .red : (prominent ? .blue : nil)
+        if let tint {
             if #available(macOS 26.0, *), !reduceTransparency {
                 content
                     .foregroundStyle(enabled ? Color.white : Color.secondary)
-                    .glassEffect(.regular.tint(enabled ? .blue : .clear).interactive(), in: shape)
+                    .glassEffect(.regular.tint(enabled ? tint : .clear).interactive(), in: shape)
             } else {
                 content
                     .foregroundStyle(enabled ? Color.white : Color.secondary)
-                    .background(enabled ? Color.blue : Color(nsColor: .controlBackgroundColor), in: shape)
+                    .background(enabled ? tint : Color(nsColor: .controlBackgroundColor), in: shape)
             }
         } else {
             content.modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
@@ -58,13 +60,15 @@ struct WorkspaceChromeButton: View {
     let systemImage: String
     let help: String?
     let prominent: Bool
+    let destructive: Bool
     let action: () -> Void
 
-    init(_ title: String, systemImage: String, help: String? = nil, prominent: Bool = false, action: @escaping () -> Void) {
+    init(_ title: String, systemImage: String, help: String? = nil, prominent: Bool = false, destructive: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.systemImage = systemImage
         self.help = help
         self.prominent = prominent
+        self.destructive = destructive
         self.action = action
     }
 
@@ -72,7 +76,7 @@ struct WorkspaceChromeButton: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .modifier(WorkspaceControlLabel())
-                .modifier(WorkspaceControlSurface(prominent: prominent))
+                .modifier(WorkspaceControlSurface(prominent: prominent, destructive: destructive))
         }
         .buttonStyle(.plain)
         .help(help ?? title)

@@ -24,6 +24,8 @@ import UniDeskEngine
     @ObservationIgnored private var pasteTask: Task<Void, Never>?
     @ObservationIgnored private var closingForPaste = false
     @ObservationIgnored private var suspended = false
+    /// 状态栏点击若把策略临时改成 accessory，关闭面板后恢复 Dock 图标。
+    @ObservationIgnored private var restoreRegularPolicy = false
 
     func install(store: AppStore) {
         guard item == nil else { return }
@@ -219,14 +221,18 @@ import UniDeskEngine
             guard let button = item?.button else { return }
             moveHosting(toPopover: true)
             popover.contentSize = NSSize(width: 440, height: panelHeight)
-            // A popover window only receives the click that follows it when its
-            // app owns the keyboard focus. Without this the click that activates
-            // the app is spent on activation and the first click inside the panel
-            // (list/grid switch, group tab, search field) is lost. This panel
-            // already wants the keyboard; the shortcut panel stays non-activating.
-            NSApp.activate(ignoringOtherApps: true)
+            // 状态栏点击会激活应用。`activate(ignoringOtherApps:)` 还会把主窗口
+            // 一并拉到前台。未在前台时先改成 accessory，只给面板键盘焦点。
+            let wasActive = NSApp.isActive
+            if !wasActive && NSApp.activationPolicy() == .regular {
+                NSApp.setActivationPolicy(.accessory)
+                restoreRegularPolicy = true
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            if !wasActive {
+                _ = NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            }
         }
     }
 
@@ -238,6 +244,15 @@ import UniDeskEngine
         pasteTask?.cancel()
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)
+        restoreActivationPolicyIfNeeded()
+    }
+
+    private func restoreActivationPolicyIfNeeded() {
+        guard restoreRegularPolicy else { return }
+        restoreRegularPolicy = false
+        if !AppStore.shared.hideDockIcon {
+            NSApp.setActivationPolicy(.regular)
+        }
     }
 
     func popoverDidClose(_ notification: Notification) {

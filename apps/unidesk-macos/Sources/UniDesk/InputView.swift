@@ -90,6 +90,9 @@ struct InputView: View {
         HStack(alignment: .center, spacing: 12) {
             NativeGlassGroup {
                 HStack(alignment: .center, spacing: 12) {
+                    WorkspaceChromeButton("添加设备屏幕", systemImage: "plus", prominent: true) {
+                        showAddDevice = true
+                    }
                     WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
                         showSettings = true
                     }
@@ -98,7 +101,7 @@ struct InputView: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .disabled(updatingSettings)
             }
-            WorkspaceChromeButton("紧急收回", systemImage: "arrow.uturn.backward", help: "立即收回键鼠控制（⌃⌥⌘ Esc）", prominent: true) {
+            WorkspaceChromeButton("紧急收回", systemImage: "arrow.uturn.backward", help: "立即收回键鼠控制（⌃⌥⌘ Esc）", destructive: true) {
                 store.reclaim()
             }
         }
@@ -162,12 +165,7 @@ struct InputView: View {
 
     private func layout(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                WorkspaceChromeButton("添加设备屏幕", systemImage: "plus", prominent: true) { showAddDevice = true }
-                    .disabled(updatingSettings)
-            }
+            Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
             DisplayLayout(store: store, snapshot: snapshot, onRemoveDevice: { id in
                 setParticipant(id, included: false)
             }, editingDisabled: updatingSettings).frame(height: height)

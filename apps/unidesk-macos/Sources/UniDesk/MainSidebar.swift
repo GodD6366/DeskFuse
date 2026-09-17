@@ -40,8 +40,33 @@ struct MainSidebar: View {
             .padding(.bottom, 4)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            SidebarDeviceStatus(store: store)
+            VStack(spacing: 8) {
+                if let update = store.snapshot?.update, update.showsQuickUpdate {
+                    SidebarUpdateButton(store: store, update: update)
+                }
+                SidebarDeviceStatus(store: store)
+            }
         }
+    }
+}
+
+private struct SidebarUpdateButton: View {
+    let store: AppStore
+    let update: UpdateState
+
+    var body: some View {
+        WorkspaceChromeButton(title, systemImage: "arrow.down.app", help: update.message, prominent: true) {
+            store.send(.downloadAndInstallUpdate)
+        }
+        .disabled(update.manualRequested || (!update.available && !update.ready))
+        .padding(.horizontal, 12)
+    }
+
+    private var title: String {
+        if update.manualRequested { return update.ready ? "正在准备安装…" : "正在下载更新…" }
+        if update.ready { return "立即安装并重启" }
+        if let target = update.targetVersion { return "更新到 \(target)" }
+        return "立即更新"
     }
 }
 
@@ -49,7 +74,7 @@ private struct SidebarDeviceStatus: View {
     let store: AppStore
     var body: some View {
         HStack(spacing: 8) {
-            Button { store.selectedPage = .devices } label: {
+            Button { store.openSettings() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "laptopcomputer")
                         .font(.system(size: 18, weight: .medium))
@@ -72,7 +97,7 @@ private struct SidebarDeviceStatus: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("查看设备详情：\(store.snapshot?.localName ?? "这台 Mac")")
+            .help("打开设置：\(store.snapshot?.localName ?? "这台 Mac")")
             Button { store.openSettings() } label: {
                 Image(systemName: "gearshape").font(.system(size: 15, weight: .medium))
                     .frame(width: 24, height: 28)
