@@ -14,6 +14,13 @@ pub struct ClassifiedEndpoint {
     pub input_eligible: bool,
 }
 
+/// Input favours a stable physical path over a one-off handshake measurement.
+/// Explicit preferences still win; automatic input uses Thunderbolt first.
+pub fn input_path_rank(preference: RoutePreference, kind: InterfaceKind) -> (u8, u8) {
+    let (class, _, kind) = path_sort_key(preference, kind, true, None);
+    (class, kind)
+}
+
 pub fn path_sort_key(
     preference: RoutePreference,
     kind: InterfaceKind,

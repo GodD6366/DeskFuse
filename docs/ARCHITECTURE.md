@@ -247,6 +247,18 @@ No clipboard/file/update stream handler is started on the input service channel.
 Disposable identity probes use probe endpoints; successful probes are closed and
 a fresh live connection is established on the input I/O runtime.
 
+Input routes are ranked independently: the saved interface preference wins,
+then Thunderbolt, Ethernet and Wi-Fi. The controller checks for a better route
+every five seconds even while a fallback is connected. Probing and dialing run
+on the discovery executor; a failed upgrade keeps the current connection.
+After the new route proves bidirectional datagram readiness, the input actor
+retires the old route only when its remote-display lease is not entered. Active
+drags therefore keep their route until the pointer returns locally. Activation
+and input leases are then reacquired on the new authenticated connection. The
+receiver follows this choice. Motion diagnostics include the actual input
+local/remote addresses, interface name and kind, independently of the main
+connection shown by the device network.
+
 Three inherited Unix socket pairs separate bounded control/persistence messages,
 replaceable status snapshots and urgent/lifetime signals. No motion, key, button
 or wheel payload crosses this process boundary. Status backpressure blocks only
@@ -509,7 +521,7 @@ package boundary; that development ZIP still excludes the WPF client and input h
 
 ### 多接口自动选路
 
-设备网络名单里的地址只是候选地址，同一 `host:port` 只保留一条。可信设备重连时收集发现及缓存中的 IPv4 地址；非 macOS 后端还解析其发布的稳定 Bonjour 主机名，macOS 使用系统 Bonjour 按接口解析出的地址。拨号前对去重后的 IPv4 做短超时身份探测，记录握手延迟；自动模式选实测最快的可达地址，无测速结果时仍按雷电、有线、Wi-Fi 排序。设备详情中的优先路径按设备持久化，只提升对应物理接口，不会被上次回程 IP 盖掉，路径不可用时仍回退。刷新会重新探测，已连接时若出现明显更快或更符合偏好的线路则切换。每次拨号继续验证预期设备身份，地址发现不授予信任。控制连接成功后记录实际 IP，键鼠和更新通道优先跟随该接口。单个控制路径握手最多等待 3 秒，再尝试下一候选地址。
+设备网络名单里的地址只是候选地址，同一 `host:port` 只保留一条。可信设备重连时收集发现及缓存中的 IPv4 地址；非 macOS 后端还解析其发布的稳定 Bonjour 主机名，macOS 使用系统 Bonjour 按接口解析出的地址。拨号前对去重后的 IPv4 做短超时身份探测，记录握手延迟；自动模式选实测最快的可达地址，无测速结果时仍按雷电、有线、Wi-Fi 排序。设备详情中的优先路径按设备持久化，只提升对应物理接口，不会被上次回程 IP 盖掉，路径不可用时仍回退。刷新会重新探测，已连接时若出现明显更快或更符合偏好的线路则切换。每次拨号继续验证预期设备身份，地址发现不授予信任。控制连接成功后记录实际 IP，更新通道优先跟随该接口。独立键鼠服务在 42425 端口自行验证和选择物理线路，自动模式优先雷电，并定期准备更优线路，在鼠标返回本机后切换；不能用主连接线路代替鼠标线路。单个控制路径握手最多等待 3 秒，再尝试下一候选地址。
 
 ### 按 Wi-Fi 场景选择键鼠主控
 

@@ -143,7 +143,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                 }
                 let (motion,dropped) = unidesk_transport::motion_diag::snapshot();
                 for r in motion.into_iter().rev().take(256) {
-                    let line = serde_json::json!({"subsystem":"input_motion_transport", "timestamp_ms":r.timestamp_ms, "stage":r.event, "peer":r.peer, "transport_session":r.transport_session, "ready":r.ready, "sent":r.sent, "received":r.received, "send_replaced":r.send_replaced, "receive_replaced":r.receive_replaced, "dropped":r.dropped, "pending_send":r.pending_send, "rtt_micros":r.rtt_micros, "sent_packets":r.sent_packets, "lost_packets":r.lost_packets, "congestion_events":r.congestion_events});
+                    let line = serde_json::json!({"subsystem":"input_motion_transport", "timestamp_ms":r.timestamp_ms, "stage":r.event, "peer":r.peer, "transport_session":r.transport_session, "local_addr":r.local_addr, "remote_addr":r.remote_addr, "interface_name":r.interface_name, "interface_kind":r.interface_kind, "ready":r.ready, "sent":r.sent, "received":r.received, "send_replaced":r.send_replaced, "receive_replaced":r.receive_replaced, "dropped":r.dropped, "pending_send":r.pending_send, "rtt_micros":r.rtt_micros, "sent_packets":r.sent_packets, "lost_packets":r.lost_packets, "congestion_events":r.congestion_events});
                     lines.push_str(&line.to_string()); lines.push('\n');
                 }
                 lines.push_str(&format!("{{\"subsystem\":\"input_service\",\"motion_dropped\":{dropped},\"export_limit\":256}}\n"));

@@ -345,7 +345,13 @@ pub trait TransportProvider: Send + Sync {
             "input transport unavailable".into(),
         ))
     }
-    fn ensure_input_link(&self, _peer: DeviceId, _endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
+    fn select_input_route(&self, _peer: DeviceId, _session: TransportSessionId) {}
+    fn ensure_input_link(
+        &self,
+        _peer: DeviceId,
+        _endpoints: Vec<Endpoint>,
+        _preference: unidesk_core::RoutePreference,
+    ) -> ProviderFuture<()> {
         Box::pin(async { Err(RuntimeError::Transport("LAN connection unavailable".into())) })
     }
 
@@ -533,8 +539,16 @@ where
     ) -> Result<(), RuntimeError> {
         (**self).send_input(peer, session, message)
     }
-    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
-        (**self).ensure_input_link(peer, endpoints)
+    fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
+        (**self).select_input_route(peer, session);
+    }
+    fn ensure_input_link(
+        &self,
+        peer: DeviceId,
+        endpoints: Vec<Endpoint>,
+        preference: unidesk_core::RoutePreference,
+    ) -> ProviderFuture<()> {
+        (**self).ensure_input_link(peer, endpoints, preference)
     }
     fn register_peer_identity(
         &self,
@@ -4537,11 +4551,19 @@ where
             .send_input(peer, session, message)
             .map_err(|e| RuntimeError::Transport(e.to_string()))
     }
-    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
+    fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
+        self.inner.select_input_route(peer, session);
+    }
+    fn ensure_input_link(
+        &self,
+        peer: DeviceId,
+        endpoints: Vec<Endpoint>,
+        preference: unidesk_core::RoutePreference,
+    ) -> ProviderFuture<()> {
         let inner = self.inner.clone();
         Box::pin(async move {
             inner
-                .ensure_input_link(peer, endpoints)
+                .ensure_input_link(peer, endpoints, preference)
                 .await
                 .map_err(|e| RuntimeError::Transport(e.to_string()))
         })

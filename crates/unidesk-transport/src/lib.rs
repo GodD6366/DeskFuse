@@ -642,15 +642,14 @@ pub trait ControlTransport: Send + Sync {
         Ok(())
     }
 
-    /// Send one authenticated application message (clipboard, input, or
-    /// display metadata) over the session for `peer`.
-    ///
-    /// The default rejects the operation so older adapters remain explicit
-    /// rather than silently dropping application traffic.
+    /// Retire other input routes after the actor reaches a local-cursor boundary.
+    fn select_input_route(&self, _peer: DeviceId, _session: unidesk_core::TransportSessionId) {}
+    /// Establish input or prepare a better physical route without closing the current one.
     async fn ensure_input_link(
         &self,
         _peer: DeviceId,
         _endpoints: Vec<Endpoint>,
+        _preference: unidesk_core::RoutePreference,
     ) -> Result<(), TransportError> {
         Err(TransportError::Closed)
     }
@@ -1613,20 +1612,27 @@ impl QuinnTransport {
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
+        preference: unidesk_core::RoutePreference,
     ) -> Result<(), TransportError> {
-        if self
+        let current_rank = self
             .input
             .contexts(peer)
             .iter()
-            .any(unidesk_core::ConnectionContext::input_eligible)
-        {
-            return Ok(());
-        }
+            .filter(|c| c.input_eligible())
+            .map(|c| routes::input_path_rank(preference, c.interface_kind))
+            .min();
+        let expected = self
+            .registered_identities
+            .read()
+            .ok()
+            .and_then(|m| m.get(&peer).copied())
+            .ok_or(TransportError::Closed)?;
         let listeners = self
             .lan_endpoints
             .lock()
             .map_err(|_| TransportError::Closed)?
             .clone();
+        let mut candidates = Vec::new();
         for remote in endpoints.into_iter().filter_map(|e| {
             e.host
                 .parse::<std::net::IpAddr>()
@@ -1645,43 +1651,61 @@ impl QuinnTransport {
                     lan::inspect(unidesk_core::TransportSessionId::new(), local, remote)
                 })
                 .await;
-                if !matches!(context, Ok(ref c) if c.input_eligible() && c.interface_name.as_ref() == Some(interface))
-                {
-                    continue;
-                }
-                // A disposable signed identity probe is never promoted into a live connection.
-                let Some(probe_endpoint) = input_dialer(&self.config, local) else {
+                let Ok(context) = context else {
                     continue;
                 };
-                let mut probe = self.clone();
-                probe.endpoint = Some(probe_endpoint);
-                probe.bound_addr = local;
-                probe.bound_interface = Some(interface.clone());
-                let expected = self
-                    .registered_identities
-                    .read()
-                    .ok()
-                    .and_then(|m| m.get(&peer).copied());
-                if expected.is_none() {
-                    return Err(TransportError::Closed);
-                }
-                if !matches!(time::timeout(Duration::from_secs(1), probe.connect_and_hello_mode(peer, remote, expected, true)).await, Ok(Ok((ref connection, _))) if { connection.close(QUIC_CLOSE_CODE, b"input probe complete"); true })
-                {
+                if !context.input_eligible() || context.interface_name.as_ref() != Some(interface) {
                     continue;
                 }
-                let mut live = self.clone();
-                live.endpoint = Some(endpoint.clone());
-                live.bound_addr = local;
-                live.bound_interface = Some(interface.clone());
-                if matches!(
-                    time::timeout(Duration::from_secs(3), live.connect_at(peer, remote)).await,
-                    Ok(Ok(_))
-                ) {
-                    return Ok(());
+                let rank = routes::input_path_rank(preference, context.interface_kind);
+                if current_rank.is_some_and(|current| rank >= current) {
+                    continue;
+                }
+                if !candidates
+                    .iter()
+                    .any(|(_, l, r, _, _)| *l == local && *r == remote)
+                {
+                    candidates.push((rank, local, remote, interface.clone(), endpoint.clone()));
                 }
             }
         }
-        Err(TransportError::Closed)
+        candidates.sort_by_key(|(rank, local, remote, _, _)| (*rank, *local, *remote));
+        for (rank, local, remote, interface, endpoint) in candidates {
+            // An inbound dial may have won while inspection was in flight.
+            if self.input.contexts(peer).iter().any(|c| {
+                c.input_eligible() && routes::input_path_rank(preference, c.interface_kind) <= rank
+            }) {
+                return Ok(());
+            }
+            // A disposable signed identity probe is never promoted into a live connection.
+            let Some(probe_endpoint) = input_dialer(&self.config, local) else {
+                continue;
+            };
+            let mut probe = self.clone();
+            probe.endpoint = Some(probe_endpoint);
+            probe.bound_addr = local;
+            probe.bound_interface = Some(interface.clone());
+            if !matches!(time::timeout(Duration::from_secs(1), probe.connect_and_hello_mode(peer, remote, Some(expected), true)).await, Ok(Ok((ref connection, _))) if { connection.close(QUIC_CLOSE_CODE, b"input probe complete"); true })
+            {
+                continue;
+            }
+            let mut live = self.clone();
+            live.endpoint = Some(endpoint.clone());
+            live.bound_addr = local;
+            live.bound_interface = Some(interface.clone());
+            if matches!(
+                time::timeout(Duration::from_secs(3), live.connect_at(peer, remote)).await,
+                Ok(Ok(_))
+            ) {
+                return Ok(());
+            }
+        }
+        // An unreachable upgrade must never tear down a working fallback.
+        if self.input.contexts(peer).iter().any(|c| c.input_eligible()) {
+            Ok(())
+        } else {
+            Err(TransportError::Closed)
+        }
     }
 
     /// Bind a secure QUIC endpoint and start its authenticated server loop.
@@ -2073,13 +2097,21 @@ impl ControlTransport for QuinnTransport {
         self.network_exchange_at(peer, endpoint, payload).await
     }
 
+    fn select_input_route(&self, peer: DeviceId, session: unidesk_core::TransportSessionId) {
+        if self.config.input_service {
+            self.input.select_route(peer, session);
+        }
+    }
     async fn ensure_input_link(
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
+        preference: unidesk_core::RoutePreference,
     ) -> Result<(), TransportError> {
         if self.config.input_service {
-            return self.ensure_service_input_link(peer, endpoints).await;
+            return self
+                .ensure_service_input_link(peer, endpoints, preference)
+                .await;
         }
         if self
             .input

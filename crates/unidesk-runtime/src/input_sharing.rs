@@ -1371,16 +1371,16 @@ impl InputActor {
             if !self.network_allowed(id) {
                 continue;
             }
+            let endpoints = peer
+                .routes
+                .iter()
+                .filter(|r| !r.source.is_public())
+                .map(|r| r.endpoint.clone())
+                .collect::<Vec<_>>();
+            self.maintain_link(id, endpoints.clone());
             let contexts = self.transport.input_contexts(id);
             let Some(context) = contexts.into_iter().find(ConnectionContext::input_eligible) else {
-                self.start_link(
-                    id,
-                    peer.routes
-                        .iter()
-                        .filter(|r| !r.source.is_public())
-                        .map(|r| r.endpoint.clone())
-                        .collect(),
-                );
+                self.start_link(id, endpoints);
                 continue;
             };
             self.publish_topology(id, &context, now);
@@ -1548,6 +1548,7 @@ mod tests {
             &self,
             peer: DeviceId,
             _endpoints: Vec<Endpoint>,
+            _preference: RoutePreference,
         ) -> ProviderFuture<()> {
             self.ensured.lock().unwrap().push(peer);
             Box::pin(async { Ok(()) })

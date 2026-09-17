@@ -25,6 +25,11 @@ pub struct MotionDiagRecord {
     pub peer: String,
     /// Truncated transport session identity.
     pub transport_session: String,
+    /// The actual bound input route, independent of the main control connection.
+    pub local_addr: String,
+    pub remote_addr: String,
+    pub interface_name: Option<String>,
+    pub interface_kind: String,
     /// Application-level datagram health, as the coordinator sees it.
     pub ready: bool,
     pub sent: u64,
@@ -96,6 +101,10 @@ mod tests {
             event: "send",
             peer: "abc".into(),
             transport_session: "def".into(),
+            local_addr: "10.10.10.4:42425".into(),
+            remote_addr: "10.10.10.1:42425".into(),
+            interface_name: Some("bridge0".into()),
+            interface_kind: "Thunderbolt".into(),
             ready: true,
             sent,
             received: 0,

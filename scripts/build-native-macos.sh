@@ -29,9 +29,12 @@ RUST_OUTPUT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/$TARGET_TRIPLE/$CONFIGURATION
 SDK_DIR="$ROOT_DIR/apps/unidesk-macos/SDK"
 mkdir -p "$SDK_DIR" apps/unidesk-macos/Generated apps/unidesk-macos/Sources/UniDeskEngine apps/unidesk-macos/Sources/UniDeskEngineFFI
 RUST_FINGERPRINT="$(python3 - "$ROOT_DIR" <<'PY'
-import hashlib, pathlib, sys
+import hashlib, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 hasher = hashlib.sha256()
+# Both the parent and input helper embed this ID. A new package must not reuse
+# binaries carrying a different bootstrap/diagnostic build identity.
+hasher.update(os.environ["UNIDESK_INPUT_BUILD_ID"].encode())
 for relative in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml"):
     hasher.update(relative.encode())
     hasher.update((root / relative).read_bytes())

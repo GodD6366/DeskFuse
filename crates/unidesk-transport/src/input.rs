@@ -299,6 +299,31 @@ impl InputHub {
             })
             .unwrap_or_default()
     }
+    /// Called by the input actor only at a local-cursor boundary, after the new
+    /// authenticated route has proved bidirectional datagram readiness.
+    pub fn select_route(&self, peer: DeviceId, selected: TransportSessionId) {
+        let retired = {
+            let Ok(sessions) = self.sessions.lock() else {
+                return;
+            };
+            let Some(chosen) = sessions.get(&selected).filter(|s| {
+                s.peer == peer
+                    && s.live()
+                    && s.context.input_eligible()
+                    && s.motion.is_ready()
+            }) else {
+                return;
+            };
+            sessions
+                .values()
+                .filter(|s| s.peer == peer && s.context.session_id != chosen.context.session_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for session in retired {
+            self.invalidate(&session, "input upgraded to preferred physical route");
+        }
+    }
     pub fn capabilities(&self, peer: DeviceId, id: TransportSessionId) -> Capabilities {
         self.sessions
             .lock()

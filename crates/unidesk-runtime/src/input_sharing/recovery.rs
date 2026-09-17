@@ -19,6 +19,7 @@ pub(super) struct Links {
     next: u64,
     active: BTreeMap<DeviceId, Attempt>,
     retries: BTreeMap<DeviceId, Retry>,
+    checked: BTreeMap<DeviceId, (RoutePreference, Instant)>,
     retired: Vec<tokio::task::JoinHandle<()>>,
     tx: mpsc::UnboundedSender<Completion>,
     rx: mpsc::UnboundedReceiver<Completion>,
@@ -30,6 +31,7 @@ impl Default for Links {
             next: 0,
             active: BTreeMap::new(),
             retries: BTreeMap::new(),
+            checked: BTreeMap::new(),
             retired: Vec::new(),
             tx,
             rx,
@@ -47,6 +49,61 @@ impl Drop for Links {
     }
 }
 impl InputActor {
+    fn route_preference(&self, peer: DeviceId) -> RoutePreference {
+        self.network
+            .borrow()
+            .device_network
+            .route_preferences
+            .get(&peer)
+            .copied()
+            .unwrap_or_default()
+    }
+    pub(super) fn maintain_link(&mut self, peer: DeviceId, endpoints: Vec<Endpoint>) {
+        // Only the controller upgrades a live route. The receiver follows that
+        // authenticated activation, so the two sides cannot fight over routing.
+        if !self.transport.independent_input()
+            || !self.snapshot.settings.enabled
+            || self.snapshot.settings.role != InputShareRole::Controller
+            || !self.snapshot.settings.participants.contains(&peer)
+            || self.incoming.is_some()
+        {
+            return;
+        }
+        let preference = self.route_preference(peer);
+        // Preparation is asynchronous, but retirement is an actor decision.
+        // Recheck entered here: a drag may have begun while a probe was pending.
+        if !self.leases.values().any(|l| l.peer == peer && l.entered) {
+            let contexts = self.transport.input_contexts(peer);
+            let best = contexts
+                .iter()
+                .filter(|c| {
+                    c.input_eligible() && self.transport.input_motion_available(peer, c.session_id)
+                })
+                .min_by_key(|c| {
+                    unidesk_transport::routes::input_path_rank(preference, c.interface_kind)
+                });
+            if let Some(best) = best {
+                let rank =
+                    unidesk_transport::routes::input_path_rank(preference, best.interface_kind);
+                if contexts.iter().any(|c| {
+                    c.input_eligible()
+                        && unidesk_transport::routes::input_path_rank(preference, c.interface_kind)
+                            > rank
+                }) {
+                    self.transport.select_input_route(peer, best.session_id);
+                }
+            }
+        }
+        if self.links.checked.get(&peer).is_some_and(|(previous, at)| {
+            *previous == preference && at.elapsed() < Duration::from_secs(5)
+        }) {
+            return;
+        }
+        self.links
+            .checked
+            .insert(peer, (preference, Instant::now()));
+        self.start_link(peer, endpoints);
+    }
     fn link_desired(&self, peer: DeviceId) -> bool {
         // A selected peer may exchange layout metadata without native input
         // permission. Activation and leases enforce availability separately.
@@ -135,10 +192,17 @@ impl InputActor {
                     let delay = (1u64 << retry.failures.min(5)).min(30);
                     retry.failures = retry.failures.saturating_add(1);
                     retry.due = Instant::now() + Duration::from_secs(delay);
-                    self.emit(RuntimeEvent::InputLinkUnavailable {
-                        peer_id: done.peer,
-                        reason: format!("输入连接恢复失败，{delay} 秒后重试：{error}"),
-                    });
+                    if !self
+                        .transport
+                        .input_contexts(done.peer)
+                        .iter()
+                        .any(ConnectionContext::input_eligible)
+                    {
+                        self.emit(RuntimeEvent::InputLinkUnavailable {
+                            peer_id: done.peer,
+                            reason: format!("输入连接恢复失败，{delay} 秒后重试：{error}"),
+                        });
+                    }
                 }
             }
         }
@@ -158,10 +222,11 @@ impl InputActor {
         let id = self.links.next;
         let tx = self.links.tx.clone();
         let transport = self.transport.clone();
+        let preference = self.route_preference(peer);
         let recover = async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(12),
-                transport.ensure_input_link(peer, endpoints),
+                transport.ensure_input_link(peer, endpoints, preference),
             )
             .await
             .unwrap_or_else(|_| {

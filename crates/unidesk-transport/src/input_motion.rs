@@ -21,7 +21,7 @@ use unidesk_protocol::{MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, encode_
 const MAX_CONTROL_SLOTS: usize = 8;
 const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
-const MAX_RECEIVE_SLOTS: usize = 512;  // Increased from 128 to reduce event replacement
+const MAX_RECEIVE_SLOTS: usize = 512; // Increased from 128 to reduce event replacement
 // Disjoint from the protocol's motion framing; exact length and nonce are checked.
 const PROBE_MAGIC: &[u8; 8] = b"UDPROBE1";
 const PROBE_SIZE: usize = 41;
@@ -103,6 +103,9 @@ pub(super) struct MotionLink {
     diag_at: Mutex<Option<Instant>>,
 }
 impl MotionLink {
+    pub(super) fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
     /// Sample the datagram path for the diagnostics export.
     ///
     /// At most one sample per second per link, because `stats()` takes the QUIC
@@ -134,6 +137,10 @@ impl MotionLink {
             event,
             peer: crate::motion_diag::short_peer(session.peer),
             transport_session: crate::motion_diag::short_session(session.context.session_id),
+            local_addr: session.context.local_addr.to_string(),
+            remote_addr: session.context.remote_addr.to_string(),
+            interface_name: session.context.interface_name.clone(),
+            interface_kind: format!("{:?}", session.context.interface_kind),
             ready: self.ready.load(Ordering::Acquire),
             sent: self.sent.load(Ordering::Relaxed),
             received: self.received.load(Ordering::Relaxed),
@@ -419,7 +426,9 @@ impl InputHub {
                     {
                         // Our challenge's echo proves both directions, not just
                         // the transport parameter advertised by the peer.
-                        reader.motion.ready.store(true, Ordering::Release);
+                        if !reader.motion.ready.swap(true, Ordering::AcqRel) {
+                            reader.motion.sample_diagnostics(&reader, "ready", true);
+                        }
                     }
                     continue;
                 }
@@ -566,6 +575,10 @@ impl InputHub {
                             transport_session: crate::motion_diag::short_session(
                                 session.context.session_id,
                             ),
+                            local_addr: session.context.local_addr.to_string(),
+                            remote_addr: session.context.remote_addr.to_string(),
+                            interface_name: session.context.interface_name.clone(),
+                            interface_kind: format!("{:?}", session.context.interface_kind),
                             ready: session.motion.ready.load(Ordering::Acquire),
                             sent: session.motion.sent.load(Ordering::Relaxed),
                             received: session.motion.received.load(Ordering::Relaxed),
@@ -614,6 +627,10 @@ impl InputHub {
                         transport_session: crate::motion_diag::short_session(
                             session.context.session_id,
                         ),
+                        local_addr: session.context.local_addr.to_string(),
+                        remote_addr: session.context.remote_addr.to_string(),
+                        interface_name: session.context.interface_name.clone(),
+                        interface_kind: format!("{:?}", session.context.interface_kind),
                         ready: session.motion.ready.load(Ordering::Acquire),
                         sent: batch_sent as u64,
                         received: 0,
