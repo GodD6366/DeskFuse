@@ -10,9 +10,13 @@ repository.workspace = true
 publish.workspace = true
 
 
+[features]
+default = ["updates"]
+updates = ["dep:unidesk-update"]
+
 [dependencies]
 serde.workspace = true
-unidesk-update = { path = "../unidesk-update" }
+unidesk-update = { path = "../unidesk-update", optional = true }
 serde_json = "1"
 semver = "1"
 hex = "0.4"

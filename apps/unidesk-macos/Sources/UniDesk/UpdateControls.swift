@@ -36,10 +36,7 @@ struct UpdateControls: View {
                     }
                     checkButton
                 }
-                Text("Homebrew 安装请在终端执行：").font(.caption).foregroundStyle(.secondary)
-                Text("brew update && brew upgrade --cask unidesk")
-                    .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                Text("也可从发布页下载 DMG 手动安装。公开发行版不会调用局域网自动安装器；安装完成后重新启动 uniDesk。")
+                Text("GitHub 发布的 Developer ID 签名包会自动下载并安装；ad-hoc 包请从发布页下载 DMG 手动安装。安装完成后重新启动 uniDesk。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 ViewThatFits(in: .horizontal) {

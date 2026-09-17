@@ -14,6 +14,7 @@ mod input_sharing;
 #[cfg(test)]
 mod network_tests;
 mod reconnect;
+#[cfg(feature = "updates")]
 pub mod updates;
 
 #[cfg(unix)]

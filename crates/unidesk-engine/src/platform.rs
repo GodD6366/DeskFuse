@@ -9,6 +9,25 @@ pub(crate) use unidesk_platform_macos::MacOSPasteboard as WorkerPasteboard;
 #[cfg(all(not(test), target_os = "windows"))]
 pub(crate) use unidesk_platform_windows::WindowsPasteboard as WorkerPasteboard;
 
+pub fn host_ports(
+    data_dir: &std::path::Path,
+) -> PlatformResult<unidesk_platform::ports::HostPorts> {
+    use std::sync::Arc;
+    use unidesk_platform::ports::{
+        HostPorts, MemoryCredentialStore, MemoryFileAuthorization, MemoryInputExecution,
+        PasteboardPort, PermissionServicePort,
+    };
+    let clipboard = Arc::new(PasteboardPort::new(create_worker_pasteboard()?));
+    Ok(HostPorts {
+        clipboard_capture: clipboard.clone(),
+        clipboard_apply: clipboard,
+        file_authorization: Arc::new(MemoryFileAuthorization::new(data_dir.join("inbox"))),
+        input_execution: Arc::new(MemoryInputExecution::new()),
+        credential_store: Arc::new(MemoryCredentialStore::new(data_dir.join("identity.key"))),
+        permission_observer: Arc::new(PermissionServicePort::new(create_permission_service())),
+    })
+}
+
 pub(crate) fn create_worker_pasteboard() -> PlatformResult<WorkerPasteboard> {
     #[cfg(any(test, target_os = "macos"))]
     {
@@ -36,6 +55,23 @@ pub use unidesk_platform_macos::{create_permission_service, display_topology};
 pub use unidesk_platform_windows::{
     create_permission_service, display_topology, session_is_active, warp_pointer,
 };
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn create_permission_service() -> Box<dyn PermissionService> {
+    struct Unknown;
+    impl PermissionService for Unknown {
+        fn snapshot(&self) -> PermissionSnapshot {
+            PermissionSnapshot::all_unknown()
+        }
+        fn open_system_settings(
+            &self,
+            _kind: unidesk_platform::PermissionKind,
+        ) -> PlatformResult<()> {
+            Ok(())
+        }
+    }
+    Box::new(Unknown)
+}
 
 #[cfg(target_os = "macos")]
 pub fn create_capture() -> Box<dyn unidesk_platform::SharedInputCapture> {

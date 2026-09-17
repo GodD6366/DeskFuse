@@ -9,10 +9,14 @@ publish.workspace = true
 
 
 [dependencies]
+async-trait = "=0.1.92"
 unidesk-core = { path = "../unidesk-core" }
 unidesk-input = { path = "../unidesk-input" }
 tokio = { version = "1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

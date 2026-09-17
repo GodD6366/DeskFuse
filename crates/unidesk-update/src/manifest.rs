@@ -33,6 +33,7 @@ pub enum Target {
 #[serde(rename_all = "snake_case")]
 pub enum PackageKind {
     MacosAppZip,
+    MacosDmg,
     WindowsNsisExe,
 }
 
@@ -54,6 +55,7 @@ impl ArtifactDescriptor {
     pub fn validate(&self) -> Result<(), UpdateError> {
         let extension = match (self.target, self.kind) {
             (Target::MacosArm64, PackageKind::MacosAppZip) => ".zip",
+            (Target::MacosArm64, PackageKind::MacosDmg) => ".dmg",
             (Target::WindowsX64, PackageKind::WindowsNsisExe) => ".exe",
             _ => return Err(UpdateError::Invalid("target/package mismatch")),
         };
@@ -117,6 +119,9 @@ impl ReleaseManifest {
         }
         for artifact in &self.artifacts {
             artifact.validate()?;
+            if artifact.kind == PackageKind::MacosDmg {
+                return Err(UpdateError::Invalid("LAN manifest package kind"));
+            }
         }
         if self
             .artifacts

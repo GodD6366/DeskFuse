@@ -10,7 +10,8 @@ let package = Package(
         .systemLibrary(name: "UniDeskEngineFFI", path: "Sources/UniDeskEngineFFI"),
         .target(name: "UniDeskEngine", dependencies: ["UniDeskEngineFFI"],
                 linkerSettings: [.unsafeFlags([libraryDirectory + "/libunidesk_ffi.a"])]),
-        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine"],
+        .target(name: "UniDeskHost", dependencies: [], path: "Host"),
+        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine", "UniDeskHost"],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("OSAKit"), .linkedFramework("CoreGraphics"), .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"), .linkedFramework("SystemConfiguration"), .linkedFramework("CoreWLAN"), .linkedFramework("CoreLocation"),
                 .linkedLibrary("sqlite3"), .linkedLibrary("resolv"), .linkedLibrary("iconv")])

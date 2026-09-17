@@ -2398,7 +2398,19 @@ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2429,8 +2441,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
+name = "unidesk-bindgen"
+version = "0.2.1"
+dependencies = [
+ "uniffi",
+]
+
+[[package]]
+name = "unidesk-collaboration"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "unidesk-core",
+ "unidesk-platform",
+ "unidesk-transfer",
+ "uuid",
+]
+
+[[package]]
+name = "unidesk-content-library"
+version = "0.2.1"
+dependencies = [
+ "tempfile",
+ "tokio",
+ "unidesk-collaboration",
+ "unidesk-store-library",
+]
+
+[[package]]
 name = "unidesk-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2440,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-discovery"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "mdns-sd",
@@ -2450,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2468,6 +2514,7 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tokio-util",
+ "unidesk-collaboration",
  "unidesk-core",
  "unidesk-discovery",
  "unidesk-identity",
@@ -2487,8 +2534,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "unidesk-extension-update"
+version = "0.2.1"
+dependencies = [
+ "unidesk-collaboration",
+ "unidesk-update",
+]
+
+[[package]]
 name = "unidesk-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "serde_json",
@@ -2507,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-identity"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -2522,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-input"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -2530,9 +2585,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "unidesk-platform"
-version = "0.2.0"
+name = "unidesk-input-macos"
+version = "0.2.1"
 dependencies = [
+ "tokio",
+ "unidesk-collaboration",
+ "unidesk-platform",
+]
+
+[[package]]
+name = "unidesk-input-windows"
+version = "0.2.1"
+dependencies = [
+ "tokio",
+ "unidesk-collaboration",
+ "unidesk-platform",
+]
+
+[[package]]
+name = "unidesk-lan-web"
+version = "0.2.1"
+dependencies = [
+ "axum",
+ "tokio",
+ "unidesk-collaboration",
+]
+
+[[package]]
+name = "unidesk-platform"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
  "serde",
  "tokio",
  "unidesk-core",
@@ -2541,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-platform-macos"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "block2",
  "core-foundation",
@@ -2562,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-platform-windows"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "serde",
@@ -2577,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-probe"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "prost",
@@ -2597,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "ed25519-dalek",
@@ -2612,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
@@ -2640,8 +2723,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "unidesk-sdk"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "unidesk-service"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "bincode",
@@ -2667,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -2678,8 +2770,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "unidesk-store-core"
+version = "0.2.1"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+ "unidesk-core",
+]
+
+[[package]]
+name = "unidesk-store-library"
+version = "0.2.1"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "unidesk-transfer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "rustix",
@@ -2694,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-transport"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2714,7 +2825,7 @@ dependencies = [
 
 [[package]]
 name = "unidesk-update"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2726,6 +2837,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "unidesk-core",
+ "uuid",
+]
+
+[[package]]
+name = "unidesk-workflow"
+version = "0.2.1"
+dependencies = [
+ "thiserror",
+ "unidesk-collaboration",
+ "unidesk-platform",
  "uuid",
 ]
 

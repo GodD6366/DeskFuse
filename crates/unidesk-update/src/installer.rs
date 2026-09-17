@@ -1,13 +1,15 @@
 //! macOS replacement runs outside the application. Only authenticated release
 //! bytes enter staging; a durable journal precedes every destructive step.
 use crate::{
-    ReleaseVersion, SignedReleaseManifest, Target, UpdateStatus, VerifiedRelease,
+    PackageKind, ReleaseVersion, SignedReleaseManifest, Target, UpdateStatus, VerifiedRelease,
     pinned_release_key, verify_artifact, write_json_atomic,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -248,6 +250,184 @@ pub fn prepare(release: &VerifiedRelease, payload: &Path, status: &UpdateStatus)
     }
     result
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubInstallSource {
+    sha256: String,
+    file_name: String,
+}
+
+struct MountGuard(PathBuf);
+impl Drop for MountGuard {
+    fn drop(&mut self) {
+        let _ = Command::new("/usr/bin/hdiutil")
+            .args(["detach", "-quiet", "-force"])
+            .arg(&self.0)
+            .status();
+    }
+}
+
+fn digest_file(path: &Path, size: u64, sha256: &str) -> Result<()> {
+    let metadata = path.symlink_metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() != size {
+        return Err("更新包大小不匹配".into());
+    }
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() != size {
+        return Err("更新包大小不匹配".into());
+    }
+    let mut file = file.take(size + 1);
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        bytes += read as u64;
+    }
+    if bytes != size || hex::encode(digest.finalize()) != sha256 {
+        return Err("更新包 SHA-256 不匹配".into());
+    }
+    Ok(())
+}
+
+fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
+    let github = stage.join("github-source.json");
+    let lan = stage.join("manifest.json");
+    match (github.is_file(), lan.is_file()) {
+        (true, false) => {
+            let source: GitHubInstallSource = read_json(&github)?;
+            if source.file_name != "uniDesk-arm64.dmg"
+                || source.file_name != journal.status.artifact.file_name
+                || source.sha256 != journal.status.artifact.sha256
+                || journal.status.artifact.kind != PackageKind::MacosDmg
+                || journal.status.artifact.target != Target::MacosArm64
+            {
+                return Err("GitHub 安装证明不匹配".into());
+            }
+            digest_file(
+                &stage.join(source.file_name),
+                journal.status.artifact.size,
+                &source.sha256,
+            )
+        }
+        (false, true) => {
+            if journal.status.artifact.kind != PackageKind::MacosAppZip {
+                return Err("局域网安装包类型无效".into());
+            }
+            let signed: SignedReleaseManifest = read_json(&lan)?;
+            let release = signed
+                .verify(&pinned_release_key().map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            verify_artifact(
+                &release,
+                Target::MacosArm64,
+                &stage.join(&journal.status.artifact.file_name),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        _ => Err("安装暂存缺少唯一的来源证明".into()),
+    }
+}
+
+/// Public GitHub DMGs are not LAN-signed. Trust is SHA-256 plus the already-running
+/// app's designated code-signing requirement. Never write a LAN manifest here.
+/// # Errors
+/// Returns a verification, storage, or platform operation failure.
+pub fn prepare_github(
+    payload: &Path,
+    release: &ReleaseVersion,
+    status: &UpdateStatus,
+) -> Result<()> {
+    if status.release != *release
+        || status.artifact.kind != PackageKind::MacosDmg
+        || status.artifact.target != Target::MacosArm64
+        || status.artifact.file_name != "uniDesk-arm64.dmg"
+    {
+        return Err("安装任务不匹配".into());
+    }
+    digest_file(payload, status.artifact.size, &status.artifact.sha256)?;
+    let target = current_bundle()?;
+    if target.starts_with("/Volumes") {
+        return Err("请先将 uniDesk 拖入应用程序目录，磁盘映像内无法自动安装".into());
+    }
+    let installed = installed_release(&target)?;
+    if !release.precedence(&installed).is_gt() {
+        return Err("更新版本不高于已安装版本".into());
+    }
+    let requirement = signature_requirement(&target)?;
+    let root = update_root()?;
+    private_dir(&root)?;
+    let mut journal = InstallJournal {
+        status: status.clone(),
+        target,
+        phase: Phase::Prepared,
+        parent_pid: std::process::id(),
+        failure: None,
+    };
+    journal.status.phase = crate::UpdatePhase::Staged;
+    let (stage, _, candidate) = paths(&root, &journal)?;
+    if stage.exists() || candidate.exists() {
+        return Err("更新暂存目录已存在".into());
+    }
+    private_dir(&stage)?;
+    persist(&root, &journal)?;
+    let result = (|| {
+        let dmg = stage.join(&status.artifact.file_name);
+        fs::copy(payload, &dmg).map_err(|e| e.to_string())?;
+        digest_file(&dmg, status.artifact.size, &status.artifact.sha256)?;
+        write_json_atomic(
+            &stage.join("github-source.json"),
+            &GitHubInstallSource {
+                sha256: status.artifact.sha256.clone(),
+                file_name: status.artifact.file_name.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mount = stage.join("mount");
+        private_dir(&mount)?;
+        command(
+            Command::new("/usr/bin/hdiutil")
+                .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+                .arg(&mount)
+                .arg(&dmg),
+        )?;
+        let _mounted = MountGuard(mount.clone());
+        let app = mount.join("uniDesk.app");
+        if app
+            .symlink_metadata()
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("磁盘映像中的应用不是普通目录".into());
+        }
+        verify_bundle(&app, &status.release, &requirement)?;
+        command(Command::new("/usr/bin/ditto").arg(&app).arg(&candidate))?;
+        verify_bundle(&candidate, &status.release, &requirement)?;
+        let _ = Command::new("/usr/bin/xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(&candidate)
+            .status();
+        fs::write(stage.join("requirement.txt"), requirement).map_err(|e| e.to_string())?;
+        fs::copy(
+            journal.target.join("Contents/MacOS/unidesk-update-helper"),
+            stage.join("unidesk-update-helper"),
+        )
+        .map_err(|e| e.to_string())?;
+        persist(&root, &journal)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&candidate);
+        let _ = fs::remove_dir_all(&stage);
+    }
+    result
+}
 /// Called only after input and transfer admission have closed and work has drained.
 /// The caller owns the child so a handoff that never completes can be cancelled
 /// before the helper leaves its wait for this process to exit.
@@ -372,21 +552,12 @@ pub fn run_helper() -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     let result = (|| {
-        let signed: SignedReleaseManifest = read_json(&stage.join("manifest.json"))?;
-        let release = signed
-            .verify(&pinned_release_key().map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        verify_artifact(
-            &release,
-            Target::MacosArm64,
-            &stage.join(&journal.status.artifact.file_name),
-        )
-        .map_err(|e| e.to_string())?;
         let requirement =
             fs::read_to_string(stage.join("requirement.txt")).map_err(|e| e.to_string())?;
         if requirement != signature_requirement(&journal.target)? {
             return Err("原应用签名已变化".into());
         }
+        verify_staged_payload(&stage, &journal)?;
         verify_bundle(&candidate, &journal.status.release, &requirement)?;
         backup_database(&root, &stage)?;
         // Journal + directory existence jointly recover a crash between rename and persist.
@@ -681,6 +852,19 @@ mod tests {
             build_number: build,
             release_id: Uuid::new_v4(),
         }
+    }
+    #[test]
+    fn staged_payload_requires_exactly_one_source() {
+        let (_dir, _root, journal) = fixture(Phase::Prepared);
+        let (stage, _, _) = paths(&_root, &journal).unwrap();
+        assert!(verify_staged_payload(&stage, &journal).is_err());
+        fs::write(stage.join("manifest.json"), b"{}").unwrap();
+        fs::write(
+            stage.join("github-source.json"),
+            br#"{"sha256":"0","file_name":"uniDesk-arm64.dmg"}"#,
+        )
+        .unwrap();
+        assert!(verify_staged_payload(&stage, &journal).is_err());
     }
     #[test]
     fn interrupted_rollback_keeps_the_release_selectable() {

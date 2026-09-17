@@ -52,8 +52,8 @@ actor EngineClient {
     func libraryQuery(_ request: String) throws -> String { try engine.libraryQuery(request: request) }
     func libraryMutate(_ request: String) throws -> String { try engine.libraryMutate(request: request) }
     func lanWebState() throws -> String { try engine.lanWebState() }
-    func configureLanWeb(enabled: Bool, interfaceName: String?) throws -> String {
-        try engine.configureLanWeb(enabled: enabled, interfaceName: interfaceName)
+    func configureLanWeb(enabled: Bool, interfaceName: String?, port: UInt16) throws -> String {
+        try engine.configureLanWeb(enabled: enabled, interfaceName: interfaceName, port: port)
     }
     func prepareClipboardPaste(_ id: UInt64, session: String) async throws -> Int64 {
         let engine = self.engine

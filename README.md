@@ -62,7 +62,7 @@ Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases�
 brew update && brew upgrade --cask unidesk
 ```
 
-内部签名包继续使用可信局域网自动更新；公开包不使用该安装通道。尚未包含 GitHub 检查功能的旧版需要先通过 Homebrew 或手动下载安装新版。
+内部签名包继续使用可信局域网自动更新；公开包不使用该安装通道。尚未包含 GitHub 自动安装功能的旧版需要先通过 Homebrew 或手动下载安装新版。
 
 ### 手动安装 DMG
 

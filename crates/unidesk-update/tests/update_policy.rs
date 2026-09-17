@@ -112,6 +112,11 @@ fn malicious_metadata_rejected_before_signature() {
     m.artifacts[0].kind = PackageKind::WindowsNsisExe;
     assert!(m.validate().is_err());
     let mut m = manifest(2);
+    m.artifacts[0].kind = PackageKind::MacosDmg;
+    m.artifacts[0].file_name = "uniDesk-arm64.dmg".into();
+    assert!(m.artifacts[0].validate().is_ok());
+    assert!(m.validate().is_err());
+    let mut m = manifest(2);
     m.artifacts.push(m.artifacts[0].clone());
     assert!(m.validate().is_err());
     let mut m = manifest(2);

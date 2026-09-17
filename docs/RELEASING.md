@@ -54,10 +54,10 @@ CODESIGN_IDENTITY=- \
 RELEASE_METADATA="$PWD/release.json" \
 UNIDESK_DMG_FINDER_LAYOUT=0 \
 ./scripts/package-macos.sh
-UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
+UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/verify-dmg.sh dist/0.1.0-build1/uniDesk-arm64.dmg
 ```
 
-无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
+无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 bootstrap 的 `dist/bootstrap/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
 打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 

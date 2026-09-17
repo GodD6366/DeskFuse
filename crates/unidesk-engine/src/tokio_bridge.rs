@@ -54,6 +54,9 @@ use unidesk_discovery::{PlatformDiscovery, ServiceRecord};
 use unidesk_identity::FileIdentityProvider;
 #[cfg(test)]
 use unidesk_identity::MemoryIdentityProvider;
+use unidesk_platform::ports::{
+    ApplyResult, ContentData, ContentToApply, NativeRevision, apply_clipboard,
+};
 use unidesk_platform::{Pasteboard, PasteboardSnapshot};
 use unidesk_platform_macos::{CapturedFilePaste, FilePasteCapture, FilePasteReference};
 #[cfg(test)]
@@ -1883,8 +1886,10 @@ async fn run_worker(
                         } else { command_error = Some("更新服务不可用".into()); }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
-                        if public_updates {
-                            command_error = Some("公开版请通过 Homebrew 或 GitHub 发布页安装更新".into());
+                        if let Some(updater) = &mut github_updater {
+                            updater.download_and_install_now();
+                            update_tick.reset_immediately();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                         } else if let Some(updater) = &updater {
                             updater.download_and_install_now();
                             update_tick.reset_immediately();
@@ -2431,11 +2436,45 @@ async fn run_worker(
                                 file_policy.reference_installed(ready.peer,id)
                             } else {false}
                         } else {
-                            let result=match ready.items.as_ref() {
-                                Some(items)=>pasteboard.write_items(items).map_err(|e|e.to_string()),
-                                None if ready.payload.mime=="text/plain"=>String::from_utf8(ready.payload.data.clone()).map_err(|e|e.to_string()).and_then(|text|pasteboard.write_text(&text).map_err(|e|e.to_string())),
-                                None if ready.payload.mime=="image/png"=>pasteboard.write_png(&ready.payload.data).map_err(|e|e.to_string()),
-                                _=>Err("剪贴板内容无效".into()),
+                            let expected = NativeRevision(pasteboard.change_count().unwrap_or(count));
+                            let data = if let Some(items) = ready.items.as_ref() {
+                                Ok(ContentData {
+                                    mime: ready.payload.mime.clone(),
+                                    bytes: ready.payload.data.clone(),
+                                    file_urls: Vec::new(),
+                                    items: items.clone(),
+                                })
+                            } else if ready.payload.mime == "text/plain" {
+                                String::from_utf8(ready.payload.data.clone())
+                                    .map(ContentData::text)
+                                    .map_err(|error| error.to_string())
+                            } else if ready.payload.mime == "image/png" {
+                                Ok(ContentData {
+                                    mime: "image/png".into(),
+                                    bytes: ready.payload.data.clone(),
+                                    file_urls: Vec::new(),
+                                    items: Vec::new(),
+                                })
+                            } else {
+                                Err("剪贴板内容无效".into())
+                            };
+                            let result = match data.and_then(|data| {
+                                apply_clipboard(
+                                    &pasteboard,
+                                    ContentToApply {
+                                        data,
+                                        remote_origin_marker: None,
+                                    },
+                                    expected,
+                                )
+                                .map_err(|error| error.to_string())
+                            }) {
+                                Ok(ApplyResult::Applied { .. }) => Ok(()),
+                                Ok(ApplyResult::Superseded { .. }) => {
+                                    Err("剪贴板已被其他复制替换".into())
+                                }
+                                Ok(ApplyResult::Rejected { reason }) => Err(reason),
+                                Err(error) => Err(error),
                             };
                             finish_native_clipboard(&pasteboard,&ready.payload,&mut RemoteClipboardState {
                                 last_change_count:&mut clipboard_last_change_count,incoming_files:&mut incoming_file_clipboards,receive_events:&receive_events,cache:&mut file_policy.cache,loop_guard:&mut clipboard_loop_guard,history:&mut clipboard_history,pending_incoming_file:&pending_incoming_file,paste_requested:&paste_requested,paste_target_pid:&paste_target_pid,
@@ -2509,6 +2548,55 @@ async fn run_worker(
             _ = update_tick.tick() => {
                 if let Some(updater) = &mut github_updater {
                     updater.poll().await;
+                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                        install_handoff = None;
+                        if let Some(mut helper) = install_helper.take() {
+                            let _ = helper.kill();
+                            let _ = helper.wait();
+                        }
+                        if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
+                        updater.abandon_install(&format!(
+                            "更新安装未在 {} 秒内启动，安装器已取消",
+                            INSTALL_HANDOFF.as_secs()
+                        ));
+                        input_coordinator.resume_after_update();
+                    }
+                    if !updater.install_abandoned() && install_handoff.is_none() && updater.ready() {
+                        let files_idle = incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
+                            && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
+                            && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty();
+                        updater.installation_waiting(if !files_idle {
+                            "已请求安装，等待当前文件传输或粘贴完成"
+                        } else {
+                            "已请求安装，正在结束键鼠共享并等待本地导出完成"
+                        });
+                        if files_idle {
+                            if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
+                                let admitted = {
+                                    let mut closed = input_signals.update_admission.lock().unwrap();
+                                    if cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire) {
+                                        *closed = true; true
+                                    } else { false }
+                                };
+                                if admitted {
+                                    match unidesk_update::installer::launch_helper() {
+                                        Ok(helper) => {
+                                            install_helper = Some(helper);
+                                            updater.installing();
+                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                                            let _ = ui_sender.unbounded_send(UiEvent::Quit);
+                                            install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
+                                        }
+                                        Err(error) => {
+                                            if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
+                                            updater.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
+                                            input_coordinator.resume_after_update();
+                                        }
+                                    }
+                                }
+                            }
+                        } else { input_coordinator.resume_after_update(); }
+                    }
                     let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                 } else if let Some(updater) = &updater {
                     if stage_task.as_ref().is_some_and(|task| task.is_finished()) {

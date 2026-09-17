@@ -7,6 +7,9 @@ private struct LanWebProjection: Decodable {
     let enabled: Bool
     let running: Bool
     let address: String?
+    let addresses: [String]
+    let listenAddress: String?
+    let port: UInt16
     let preferredInterface: String?
     let interfaces: [NetworkInterface]
     let error: String?
@@ -57,9 +60,12 @@ struct LanTransferView: View {
     @State private var actionError: String?
     @State private var addressCopied = false
     @State private var qrImage: NSImage?
+    @State private var portDraft = ""
+    @State private var selectedAddress = ""
 
     private var liveAddress: String? {
         guard readError == nil, !configuring, state?.running == true else { return nil }
+        if state?.addresses.contains(selectedAddress) == true { return selectedAddress }
         return state?.address
     }
 
@@ -99,6 +105,9 @@ struct LanTransferView: View {
             qrImage = address.flatMap(makeQRCode)
             addressCopied = false
         }
+        .onChange(of: state?.port, initial: true) { _, port in
+            portDraft = port.flatMap { $0 == 0 ? nil : String($0) } ?? ""
+        }
     }
 
     private var serviceCard: some View {
@@ -126,9 +135,9 @@ struct LanTransferView: View {
                     get: { state.preferredInterface ?? "" },
                     set: { configure(enabled: state.enabled, interface: $0.isEmpty ? nil : $0) }
                 )) {
-                    Text("自动选择").tag("")
+                    Text("所有接口（0.0.0.0）").tag("")
                     ForEach(state.interfaces) { interface in
-                        Text("\(interface.label) · \(interface.address)").tag(interface.name)
+                        Text(interface.label).tag(interface.name)
                     }
                     if let preferred = state.preferredInterface,
                        !state.interfaces.contains(where: { $0.name == preferred }) {
@@ -137,6 +146,24 @@ struct LanTransferView: View {
                 }
                 .pickerStyle(.menu).disabled(configuring)
                 .frame(maxWidth: 480, alignment: .leading)
+                HStack(spacing: 12) {
+                    Text("端口")
+                    TextField("自动分配", text: $portDraft)
+                        .textFieldStyle(.roundedBorder).frame(width: 130)
+                        .onSubmit { applyPort() }
+                    Button("应用") { applyPort() }
+                        .disabled(configuring)
+                    Button("自动分配") {
+                        portDraft = ""
+                        configure(enabled: state.enabled, interface: state.preferredInterface, port: 0)
+                    }.disabled(configuring)
+                }.disabled(configuring)
+                Text("留空由系统随机分配可用端口，也可指定 1–65535。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if state.running, let listenAddress = state.listenAddress {
+                    Text("正在监听：\(listenAddress)")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
             }
         }
     }
@@ -197,6 +224,16 @@ struct LanTransferView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(address).font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if let state, state.addresses.count > 1 {
+                Picker("访问地址", selection: Binding(
+                    get: { liveAddress ?? "" },
+                    set: { selectedAddress = $0 }
+                )) {
+                    ForEach(state.addresses, id: \.self) { address in
+                        Text(address).tag(address)
+                    }
+                }.pickerStyle(.menu)
+            }
             NativeGlassGroup {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 10) { addressButtons(address) }
@@ -295,15 +332,26 @@ struct LanTransferView: View {
         }
     }
 
-    @MainActor private func configure(enabled: Bool, interface: String?) {
+    @MainActor private func applyPort() {
+        let text = portDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = text.isEmpty ? UInt16(0) : UInt16(text) else {
+            actionError = "请输入 1–65535 的端口号，或留空自动分配。"
+            return
+        }
+        configure(enabled: state?.enabled ?? false, interface: state?.preferredInterface, port: port)
+    }
+
+    @MainActor private func configure(enabled: Bool, interface: String?, port: UInt16? = nil) {
         guard !configuring, let client = store.client else { return }
+        let requestedPort = port ?? state?.port ?? 0
         configuring = true
         requestGeneration += 1
         actionError = nil
         Task {
             defer { configuring = false }
             do {
-                state = try LanWebProjection.decode(await client.configureLanWeb(enabled: enabled, interfaceName: interface))
+                state = try LanWebProjection.decode(await client.configureLanWeb(enabled: enabled, interfaceName: interface, port: requestedPort))
+                portDraft = state?.port == 0 ? "" : String(state?.port ?? 0)
                 readError = nil
             } catch {
                 actionError = error.userFacingMessage

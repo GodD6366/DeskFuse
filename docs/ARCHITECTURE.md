@@ -1,5 +1,34 @@
 # uniDesk architecture
 
+## Target shape (collaboration core)
+
+Native UI talks to a host assembly. The host injects Host Ports, starts
+`unidesk-collaboration`, and optionally loads product extensions. The core has
+no axum, image, zip, workflow, content-library or concrete OS adapter
+dependency. macOS and Windows share clipboard, file and input policy.
+
+```text
+SwiftUI / WPF
+        |
+Host assembly (ports + extension selection)
+        |
+        +-- extensions/ (content-library, workflow, lan-web, update)
+        |
+unidesk-collaboration (K3 session, K5 clipboard, K6 files, K7 input)
+        |
+Host Ports (unidesk-platform::ports)  <-- implemented by the host
+        |
+protocol / identity / transport / core / store-core
+```
+
+Input subprocesses use `CollaborationCore::new_input_only`. They must not link
+content-library, workflow, lan-web or update. Architecture gates live in
+`scripts/check-architecture.sh`.
+
+The production macOS binary still links `unidesk-ffi` → `unidesk-engine` while
+those workers are cut over. See [MIGRATION.md](MIGRATION.md), [API.md](API.md)
+and [HOST_PORTS.md](HOST_PORTS.md).
+
 ## Native clients and shared Rust engine
 
 The macOS client uses SwiftUI and Observation, with AppKit only for the file

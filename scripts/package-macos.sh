@@ -45,12 +45,11 @@ fi
 source "$ROOT_DIR/scripts/codesign-identity.sh"
 source "$ROOT_DIR/scripts/macos-codesign.sh"
 unidesk_resolve_signing_kind
-DEFAULT_DIST_DIR="$ROOT_DIR/dist"
-if [[ "$PACKAGE_MODE" == bootstrap && "${CI:-false}" != "true" ]]; then
-  DEFAULT_DIST_DIR="$ROOT_DIR/dist/bootstrap"
-fi
-DIST_DIR="${DIST_DIR:-$DEFAULT_DIST_DIR}"
-DMG_PATH="${DMG_PATH:-$DIST_DIR/uniDesk-arm64.dmg}"
+# DIST_DIR is resolved after the build number exists so local packages land in
+# dist/{version}-build{number}/. Explicit DIST_DIR, CI artifact layout, and local
+# bootstrap isolation stay unchanged.
+EXPLICIT_DIST_DIR="${DIST_DIR:-}"
+EXPLICIT_DMG_PATH="${DMG_PATH:-}"
 ASSET_DIR="$ROOT_DIR/resources/generated"
 
 if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
@@ -73,10 +72,6 @@ if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
     exit 1
   fi
 fi
-
-mkdir -p "$DIST_DIR"
-DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
-DIST_DIR="$(cd "$DIST_DIR" && pwd)"
 
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-package.XXXXXX")"
 DMG_SOURCE_DIR="$STAGING_DIR/dmg-root"
@@ -110,6 +105,21 @@ if [[ -z "$RELEASE_METADATA" ]]; then
 fi
 python3 "$ROOT_DIR/scripts/release.py" validate --descriptor "$RELEASE_METADATA"
 BUILD_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_number"])' "$RELEASE_METADATA")"
+
+if [[ -n "$EXPLICIT_DIST_DIR" ]]; then
+  DIST_DIR="$EXPLICIT_DIST_DIR"
+elif [[ "$PACKAGE_MODE" == bootstrap && "${CI:-false}" != "true" ]]; then
+  DIST_DIR="$ROOT_DIR/dist/bootstrap"
+elif [[ "${CI:-false}" == "true" ]]; then
+  DIST_DIR="$ROOT_DIR/dist"
+else
+  DIST_DIR="$ROOT_DIR/dist/${APP_VERSION}-build${BUILD_VERSION}"
+fi
+DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/uniDesk-arm64.dmg}"
+mkdir -p "$DIST_DIR"
+DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
+DIST_DIR="$(cd "$DIST_DIR" && pwd)"
+printf 'output directory: %s\n' "$DIST_DIR"
 
 "$ROOT_DIR/scripts/generate-assets.sh"
 

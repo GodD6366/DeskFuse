@@ -1,3 +1,6 @@
 [toolchain]
 channel = "1.97.1"
 components = ["rustfmt", "clippy"]
+# rust-src is not required. Host builds use the prebuilt std with
+# MACOSX_DEPLOYMENT_TARGET=14.0 instead of -Z build-std.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
