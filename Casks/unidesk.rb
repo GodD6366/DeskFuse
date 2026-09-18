@@ -4,10 +4,10 @@ cask "unidesk" do
   version "0.2.3"
   sha256 "7be434427b581e516046b22d337dd844a465a521776fecc1c1b2708e1c656349"
 
-  url "https://github.com/GodD6366/uniDesk/releases/download/v#{version}/uniDesk-arm64.dmg"
+  url "https://github.com/GodD6366/unidesk-release/releases/download/v#{version}/uniDesk-arm64.dmg"
   name "uniDesk"
   desc "Clipboard, file transfer and input sharing for trusted devices"
-  homepage "https://github.com/GodD6366/uniDesk"
+  homepage "https://github.com/GodD6366/unidesk-release"
 
   depends_on macos: :sonoma
   depends_on arch: :arm64

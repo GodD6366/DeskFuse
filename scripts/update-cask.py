@@ -12,7 +12,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASK = ROOT / "Casks" / "unidesk.rb"
 DMG_NAME = "uniDesk-arm64.dmg"
-RELEASE_BASE = "https://github.com/GodD6366/uniDesk/releases/download"
+RELEASE_BASE = "https://github.com/GodD6366/unidesk-release/releases/download"
 VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 SHA256_PATTERN = re.compile(r"[a-f0-9]{64}")
 
@@ -43,7 +43,7 @@ cask "unidesk" do
   url "{RELEASE_BASE}/v#{{version}}/{DMG_NAME}"
   name "uniDesk"
   desc "Clipboard, file transfer and input sharing for trusted devices"
-  homepage "https://github.com/GodD6366/uniDesk"
+  homepage "https://github.com/GodD6366/unidesk-release"
 
   depends_on macos: :sonoma
   depends_on arch: :arm64

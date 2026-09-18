@@ -178,7 +178,7 @@ else
   printf 'lan\n' > "$CONTENTS_DIR/Resources/update-channel"
 fi
 chmod 0755 "$CONTENTS_DIR/MacOS/$BINARY_NAME"
-cp "$ROOT_DIR/LICENSE-MIT" "$ROOT_DIR/LICENSE-APACHE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$CONTENTS_DIR/Resources/"
+cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/LICENSE-MIT" "$ROOT_DIR/LICENSE-APACHE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$CONTENTS_DIR/Resources/"
 cp "$ROOT_DIR/resources/icons/LICENSE" "$CONTENTS_DIR/Resources/LICENSE-LUCIDE"
 python3 "$ROOT_DIR/scripts/third-party-notices.py" --output "$CONTENTS_DIR/Resources/THIRD_PARTY_DEPENDENCIES.txt"
 # Ship the editable vector sources alongside the native macOS representations.

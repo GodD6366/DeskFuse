@@ -15,11 +15,13 @@
 
 ## 首次启用 GitHub
 
-现有工作流用于 `GodD6366/uniDesk`。**公开 tag 预发行**需要 Apple Developer ID 与公证凭据，见 [公证凭据](NOTARIZE.md)；main 分支检查和贡献者 Homebrew 不读取这些 secret。维护者确认仓库公开文件清单后，自行启用 Actions、private vulnerability reporting，并按实际协作需要设置 main 检查规则和发行 tag 管理。初期可限制 tag 创建／更新给维护者；不要强制要求个人项目必须有第二位审批人。
+源码与 CI 位于私有仓库 `GodD6366/uniDesk`；公开仓库 `GodD6366/unidesk-release` 只维护下载说明、Homebrew cask 和 Release 安装包。原源码仓库直接改为私有，原提交、tag、Release 和 Apple secrets 保持不变。公开安装包仓库使用独立的说明文档历史，不复制源码对象。
 
-工作流不会修改仓库 public/private 状态，也不会自动推送 tag。私有仓库的 Actions 运行使用账户可用额度；实际额度与设置以 GitHub 为准。
+原仓库已有的六项 [公证凭据](NOTARIZE.md) 无需重新设置。跨仓库发布新增 `RELEASE_REPOSITORY_TOKEN`：仅授予公开仓库 Contents read/write 的 fine-grained PAT 或 GitHub App token。仓库自带的 `GITHUB_TOKEN` 无权写另一个仓库。迁移保留原仓库身份及 secrets，不导出密钥。
 
-在推送发行 tag 之前，于仓库 **Settings → Secrets and variables → Actions** 写入 `APPLE_DEVELOPER_ID_P12`、`APPLE_DEVELOPER_ID_P12_PASSWORD`、`APPLE_TEAM_ID`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`。逐步操作见 [公证凭据](NOTARIZE.md)。缺一项则 `package` job 失败，不会再上传 ad-hoc 公开包。
+源码 tag 仅推送到私有仓库。发布工作流在公开仓库 main 的发行说明提交上创建同名 tag，绝不向公开仓库推送私有源码或源码 tag；`build-info.json` 的 commit 仍记录真正的私有源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/unidesk.rb`。
+
+迁移不重新推送原有源码 tag，不重跑历史发行。首次跨仓库发布前需配置 `RELEASE_REPOSITORY_TOKEN`，且按现有流程运行全部 CI 门禁。
 
 ## 准备版本（协调端，仅一次）
 
@@ -31,7 +33,7 @@
 
 `build_number` 当前受 CFBundleVersion 限制为 1..9999；到达上限时应先改造并验证编号格式，不得回绕。只支持 `vX.Y.Z` tag；测试性质通过 GitHub prerelease 标志表示，暂不支持带 `-rc` 后缀的 tag。
 
-## 贡献者独立 Homebrew 包
+## 授权开发者独立 Homebrew 包
 
 需要完整 Xcode 27+（macOS 27+ SDK）、仓库固定 Rust 工具链、`rust-src` 和 arm64 target。最低运行目标仍为 macOS 14。
 
@@ -96,12 +98,12 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-公开仓库同时作为 Homebrew tap（`brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk`）。`Casks/unidesk.rb` 固定 `uniDesk-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
+公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release`）。`Casks/unidesk.rb` 固定 `uniDesk-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
 
-cask job 下载刚发布的 DMG、重新渲染 cask 并提交到默认分支。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
+cask job 下载刚发布的 DMG、重新渲染 cask 并提交到公开安装包仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 
 ```sh
-gh release download v0.1.0 --repo GodD6366/uniDesk --pattern uniDesk-arm64.dmg --dir dist
+gh release download v0.1.0 --repo GodD6366/unidesk-release --pattern uniDesk-arm64.dmg --dir dist
 python3 scripts/update-cask.py --dmg dist/uniDesk-arm64.dmg --version 0.1.0
 git add Casks/unidesk.rb
 git commit -m 'chore(cask): pin v0.1.0 DMG checksum'

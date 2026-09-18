@@ -19,4 +19,4 @@ build240 用户反馈鼠标离开远程应用窗口后仍无法使用鼠标共�
 
 按既有用户要求不运行本机交互或自动化测试，仅执行官方构建、固定本地签名和 DMG 完整性检查。双机待检查：远程操作超过 2 秒后移出窗口，连续重复进出，按住鼠标拖出，移过透明圆角，以及打开多个远程应用后切回普通跨屏共享。50 ms 为边界兜底检查间隔，并非已经测得的端到端共享恢复延迟。两端均需安装本次包以覆盖 A/B 的租约恢复修复。
 
-交付 `0.2.3 build241`：`/Users/godd/workspace/uniDesk/dist/0.2.3-build241/uniDesk-arm64.dmg`。官方脚本退出 0，构建、签名、`verify-dmg.sh` 与差异检查通过；未公证。签名保持 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68。SHA-256：`3f828c2d93303aa3b33996450f7ce88b91ccba7490570fae4fdf7f52b4a62143`。最终日志：`artifacts/remote-application/pointer-exit-sharing-package-final.log`。
+交付 `0.2.3 build241`：`dist/0.2.3-build241/uniDesk-arm64.dmg`。官方脚本退出 0，构建、签名、`verify-dmg.sh` 与差异检查通过；未公证。签名保持 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68。SHA-256：`3f828c2d93303aa3b33996450f7ce88b91ccba7490570fae4fdf7f52b4a62143`。最终日志：`artifacts/remote-application/pointer-exit-sharing-package-final.log`。

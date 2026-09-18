@@ -14,4 +14,4 @@
 
 沿用用户指定的本地固定签名和主项目 dist 输出。仅运行官方打包中的构建、签名、完整性检查；没有执行本机交互或双机测试。
 
-交付 build 231：`/Users/godd/workspace/uniDesk/dist/0.2.3-build231/uniDesk-arm64.dmg`。构建、签名和 `verify-dmg.sh` 已通过，签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`a6c216eb1fa2b1a11584896ab5d645829bb5edcc8972c5661d2918adb7953a35`。日志：`artifacts/remote-application/pointer-event-package.log`。
+交付 build 231：`dist/0.2.3-build231/uniDesk-arm64.dmg`。构建、签名和 `verify-dmg.sh` 已通过，签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`a6c216eb1fa2b1a11584896ab5d645829bb5edcc8972c5661d2918adb7953a35`。日志：`artifacts/remote-application/pointer-event-package.log`。

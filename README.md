@@ -1,5 +1,7 @@
 # uniDesk
 
+源码仓库已转为私有；公开安装包与 Homebrew tap 位于 [unidesk-release](https://github.com/GodD6366/unidesk-release)。旧版更新地址已迁移，请手动从新 Release 页面安装后续版本；已有 tap 可用 `git -C "$(brew --repository godd6366/unidesk)" remote set-url origin https://github.com/GodD6366/unidesk-release` 更新地址。
+
 [English](README.en.md) · [开发指南](CONTRIBUTING.md) · [发行指南](docs/RELEASING.md) · [计划与待办](TODO.md)
 
 uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：在可信设备间同步剪贴板、传输文件、暂存并拖出文件，并提供独立开关的键鼠共享。交互约定见[当前界面与行为约定](design/current/README.md)。
@@ -26,7 +28,7 @@ uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：�
 | 文件暂存抽屉 | ❌ | ❌ | ✅ |
 | 剪贴板历史 | ❌ | ❌ | ✅ 跨设备同步，支持图片内容搜索 |
 | 加密传输 | ✅ | ✅ TLS | ✅ QUIC |
-| 开源 | ❌ | ✅ GPL-2.0 | ✅ MIT／Apache-2.0 |
+| 开源 | ❌ | ✅ GPL-2.0 | ❌ 私有源码 |
 
 对比依据（2026-09-15）：[Apple 通用控制](https://support.apple.com/en-us/HT212757)、[通用剪贴板](https://support.apple.com/en-us/102430)、[Deskflow](https://github.com/deskflow/deskflow)（文件拖放移除见 [#8459](https://github.com/deskflow/deskflow/issues/8459)）。
 
@@ -42,13 +44,13 @@ uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：�
 
 ## 下载与安装
 
-下载见 [GitHub Releases](https://github.com/GodD6366/uniDesk/releases)。
+下载见 [GitHub Releases](https://github.com/GodD6366/unidesk-release/releases)。
 
 ### Homebrew（macOS 14+、Apple Silicon）
 
 ```sh
 brew trust --cask godd6366/unidesk/unidesk
-brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk
+brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release
 brew install --cask godd6366/unidesk/unidesk
 ```
 
@@ -77,7 +79,7 @@ brew update && brew upgrade --cask unidesk
 需要 Apple Silicon Mac、完整 **Xcode 27+（macOS 27+ SDK）**、Rustup、Python 3.11+；Command Line Tools 不足。最低运行目标 macOS 14，工具链与依赖分别固定在 `rust-toolchain.toml` 和 `Cargo.lock`。
 
 ```sh
-git clone https://github.com/GodD6366/uniDesk.git
+git clone git@github.com:GodD6366/uniDesk.git
 cd uniDesk
 rustup show active-toolchain
 rustup target add aarch64-apple-darwin
@@ -113,4 +115,4 @@ docs/           架构、功能契约、发布与支持边界
 
 ## 许可证
 
-自有代码按 **MIT 或 Apache-2.0** 双许可证分发，由使用者选择；见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。依赖与第三方资源保留各自许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+当前源码仅在私有仓库维护，不再公开分发。历史已公开版本继续适用其原有 [MIT](LICENSE-MIT)／[Apache-2.0](LICENSE-APACHE) 许可；新增自有代码见 [LICENSE](LICENSE)。依赖与第三方资源保留各自许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

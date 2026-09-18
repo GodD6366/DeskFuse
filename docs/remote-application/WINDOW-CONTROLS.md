@@ -18,4 +18,4 @@
 
 依照用户要求只完成官方构建、固定本地签名及 DMG 完整性检查，不运行本机交互测试。双机待验收：覆盖标记的位置、三色按钮及还原尺寸、最小化后再次使用相同快捷键、菜单与远端输入焦点切换、普通远端快捷键和退出控制后恢复鼠标共享。
 
-交付 `0.2.3 build240`：`/Users/godd/workspace/uniDesk/dist/0.2.3-build240/uniDesk-arm64.dmg`。官方打包脚本退出 0，原生构建、签名与 `verify-dmg.sh` 检查通过。签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。SHA-256：`8ca122022970d16bc36a8b60b7f382b8d8bbce79826dda3e5de682a31854f5ef`。构建记录：`artifacts/remote-application/traffic-lights-shortcuts-package-final.log`。
+交付 `0.2.3 build240`：`dist/0.2.3-build240/uniDesk-arm64.dmg`。官方打包脚本退出 0，原生构建、签名与 `verify-dmg.sh` 检查通过。签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。SHA-256：`8ca122022970d16bc36a8b60b7f382b8d8bbce79826dda3e5de682a31854f5ef`。构建记录：`artifacts/remote-application/traffic-lights-shortcuts-package-final.log`。

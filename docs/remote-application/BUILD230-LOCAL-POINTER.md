@@ -14,6 +14,6 @@
 
 按项目默认脚本 `scripts/package-macos.sh`，固定本地 Apple Development 身份，输出到主项目 `dist/0.2.3-build230/`。只进行构建、签名和包完整性检查，不执行本机交互或双机功能测试。
 
-构建、嵌套签名及 `verify-dmg.sh` 均已通过。签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。DMG：`/Users/godd/workspace/uniDesk/dist/0.2.3-build230/uniDesk-arm64.dmg`，SHA-256：`adb3549262dde8521c0f2ee136e51ab213b9c6671b698f6ade397aa025929a9f`。构建日志：`artifacts/remote-application/local-pointer-package.log`。
+构建、嵌套签名及 `verify-dmg.sh` 均已通过。签名为 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。DMG：`dist/0.2.3-build230/uniDesk-arm64.dmg`，SHA-256：`adb3549262dde8521c0f2ee136e51ab213b9c6671b698f6ade397aa025929a9f`。构建日志：`artifacts/remote-application/local-pointer-package.log`。
 
 两端更新后重点验证：本机鼠标能自由进出远程窗口；画面内移动、左右键、拖动、滚轮和连续键入作用到 B；切换本机窗口停止转发；控制申请失败时本机鼠标仍可用；B 前台切换时明确释放。若失败，立即导出两端日志，核对具体失败原因、`remote_foreground` 和 `input_progress`，不要先重启清掉现场。

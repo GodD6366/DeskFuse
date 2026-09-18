@@ -1,5 +1,7 @@
 # uniDesk
 
+Source is now private. Public installers and the Homebrew tap live in [unidesk-release](https://github.com/GodD6366/unidesk-release). Older clients need a manual update from the new release page. Existing taps can update their origin with `git -C "$(brew --repository godd6366/unidesk)" remote set-url origin https://github.com/GodD6366/unidesk-release`.
+
 [中文](README.md) · [Contributing](CONTRIBUTING.md) · [Releasing](docs/RELEASING.md) · [TODO](TODO.md)
 
 A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
@@ -26,7 +28,7 @@ Behavior is defined by the [file transfer contract](docs/FILE_TRANSFER.md), [arc
 | Staging shelf | ❌ | ❌ | ✅ |
 | Clipboard history | ❌ | ❌ | ✅ cross-device sync, image content search |
 | Encrypted transport | ✅ | ✅ TLS | ✅ QUIC |
-| Open source | ❌ | ✅ GPL-2.0 | ✅ MIT / Apache-2.0 |
+| Open source | ❌ | ✅ GPL-2.0 | ❌ Private source |
 
 Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/HT212757), [Universal Clipboard](https://support.apple.com/en-us/102430), [Deskflow](https://github.com/deskflow/deskflow) (drag-and-drop removal in [#8459](https://github.com/deskflow/deskflow/issues/8459)).
 
@@ -42,13 +44,13 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 
 ## Download and install
 
-Downloads: [GitHub Releases](https://github.com/GodD6366/uniDesk/releases).
+Downloads: [GitHub Releases](https://github.com/GodD6366/unidesk-release/releases).
 
 ### Homebrew (macOS 14+, Apple Silicon)
 
 ```sh
 brew trust --cask godd6366/unidesk/unidesk
-brew tap godd6366/unidesk https://github.com/GodD6366/uniDesk
+brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release
 brew install --cask godd6366/unidesk/unidesk
 ```
 
@@ -77,7 +79,7 @@ GitHub prereleases built with Apple credentials are Developer ID signed and nota
 Requires an Apple Silicon Mac, full **Xcode 27+ (macOS 27+ SDK)**, Rustup and Python 3.11+; Command Line Tools alone are not enough. The deployment target is macOS 14, with Rust and dependencies pinned in `rust-toolchain.toml` and `Cargo.lock`.
 
 ```sh
-git clone https://github.com/GodD6366/uniDesk.git
+git clone git@github.com:GodD6366/uniDesk.git
 cd uniDesk
 rustup show active-toolchain
 rustup target add aarch64-apple-darwin
@@ -113,4 +115,4 @@ Report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-Original code is dual-licensed under **MIT or Apache-2.0**, at your option; see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). Dependencies and third-party assets retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Current source is maintained privately. Previously published versions retain their original [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE) licenses; new original code is covered by [LICENSE](LICENSE). Dependencies and third-party assets retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

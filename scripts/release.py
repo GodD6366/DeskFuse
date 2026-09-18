@@ -196,7 +196,7 @@ def main() -> None:
     parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
     parser.add_argument("--directory", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag")
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
+    parser.add_argument("--repo", default=os.environ.get("UNIDESK_RELEASE_REPOSITORY", "GodD6366/unidesk-release"))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
     args = parser.parse_args()
     if args.command == "version":

@@ -12,7 +12,7 @@
 
 按用户既有要求，只做官方构建、固定本地签名与包完整性检查，不运行本机交互测试。候选窗显示/点击、输入连续性、窗口尺寸和视觉效果待双机验收。
 
-交付 build 234：`/Users/godd/workspace/uniDesk/dist/0.2.3-build234/uniDesk-arm64.dmg`。构建、嵌套签名及 `verify-dmg.sh` 已通过；Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`e825e3594dfa2bf47bafb7d4d4314c5da082f3e3557d8567e79907f0375ecf33`。构建日志：`artifacts/remote-application/borderless-transition-package.log`。
+交付 build 234：`dist/0.2.3-build234/uniDesk-arm64.dmg`。构建、嵌套签名及 `verify-dmg.sh` 已通过；Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`e825e3594dfa2bf47bafb7d4d4314c5da082f3e3557d8567e79907f0375ecf33`。构建日志：`artifacts/remote-application/borderless-transition-package.log`。
 
 ## 候选框越界反馈的后续修正
 
@@ -26,4 +26,4 @@
 
 沿用只交包自测的要求，不运行本机交互或自动化测试。待双机验证：右/下边缘超长候选框完整显示、候选点击映射、首次打开/重连后的窗口比例、打字期间无黑闪。
 
-交付 build 235：`/Users/godd/workspace/uniDesk/dist/0.2.3-build235/uniDesk-arm64.dmg`。官方打包脚本退出 0；构建、嵌套签名、`verify-dmg.sh` 及差异空白检查通过。签名沿用 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`c64d48859f0c078720f7a92e796494f241507f37d2a404e7426d9d3a9483a47e`。日志：`artifacts/remote-application/candidate-bounds-package.log`。
+交付 build 235：`dist/0.2.3-build235/uniDesk-arm64.dmg`。官方打包脚本退出 0；构建、嵌套签名、`verify-dmg.sh` 及差异空白检查通过。签名沿用 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`c64d48859f0c078720f7a92e796494f241507f37d2a404e7426d9d3a9483a47e`。日志：`artifacts/remote-application/candidate-bounds-package.log`。

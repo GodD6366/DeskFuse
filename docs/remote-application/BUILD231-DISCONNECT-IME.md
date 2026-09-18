@@ -22,4 +22,4 @@
 
 按用户约定仅进行构建、固定本地签名和包完整性检查，不进行本机交互或双机功能测试。
 
-交付 build 233：`/Users/godd/workspace/uniDesk/dist/0.2.3-build233/uniDesk-arm64.dmg`。官方打包、嵌套代码签名及 `verify-dmg.sh` 通过；签名 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`861009781981a2bb86976014cc02bffebe5fabfb9cde53404763ff7e32068de5`。构建记录：`artifacts/remote-application/session-ime-window-package.log`。
+交付 build 233：`dist/0.2.3-build233/uniDesk-arm64.dmg`。官方打包、嵌套代码签名及 `verify-dmg.sh` 通过；签名 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`861009781981a2bb86976014cc02bffebe5fabfb9cde53404763ff7e32068de5`。构建记录：`artifacts/remote-application/session-ime-window-package.log`。

@@ -40,7 +40,7 @@ APP_BUNDLE="$MOUNT_POINT/uniDesk.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 BINARY_PATH="$CONTENTS_DIR/MacOS/unidesk-app"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
-for resource in LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt uniDesk.icns uniDesk-icon-1024.png unidesk-status-icon.png; do
+for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt uniDesk.icns uniDesk-icon-1024.png unidesk-status-icon.png; do
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
