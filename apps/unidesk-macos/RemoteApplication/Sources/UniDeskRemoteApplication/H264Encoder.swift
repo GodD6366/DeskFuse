@@ -96,22 +96,26 @@ public final class H264Encoder: @unchecked Sendable {
             let started = ProcessInfo.processInfo.systemUptime
             let status = VTCompressionSessionEncodeFrame(session, imageBuffer: frame.buffer,
                 presentationTimeStamp: frame.timestamp, duration: CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000),
-                frameProperties: properties, infoFlagsOut: nil) { [weak self] status, _, sample in
+                frameProperties: properties, infoFlagsOut: nil) { [weak self] status, flags, sample in
                     guard let self else { return }
-                    if status == noErr, let sample {
+                    // Real-time VT encoding may successfully drop a frame. This
+                    // is not a codec failure and must not disconnect the viewer.
+                    // Submission sequence numbers now have a gap, so resume with
+                    // a key frame for the receiver's reference-chain validation.
+                    let dropped = status == noErr && (flags.contains(.frameDropped) || sample == nil)
+                    if status != noErr {
+                        self.output(.failure(.codec("编码视频帧", status)))
+                    } else if !dropped, let sample {
                         do {
                             let encoded = try Self.extract(sample, surface: self.surface, sequence: frameSequence)
                             self.metrics.update { $0.hardwareEncoder = true }
                             self.metrics.encode(duration: ProcessInfo.processInfo.systemUptime - started, bytes: encoded.bytes.count)
                             if !self.lock.withLock({ self.stopped }) { self.output(.success(encoded)) }
                         } catch { self.output(.failure(error as? RemoteApplicationError ?? .malformedFrame)) }
-                    } else {
-                        // A missing reference invalidates the chain, even when VT
-                        // reports a successful intentional frame drop.
-                        self.output(.failure(.codec("编码视频帧", status)))
                     }
                     self.queue.async { [weak self] in
                         guard let self else { return }
+                        if dropped { self.forceKeyFrame = true }
                         self.inFlight = max(0, self.inFlight - 1); self.drain()
                     }
                 }
