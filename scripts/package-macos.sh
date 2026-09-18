@@ -19,12 +19,23 @@ done
 # Public/homebrew packages never read the maintainer's LAN signing key, allocate
 # a coordinator build number or seed the running app's updater.
 PACKAGE_MODE=lan
-case "${1:-}" in
-  ""|--lan) ;;
-  --homebrew) PACKAGE_MODE=homebrew ;;
-  *) echo "usage: scripts/package-macos.sh [--lan|--homebrew]" >&2; exit 2 ;;
-esac
-[[ "$#" -le 1 ]] || { echo "usage: scripts/package-macos.sh [--lan|--homebrew]" >&2; exit 2; }
+AUTO_INSTALL=0
+usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew] [--auto]" >&2; exit 2; }
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --lan) ;;
+    --homebrew) PACKAGE_MODE=homebrew ;;
+    --auto) AUTO_INSTALL=1 ;;
+    *) usage ;;
+  esac
+  shift
+done
+# --auto replaces the running local install; a public homebrew build must not
+# touch /Applications on the packaging machine.
+if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" == homebrew ]]; then
+  echo "error: --auto is only valid with the local LAN package mode" >&2
+  exit 2
+fi
 
 TARGET_TRIPLE="aarch64-apple-darwin"
 export MACOSX_DEPLOYMENT_TARGET=14.0
@@ -361,4 +372,23 @@ stage.rename(destination)
 if previous.exists(): shutil.rmtree(previous)
 PYSEED
   echo "LAN update seed: $UPDATE_ROOT/inbox"
+fi
+
+# --auto: replace the running instance with the freshly packaged app. Only the
+# LAN local-delivery flow reaches this point; homebrew mode rejects --auto.
+if [[ "$AUTO_INSTALL" == 1 ]]; then
+  echo "auto install: stopping running uniDesk processes"
+  pkill -x "$BINARY_NAME" 2>/dev/null || true
+  pkill -x "unidesk-input-service" 2>/dev/null || true
+  # Give the app a moment to release the input-service child and file handles.
+  for ((wait_round = 0; wait_round < 20; wait_round++)); do
+    pgrep -x "$BINARY_NAME" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  INSTALL_PATH="/Applications/uniDesk.app"
+  rm -rf "$INSTALL_PATH"
+  ditto "$APP_BUNDLE" "$INSTALL_PATH"
+  codesign --verify --deep --strict "$INSTALL_PATH"
+  echo "auto install: $INSTALL_PATH"
+  open "$INSTALL_PATH"
 fi
