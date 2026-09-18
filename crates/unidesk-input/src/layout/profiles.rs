@@ -105,8 +105,8 @@ pub fn remember_layout(
     {
         let mut positions: Vec<_> = all_positions
             .iter()
-            .cloned()
             .filter(|p| p.display.device_id == device)
+            .cloned()
             .collect();
         if positions.is_empty() {
             continue;

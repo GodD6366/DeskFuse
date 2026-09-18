@@ -4833,6 +4833,7 @@ mod tests {
                 | Capabilities::INPUT_ENVIRONMENT
                 | Capabilities::DEFERRED_FILE_CLIPBOARD
                 | Capabilities::CLIPBOARD_SYNC_V2
+                | Capabilities::REMOTE_APPLICATION
                 | motion_mode_capabilities(
                     std::env::var("UNIDESK_INPUT_MOTION_MODE").ok().as_deref()
                 )
