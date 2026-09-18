@@ -2565,6 +2565,7 @@ dependencies = [
  "unidesk-platform-macos",
  "unidesk-runtime",
  "unidesk-transfer",
+ "unidesk-transport",
  "unidesk-update",
  "uniffi",
  "uuid",

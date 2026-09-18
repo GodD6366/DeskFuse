@@ -23,7 +23,7 @@ pub mod input_service;
 #[path = "input_service_types.rs"]
 pub mod input_service;
 #[cfg(unix)]
-mod input_service_types;
+pub mod input_service_types;
 
 use unidesk_core::{
     ConnectionContext, DisplayId, DisplayTopology, InputActivationId, InputActivationPolicy,

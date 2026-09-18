@@ -1,4 +1,5 @@
-//! Process boundary for native input. No motion or key payload crosses this IPC.
+//! Process boundary for native input. Remote-app input has a bounded, separate
+//! typed lane; normal cross-screen motion remains on the helper network.
 //! Control, replaceable status, and urgent/lifetime traffic use different sockets.
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,7 @@ pub struct Bootstrap {
 #[allow(clippy::large_enum_variant)]
 enum HostMessage {
     Bootstrap(Bootstrap),
+    RemoteApplication(super::input_service_types::RemoteApplicationInput),
     Authority { revision: u64, value: Authority },
     Command { id: u64, value: RuntimeCommand },
     Persisted { id: u64, error: Option<String> },
@@ -213,6 +215,7 @@ pub(super) async fn run_host(
         .await;
         *control.sequence.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         *control.urgent.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *control.remote.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let error = result.err();
         let status = NativeStatus {
             error: error.clone(),
@@ -316,6 +319,22 @@ async fn run_process(
     };
     write_frame(&mut command, &HostMessage::Bootstrap(bootstrap)).map_err(|e| e.to_string())?;
     let writer = Arc::new(Mutex::new(command.try_clone().map_err(|e| e.to_string())?));
+    let (remote_tx, remote_rx) = std::sync::mpsc::sync_channel(128);
+    *control.remote.lock().map_err(|e| e.to_string())? = Some(remote_tx);
+    let remote_writer = writer.clone();
+    std::thread::Builder::new()
+        .name("unidesk-remote-input-writer".into())
+        .spawn(move || {
+            while let Ok(packet) = remote_rx.recv() {
+                let Ok(mut writer) = remote_writer.lock() else {
+                    break;
+                };
+                if write_frame(&mut writer, &HostMessage::RemoteApplication(packet)).is_err() {
+                    break;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let rpc_writer = writer.clone();
     std::thread::Builder::new()
         .name("unidesk-input-persistence".into())

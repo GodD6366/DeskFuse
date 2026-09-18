@@ -385,6 +385,9 @@ impl Capabilities {
     /// Epoch-barriered mouse positions carried by bounded QUIC datagrams.
     pub const INPUT_MOTION_DATAGRAM_V1: Self = Self(1 << 9);
 
+    /// Native remote applications over an admitted, paired control connection.
+    pub const REMOTE_APPLICATION: Self = Self(1 << 12);
+
     /// No capabilities.
     pub const NONE: Self = Self(0);
 

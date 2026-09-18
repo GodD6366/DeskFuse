@@ -26,6 +26,36 @@ fn may_post() -> bool {
     // SAFETY: the preflight function has no arguments and does not request TCC.
     unsafe { CGPreflightPostEventAccess() != 0 }
 }
+
+/// The input helper runs Tokio, not an AppKit application run loop. Query the
+/// WindowServer process state synchronously instead of NSWorkspace's cached
+/// running-application properties, which update on AppKit run-loop turns.
+pub fn frontmost_pid() -> i32 {
+    #[repr(C)]
+    struct ProcessSerialNumber {
+        high: u32,
+        low: u32,
+    }
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn GetFrontProcess(process: *mut ProcessSerialNumber) -> i32;
+        fn GetProcessPID(process: *const ProcessSerialNumber, pid: *mut i32) -> i32;
+    }
+    let mut process = ProcessSerialNumber { high: 0, low: 0 };
+    let mut pid = 0;
+    // SAFETY: both legacy public Process Manager APIs receive valid stack
+    // output pointers. An unavailable foreground process fails closed.
+    unsafe {
+        if GetFrontProcess(&mut process) == 0 && GetProcessPID(&process, &mut pid) == 0 {
+            return pid.max(0);
+        }
+    }
+    0
+}
+
+pub fn can_post_input() -> bool {
+    may_post()
+}
 fn may_capture() -> bool {
     // The production capture uses CGEventTapOptions::Default so it can
     // suppress local input while controlling a peer. macOS authorizes this

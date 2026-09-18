@@ -46,6 +46,7 @@ import UniDeskEngine
             do {
                 let engine = try await Task.detached { try Engine() }.value
                 self.engine = engine
+                if #available(macOS 14.2, *) { RemoteApplicationManager.shared.start(engine: engine) }
                 await WorkflowStore.shared.reload(engine: engine)
                 UniDeskImageAppShortcuts.updateAppShortcutParameters()
                 let client = EngineClient(engine: engine)
@@ -182,6 +183,7 @@ import UniDeskEngine
         }
     }
     func terminate() -> NSApplication.TerminateReply {
+        if #available(macOS 14.2, *) { RemoteApplicationManager.shared.stop() }
         if quitting || client == nil { return .terminateNow }
         quitting = true; reclaim(); shelf?.stop(); transferWindow?.stop()
         // AppKit already holds the main run loop inside applicationShouldTerminate,

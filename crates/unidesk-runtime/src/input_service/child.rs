@@ -3,6 +3,7 @@ use std::os::fd::AsFd;
 use std::sync::atomic::AtomicU8;
 /// Inherited descriptors are the only IPC entry points. No public local socket.
 pub struct ChildConnection {
+    pub remote: mpsc::Receiver<crate::input_service_types::RemoteApplicationInput>,
     pub bootstrap: Bootstrap,
     pub stopping: Arc<AtomicBool>,
     pub recording: Arc<AtomicBool>,
@@ -63,6 +64,7 @@ impl ChildConnection {
             .map_err(|e| e.to_string())?;
         let (authority_tx, authority) = watch::channel(bootstrap.authority.clone());
         let (command_tx, commands) = mpsc::channel(128);
+        let (remote_tx, remote) = mpsc::channel(128);
         let signal = stopping.clone();
         let persistence = store.clone();
         std::thread::Builder::new()
@@ -71,6 +73,11 @@ impl ChildConnection {
                 let mut revision = 0;
                 while let Ok(message) = read_frame(&mut command) {
                     match message {
+                        HostMessage::RemoteApplication(packet) => {
+                            if remote_tx.try_send(packet).is_err() {
+                                break;
+                            }
+                        }
                         HostMessage::Authority {
                             revision: incoming,
                             value,
@@ -117,6 +124,18 @@ impl ChildConnection {
                         b'E' => reclaim.store(true, Ordering::Release),
                         b'R' => rec.store(true, Ordering::Release),
                         b'r' => rec.store(false, Ordering::Release),
+                        b'V' => {
+                            let _ =
+                                update.compare_exchange(0, 6, Ordering::AcqRel, Ordering::Acquire);
+                        }
+                        b'v' => {
+                            // The coordinator may acknowledge 6 -> 7 concurrently.
+                            // One atomic update releases either viewer state.
+                            let _ =
+                                update.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                                    matches!(value, 6 | 7).then_some(0)
+                                });
+                        }
                         b'P' => {
                             let _ =
                                 update.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
@@ -126,7 +145,7 @@ impl ChildConnection {
                                 matches!(v, 0 | 1).then_some(3)
                             });
                         }
-                        b'p' => update.store(0, Ordering::Release),
+                        b'p' => crate::input_service_types::resume_update_pause(&update),
                         b'D' => unidesk_core::debug_logging::set_enabled(true),
                         b'd' => unidesk_core::debug_logging::set_enabled(false),
                         _ => break,
@@ -170,6 +189,7 @@ impl ChildConnection {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             bootstrap,
+            remote,
             stopping,
             recording,
             emergency,

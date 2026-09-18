@@ -36,7 +36,7 @@ pub use wire::envelope::Message;
 pub use wire::{
     ClipboardUpdate, DisplayInfo, Envelope, Error, Goodbye, Hello, HelloAck, InputEndpoints,
     InputEvent, InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest,
-    PeerInfo, Ping, Pong, SessionProof, envelope, input_event,
+    PeerInfo, Ping, Pong, RemoteApplicationOpen, SessionProof, envelope, input_event,
 };
 
 /// ALPN protocol identifier.
@@ -90,6 +90,13 @@ impl Envelope {
 
 fn validate_message(message: &Message) -> Result<(), ProtocolError> {
     match message {
+        Message::RemoteApplicationOpen(open) => {
+            if open.version == 1 {
+                Ok(())
+            } else {
+                Err(ProtocolError::InvalidPayload("remote application version"))
+            }
+        }
         Message::ReleaseInventory(_)
         | Message::UpdateRequest(_)
         | Message::UpdateChunk(_)

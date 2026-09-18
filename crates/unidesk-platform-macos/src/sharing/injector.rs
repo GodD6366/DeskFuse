@@ -831,6 +831,13 @@ impl NativeInjector {
                     self.clicks.get(button).map_or(1, |(_, _, count)| *count)
                 };
                 self.post_button(*button, *pressed, count)?;
+                if display.id.0 == "remote-application" {
+                    unidesk_platform::timing::record(
+                        "remote_pointer_post",
+                        Duration::ZERO,
+                        format!("kind={}", if *pressed { "down" } else { "up" }),
+                    );
+                }
                 if *pressed {
                     self.buttons.insert(*button);
                 } else {

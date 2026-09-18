@@ -104,6 +104,7 @@ struct DevicesView: View {
                             Divider()
                             infoRow("键鼠", symbol: "computermouse", value: snapshot.input.summary)
                         }.padding(20).modifier(DeviceDetailsSurface())
+                        if #available(macOS 14.2, *) { RemoteApplicationAccessView() }
                         if snapshot.networkId != nil {
                             VStack(alignment: .leading, spacing: 10) {
                                 WorkspaceChromeButton("退出设备网络", systemImage: "rectangle.portrait.and.arrow.right", destructive: true) {
@@ -143,7 +144,26 @@ struct DevicesView: View {
     }
 
     private func row(_ device: Device) -> some View {
-        deviceRow(name: device.name, detail: device.detail, symbol: "desktopcomputer", connected: device.connected).tag(device.id)
+        HStack(spacing: 8) {
+            deviceRow(name: device.name, detail: device.detail, symbol: "desktopcomputer", connected: device.connected)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if device.trusted && !device.blocked {
+                if #available(macOS 14.2, *) {
+                    Button {
+                        selected = device.id
+                        RemoteApplicationManager.shared.open(device)
+                    } label: {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 28, height: 28).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!device.connected)
+                    .help(device.connected ? "打开远程应用" : "连接设备后可打开远程应用")
+                    .accessibilityLabel("打开 \(device.name) 的远程应用")
+                }
+            }
+        }.tag(device.id).listRowSeparator(.hidden)
     }
 
     private func deviceRow(name: String, detail: String, symbol: String, connected: Bool) -> some View {

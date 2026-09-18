@@ -22,6 +22,7 @@ unidesk-core = { path = "../unidesk-core" }
 unidesk-runtime = { path = "../unidesk-runtime" }
 unidesk-platform = { path = "../unidesk-platform" }
 unidesk-platform-macos = { path = "../unidesk-platform-macos" }
+unidesk-transport = { path = "../unidesk-transport" }
 unidesk-transfer = { path = "../unidesk-transfer" }
 unidesk-update = { path = "../unidesk-update" }
 

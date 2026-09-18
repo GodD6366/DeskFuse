@@ -47,6 +47,13 @@ unidesk_resolve_signing_kind
 # DIST_DIR is resolved after the build number exists so local packages land in
 # dist/{version}-build{number}/. Explicit DIST_DIR, CI artifact layout, and local
 # homebrew isolation stay unchanged.
+# Linked worktrees share the primary checkout's local delivery directory.
+# CI and an explicit DIST_DIR retain their existing output contracts.
+LOCAL_PACKAGE_ROOT="$ROOT_DIR"
+if COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+  && [[ "$COMMON_GIT_DIR" == */.git ]]; then
+  LOCAL_PACKAGE_ROOT="$(dirname "$COMMON_GIT_DIR")"
+fi
 EXPLICIT_DIST_DIR="${DIST_DIR:-}"
 EXPLICIT_DMG_PATH="${DMG_PATH:-}"
 ASSET_DIR="$ROOT_DIR/resources/generated"
@@ -107,11 +114,11 @@ BUILD_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))
 if [[ -n "$EXPLICIT_DIST_DIR" ]]; then
   DIST_DIR="$EXPLICIT_DIST_DIR"
 elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" != "true" ]]; then
-  DIST_DIR="$ROOT_DIR/dist/homebrew"
+  DIST_DIR="$LOCAL_PACKAGE_ROOT/dist/homebrew"
 elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" == "true" ]]; then
   DIST_DIR="$ROOT_DIR/dist"
 else
-  DIST_DIR="$ROOT_DIR/dist/${APP_VERSION}-build${BUILD_VERSION}"
+  DIST_DIR="$LOCAL_PACKAGE_ROOT/dist/${APP_VERSION}-build${BUILD_VERSION}"
 fi
 DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/uniDesk-arm64.dmg}"
 mkdir -p "$DIST_DIR"

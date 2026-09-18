@@ -164,7 +164,7 @@ impl InputCoordinator {
             remote.signal(b'p');
             return;
         }
-        self.update_pause.store(0, Ordering::Release);
+        unidesk_runtime::input_service_types::resume_update_pause(&self.update_pause);
     }
 }
 impl Drop for InputCoordinator {
@@ -875,6 +875,7 @@ async fn run(
     let mut recording_active = false;
     let started = Instant::now();
     let mut next_refresh = Instant::now();
+    let mut remote_application_paused = false;
     // Housekeeping/dwell/lease checks only. Mouse delivery is notification-driven.
     let mut timer = tokio::time::interval(Duration::from_millis(20));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -883,6 +884,60 @@ async fn run(
             break;
         }
         let pause = update_pause.load(Ordering::Acquire);
+        if pause == 4 || pause == 6 {
+            // Stopping native adapters alone leaves idle network grants marked
+            // Ready. Their local watchdogs expire while this loop is suspended,
+            // preventing sharing from recovering after the canvas releases us.
+            // Retire the old grants and negotiate fresh ones on native Ready.
+            let snapshot = runtime.input_snapshot();
+            state
+                .report_native(
+                    &runtime,
+                    &snapshot,
+                    InputActivationStatus::Preparing,
+                    Some("远程应用暂时占用输入，退出后自动恢复".into()),
+                )
+                .await;
+            state.available = false;
+            state.retired.extend(state.grants.keys().copied());
+            state.grants.clear();
+            state.reclaim(&runtime, Some(state.anchor)).await;
+            let _ = state.capture.stop();
+            state.capture_started = false;
+            if let Some(injector) = state.injector.take() {
+                let _ = injector.release_all();
+            }
+            let _ = update_pause.compare_exchange(
+                pause,
+                pause + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        if matches!(pause, 4..=7) {
+            if !remote_application_paused {
+                timing::record(
+                    "remote_sharing_pause",
+                    Duration::ZERO,
+                    format!("pause={pause}"),
+                );
+                remote_application_paused = true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            next_refresh = Instant::now();
+            state.last_report = None;
+            continue;
+        }
+        if remote_application_paused {
+            remote_application_paused = false;
+            next_refresh = Instant::now();
+            timer.reset_immediately();
+            timing::record(
+                "remote_sharing_resume",
+                Duration::ZERO,
+                format!("pause={pause}"),
+            );
+        }
         if pause == 3 || (pause != 0 && state.outbound.is_none() && state.inbound.is_none()) {
             if pause == 1 || pause == 3 {
                 state.reclaim(&runtime, Some(state.anchor)).await;
