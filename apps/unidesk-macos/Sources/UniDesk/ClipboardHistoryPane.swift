@@ -368,6 +368,7 @@ private struct ClipboardHistoryRow: View {
             title: title,
             fallback: item.clipboardTitle,
             editing: $editingTitle,
+            editsOnDoubleClick: false,
             font: .system(size: 14, weight: .semibold)
         )
         .frame(maxWidth: .infinity, alignment: .leading)

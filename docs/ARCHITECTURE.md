@@ -172,7 +172,16 @@ decides whether sharing is enabled. A receiver's short-lived managed activation
 is runtime-owned and never persisted into its input settings. Display IDs come from native display identity,
 not array positions; coordinates are display-local logical points and complete
 device desktop placement is a translation of that device's native topology.
-Reconfiguration preserves native internal arrangement. Changes to the active
+Reconfiguration preserves native internal arrangement. Layout memory is bounded to
+128 per-device profiles keyed by the controller and receiver's physical display
+geometry, ignoring generation, discovery order and readiness. Remote coordinates
+are relative to the controller desktop origin. Topology transitions remember the
+previous combination; only explicit placement changes overwrite an existing
+profile. After resolving all devices, disconnected desktops are reattached with
+preference for their remembered neighbor and side, without modifying saved profiles.
+Native topology generation is a content fingerprint, not an ordered revision;
+receivers accept a different fingerprint on a currently authenticated context even
+when its numeric value decreases. Changes to the active
 display or its transform invalidate control; unrelated peer readiness updates
 preserve the active display and stable default desktop positions. Only Ready peers with pre-granted
 sessions participate in pointer crossing.

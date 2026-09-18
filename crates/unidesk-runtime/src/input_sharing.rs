@@ -80,6 +80,7 @@ fn lease_now_ms() -> u64 {
 struct InputActor {
     links: recovery::Links,
     environment: environment::Environment,
+    layout_persistence: layout::LayoutPersistence,
     outgoing: BTreeMap<DeviceId, Activation>,
     incoming: Option<Activation>,
     retired_activations: std::collections::VecDeque<RetiredActivation>,
@@ -136,6 +137,7 @@ pub(crate) async fn run(
     let mut actor = InputActor {
         links: recovery::Links::default(),
         environment: environment::Environment::default(),
+        layout_persistence: layout::LayoutPersistence::default(),
         outgoing: BTreeMap::new(),
         incoming: None,
         retired_activations: std::collections::VecDeque::new(),
@@ -208,7 +210,11 @@ pub(crate) async fn run(
                 publish_snapshot = !matches!(&event, InputTransportEvent::Motion { .. });
                 actor.inbound(event);
             } else { break },
-            _ = environment_save.tick() => actor.start_environment_save(),
+            _ = environment_save.tick() => {
+                actor.start_environment_save();
+                actor.remember_visible_layout();
+                actor.start_layout_save();
+            },
             _ = async { match motion_deadline {Some(deadline)=>tokio::time::sleep_until(deadline.into()).await,None=>std::future::pending::<()>().await} } => actor.tick_motion(),
             _=interval.tick()=>{if overflow.swap(false,Ordering::AcqRel){actor.deactivate_all("input command queue overflow");}actor.tick();},
             changed=actor.network.changed()=>{if changed.is_err(){break}actor.tick();},
@@ -221,6 +227,14 @@ pub(crate) async fn run(
         {
             actor.finish_policy_save().await;
         }
+        if actor
+            .layout_persistence
+            .pending
+            .as_ref()
+            .is_some_and(|task| task.is_finished())
+        {
+            actor.finish_layout_save().await;
+        }
         actor.reap_links().await;
         // Motion is delivered directly to the native worker, not the UI. Avoid
         // rebuilding/cloning every peer and transfer snapshot on every sample.
@@ -229,6 +243,10 @@ pub(crate) async fn run(
             actor.publish();
         }
     }
+    actor.finish_layout_save().await;
+    actor.remember_visible_layout();
+    actor.start_layout_save();
+    actor.finish_layout_save().await;
     actor.finish_policy_save().await;
     actor.persist_environment_if_dirty().await;
     actor.stop_links().await;
@@ -532,6 +550,7 @@ impl InputActor {
         ));
     }
     async fn command(&mut self, command: RuntimeCommand) {
+        let applying_scene = matches!(&command, RuntimeCommand::ApplyInputSharingScene { .. });
         let command = match command {
             RuntimeCommand::ApplyInputSharingScene { scene_id } => {
                 let Some(scene) = self.snapshot.scenes.iter().find(|s| s.id == scene_id) else {
@@ -588,6 +607,7 @@ impl InputActor {
                 self.pause_current_managed().await;
             }
             RuntimeCommand::SaveInputSharingScene { name } => {
+                self.remember_visible_layout();
                 match InputSharingScene::new(name, self.snapshot.settings.clone()) {
                     Ok(scene) => {
                         let mut scenes = self.snapshot.scenes.clone();
@@ -611,7 +631,13 @@ impl InputActor {
                 scenes.retain(|s| s.id != scene_id);
                 self.save_scenes(scenes).await;
             }
-            RuntimeCommand::SetInputSharingSettings(settings) => {
+            RuntimeCommand::SetInputSharingSettings(mut settings) => {
+                // Layout memory belongs to the actor, not a potentially stale UI DTO.
+                if !applying_scene {
+                    self.remember_visible_layout();
+                    settings.layout_profiles = self.snapshot.settings.layout_profiles.clone();
+                }
+                self.finish_layout_save().await;
                 if let Err(e) = settings.validate() {
                     self.settings_error(e.to_string());
                     return;
@@ -645,6 +671,7 @@ impl InputActor {
                         if settings.enabled && settings.role == InputShareRole::Controller {
                             self.end_incoming("local controller enabled", true);
                         }
+                        self.layout_persistence.dirty = false;
                         self.snapshot.settings = settings.clone();
                         self.published_topologies.clear();
                         self.attempted.clear();
@@ -682,6 +709,7 @@ impl InputActor {
                     return;
                 }
                 if self.snapshot.local_topology.as_ref() != Some(&topology) {
+                    self.remember_visible_layout();
                     self.release_all("display topology changed");
                     self.snapshot.local_topology = Some(topology);
                     self.published_topologies.clear();
@@ -930,9 +958,9 @@ impl InputActor {
                             .remote_topologies
                             .get(&peer_id)
                             .is_some_and(|current| {
-                                topology.generation < current.generation
-                                    || (topology.generation == current.generation
-                                        && topology != *current)
+                                // Native generation is a content fingerprint, not a
+                                // monotonic counter: closing/reopening can decrease it.
+                                topology.generation == current.generation && topology != *current
                             })
                         {
                             return;
@@ -940,6 +968,7 @@ impl InputActor {
                         let changed =
                             self.snapshot.remote_topologies.get(&peer_id) != Some(&topology);
                         if changed {
+                            self.remember_visible_layout();
                             let ids = self
                                 .leases
                                 .iter()
@@ -1655,6 +1684,7 @@ mod tests {
             InputActor {
                 links: recovery::Links::default(),
                 environment: environment::Environment::default(),
+                layout_persistence: layout::LayoutPersistence::default(),
                 outgoing: if controller {
                     BTreeMap::from([(peer, activation.clone())])
                 } else {
@@ -2189,6 +2219,29 @@ mod tests {
         );
         assert!(!actor.leases.contains_key(&id));
     }
+    #[test]
+    fn topology_fingerprint_can_decrease_and_return_after_clamshell() {
+        let (mut actor, peer, context, _, _) = setup(false);
+        let original = actor.snapshot.remote_topologies[&peer].clone();
+        let mut changed = original.clone();
+        changed.generation = original.generation - 1;
+        changed.displays[0].width += 100;
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::DisplayTopology(changed.clone()),
+        );
+        assert_eq!(actor.snapshot.remote_topologies[&peer], changed);
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::DisplayTopology(original.clone()),
+        );
+        assert_eq!(actor.snapshot.remote_topologies[&peer], original);
+    }
+
     #[test]
     fn selected_peers_exchange_topology_without_enabling_input_or_native_permissions() {
         for (enabled, available, receiver_role) in [

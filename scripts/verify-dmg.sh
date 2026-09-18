@@ -46,8 +46,18 @@ done
 
 # The signed distribution marker selects the updater, independent of install path.
 [[ -f "$CONTENTS_DIR/Resources/update-channel" ]] || { echo "error: update channel missing" >&2; exit 1; }
-case "$(cat "$CONTENTS_DIR/Resources/update-channel")" in
-  github|lan) ;;
+UPDATE_CHANNEL="$(cat "$CONTENTS_DIR/Resources/update-channel")"
+case "$UPDATE_CHANNEL" in
+  lan)
+    [[ -f "$MOUNT_POINT/.updates/manifest.json" && -f "$CONTENTS_DIR/Resources/LanUpdate/manifest.json" ]] || {
+      echo "error: LAN package is missing its signed update payload" >&2; exit 1;
+    }
+    ;;
+  github)
+    [[ ! -e "$MOUNT_POINT/.updates" && ! -e "$CONTENTS_DIR/Resources/LanUpdate" ]] || {
+      echo "error: Homebrew/GitHub package contains a LAN update payload" >&2; exit 1;
+    }
+    ;;
   *) echo "error: invalid update channel" >&2; exit 1 ;;
 esac
 
@@ -237,6 +247,7 @@ PYMETA
 
 echo "verified: $DMG_PATH"
 echo "architecture: $ARCHES"
+echo "update channel: $UPDATE_CHANNEL"
 echo "signing: $SIGNING_STATUS"
 if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
   echo "notarization: stapled ticket validated"

@@ -1,6 +1,11 @@
 //! Shared layout resolution and device-group magnetic placement.
 use crate::sharing::SharingDisplay;
-use unidesk_core::{DeviceId, DisplayKey, DisplayPlacementSetting, InputSharingSnapshot};
+use unidesk_core::{
+    DeviceId, DisplayKey, DisplayLayoutAttachment, DisplayLayoutSide, DisplayPlacementSetting,
+    InputSharingSnapshot,
+};
+mod profiles;
+pub use profiles::remember_layout;
 
 /// Translate complete native device desktops as groups. Never synthesize a
 /// display when a peer has not supplied a topology.
@@ -29,20 +34,22 @@ pub fn layout_displays(
     groups.sort_by_key(|(device, topology, _)| {
         if *device == local {
             0
-        } else if topology.displays.iter().any(|display| {
-            snapshot
-                .settings
-                .placements
-                .iter()
-                .any(|p| p.display.device_id == *device && p.display.display_id == display.id)
-        }) {
+        } else if profiles::profile_for(snapshot, *device, topology).is_some()
+            || topology.displays.iter().any(|display| {
+                snapshot
+                    .settings
+                    .placements
+                    .iter()
+                    .any(|p| p.display.device_id == *device && p.display.display_id == display.id)
+            })
+        {
             1
         } else {
             2
         }
     });
     let mut cursor_x = 0.0_f64;
-    let mut result = Vec::new();
+    let mut result: Vec<SharingDisplay> = Vec::new();
     for (device_id, topology, ready) in groups {
         let min_x = topology
             .displays
@@ -62,13 +69,41 @@ pub fn layout_displays(
             .map(|d| d.frame_x + f64::from(d.width))
             .reduce(f64::max)
             .unwrap_or(min_x);
+        let profile = profiles::profile_for(snapshot, device_id, topology)
+            .or_else(|| profiles::fallback_profile(snapshot, device_id));
+        let saved = profile
+            .map(|p| p.placements.as_slice())
+            .unwrap_or(&snapshot.settings.placements);
+        let reference_x = if profile.is_some() && device_id != local {
+            result
+                .iter()
+                .filter(|d| d.key.device_id == local)
+                .map(|d| d.x)
+                .reduce(f64::min)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let reference_y = if profile.is_some() && device_id != local {
+            result
+                .iter()
+                .filter(|d| d.key.device_id == local)
+                .map(|d| d.y)
+                .reduce(f64::min)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let configured_offset = topology.displays.iter().find_map(|display| {
-            snapshot
-                .settings
-                .placements
+            saved
                 .iter()
                 .find(|p| p.display.device_id == device_id && p.display.display_id == display.id)
-                .map(|p| (p.x - display.frame_x, p.y - display.frame_y))
+                .map(|p| {
+                    (
+                        p.x + reference_x - display.frame_x,
+                        p.y + reference_y - display.frame_y,
+                    )
+                })
         });
         let (offset_x, offset_y) = configured_offset.unwrap_or((cursor_x - min_x, -min_y));
         let group_start = result.len();
@@ -84,17 +119,21 @@ pub fn layout_displays(
                 ready,
             });
         }
-        // Saved origins refer to a previous native topology. Resolution/primary
-        // display changes can make whole device desktops intersect after wake.
-        // Repair only the incoming group, retaining its native screen offsets.
+        // Repair overlap without changing a device's native internal arrangement.
+        // Gap repair waits until ALL groups exist: a saved desktop may connect
+        // through another device that is later in the discovery order.
         let rects: Vec<_> = result.iter().map(LayoutRect::from).collect();
         let overlaps = rects[group_start..].iter().any(|a| {
             rects[..group_start]
                 .iter()
                 .any(|b| rectangles_overlap(a, b, 0.0, 0.0))
         });
+        let attachment = profile
+            .and_then(|p| p.attachment.clone())
+            .or_else(|| profiles::attachment_for(&rects, device_id));
         let (dx, dy) = if overlaps {
-            snap_device_move(&rects, device_id, 0.0, 0.0, None)
+            snap_device_move_with_attachment(&rects, device_id, 0.0, 0.0, None, attachment.as_ref())
+                .or_else(|_| snap_device_move(&rects, device_id, 0.0, 0.0, None))
                 // Large layouts can exceed the drag-preview limit. Placing at
                 // the occupied right edge still guarantees no device overlap.
                 .unwrap_or((cursor_x - (offset_x + min_x), 0.0))
@@ -107,12 +146,100 @@ pub fn layout_displays(
         }
         cursor_x = cursor_x.max(offset_x + max_x + dx);
     }
+    repair_layout_gaps(&mut result, snapshot, local);
     // Unready desktops still reserve space, so UI and input routing resolve
     // identical coordinates and readiness changes cannot move other screens.
     if ready_only {
         result.retain(|display| display.ready);
     }
     result
+}
+
+/// Connect orphaned desktops only after resolving the full graph. Otherwise a
+/// valid A-B-C layout could be reordered merely because C was discovered before B.
+fn repair_layout_gaps(
+    displays: &mut [SharingDisplay],
+    snapshot: &InputSharingSnapshot,
+    local: DeviceId,
+) {
+    use std::collections::BTreeSet;
+    let devices: BTreeSet<_> = displays.iter().map(|d| d.key.device_id).collect();
+    if !devices.contains(&local) {
+        return;
+    }
+    for _ in 0..devices.len() {
+        let rects: Vec<_> = displays.iter().map(LayoutRect::from).collect();
+        let mut connected = BTreeSet::from([local]);
+        loop {
+            let count = connected.len();
+            for a in &rects {
+                if rects
+                    .iter()
+                    .any(|b| connected.contains(&b.key.device_id) && rectangles_touch(a, b))
+                {
+                    connected.insert(a.key.device_id);
+                }
+            }
+            if connected.len() == count {
+                break;
+            }
+        }
+        if connected.len() == devices.len() {
+            return;
+        }
+        let mut candidates = Vec::new();
+        for device in devices.difference(&connected).copied() {
+            let profile = snapshot
+                .remote_topologies
+                .get(&device)
+                .and_then(|t| profiles::profile_for(snapshot, device, t))
+                .or_else(|| profiles::fallback_profile(snapshot, device));
+            let facing: Vec<_> = rects
+                .iter()
+                .filter(|r| r.key.device_id == device || connected.contains(&r.key.device_id))
+                .cloned()
+                .collect();
+            let preferred = profile
+                .and_then(|p| p.attachment.clone())
+                .or_else(|| profiles::attachment_for(&facing, device));
+            for neighbor in &connected {
+                for side in [
+                    DisplayLayoutSide::Left,
+                    DisplayLayoutSide::Right,
+                    DisplayLayoutSide::Above,
+                    DisplayLayoutSide::Below,
+                ] {
+                    let attachment = DisplayLayoutAttachment {
+                        neighbor: *neighbor,
+                        side,
+                    };
+                    // Candidate seams belong to the connected component; collision
+                    // checks still include every device, including other orphans.
+                    if let Ok((dx, dy)) = snap_device_move_with_attachment(
+                        &rects,
+                        device,
+                        0.0,
+                        0.0,
+                        None,
+                        Some(&attachment),
+                    ) {
+                        let rank = preferred.as_ref().map_or(0, |p| {
+                            u8::from(p.side != side) * 2 + u8::from(p.neighbor != *neighbor)
+                        });
+                        candidates.push((rank, dx.hypot(dy), device, dx, dy));
+                    }
+                }
+            }
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let Some((_, _, device, dx, dy)) = candidates.first() else {
+            return;
+        };
+        for display in displays.iter_mut().filter(|d| d.key.device_id == *device) {
+            display.x += dx;
+            display.y += dy;
+        }
+    }
 }
 
 /// Lightweight geometry also used by the native canvas for drag previews.
@@ -140,6 +267,14 @@ impl From<&SharingDisplay> for LayoutRect {
         }
     }
 }
+fn rectangles_touch(a: &LayoutRect, b: &LayoutRect) -> bool {
+    let vertical = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+    let horizontal = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+    (vertical > 0.01
+        && ((a.x + a.width - b.x).abs() <= 0.001 || (b.x + b.width - a.x).abs() <= 0.001))
+        || (horizontal > 0.01
+            && ((a.y + a.height - b.y).abs() <= 0.001 || (b.y + b.height - a.y).abs() <= 0.001))
+}
 fn rectangles_overlap(a: &LayoutRect, b: &LayoutRect, dx: f64, dy: f64) -> bool {
     (a.x + dx + a.width).min(b.x + b.width) - (a.x + dx).max(b.x) > 0.01
         && (a.y + dy + a.height).min(b.y + b.height) - (a.y + dy).max(b.y) > 0.01
@@ -163,6 +298,16 @@ pub fn snap_device_move(
     dx: f64,
     dy: f64,
     distance: Option<f64>,
+) -> Result<(f64, f64), String> {
+    snap_device_move_with_attachment(rects, device, dx, dy, distance, None)
+}
+fn snap_device_move_with_attachment(
+    rects: &[LayoutRect],
+    device: DeviceId,
+    dx: f64,
+    dy: f64,
+    distance: Option<f64>,
+    attachment: Option<&DisplayLayoutAttachment>,
 ) -> Result<(f64, f64), String> {
     if !dx.is_finite()
         || !dy.is_finite()
@@ -191,6 +336,12 @@ pub fn snap_device_move(
     let mut candidates = Vec::new();
     for a in &moving {
         for b in &stationary {
+            if attachment.is_some_and(|a| {
+                a.neighbor != b.key.device_id
+                    && stationary.iter().any(|r| r.key.device_id == a.neighbor)
+            }) {
+                continue;
+            }
             // Try all four seams, including cross-axis endpoints for irregular multi-screen groups.
             for horizontal in [true, false] {
                 let (a_start, a_size, b_start, b_size, desired) = if horizontal {
@@ -220,7 +371,16 @@ pub fn snap_device_move(
                     } else {
                         [b.y - a.y - a.height, b.y + b.height - a.y]
                     };
-                    for seam in seams {
+                    for (index, seam) in seams.into_iter().enumerate() {
+                        let side = match (horizontal, index) {
+                            (true, 0) => DisplayLayoutSide::Left,
+                            (true, _) => DisplayLayoutSide::Right,
+                            (false, 0) => DisplayLayoutSide::Above,
+                            (false, _) => DisplayLayoutSide::Below,
+                        };
+                        if attachment.is_some_and(|a| a.side != side) {
+                            continue;
+                        }
                         let (x, y) = if horizontal {
                             (seam, cross)
                         } else {
@@ -291,6 +451,150 @@ mod tests {
     }
     fn coordinates(displays: &[SharingDisplay]) -> Vec<(DisplayKey, f64, f64)> {
         displays.iter().map(|d| (d.key.clone(), d.x, d.y)).collect()
+    }
+
+    fn remember(snapshot: &mut InputSharingSnapshot, local: DeviceId, replace: bool) {
+        let displays = layout_displays(snapshot, local, false);
+        let mut settings = snapshot.settings.clone();
+        remember_layout(&mut settings, snapshot, local, &displays, replace);
+        snapshot.settings = settings;
+        snapshot.settings.validate().unwrap();
+    }
+
+    fn laptop_and_monitor() -> InputSharingSnapshot {
+        let local = device(1);
+        let peer = device(2);
+        let mut snapshot = InputSharingSnapshot {
+            local_topology: Some(topology(vec![screen("local", 0.0, 0.0, 200, 100)])),
+            remote_topologies: std::collections::BTreeMap::from([(
+                peer,
+                topology(vec![
+                    screen("monitor", -100.0, 0.0, 100, 100),
+                    screen("laptop", 0.0, 0.0, 100, 100),
+                ]),
+            )]),
+            ..Default::default()
+        };
+        snapshot.settings.participants = vec![peer];
+        snapshot.settings.placements = vec![
+            DisplayPlacementSetting {
+                display: DisplayKey {
+                    device_id: local,
+                    display_id: "local".into(),
+                },
+                x: 0.0,
+                y: 0.0,
+            },
+            DisplayPlacementSetting {
+                display: DisplayKey {
+                    device_id: peer,
+                    display_id: "monitor".into(),
+                },
+                x: -200.0,
+                y: 0.0,
+            },
+            DisplayPlacementSetting {
+                display: DisplayKey {
+                    device_id: peer,
+                    display_id: "laptop".into(),
+                },
+                x: -100.0,
+                y: 0.0,
+            },
+        ];
+        snapshot
+    }
+
+    #[test]
+    fn clamshell_repairs_gap_and_reopening_restores_original_pair() {
+        let local = device(1);
+        let peer = device(2);
+        let mut snapshot = laptop_and_monitor();
+        let original = coordinates(&layout_displays(&snapshot, local, false));
+        let open_topology = snapshot.remote_topologies[&peer].clone();
+        remember(&mut snapshot, local, false);
+        snapshot
+            .remote_topologies
+            .insert(peer, topology(vec![screen("monitor", 0.0, 0.0, 100, 100)]));
+        let closed = layout_displays(&snapshot, local, false);
+        let monitor = closed.iter().find(|d| d.key.device_id == peer).unwrap();
+        assert_eq!((monitor.x, monitor.y), (-100.0, 0.0));
+        assert!(rectangles_touch(
+            &LayoutRect::from(monitor),
+            &LayoutRect::from(&closed[0])
+        ));
+        no_device_overlap(&closed);
+        remember(&mut snapshot, local, true);
+        snapshot.remote_topologies.insert(peer, open_topology);
+        assert_eq!(
+            coordinates(&layout_displays(&snapshot, local, false)),
+            original
+        );
+    }
+
+    #[test]
+    fn different_local_screen_combination_does_not_overwrite_office_layout() {
+        let local = device(1);
+        let mut snapshot = laptop_and_monitor();
+        let office = snapshot.local_topology.clone();
+        let original = coordinates(&layout_displays(&snapshot, local, false));
+        remember(&mut snapshot, local, false);
+        snapshot.local_topology = Some(topology(vec![screen("home", 0.0, 0.0, 150, 100)]));
+        let mut home = layout_displays(&snapshot, local, false);
+        for display in home.iter_mut().filter(|d| d.key.device_id != local) {
+            display.x += 350.0;
+        }
+        let mut settings = snapshot.settings.clone();
+        remember_layout(&mut settings, &snapshot, local, &home, true);
+        snapshot.settings = settings;
+        snapshot.local_topology = office;
+        assert_eq!(
+            coordinates(&layout_displays(&snapshot, local, false)),
+            original
+        );
+        // Neither native primary-origin rebasing nor generation changes identify a new setup.
+        let count = snapshot.settings.layout_profiles.len();
+        let topology = snapshot.local_topology.as_mut().unwrap();
+        topology.generation = 999;
+        topology.displays[0].frame_x = 300.0;
+        topology.displays[0].frame_y = -20.0;
+        assert_eq!(
+            coordinates(&layout_displays(&snapshot, local, false)),
+            original
+        );
+        remember(&mut snapshot, local, false);
+        assert_eq!(snapshot.settings.layout_profiles.len(), count);
+    }
+
+    #[test]
+    fn offline_office_peer_keeps_relative_position_when_local_desktop_moves_at_home() {
+        let local = device(1);
+        let peer = device(2);
+        let mut snapshot = laptop_and_monitor();
+        remember(&mut snapshot, local, false);
+        let remote = snapshot.remote_topologies.remove(&peer).unwrap();
+        let mut displays = layout_displays(&snapshot, local, false);
+        for d in &mut displays {
+            d.x += 500.0;
+            d.y += 200.0;
+        }
+        let mut settings = snapshot.settings.clone();
+        remember_layout(&mut settings, &snapshot, local, &displays, true);
+        snapshot.settings = settings;
+        snapshot.remote_topologies.insert(peer, remote);
+        let restored = layout_displays(&snapshot, local, false);
+        let local_screen = restored.iter().find(|d| d.key.device_id == local).unwrap();
+        let remote_screen = restored
+            .iter()
+            .find(|d| d.key.display_id == unidesk_core::DisplayId::from("laptop"))
+            .unwrap();
+        assert_eq!(
+            (
+                remote_screen.x - local_screen.x,
+                remote_screen.y - local_screen.y
+            ),
+            (-100.0, 0.0)
+        );
     }
 
     #[test]
@@ -383,6 +687,40 @@ mod tests {
                 .unwrap()
                 .x,
             200.0
+        );
+    }
+
+    #[test]
+    fn saved_chain_remains_connected_when_far_device_is_enumerated_first() {
+        let local = device(1);
+        let far = device(2);
+        let near = device(3);
+        let mut snapshot = InputSharingSnapshot {
+            local_topology: Some(topology(vec![screen("local", 0.0, 0.0, 100, 100)])),
+            ..Default::default()
+        };
+        snapshot.settings.participants = vec![far, near];
+        for (peer, x) in [(far, 200.0), (near, 100.0)] {
+            snapshot
+                .remote_topologies
+                .insert(peer, topology(vec![screen("remote", 0.0, 0.0, 100, 100)]));
+            snapshot.settings.placements.push(DisplayPlacementSetting {
+                display: DisplayKey {
+                    device_id: peer,
+                    display_id: "remote".into(),
+                },
+                x,
+                y: 0.0,
+            });
+        }
+        let resolved = layout_displays(&snapshot, local, false);
+        assert_eq!(
+            resolved.iter().find(|d| d.key.device_id == far).unwrap().x,
+            200.0
+        );
+        assert_eq!(
+            resolved.iter().find(|d| d.key.device_id == near).unwrap().x,
+            100.0
         );
     }
 

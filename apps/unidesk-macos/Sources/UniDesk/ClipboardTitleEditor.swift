@@ -6,6 +6,7 @@ struct ClipboardTitleLabel: View {
     let title: String?
     let fallback: String
     @Binding var editing: Bool
+    var editsOnDoubleClick = true
     var font: Font = .system(size: 13, weight: .semibold)
 
     private var customTitle: String { (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -13,15 +14,23 @@ struct ClipboardTitleLabel: View {
 
     var body: some View {
         if !display.isEmpty {
-            Text(display)
-                .font(font)
-                .foregroundStyle(customTitle.isEmpty ? Color.secondary : Color.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { editing = true }
-                .help("双击编辑标题")
+            if editsOnDoubleClick {
+                label
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { editing = true }
+                    .help("双击编辑标题")
+            } else {
+                // List content belongs to the row's selection/paste gesture.
+                label
+            }
         }
+    }
+    private var label: some View {
+        Text(display)
+            .font(font)
+            .foregroundStyle(customTitle.isEmpty ? Color.secondary : Color.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
     }
 }
 

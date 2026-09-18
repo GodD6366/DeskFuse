@@ -71,14 +71,14 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Validate public source boundary
         run: python3 scripts/check-repository.py
-      - name: Build main-branch bootstrap DMG
+      - name: Build main-branch Homebrew DMG
         env:
           CODESIGN_IDENTITY: '-'
           RELEASE_METADATA: ${{ github.workspace }}/release.json
           UNIDESK_DMG_FINDER_LAYOUT: '0'
           MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
-          ./scripts/package-macos.sh --bootstrap
+          ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
           python3 scripts/release.py inventory
       - name: Upload main-branch build

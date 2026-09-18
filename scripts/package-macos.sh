@@ -16,16 +16,15 @@ for command_name in cargo swift codesign hdiutil lipo security python3 ditto sha
   fi
 done
 
-# Public/bootstrap packages never read the maintainer's LAN signing key, allocate
+# Public/homebrew packages never read the maintainer's LAN signing key, allocate
 # a coordinator build number or seed the running app's updater.
 PACKAGE_MODE=lan
-[[ "${CI:-false}" != "true" ]] || PACKAGE_MODE=bootstrap
 case "${1:-}" in
-  "") ;;
-  --bootstrap) PACKAGE_MODE=bootstrap ;;
-  *) echo "usage: scripts/package-macos.sh [--bootstrap]" >&2; exit 2 ;;
+  ""|--lan) ;;
+  --homebrew) PACKAGE_MODE=homebrew ;;
+  *) echo "usage: scripts/package-macos.sh [--lan|--homebrew]" >&2; exit 2 ;;
 esac
-[[ "$#" -le 1 ]] || { echo "usage: scripts/package-macos.sh [--bootstrap]" >&2; exit 2; }
+[[ "$#" -le 1 ]] || { echo "usage: scripts/package-macos.sh [--lan|--homebrew]" >&2; exit 2; }
 
 TARGET_TRIPLE="aarch64-apple-darwin"
 export MACOSX_DEPLOYMENT_TARGET=14.0
@@ -47,7 +46,7 @@ source "$ROOT_DIR/scripts/macos-codesign.sh"
 unidesk_resolve_signing_kind
 # DIST_DIR is resolved after the build number exists so local packages land in
 # dist/{version}-build{number}/. Explicit DIST_DIR, CI artifact layout, and local
-# bootstrap isolation stay unchanged.
+# homebrew isolation stay unchanged.
 EXPLICIT_DIST_DIR="${DIST_DIR:-}"
 EXPLICIT_DMG_PATH="${DMG_PATH:-}"
 ASSET_DIR="$ROOT_DIR/resources/generated"
@@ -90,11 +89,13 @@ trap 'detach_dmg; rm -rf "$STAGING_DIR"' EXIT
 
 # Allocate one build number before building either platform. Failed allocations
 # are not reused, and the coordinator ledger is never sent to a build peer.
-if [[ "$PACKAGE_MODE" == bootstrap && -z "$RELEASE_METADATA" ]]; then
+if [[ "$PACKAGE_MODE" == homebrew && -z "$RELEASE_METADATA" ]]; then
   RELEASE_METADATA="$ROOT_DIR/release.json"
 fi
-if [[ "$PACKAGE_MODE" == bootstrap ]]; then
-  echo "distribution: bootstrap (no LAN signing or local update seed)"
+if [[ "$PACKAGE_MODE" == homebrew ]]; then
+  echo "distribution: Homebrew/GitHub (update-channel=github)"
+else
+  echo "distribution: local LAN (update-channel=lan)"
 fi
 if [[ -z "$RELEASE_METADATA" ]]; then
   RELEASE_METADATA="$STAGING_DIR/release.json"
@@ -105,9 +106,9 @@ BUILD_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))
 
 if [[ -n "$EXPLICIT_DIST_DIR" ]]; then
   DIST_DIR="$EXPLICIT_DIST_DIR"
-elif [[ "$PACKAGE_MODE" == bootstrap && "${CI:-false}" != "true" ]]; then
-  DIST_DIR="$ROOT_DIR/dist/bootstrap"
-elif [[ "${CI:-false}" == "true" ]]; then
+elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" != "true" ]]; then
+  DIST_DIR="$ROOT_DIR/dist/homebrew"
+elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" == "true" ]]; then
   DIST_DIR="$ROOT_DIR/dist"
 else
   DIST_DIR="$ROOT_DIR/dist/${APP_VERSION}-build${BUILD_VERSION}"
@@ -164,7 +165,7 @@ unidesk_codesign --identifier com.unidesk.app.input-service "$CONTENTS_DIR/MacOS
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/unidesk-update-helper" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 unidesk_codesign "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
-if [[ "$PACKAGE_MODE" == bootstrap ]]; then
+if [[ "$PACKAGE_MODE" == homebrew ]]; then
   printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
 else
   printf 'lan\n' > "$CONTENTS_DIR/Resources/update-channel"
@@ -198,7 +199,7 @@ UPDATE_ZIP="$STAGING_DIR/uniDesk-arm64-update.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 
 # Release authorization is independent of pairing and platform code signing.
-# CI can ship a bootstrap DMG without the private LAN release key; it cannot
+# CI can ship a homebrew DMG without the private LAN release key; it cannot
 # publish an automatically installable release until the coordinator signs it.
 SIGNED_UPDATE=0
 RELEASE_KEY="${UNIDESK_RELEASE_KEY:-$HOME/Library/Application Support/uniDesk-release/signing-key.hex}"
@@ -227,7 +228,7 @@ PYMANIFEST
   codesign --verify --deep --strict "$APP_BUNDLE"
   SIGNED_UPDATE=1
 elif [[ "$PACKAGE_MODE" == lan ]]; then
-  echo "error: release signing key unavailable; use --bootstrap for a standalone package without LAN signing" >&2
+  echo "error: LAN release signing key unavailable: $RELEASE_KEY" >&2
   exit 1
 fi
 
@@ -317,7 +318,7 @@ mv "$UPDATE_ZIP" "$DIST_DIR/uniDesk-arm64-update.zip"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then
   cp "$STAGING_DIR/manifest.json" "$DIST_DIR/manifest.json"
 else
-  # Never leave a prior signed manifest next to an unrelated bootstrap payload.
+  # Never leave a prior signed manifest next to an unrelated homebrew payload.
   rm -f "$DIST_DIR/manifest.json"
 fi
 if [[ ! "$RELEASE_METADATA" -ef "$DIST_DIR/release.json" ]]; then

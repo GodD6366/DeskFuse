@@ -188,6 +188,30 @@ pub struct DisplayPlacementSetting {
     pub x: f64,
     pub y: f64,
 }
+/// Side of a device relative to its neighboring desktop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DisplayLayoutSide {
+    Left,
+    Right,
+    Above,
+    Below,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DisplayLayoutAttachment {
+    pub neighbor: DeviceId,
+    pub side: DisplayLayoutSide,
+}
+/// A device's placement in a particular controller/receiver screen combination.
+/// Connection readiness and topology generation are deliberately not identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DisplayLayoutProfile {
+    pub device_id: DeviceId,
+    pub local_topology: String,
+    pub device_topology: String,
+    /// Remote positions are relative to the controller desktop's minimum origin.
+    pub placements: Vec<DisplayPlacementSetting>,
+    pub attachment: Option<DisplayLayoutAttachment>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InputSharingSettings {
@@ -200,6 +224,7 @@ pub struct InputSharingSettings {
     pub participants: Vec<DeviceId>,
     pub switch_mode: EdgeSwitchMode,
     pub placements: Vec<DisplayPlacementSetting>,
+    pub layout_profiles: Vec<DisplayLayoutProfile>,
 }
 impl Default for InputSharingSettings {
     fn default() -> Self {
@@ -213,6 +238,7 @@ impl Default for InputSharingSettings {
             participants: vec![],
             switch_mode: EdgeSwitchMode::Instant,
             placements: vec![],
+            layout_profiles: vec![],
         }
     }
 }
@@ -253,6 +279,38 @@ impl InputSharingSettings {
             .iter()
             .any(|s| s.key_code > 255)
             || self.participants.len() > 32
+            || self.layout_profiles.len() > 128
+            || self.layout_profiles.iter().any(|profile| {
+                profile.local_topology.is_empty()
+                    || profile.local_topology.len() > 16384
+                    || profile.device_topology.is_empty()
+                    || profile.device_topology.len() > 16384
+                    || profile.placements.is_empty()
+                    || profile.placements.len() > 32
+                    || profile.placements.iter().any(|p| {
+                        p.display.device_id != profile.device_id
+                            || !p.x.is_finite()
+                            || !p.y.is_finite()
+                    })
+                    || profile
+                        .placements
+                        .iter()
+                        .map(|p| &p.display)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        != profile.placements.len()
+                    || profile
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|a| a.neighbor == profile.device_id)
+            })
+            || self
+                .layout_profiles
+                .iter()
+                .map(|p| (p.device_id, &p.local_topology, &p.device_topology))
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.layout_profiles.len()
             || self.placements.len() > 128
             || self.participants.iter().collect::<BTreeSet<_>>().len() != self.participants.len()
             || self

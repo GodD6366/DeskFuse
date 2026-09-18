@@ -121,7 +121,8 @@ struct MenuBarClipboardRow: View {
         ClipboardTitleLabel(
             title: title,
             fallback: item.clipboardTitle,
-            editing: $editingTitle
+            editing: $editingTitle,
+            editsOnDoubleClick: false
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }

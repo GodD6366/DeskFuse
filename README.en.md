@@ -85,7 +85,7 @@ rustup component add rust-src
 CODESIGN_IDENTITY=- ./scripts/build_and_run.sh
 ```
 
-Without a signing certificate, add `CODESIGN_IDENTITY=-` explicitly; add `--build` to build without launching, and select a specific Xcode per command with `DEVELOPER_DIR=...`. For a standalone test DMG, run `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --bootstrap`, which writes to `dist/bootstrap/` and takes no part in LAN updates.
+Without a signing certificate, add `CODESIGN_IDENTITY=-` explicitly; add `--build` to build without launching, and select a specific Xcode per command with `DEVELOPER_DIR=...`. For a local LAN installer, run `./scripts/package-macos.sh` (equivalent to `--lan`); output goes to `dist/{version}-build{number}/`. Homebrew/GitHub packages require explicit `--homebrew`. For an ad-hoc channel test, use `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --homebrew`, which writes to `dist/homebrew/` and takes no part in LAN updates.
 
 ## Layout
 

@@ -21,7 +21,8 @@ struct ClipboardDisplayModePicker: View {
                 } label: {
                     Image(systemName: option.symbol)
                         .font(.system(size: 12, weight: .medium))
-                        .frame(width: 26, height: 22)
+                        .frame(width: 34, height: 30)
+                        .contentShape(Rectangle())
                         .foregroundStyle(mode == option ? Color.accentColor : Color.secondary)
                         .background(mode == option ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 6))
                 }

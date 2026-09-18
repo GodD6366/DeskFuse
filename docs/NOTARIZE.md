@@ -1,6 +1,6 @@
 # macOS Developer ID 与公证凭据
 
-公开 GitHub 预发行必须用 **Developer ID Application** 签名、打开 hardened runtime，再交给 Apple `notarytool` 公证并 staple。贡献者本机和 main 分支的 bootstrap artifact 仍可显式 `CODESIGN_IDENTITY=-`，不需要这些凭据。
+公开 GitHub 预发行必须用 **Developer ID Application** 签名、打开 hardened runtime，再交给 Apple `notarytool` 公证并 staple。贡献者本机和 main 分支的 Homebrew artifact 仍可显式 `CODESIGN_IDENTITY=-`，不需要这些凭据。
 
 把下面 6 个值加到仓库 **Settings → Secrets and variables → Actions**。不要提交到 Git，不要写进 issue 或 PR。本机调试可放在被忽略的 `.env`（变量名见根目录 `.env.example`）。
 
@@ -130,7 +130,7 @@ set -a && source .env && set +a
 CODESIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" \
 UNIDESK_REQUIRE_NOTARIZE=1 \
 UNIDESK_DMG_FINDER_LAYOUT=0 \
-./scripts/package-macos.sh --bootstrap
+./scripts/package-macos.sh --homebrew
 ```
 
 `scripts/import-developer-id.sh` 只给 CI 或本机没有把证书装进登录钥匙串时用。

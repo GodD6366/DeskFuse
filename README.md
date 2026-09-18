@@ -85,7 +85,7 @@ rustup component add rust-src
 CODESIGN_IDENTITY=- ./scripts/build_and_run.sh
 ```
 
-无签名证书时显式加 `CODESIGN_IDENTITY=-`；加 `--build` 只构建不启动，多套 Xcode 用 `DEVELOPER_DIR=...` 单次选择。独立测试包用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --bootstrap`，输出到 `dist/bootstrap/`，不参与局域网更新。
+无签名证书时显式加 `CODESIGN_IDENTITY=-`；加 `--build` 只构建不启动，多套 Xcode 用 `DEVELOPER_DIR=...` 单次选择。本地局域网安装包直接运行 `./scripts/package-macos.sh`（等同 `--lan`），输出到 `dist/{version}-build{number}/`。Homebrew/GitHub 渠道需显式指定 `--homebrew`；无发行证书的渠道测试可使用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --homebrew`，输出到 `dist/homebrew/`，不参与局域网更新。
 
 ## 项目结构
 

@@ -669,11 +669,16 @@ fn effective_native_settings(
 }
 // Geometry changes rebuild routing, not permission adapters or activation leases.
 fn native_settings_equal(a: &InputSharingSettings, b: &InputSharingSettings) -> bool {
-    let mut a = a.clone();
-    let mut b = b.clone();
-    a.placements.clear();
-    b.placements.clear();
-    a == b
+    // Neither layout coordinates nor remembered combinations change permissions.
+    // Compare by reference rather than cloning the placement history on each tick.
+    a.shortcuts == b.shortcuts
+        && a.disabled_corners == b.disabled_corners
+        && a.corner_size == b.corner_size
+        && a.enabled == b.enabled
+        && a.role == b.role
+        && a.authorized_controller == b.authorized_controller
+        && a.participants == b.participants
+        && a.switch_mode == b.switch_mode
 }
 fn native_configuration_changed(
     previous: &InputSharingSnapshot,

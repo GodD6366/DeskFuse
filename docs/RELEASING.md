@@ -4,7 +4,7 @@
 
 | 产物 | 用途 |
 | --- | --- |
-| `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 bootstrap 仍可 ad-hoc |
+| `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
 | `dist/build-info.json` | 源 commit、工具链、架构、签名状态和 DMG 哈希 |
 | `dist/SHA256SUMS` | 上述三个文件的 SHA-256；校验和本身不是发行签名 |
@@ -15,7 +15,7 @@
 
 ## 首次启用 GitHub
 
-现有工作流用于 `GodD6366/uniDesk`。**公开 tag 预发行**需要 Apple Developer ID 与公证凭据，见 [公证凭据](NOTARIZE.md)；main 分支检查和贡献者 bootstrap 不读取这些 secret。维护者确认仓库公开文件清单后，自行启用 Actions、private vulnerability reporting，并按实际协作需要设置 main 检查规则和发行 tag 管理。初期可限制 tag 创建／更新给维护者；不要强制要求个人项目必须有第二位审批人。
+现有工作流用于 `GodD6366/uniDesk`。**公开 tag 预发行**需要 Apple Developer ID 与公证凭据，见 [公证凭据](NOTARIZE.md)；main 分支检查和贡献者 Homebrew 不读取这些 secret。维护者确认仓库公开文件清单后，自行启用 Actions、private vulnerability reporting，并按实际协作需要设置 main 检查规则和发行 tag 管理。初期可限制 tag 创建／更新给维护者；不要强制要求个人项目必须有第二位审批人。
 
 工作流不会修改仓库 public/private 状态，也不会自动推送 tag。私有仓库的 Actions 运行使用账户可用额度；实际额度与设置以 GitHub 为准。
 
@@ -31,18 +31,18 @@
 
 `build_number` 当前受 CFBundleVersion 限制为 1..9999；到达上限时应先改造并验证编号格式，不得回绕。只支持 `vX.Y.Z` tag；测试性质通过 GitHub prerelease 标志表示，暂不支持带 `-rc` 后缀的 tag。
 
-## 贡献者独立 bootstrap 包
+## 贡献者独立 Homebrew 包
 
 需要完整 Xcode 27+（macOS 27+ SDK）、仓库固定 Rust 工具链、`rust-src` 和 arm64 target。最低运行目标仍为 macOS 14。
 
 ```sh
 rustup target add aarch64-apple-darwin
 rustup component add rust-src
-CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --bootstrap
-./scripts/verify-dmg.sh dist/bootstrap/uniDesk-arm64.dmg
+CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --homebrew
+./scripts/verify-dmg.sh dist/homebrew/uniDesk-arm64.dmg
 ```
 
-本地输出默认位于 `dist/bootstrap/`，使用已提交的根 `release.json`，不分配维护者构建号、不读取 LAN 发行私钥、不投递运行中应用的自动更新。显式设置 `DIST_DIR` 可以改输出目录。bootstrap 不是 LAN 自动安装包；`manifest.json` 不生成，也不保留旧清单。所有发行包仍须记录实际签名、公证和验收边界。
+本地输出默认位于 `dist/homebrew/`，使用已提交的根 `release.json`，不分配维护者构建号、不读取 LAN 发行私钥、不投递运行中应用的自动更新。显式设置 `DIST_DIR` 可以改输出目录。Homebrew 不是 LAN 自动安装包；`manifest.json` 不生成，也不保留旧清单。所有发行包仍须记录实际签名、公证和验收边界。
 
 ## 维护者本地构建／验证
 
@@ -52,7 +52,7 @@ Python 3.11+；已安装仓库固定 Rust 工具链及 aarch64-apple-darwin targ
 ./scripts/package-macos.sh
 ```
 
-`package-macos.sh` 是唯一打包入口：普通本地打包每次从协调端 ledger 分配新构建号与发行 ID，自动完成构建、签名和 DMG 完整性检查，不需要先运行 prepare，也不读取或修改根 `release.json`。语义版本取自 Cargo.toml；本地打包只递增 build。
+`package-macos.sh` 是唯一打包入口：无参数或 `--lan` 固定生成局域网包（`update-channel=lan`），不由 `CI` 环境变量切换渠道。Homebrew/GitHub 包必须显式传入 `--homebrew`（`update-channel=github`）；CI 已显式指定。普通本地打包每次从协调端 ledger 分配新构建号与发行 ID，自动完成构建、签名和 DMG 完整性检查，不需要先运行 prepare，也不读取或修改根 `release.json`。语义版本取自 Cargo.toml；本地打包只递增 build。
 
 新 descriptor 在编译前保存至 `dist/{version}-build{number}/release.json`。失败后可用该文件显式重试，例如：
 
@@ -63,7 +63,7 @@ RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
 
 此命令仅适用于尚未生成 DMG 的失败构建。已有 DMG 时拒绝覆盖；需要新包就取消 `RELEASE_METADATA`，重新运行默认命令。失败编号不回收，因此构建号跳号本身不代表缺少流程。根 `release.json` 是公开发行输入，不代表最新本地构建；以打包输出目录中的 descriptor 和包内版本为准。`build_and_run.sh` 是开发运行入口，使用 build 0，不分配发行构建号。
 
-无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 bootstrap 的 `dist/bootstrap/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
+无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 Homebrew 的 `dist/homebrew/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
 打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 
@@ -86,7 +86,7 @@ git push origin v0.1.0
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
 2. 调用相同 CI：macOS 检查、Windows 原生适配器和服务检查均成功才继续。
-3. `xcode-27` Apple Silicon runner 使用已提交 descriptor 和固定 Rust target，导入 Developer ID、`--bootstrap` + headless 打包、hardened runtime、`notarytool` 公证并 staple，验证 DMG，再生成四件套。缺少 Apple secret 时失败。
+3. `xcode-27` Apple Silicon runner 使用已提交 descriptor 和固定 Rust target，导入 Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple，验证 DMG，再生成四件套。缺少 Apple secret 时失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
 
