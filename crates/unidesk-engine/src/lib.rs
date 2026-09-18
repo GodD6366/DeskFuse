@@ -29,3 +29,8 @@ pub mod input_service;
 
 #[cfg(target_os = "macos")]
 pub mod lan_web;
+
+pub mod remote_application;
+
+#[cfg(target_os = "macos")]
+mod remote_application_input;

@@ -3,6 +3,7 @@
 // UniFFI exports require owned arguments across the native language boundary.
 #![allow(clippy::needless_pass_by_value)]
 mod clipboard_paste;
+mod remote_application;
 mod workflow;
 pub use clipboard_paste::*;
 mod clipboard_library;

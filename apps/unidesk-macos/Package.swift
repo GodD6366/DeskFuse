@@ -7,11 +7,14 @@ let package = Package(
     name: "uniDesk", platforms: [.macOS(.v14)],
     products: [.executable(name: "unidesk-app", targets: ["UniDesk"])],
     targets: [
+        .target(name: "UniDeskRemoteApplication", path: "RemoteApplication/Sources/UniDeskRemoteApplication",
+            exclude: ["RemoteTransport.swift", "RemoteTLSIdentity.swift"],
+            linkerSettings: [.linkedFramework("ScreenCaptureKit"), .linkedFramework("VideoToolbox"), .linkedFramework("MetalKit"), .linkedFramework("CoreImage")]),
         .systemLibrary(name: "UniDeskEngineFFI", path: "Sources/UniDeskEngineFFI"),
         .target(name: "UniDeskEngine", dependencies: ["UniDeskEngineFFI"],
                 linkerSettings: [.unsafeFlags([libraryDirectory + "/libunidesk_ffi.a"])]),
         .target(name: "UniDeskHost", dependencies: [], path: "Host"),
-        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine", "UniDeskHost"],
+        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine", "UniDeskHost", "UniDeskRemoteApplication"],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("OSAKit"), .linkedFramework("CoreGraphics"), .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"), .linkedFramework("SystemConfiguration"), .linkedFramework("CoreWLAN"), .linkedFramework("CoreLocation"),
                 .linkedLibrary("sqlite3"), .linkedLibrary("resolv"), .linkedLibrary("iconv")])

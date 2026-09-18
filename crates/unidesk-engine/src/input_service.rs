@@ -170,12 +170,20 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
+    let mut remote_input = crate::remote_application_input::Owner::new(child.pause.clone());
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     while !child.stopping.load(Ordering::Acquire) {
         tokio::select! {
             _ = tick.tick() => {
+                if matches!(child.pause.load(Ordering::Acquire), 6 | 7) && child.emergency.swap(false, Ordering::AcqRel) {
+                    let _ = child.pause.compare_exchange(7, 0, Ordering::AcqRel, Ordering::Acquire);
+                    let _ = child.pause.compare_exchange(6, 0, Ordering::AcqRel, Ordering::Acquire);
+                }
+                let remote_active = matches!(child.pause.load(Ordering::Acquire), 4 | 5);
+                let emergency = remote_active && child.emergency.swap(false, Ordering::AcqRel);
+                remote_input.tick(&authority, emergency);
                 let mut changed = false;
                 // Bound discovery processing so a discovery burst cannot starve lifetime checks.
                 for _ in 0..32 {
@@ -206,6 +214,10 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                     }
                     authorized = allowed; runtime.update_view(next);
                 }
+                status.native.remote_application_viewer_paused = child.pause.load(Ordering::Acquire) == 7;
+                status.native.remote_application_lease = remote_input.lease();
+                status.native.remote_application_request = remote_input.request.clone();
+                status.native.remote_application_error = remote_input.error.clone();
                 status.input = runtime.handle.input_snapshot();
                 let (pending, error) = child.persistence_status();
                 status.native.persistence_pending = pending;
@@ -214,6 +226,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                 if let Ok(lines) = diagnostics.try_lock() { status.diagnostics = lines.clone(); }
                 child.status.send_replace(status.clone());
             }
+            Some(packet) = child.remote.recv() => { remote_input.receive(packet, &authority); },
             Some((id,command)) = child.commands.recv() => {
                 if let Err(error) = runtime.handle.try_send(command) { status.native.error = Some(error.to_string()); }
                 status.last_command = id;
@@ -231,6 +244,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             },
         }
     }
+    drop(remote_input);
     drop(native);
     runtime.handle.shutdown().await.map_err(|e| e.to_string())?;
     Ok(())

@@ -26,7 +26,7 @@ pub struct Envelope {
     /// The message carried by this envelope.
     #[prost(
         oneof = "envelope::Message",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 40, 41, 42, 43, 44, 45"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 40, 41, 42, 43, 44, 45"
     )]
     pub message: Option<envelope::Message>,
 }
@@ -35,8 +35,8 @@ pub mod envelope {
     use super::{
         ClipboardUpdate, DisplayInfo, Error, Goodbye, Hello, HelloAck, InputEndpoints,
         InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest, PeerInfo,
-        Ping, Pong, ReleaseInventory, SessionProof, UpdateCancel, UpdateChunk, UpdateReceipt,
-        UpdateRequest, UpdateStatus,
+        Ping, Pong, ReleaseInventory, RemoteApplicationOpen, SessionProof, UpdateCancel,
+        UpdateChunk, UpdateReceipt, UpdateRequest, UpdateStatus,
     };
     use prost::Oneof;
 
@@ -75,6 +75,8 @@ pub mod envelope {
         NetworkControl(NetworkControl),
         #[prost(message, tag = "33")]
         SessionProof(SessionProof),
+        #[prost(message, tag = "34")]
+        RemoteApplicationOpen(RemoteApplicationOpen),
         #[prost(message, tag = "40")]
         ReleaseInventory(ReleaseInventory),
         #[prost(message, tag = "41")]
@@ -496,4 +498,11 @@ mod motion_control_tests {
             assert!(untrusted.to_core().is_err());
         }
     }
+}
+
+/// Upgrade one authenticated control stream into a bounded remote media session.
+#[derive(Clone, PartialEq, Message)]
+pub struct RemoteApplicationOpen {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
 }

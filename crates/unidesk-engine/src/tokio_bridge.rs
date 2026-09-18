@@ -4444,6 +4444,7 @@ fn runtime_config() -> RuntimeConfig {
             | Capabilities::INPUT_ENVIRONMENT
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
+            | Capabilities::REMOTE_APPLICATION
             | motion_mode_capabilities(std::env::var("UNIDESK_INPUT_MOTION_MODE").ok().as_deref()),
         ..RuntimeConfig::default()
     }
@@ -4570,7 +4571,7 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     #[cfg(not(test))]
     let builder = builder
         .with_external_discovery(discovery)
-        .with_control_transport(transport);
+        .with_control_transport(transport.clone());
     #[cfg(test)]
     let builder = builder.with_transport(UnavailableControlTransport);
     #[cfg(all(target_os = "macos", not(test)))]
@@ -4582,7 +4583,10 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
             .map_err(|e| RuntimeError::Store(e.to_string()))?
             .with_file_name("identity.key"),
     });
-    builder.build()
+    let runtime = builder.build()?;
+    #[cfg(not(test))]
+    crate::remote_application::install(transport, runtime.clone());
+    Ok(runtime)
 }
 
 fn emit_permission_snapshot(

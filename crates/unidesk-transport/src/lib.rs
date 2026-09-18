@@ -18,6 +18,7 @@ mod input;
 pub mod input_executor;
 pub mod motion_diag;
 mod network;
+pub mod remote_application;
 mod session_auth;
 pub use network::{NetworkTransportRequest, NetworkTransportStream};
 pub mod lan;
@@ -1436,6 +1437,7 @@ fn forget_input_dialer(local: SocketAddr, endpoint: &Arc<quinn::Endpoint>) {
 struct QuinnShared {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
+    remote_app: remote_application::RemoteHub,
     stopping: Arc<AtomicBool>,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
@@ -1497,6 +1499,7 @@ impl QuinnShared {
 pub struct QuinnTransport {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
+    remote_app: remote_application::RemoteHub,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
     bound_interface: Option<String>,
@@ -1550,6 +1553,7 @@ impl QuinnTransport {
         QuinnShared {
             identity: self.identity.clone(),
             network: self.network.clone(),
+            remote_app: self.remote_app.clone(),
             lan_tasks: self.lan_tasks.clone(),
             stopping: self.shutdown_started.clone(),
             lan_endpoints: self.lan_endpoints.clone(),
@@ -1578,6 +1582,7 @@ impl QuinnTransport {
         Self {
             identity: Arc::default(),
             network: network::NetworkHub::new(),
+            remote_app: remote_application::RemoteHub::new(),
             lan_tasks: Arc::default(),
             lan_endpoints: Arc::default(),
             bound_interface: None,
@@ -1739,6 +1744,7 @@ impl QuinnTransport {
             input.disable_updates();
         }
         let network = network::NetworkHub::new();
+        let remote_app = remote_application::RemoteHub::new();
         let identity = Arc::default();
         let bound_addr = endpoint
             .local_addr()
@@ -1775,6 +1781,7 @@ impl QuinnTransport {
         let shared = QuinnShared {
             identity: Arc::clone(&identity),
             network: network.clone(),
+            remote_app: remote_app.clone(),
             lan_tasks: lan_tasks.clone(),
             stopping: stopping.clone(),
             lan_endpoints: lan_endpoints.clone(),
@@ -1834,6 +1841,7 @@ impl QuinnTransport {
         Ok(Self {
             identity,
             network,
+            remote_app,
             lan_tasks,
             lan_endpoints,
             bound_interface: None,
@@ -3046,13 +3054,20 @@ async fn serve_connection(
                 let ordinal = accepted;
                 accepted += 1;
                 let timeout = shared.config.idle_timeout_or_handshake();
-                readers.spawn(async move { (ordinal, send, read_control_frame(&mut recv, timeout).await) });
+                readers.spawn(async move { let request = read_control_frame(&mut recv, timeout).await; (ordinal, send, recv, request) });
             }
             done = readers.join_next(), if !readers.is_empty() => {
-                let Some(Ok((ordinal, mut send, request))) = done else { connection.close(QUIC_CLOSE_CODE,b"control reader failed"); break; };
+                let Some(Ok((ordinal, mut send, recv, request))) = done else { connection.close(QUIC_CLOSE_CODE,b"control reader failed"); break; };
                 if let Ok(request) = request {
                     let request_id = request_id_or_zero(&request);
                     match request.message {
+                        Some(Message::RemoteApplicationOpen(_)) => {
+                            pending.insert(ordinal, None);
+                            if negotiated.contains(Capabilities::REMOTE_APPLICATION) && !shared.is_revoked(peer).unwrap_or(true) {
+                                let hub = shared.remote_app.clone();
+                                tokio::spawn(async move { hub.accept(peer, send, recv).await; });
+                            }
+                        }
                         Some(message @ (Message::ClipboardUpdate(_) | Message::InputEventBatch(_) | Message::DisplayInfo(_))) => {
                             pending.insert(ordinal, Some(message));
                         }
@@ -3171,6 +3186,9 @@ async fn read_control_frame(
     timeout: Duration,
 ) -> Result<Envelope, TransportError> {
     let envelope = read_frame(recv, timeout).await?;
+    if matches!(envelope.message, Some(Message::RemoteApplicationOpen(_))) {
+        return Ok(envelope);
+    }
     let mut trailing = [0_u8; 1];
     match time::timeout(timeout, recv.read(&mut trailing))
         .await
