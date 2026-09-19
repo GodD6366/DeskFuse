@@ -81,11 +81,21 @@ fn format_order_and_remote_markers_are_ignored_but_latest_snapshot_is_retained()
     history.record(latest.clone(), "远端", &sender);
     assert_eq!(history.items.len(), 1);
     assert_eq!(history.items[0].0.id, id);
-    assert_eq!(history.items[0].1, latest);
+    let stored = &history.items[0].1;
+    assert_eq!(stored, &latest);
     let pasteboard = MemoryPasteboard::new();
     pasteboard.write_text("other").unwrap();
     history.restore(id, &pasteboard).unwrap();
-    assert_eq!(pasteboard.read().unwrap().items, latest.items);
+    let restored = pasteboard.read().unwrap();
+    assert_eq!(restored.items.len(), 1);
+    assert_eq!(restored.items[0].representations.len(), 2);
+    assert!(restored.items[0]
+        .representations
+        .iter()
+        .all(|representation| !matches!(
+            representation.type_name.as_str(),
+            "com.unidesk.clipboard-origin" | "com.apple.is-remote-clipboard"
+        )));
 }
 
 #[test]
@@ -148,7 +158,7 @@ fn whitespace_and_text_beyond_display_limit_are_not_discarded() {
 }
 
 #[test]
-fn image_identity_uses_original_bytes_not_preview() {
+fn image_identity_uses_decoded_pixels_and_ignores_metadata() {
     let (sender, _receiver) = unbounded();
     let mut history = ClipboardHistoryStore::default();
     let image = image::DynamicImage::new_rgb8(4, 4);
@@ -173,9 +183,8 @@ fn image_identity_uses_original_bytes_not_preview() {
     assert_eq!(history.items.len(), 1);
     assert_eq!(history.items[0].0.id, id);
     history.record(second, "远端", &sender);
-    assert_eq!(history.items.len(), 2);
+    assert_eq!(history.items.len(), 1);
     assert!(history.items[0].0.image_png.is_some());
-    assert_eq!(history.items[0].0.image_png, history.items[1].0.image_png);
 }
 
 #[test]
