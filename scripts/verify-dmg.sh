@@ -59,9 +59,9 @@ case "$UPDATE_CHANNEL" in
       echo "error: LAN package is missing its signed update payload" >&2; exit 1;
     }
     ;;
-  github)
+  github|manual)
     [[ ! -e "$MOUNT_POINT/.updates" && ! -e "$CONTENTS_DIR/Resources/LanUpdate" ]] || {
-      echo "error: Homebrew/GitHub package contains a LAN update payload" >&2; exit 1;
+      echo "error: $UPDATE_CHANNEL package contains a LAN update payload" >&2; exit 1;
     }
     ;;
   *) echo "error: invalid update channel" >&2; exit 1 ;;

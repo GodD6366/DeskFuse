@@ -129,7 +129,7 @@ enum HostMessage {
 enum ChildRequest {
     Persist { id: u64, value: Persist },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceSnapshot {
     pub generation: u64,
     pub native: NativeStatus,

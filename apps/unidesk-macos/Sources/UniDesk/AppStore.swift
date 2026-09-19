@@ -161,6 +161,10 @@ import UniDeskEngine
     func reclaim() { engine?.emergencyReclaim() }
     /// Applies the Dock visibility choice; call at launch and whenever it changes.
     func applyDockIconPolicy() {
+        if #available(macOS 14.2, *), RemoteApplicationDockController.shared.hasActiveApplication {
+            NSApp.setActivationPolicy(.regular)
+            return
+        }
         NSApp.setActivationPolicy(hideDockIcon ? .accessory : .regular)
     }
     func setHideDockIcon(_ hidden: Bool) {

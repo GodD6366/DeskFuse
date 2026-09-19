@@ -212,10 +212,9 @@ impl Engine {
        let refresh_keys=matches!(&event,UiEvent::WorkflowCatalogChanged|UiEvent::InputSharingSnapshot(_));
        let terminal=match &event{UiEvent::TransferStatus{transfer_id,state,..} if state.is_terminal()=>Some(*transfer_id),_=>None};
        let urgent=notification.is_some() || terminal.is_some();
-       let snapshot={let mut state=event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.apply(event);
-        if refresh_keys && let (Ok(list),Ok(mut keys))=(event_workflows.list(),monitor_workflows.lock()) { keys.bindings=crate::workflow::hotkey_bindings(&list,&state.model.input_sharing.settings.shortcuts); }
-        urgent.then(||EngineSnapshot::from(&*state))};
-       snapshot_dirty = !urgent;
+       let snapshot={let mut state=event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let changed=state.apply(event);
+        if changed && refresh_keys && let (Ok(list),Ok(mut keys))=(event_workflows.list(),monitor_workflows.lock()) { keys.bindings=crate::workflow::hotkey_bindings(&list,&state.model.input_sharing.settings.shortcuts); }
+        if urgent { snapshot_dirty=false; Some(EngineSnapshot::from(&*state)) } else { if changed { snapshot_dirty=true; } None }};
        if let Some(l)=&listener{if let Some(snapshot)=snapshot{let revision=snapshot.revision;l.on_event(EngineEvent::Snapshot{snapshot});if let Some(id)=terminal{event_bridge.record_transfer_presentation(id,revision);}}
         if let Some(event)=notification{l.on_event(event);}}
       }

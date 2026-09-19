@@ -65,7 +65,7 @@ final class MacOSClipboardApply: @unchecked Sendable {
         if currentCount != expectedRevision.value {
             return .superseded(currentRevision: NativeRevision(value: currentCount))
         }
-        pasteboard.clearContents()
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
         let ok = pasteboard.setString(text, forType: .string)
         if ok {
             capture?.markAsRemoteWrite()

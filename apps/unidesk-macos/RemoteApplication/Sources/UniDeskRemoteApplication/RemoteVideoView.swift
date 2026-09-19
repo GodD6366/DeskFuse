@@ -13,6 +13,13 @@ public enum VideoViewScale: String, CaseIterable, Sendable {
     public var scaleMode: VideoViewScale = .fit { didSet { offset = .zero; redraw = true; reportedSize = nil } }
     public var surfaceLayout: CaptureSurface? { didSet { if oldValue != surfaceLayout { redraw = true } } }
     public var onContentSize: ((CGSize) -> Void)?
+    /// The receiver's local controls replace source-space titlebar regions.
+    /// Keep it independent of the compact SwiftUI button capsule: captured
+    /// indicators and browser buttons can extend below or beyond that capsule.
+    public var replacesWindowControls = false {
+        didSet { if oldValue != replacesWindowControls { redraw = true } }
+    }
+    private var windowControlsCoverRects: [CGRect] = []
     private var reportedSize: CGSize?
     private var pointerRegions: [(view: CGRect, source: CGRect)] = []
     public var onPresented: (@Sendable (SurfaceIdentity, UInt64) -> Void)?
@@ -57,6 +64,10 @@ public enum VideoViewScale: String, CaseIterable, Sendable {
     public override var isOpaque: Bool { false }
 
     public override func layout() { super.layout(); redraw = true; reportedSize = nil }
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        redraw = true
+    }
     public override var acceptsFirstResponder: Bool { inputEnabled }
     public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { inputEnabled }
     public override func becomeFirstResponder() -> Bool {
@@ -111,6 +122,9 @@ public enum VideoViewScale: String, CaseIterable, Sendable {
     }
     private func containsCanvas(_ point: CGPoint) -> Bool {
         guard videoRect.contains(point) else { return false }
+        // Auxiliary panels are composited above the cover and retain input.
+        if windowControlsCoverRects.contains(where: { $0.contains(point) }),
+           !pointerRegions.dropFirst().contains(where: { $0.view.contains(point) }) { return false }
         guard let application = lastLayout?.applicationRect else { return true }
         let radius = min(20 * videoRect.width / application.width, min(videoRect.width, videoRect.height) / 2)
         return NSBezierPath(roundedRect: videoRect, xRadius: radius, yRadius: radius).contains(point)
@@ -206,7 +220,8 @@ public enum VideoViewScale: String, CaseIterable, Sendable {
                 command.present(drawable); command.commit()
             }
             presentedSurface = nil; lastSurface = nil; lastSequence = 0; videoRect = .zero
-            pointerRegions.removeAll(); reportedSize = nil; lastLayout = nil; return
+            pointerRegions.removeAll(); windowControlsCoverRects.removeAll()
+            reportedSize = nil; lastLayout = nil; return
         }
         let frame = presentation.frame
         let changedSurface = frame.surface != lastSurface
@@ -253,6 +268,35 @@ public enum VideoViewScale: String, CaseIterable, Sendable {
                 .transformed(by: CGAffineTransform(translationX: destination.minX, y: destination.minY))
         }
         var image = tile(applicationPixels, at: viewport)
+        windowControlsCoverRects.removeAll(keepingCapacity: true)
+        if layout?.applicationRect != nil, replacesWindowControls {
+            // Use the same source -> drawable transform as the video, including
+            // fit, Retina scaling and 1:1 panning. A view-sized capsule cannot
+            // reliably cover source controls. Keep the fill rectangular so its
+            // rounded edges cannot expose a second set of traffic lights.
+            var color = CIColor.white
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                if let rgb = NSColor.controlBackgroundColor.usingColorSpace(.deviceRGB) {
+                    color = CIColor(red: rgb.redComponent, green: rgb.greenComponent,
+                                    blue: rgb.blueComponent, alpha: 1)
+                }
+            }
+            // Older peers omit layout metadata. An explicit empty list means
+            // the controls moved outside the capture and must not get a cover.
+            let covers = layout?.windowControlRects ?? [CGRect(origin: application.origin,
+                size: CGSize(width: min(88, application.width), height: min(40, application.height)))]
+            for cover in covers {
+                let visible = cover.intersection(application)
+                guard !visible.isNull, !visible.isEmpty else { continue }
+                let target = CGRect(
+                    x: viewport.minX + (visible.minX - application.minX) / application.width * scaled.width,
+                    y: viewport.minY + (application.maxY - visible.maxY) / application.height * scaled.height,
+                    width: visible.width / application.width * scaled.width,
+                    height: visible.height / application.height * scaled.height)
+                windowControlsCoverRects.append(viewRect(target))
+                image = CIImage(color: color).cropped(to: target).composited(over: image)
+            }
+        }
         // Keep external candidate/popover panels inside the app viewport. Their
         // hit regions map back to the original B coordinates, never the moved UI.
         for auxiliary in layout?.auxiliaryRects ?? [] where !application.contains(auxiliary) {

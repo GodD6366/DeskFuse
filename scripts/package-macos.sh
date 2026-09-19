@@ -16,23 +16,35 @@ for command_name in cargo swift codesign hdiutil lipo security python3 ditto sha
   fi
 done
 
-# Public/homebrew packages never read the maintainer's LAN signing key, allocate
-# a coordinator build number or seed the running app's updater.
+# Public packages never read the LAN signing key or seed the running updater.
+# --homebrew uses prepared metadata; --release allocates once for manual packages.
 PACKAGE_MODE=lan
 AUTO_INSTALL=0
-usage() { echo "usage: UNIDESK_MACOS_ARCH={arm64|x86_64} scripts/package-macos.sh [--lan|--homebrew] [--auto]" >&2; exit 2; }
+RELEASE_PAIR=0
+EXPLICIT_LAN=0
+EXPLICIT_HOMEBREW=0
+usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] (single target: UNIDESK_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --lan) ;;
-    --homebrew) PACKAGE_MODE=homebrew ;;
+    --lan) EXPLICIT_LAN=1 ;;
+    --homebrew) EXPLICIT_HOMEBREW=1; PACKAGE_MODE=homebrew ;;
+    --manual) PACKAGE_MODE=manual ;;
+    --release) RELEASE_PAIR=1 ;;
     --auto) AUTO_INSTALL=1 ;;
     *) usage ;;
   esac
   shift
 done
+if [[ "$RELEASE_PAIR" == 1 ]]; then
+  if [[ "$EXPLICIT_LAN" == 1 || "$EXPLICIT_HOMEBREW" == 1 || "$AUTO_INSTALL" == 1 || -n "${UNIDESK_MACOS_ARCH:-}" || -n "${DMG_PATH:-}" ]]; then
+    echo "error: --release selects both manual packages; do not combine with --lan, --homebrew, --auto, UNIDESK_MACOS_ARCH or DMG_PATH" >&2
+    exit 2
+  fi
+  PACKAGE_MODE=manual
+fi
 # --auto replaces the running local install; a public homebrew build must not
 # touch /Applications on the packaging machine.
-if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" == homebrew ]]; then
+if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" != lan ]]; then
   echo "error: --auto is only valid with the local LAN package mode" >&2
   exit 2
 fi
@@ -49,7 +61,7 @@ case "$MACOS_ARCH" in
     EXPECTED_ARCH="x86_64"
     ARTIFACT_SUFFIX="x86_64"
     if [[ "$PACKAGE_MODE" == lan ]]; then
-      echo "error: Intel packages require --homebrew; LAN update manifests currently target arm64 only" >&2
+      echo "error: Intel packages require --homebrew or --manual; LAN update manifests currently target arm64 only" >&2
       exit 2
     fi
     ;;
@@ -111,6 +123,60 @@ if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
   fi
 fi
 
+if [[ "$RELEASE_PAIR" == 1 ]]; then
+  # Separate output directories prevent the per-target checksum/signing files
+  # from replacing one another. Build sequentially: native build paths are shared.
+  RELEASE_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-release.XXXXXX")"
+  trap 'rm -rf "$RELEASE_STAGE"' EXIT
+  if [[ -z "$RELEASE_METADATA" ]]; then
+    RELEASE_METADATA="$RELEASE_STAGE/release.json"
+    "$ROOT_DIR/scripts/prepare-release.sh" --descriptor "$RELEASE_METADATA"
+  fi
+  python3 "$ROOT_DIR/scripts/release.py" validate --descriptor "$RELEASE_METADATA"
+  RELEASE_BUILD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_number"])' "$RELEASE_METADATA")"
+  RELEASE_DIR="${EXPLICIT_DIST_DIR:-$LOCAL_PACKAGE_ROOT/dist/${APP_VERSION}-build${RELEASE_BUILD}}"
+  mkdir -p "$RELEASE_DIR"
+  RELEASE_DIR="$(cd "$RELEASE_DIR" && pwd)"
+  # Only a descriptor left by a failed attempt is reusable. Never mix an older
+  # package (including LAN payloads) into a new pair or overwrite delivered bytes.
+  python3 - "$RELEASE_DIR" "$RELEASE_METADATA" <<'PYPAIR'
+import pathlib, sys
+directory, descriptor = map(pathlib.Path, sys.argv[1:])
+if any(path.name != "release.json" for path in directory.iterdir()):
+    raise SystemExit(f"error: output directory contains artifacts: {directory}; use a new build")
+existing = directory / "release.json"
+if existing.exists() and existing.read_bytes() != descriptor.read_bytes():
+    raise SystemExit("error: output release descriptor conflicts with requested build")
+PYPAIR
+  if [[ ! "$RELEASE_METADATA" -ef "$RELEASE_DIR/release.json" ]]; then
+    cp "$RELEASE_METADATA" "$RELEASE_DIR/release.json"
+  fi
+  RELEASE_METADATA="$RELEASE_DIR/release.json"
+  echo "release descriptor: $RELEASE_METADATA"
+  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" ./scripts/package-macos.sh --release"
+  for release_arch in arm64 x86_64; do
+    CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
+      UNIDESK_MACOS_ARCH="$release_arch" \
+      DIST_DIR="$RELEASE_STAGE/$release_arch" \
+      RELEASE_METADATA="$RELEASE_METADATA" \
+      "$ROOT_DIR/scripts/package-macos.sh" --manual
+    cmp "$RELEASE_METADATA" "$RELEASE_STAGE/$release_arch/release.json"
+  done
+  for release_arch in arm64 x86_64; do
+    mv "$RELEASE_STAGE/$release_arch/uniDesk-$release_arch.dmg" "$RELEASE_DIR/"
+    mv "$RELEASE_STAGE/$release_arch/uniDesk-$release_arch-update.zip" "$RELEASE_DIR/"
+    mv "$RELEASE_STAGE/$release_arch/.signing" "$RELEASE_DIR/.signing-$release_arch"
+  done
+  (
+    cd "$RELEASE_DIR"
+    shasum -a 256 uniDesk-arm64.dmg uniDesk-arm64-update.zip \
+      uniDesk-x86_64.dmg uniDesk-x86_64-update.zip release.json > SHA256SUMS
+    shasum -a 256 -c SHA256SUMS
+  )
+  printf 'release output directory: %s\n' "$RELEASE_DIR"
+  exit 0
+fi
+
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-package.XXXXXX")"
 DMG_SOURCE_DIR="$STAGING_DIR/dmg-root"
 APP_BUNDLE="$DMG_SOURCE_DIR/uniDesk.app"
@@ -133,6 +199,8 @@ if [[ "$PACKAGE_MODE" == homebrew && -z "$RELEASE_METADATA" ]]; then
 fi
 if [[ "$PACKAGE_MODE" == homebrew ]]; then
   echo "distribution: Homebrew/GitHub (update-channel=github)"
+elif [[ "$PACKAGE_MODE" == manual ]]; then
+  echo "distribution: manual installation (automatic updates disabled)"
 else
   echo "distribution: local LAN (update-channel=lan)"
 fi
@@ -158,7 +226,7 @@ DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DM
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
 printf 'output directory: %s\n' "$DIST_DIR"
 
-if [[ "$PACKAGE_MODE" == lan ]]; then
+if [[ "$PACKAGE_MODE" != homebrew ]]; then
   if [[ -e "$DMG_PATH" ]]; then
     echo "error: package already exists: $DMG_PATH; unset RELEASE_METADATA to allocate a new build" >&2
     exit 1
@@ -170,7 +238,7 @@ if [[ "$PACKAGE_MODE" == lan ]]; then
   fi
   RELEASE_METADATA="$DIST_DIR/release.json"
   echo "release descriptor: $RELEASE_METADATA"
-  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" ./scripts/package-macos.sh"
+  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" UNIDESK_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
 fi
 
 "$ROOT_DIR/scripts/generate-assets.sh"
@@ -206,6 +274,8 @@ unidesk_codesign "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
 if [[ "$PACKAGE_MODE" == homebrew ]]; then
   printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
+elif [[ "$PACKAGE_MODE" == manual ]]; then
+  printf 'manual\n' > "$CONTENTS_DIR/Resources/update-channel"
 else
   printf 'lan\n' > "$CONTENTS_DIR/Resources/update-channel"
 fi

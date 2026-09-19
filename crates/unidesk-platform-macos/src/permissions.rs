@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::{PlatformError, PlatformResult};
 
@@ -291,6 +292,25 @@ fn macos_accessibility_is_trusted() -> bool {
 fn macos_full_disk_access_is_granted() -> bool {
     use std::{fs, path::PathBuf};
 
+    struct Cache {
+        checked: Instant,
+        granted: bool,
+    }
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        Mutex::new(Cache {
+            checked: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+            granted: false,
+        })
+    });
+    if let Ok(guard) = cache.lock()
+        && guard.checked.elapsed() < Duration::from_secs(2)
+    {
+        return guard.granted;
+    }
+
     fn can_read(path: PathBuf) -> bool {
         if path.is_dir() {
             fs::read_dir(path)
@@ -316,10 +336,15 @@ fn macos_full_disk_access_is_granted() -> bool {
         ]);
     }
 
-    probes
+    let granted = probes
         .into_iter()
         .filter(|path| path.exists())
-        .any(can_read)
+        .any(can_read);
+    if let Ok(mut guard) = cache.lock() {
+        guard.checked = Instant::now();
+        guard.granted = granted;
+    }
+    granted
 }
 
 #[cfg(target_os = "macos")]

@@ -136,6 +136,9 @@ pub struct SourceMetadata {
     pub device_id: Option<String>,
     pub created_at_ms: Option<u64>,
     pub no_history: bool,
+    /// Exact decoded image hash, including single-image file representations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
 }
 pub fn source_metadata(snapshot: &unidesk_platform::PasteboardSnapshot) -> SourceMetadata {
     snapshot

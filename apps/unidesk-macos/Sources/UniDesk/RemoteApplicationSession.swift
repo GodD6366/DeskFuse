@@ -18,8 +18,8 @@ final class SessionDataPlane: @unchecked Sendable {
         input = RemoteInputRelay(sender: { bridge.send($0) })
     }
     private let lock = NSLock()
-    private var decoder: H264Decoder?
-    private var encoder: H264Encoder?
+    private var decoder: VideoDecoder?
+    private var encoder: VideoEncoder?
     private var metrics: MediaMetrics?
     private var peer: RemotePeer?
     private var identity: SurfaceIdentity?
@@ -33,13 +33,12 @@ final class SessionDataPlane: @unchecked Sendable {
     func begin(_ token: UUID) { lock.withLock { connectionToken = token } }
     func isCurrent(_ token: UUID) -> Bool { lock.withLock { connectionToken == token } }
     func setPeer(_ peer: RemotePeer?) { lock.withLock { self.peer = peer } }
-    func setEncoder(_ value: H264Encoder?) { lock.withLock { encoder = value } }
+    func setEncoder(_ value: VideoEncoder?, surface: SurfaceIdentity? = nil) {
+        lock.withLock { encoder = value; identity = surface }
+    }
     func setMetrics(_ value: MediaMetrics?) { lock.withLock { metrics = value } }
-    func updateSurface(_ value: CaptureSurface) {
-        // The host side owns the capture surface through RemoteInputRelay;
-        // the viewer side also keeps the same relay surface after a layout
-        // update. The relay itself rejects stale identities.
-        input.updateSurface(value)
+    func hasPresented(_ surface: SurfaceIdentity) -> Bool {
+        lock.withLock { identity == surface && presentedSequence > 0 }
     }
     func requestKey() { lock.withLock { encoder }?.requestKeyFrame() }
     func sendFrame(_ frame: EncodedVideoFrame) {
@@ -55,8 +54,9 @@ final class SessionDataPlane: @unchecked Sendable {
         setMetrics(metrics)
         _ = try CaptureSurface(identity: surface.identity, displayID: surface.displayID, displayFrame: surface.displayFrame,
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz,
-            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects)
-        let next = H264Decoder(surface: surface.identity, expectedPixels: profile.pixels, metrics: metrics,
+            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects,
+            windowControlRects: surface.windowControlRects)
+        let next = VideoDecoder(surface: surface.identity, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics,
             keyFrameNeeded: { [weak self] in self?.send(RemoteMessage(.keyFrame)) }, output: { [weak self] result in
                 guard let self, self.lock.withLock({ self.connectionToken == token && self.identity == surface.identity }) else { return }
                 switch result {
@@ -65,7 +65,7 @@ final class SessionDataPlane: @unchecked Sendable {
                 }
             })
         var accepted = false
-        let old = lock.withLock { () -> H264Decoder? in
+        let old = lock.withLock { () -> VideoDecoder? in
             guard connectionToken == token else { return nil }
             accepted = true; frames.transition(to: surface.identity, layout: surface)
             let old = decoder; decoder = next; identity = surface.identity; presentedSequence = 0; enabled = false
@@ -135,9 +135,16 @@ final class SessionDataPlane: @unchecked Sendable {
                 guard now - self.lastDiagnostic >= 1 else { return nil }
                 self.lastDiagnostic = now
                 let counters = self.metrics?.snapshot()
-                return "peer=\(self.peerID) host=\(host) healthy=\(healthy) enabled=\(self.enabled) sentInput=\(self.sequence) receivedInput=\(self.receivedInput) presented=\(self.presentedSequence) generation=\(self.identity?.generation ?? 0) heartbeatAgeMs=\(Int((now-self.lastPeerHeartbeat)*1000)) captured=\(counters?.captured ?? 0) idle=\(counters?.capturedIdle ?? 0) blank=\(counters?.capturedBlank ?? 0) started=\(counters?.capturedStarted ?? 0) other=\(counters?.capturedOther ?? 0) encoded=\(counters?.encoded ?? 0) decoded=\(counters?.decoded ?? 0) chainResets=\(counters?.chainResets ?? 0)"
+                return "peer=\(self.peerID) session=\(self.identity?.session.uuidString ?? self.connectionToken.uuidString) host=\(host) healthy=\(healthy) enabled=\(self.enabled) sentInput=\(self.sequence) receivedInput=\(self.receivedInput) presented=\(self.presentedSequence) generation=\(self.identity?.generation ?? 0) heartbeatAgeMs=\(Int((now-self.lastPeerHeartbeat)*1000)) captured=\(counters?.captured ?? 0) idle=\(counters?.capturedIdle ?? 0) blank=\(counters?.capturedBlank ?? 0) started=\(counters?.capturedStarted ?? 0) other=\(counters?.capturedOther ?? 0) encoded=\(counters?.encoded ?? 0) decoded=\(counters?.decoded ?? 0) chainResets=\(counters?.chainResets ?? 0)"
             }
-            if let detail { self.engine.remoteApplicationDiagnostic(event: "data_progress", detail: detail) }
+            if let detail {
+                self.engine.remoteApplicationDiagnostic(event: "data_progress", detail: detail)
+                if host, let counters = self.lock.withLock({ self.metrics?.snapshot() }) {
+                    let surface = self.lock.withLock { self.identity }
+                    self.engine.remoteApplicationDiagnostic(event: "encoder_progress",
+                        detail: "peer=\(self.peerID) session=\(surface?.session.uuidString ?? "none") generation=\(surface?.generation ?? 0) submitted=\(counters.encoderSubmitted) callbacks=\(counters.encoderCallbacks) dropped=\(counters.encoderDropped) replaced=\(counters.replacedBeforeEncode) encoded=\(counters.encoded)")
+                }
+            }
         }
         lock.withLock {
             heartbeatTimer?.cancel()
@@ -149,7 +156,7 @@ final class SessionDataPlane: @unchecked Sendable {
     func release() { lock.withLock { enabled = false }; send(RemoteMessage(.release)) }
     func reset() {
         input.stop()
-        let old = lock.withLock { () -> H264Decoder? in
+        let old = lock.withLock { () -> VideoDecoder? in
             heartbeatTimer?.cancel(); heartbeatTimer = nil
             let old = decoder; decoder = nil; encoder = nil; peer = nil; identity = nil; enabled = false; connectionToken = UUID(); frames.reset(nil); return old
         }
@@ -185,7 +192,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         requestedApplication = application; reconnectTarget = application; choosingApplication = false
     }
     func refreshApplications() {
-        if connected { plane.send(RemoteMessage(.hello)) }
+        if connected {
+            var hello = RemoteMessage(.hello); hello.capabilities = .local; plane.send(hello)
+        }
         else if !busy { Task { await start() } }
     }
     func setViewerVisible(_ visible: Bool) {
@@ -256,6 +265,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     var selected: UUID?
     var applicationQuery = ""
     var preferences = VideoPreferences()
+    private var remoteCapabilities = MediaCapabilities.h264Only
     var scale: VideoViewScale = .fit
     var presentationSurface: CaptureSurface?
     @ObservationIgnored var presentationSizeChanged: ((CGSize) -> Void)?
@@ -276,7 +286,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     @ObservationIgnored var metrics = MediaMetrics()
     @ObservationIgnored private let catalog = ApplicationCatalog()
     @ObservationIgnored private var capture = RemoteAppCapture()
-    @ObservationIgnored private var encoder: H264Encoder?
+    @ObservationIgnored private var encoder: VideoEncoder?
     @ObservationIgnored private var peer: RemotePeer?
     @ObservationIgnored private var monitor: Task<Void, Never>?
     @ObservationIgnored private var operation = UUID()
@@ -287,6 +297,12 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     @ObservationIgnored private var lastSurface: CaptureSurface?
     @ObservationIgnored private var lastProfile: VideoProfile?
     @ObservationIgnored private var lastMode: CaptureViewMode?
+    @ObservationIgnored private var pendingCapture: (surface: CaptureSurface, profile: VideoProfile, mode: CaptureViewMode, since: Double)?
+    @ObservationIgnored private var encoderRateLimit: Double?
+    @ObservationIgnored private var encoderProgressAt = 0.0
+    @ObservationIgnored private var encoderHasOutput = false
+    @ObservationIgnored private var encodedAtProgress: UInt64 = 0
+    @ObservationIgnored private var capturedAtProgress: UInt64 = 0
     @ObservationIgnored private var changing = false
     @ObservationIgnored private var controlPending = false
     @ObservationIgnored private var controlRequest = UUID()
@@ -309,7 +325,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         busy = true; defer { busy = false }
         await stop(); failure = nil; viewerPaused = false; awaitingResumeSurface = false
         hasPresentedFrame = false
-        capturePaused = false; resumePending = false
+        capturePaused = false; resumePending = false; encoderRateLimit = nil
         operation = UUID(); let token = operation; plane.begin(token)
         metrics = MediaMetrics(); statistics = MediaStatistics()
         plane.setMetrics(metrics)
@@ -428,9 +444,8 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 }
                 self.connected = ready; self.status = message
                 if ready {
-                    if host { var value = RemoteMessage(.applications); value.applications = self.applications; self.plane.send(value) }
-                    else {
-                        self.plane.send(RemoteMessage(.hello))
+                    if !host {
+                        var hello = RemoteMessage(.hello); hello.capabilities = .local; self.plane.send(hello)
                     }
                 } else {
                     let hadApplications = !self.applications.isEmpty
@@ -450,6 +465,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         if role == .host {
             switch message.kind {
             case .hello:
+                remoteCapabilities = message.capabilities ?? .h264Only
                 applications = catalog.applications().filter { $0.processID != ProcessInfo.processInfo.processIdentifier }
                 var value = RemoteMessage(.applications); value.applications = applications; plane.send(value)
             case .launch:
@@ -460,6 +476,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     guard RemoteApplicationManager.shared.claimHostControl(self) else {
                         throw RemoteApplicationError.unsupported("另一台设备正在控制本机，请先释放控制")
                     }
+                    encoderRateLimit = nil
                     if let preferences = message.preferences { self.preferences = preferences }
                     process = try await catalog.launch(application)
                     guard operation == token, let process else { return }
@@ -525,7 +542,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             case .resume:
                 capturePaused = false; resumePending = true
             case .preferences:
-                if let preferences = message.preferences { self.preferences = preferences }
+                if let preferences = message.preferences {
+                    self.preferences = preferences; encoderRateLimit = nil
+                }
             case .stop: await stopCapture()
             default: break
             }
@@ -549,7 +568,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 releaseControl(); lastSurface = surface; presentationSurface = surface; running = true; failure = nil
                 presentationSizeChanged?((surface.applicationRect ?? surface.contentRect).size)
                 sourceDescription = "B 源：\(Int(surface.contentRect.width)) × \(Int(surface.contentRect.height)) pt · \(surface.nativePixels.label) px"
-                actualDescription = "传输：\(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
+                actualDescription = "传输：\(profile.codec.label) · \(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
                 status = "远端画面已配置，点击画面获取控制"
                 // A configured surface with no arriving frame currently looks
                 // identical to a live stream. Surface the stall, nudge a fresh
@@ -558,7 +577,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 firstFrameWatch = Task { [weak self] in
                     guard let self else { return }
                     try? await Task.sleep(for: .seconds(10))
-                    guard !Task.isCancelled, self.operation == token, self.running, !self.hasPresentedFrame,
+                    guard !Task.isCancelled, self.operation == token, self.running, !self.plane.hasPresented(surface.identity),
                           !self.controlling, !self.controlPending, self.failure == nil, self.connected else { return }
                     self.status = "正在等待远端画面…"
                     self.plane.send(RemoteMessage(.keyFrame))
@@ -566,11 +585,11 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                         detail: "peer=\(self.peerID) generation=\(surface.identity.generation)")
                 }
             case .layout:
-                guard let surface = message.surface, surface.identity == lastSurface?.identity else { return }
+                guard let surface = message.surface, let previous = lastSurface,
+                      surface.identity == previous.identity, surface.hasSameCaptureGeometry(as: previous) else { return }
                 guard let validated = try? surface.withIdentity(surface.identity) else { return }
                 layoutDiagnostic(validated)
                 plane.frames.updateLayout(validated)
-                plane.updateSurface(validated)
                 lastSurface = validated; presentationSurface = validated
                 presentationSizeChanged?((validated.applicationRect ?? validated.contentRect).size)
             case .controlReady:
@@ -603,6 +622,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         if !focused { autoAcquire = false; releaseControl(resumeSharing: true); return }
         guard role == .viewer, running, !viewerPaused, !awaitingResumeSurface,
               !controlPending, !controlling, let surface = lastSurface else { return }
+        guard plane.hasPresented(surface.identity) else {
+            status = "正在等待远端画面…"; autoAcquire = true; return
+        }
         status = "正在申请控制权…"
         do { try RemoteApplicationManager.shared.claimViewerControl(self) }
         catch { status = error.localizedDescription; return }
@@ -672,6 +694,19 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             try await Task.sleep(for: .milliseconds(250))
         }
     }
+    private func selectedVideoCodec() throws -> VideoCodec {
+        switch preferences.codec {
+        case .h264: return .h264
+        case .hevc:
+            guard remoteCapabilities.supportsDecoder(.hevc) else {
+                throw RemoteApplicationError.unsupported("远端不支持 H.265 硬件解码")
+            }
+            return .hevc
+        case .automatic:
+            return remoteCapabilities.supportsDecoder(.hevc) ? .hevc : .h264
+        }
+    }
+
     private func refreshCapture(token: UUID) async throws {
         guard !changing, !capturePaused, let process, operation == token else { return }
         changing = true; defer { changing = false }
@@ -682,41 +717,22 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         engine.remoteApplicationDiagnostic(event: "capture_source", detail: "peer=\(peerID) \(source.note)")
         guard operation == token, !capturePaused else { return }
         let surface = source.surface
-        let profile = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz, preferences: preferences)
-        if encoder != nil, let previous = lastSurface, let activeProfile = lastProfile, lastMode == mode {
-            // Keep one media identity alive while a preview or child window
-            // changes the logical capture rectangle. ScreenCaptureKit can
-            // update sourceRect in place; restarting here used to create a
-            // long no-encoded-frame window and revoke the input lease.
-            let layout = try surface.withIdentity(previous.identity)
-            if layout != previous || activeProfile != profile {
-                do {
-                    try await capture.updateConfiguration(source: source, profile: activeProfile)
-                    plane.input.updateSurface(layout)
-                    lastSurface = layout
-                    layoutDiagnostic(layout)
-                    var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
-                    return
-                } catch {
-                    // Fall through to the existing full restart if the OS
-                    // rejects an in-place configuration update.
-                }
-            } else {
-                try await capture.updateFilter(source)
-                if previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects {
-                    lastSurface = layout
-                    layoutDiagnostic(layout)
-                    var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
-                }
-                return
-            }
-        }
-        if encoder != nil, lastSurface?.contentRect == surface.contentRect, lastSurface?.displayID == surface.displayID,
-           lastSurface?.pointPixelScale == surface.pointPixelScale, lastSurface?.sourceHz == surface.sourceHz,
+        try recoverEncoderIfStalled()
+        let selectedCodec = try selectedVideoCodec()
+        let requested = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz,
+                                                   preferences: preferences, codec: selectedCodec)
+        var profile: VideoProfile
+        if let limit = encoderRateLimit, requested.framesPerSecond > limit {
+            profile = VideoProfile(codec: requested.codec, pixels: requested.pixels, framesPerSecond: limit,
+                reason: "硬件编码未出帧，已自动降至 \(Int(limit)) Hz")
+        } else { profile = requested }
+        if encoder != nil, let previous = lastSurface, previous.hasSameCaptureGeometry(as: surface),
            lastProfile == profile, lastMode == mode {
+            pendingCapture = nil
             try await capture.updateFilter(source)
-            if let previous = lastSurface,
-               previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects {
+            guard operation == token, !capturePaused, running, lastSurface?.identity == previous.identity else { return }
+            if previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects
+                || previous.windowControlRects != surface.windowControlRects {
                 let layout = try surface.withIdentity(previous.identity)
                 lastSurface = layout
                 layoutDiagnostic(layout)
@@ -724,50 +740,117 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             }
             return
         }
+        // Wait out preview/window animations. A real crop or profile change
+        // needs a new identity so old pixels cannot use new input coordinates.
+        // Layout-only changes above keep their stream and native lease.
+        if encoder != nil, let previous = lastSurface, !previous.hasSameCaptureGeometry(as: surface) {
+            let layout = try previous.withWindowControlRects(surface.windowControlRects)
+            if layout.windowControlRects != previous.windowControlRects {
+                lastSurface = layout
+                var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            if let pending = pendingCapture, pending.surface.hasSameCaptureGeometry(as: surface),
+               pending.profile == profile, pending.mode == mode {
+                guard now - pending.since >= 0.5 else { return }
+            } else {
+                pendingCapture = (surface, profile, mode, now)
+                return
+            }
+        }
+        pendingCapture = nil
         controlRequest = UUID(); controlling = false; plane.input.focus(false)
+        lastSurface = nil
         plane.input.suspend(); await capture.stop()
         let old = encoder; encoder = nil; plane.setEncoder(nil)
         if let old { await Task.detached { old.stop() }.value }
-        guard operation == token else { return }
+        guard operation == token, !capturePaused, running else { return }
         let plane = plane, metrics = metrics
-        let next = try await Task.detached { [weak self] in
-            try H264Encoder(surface: identity, profile: profile, metrics: metrics) { [weak self] result in
-                guard plane.isCurrent(token) else { return }
-                switch result {
-                case .success(let frame): plane.sendFrame(frame)
-                case .failure(let error):
-                    plane.input.suspend()
-                    Task { @MainActor [weak self] in
-                        guard let self, self.operation == token else { return }
-                        self.sendError(error.localizedDescription)
+        let makeEncoder: (VideoProfile) async throws -> VideoEncoder = { [weak self] requestedProfile in
+            try await Task.detached { [weak self] in
+                try VideoEncoder(surface: identity, profile: requestedProfile, metrics: metrics) { [weak self] result in
+                    guard plane.isCurrent(token) else { return }
+                    switch result {
+                    case .success(let frame): plane.sendFrame(frame)
+                    case .failure(let error):
+                        Task { @MainActor [weak self] in
+                            guard let self, self.operation == token, self.lastSurface?.identity == identity else { return }
+                            await self.stopCapture()
+                            self.sendError(error.localizedDescription)
+                        }
                     }
                 }
-            }
-        }.value
+            }.value
+        }
+        let next: VideoEncoder
+        do {
+            next = try await makeEncoder(profile)
+        } catch {
+            guard preferences.codec == .automatic, profile.codec == .hevc else { throw error }
+            profile = VideoProfile(codec: .h264, pixels: profile.pixels, framesPerSecond: profile.framesPerSecond,
+                bitrate: profile.bitrate, reason: "H.265 硬件编码不可用，已回退 H.264")
+            next = try await makeEncoder(profile)
+            engine.remoteApplicationDiagnostic(event: "codec_fallback", detail: "peer=\(peerID) requested=hevc selected=h264 reason=\(error.localizedDescription)")
+        }
         guard operation == token, !capturePaused else { next.stop(); return }
-        encoder = next; plane.setEncoder(next); plane.input.setSurface(surface)
+        encoder = next; plane.setEncoder(next, surface: identity); plane.input.setSurface(surface)
+        let counts = metrics.snapshot()
+        encoderProgressAt = ProcessInfo.processInfo.systemUptime
+        encoderHasOutput = false
+        encodedAtProgress = counts.encoded; capturedAtProgress = counts.captured
         // Publish host control geometry before A can present and acknowledge
         // the new stream. startCapture can suspend after delivering a first frame.
         generation += 1; lastSurface = surface; lastProfile = profile; lastMode = mode
         layoutDiagnostic(surface)
+        engine.remoteApplicationDiagnostic(event: "encoder_profile",
+            detail: "peer=\(peerID) session=\(token.uuidString) generation=\(identity.generation) codec=\(profile.codec.rawValue) width=\(profile.pixels.width) height=\(profile.pixels.height) fps=\(profile.framesPerSecond) bitrate=\(profile.bitrate)")
         var message = RemoteMessage(.surface); message.surface = surface; message.profile = profile; plane.send(message)
         try await capture.start(source: source, profile: profile, metrics: metrics, sink: { next.submit($0) }, failed: { [weak self] message in
-            plane.input.suspend()
             Task { @MainActor [weak self] in
-                guard let self, self.operation == token else { return }
+                guard let self, self.operation == token, self.running, self.lastSurface?.identity == identity else { return }
                 await self.stopCapture(); self.sendError(message)
             }
         })
         guard operation == token else { return }
         sourceDescription = "源：\(surface.nativePixels.label) px"
-        actualDescription = "编码：\(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz"
+        actualDescription = "编码：\(profile.codec.label) · \(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
         status = "正在共享 \(process.localizedName ?? "应用") · 在 A 端点击画面操作"
+    }
+    private func recoverEncoderIfStalled() throws {
+        guard encoder != nil, let profile = lastProfile else { return }
+        let counts = metrics.snapshot(), now = ProcessInfo.processInfo.systemUptime
+        if counts.encoded != encodedAtProgress {
+            encoderHasOutput = true
+            encodedAtProgress = counts.encoded; capturedAtProgress = counts.captured; encoderProgressAt = now
+            return
+        }
+        if counts.captured == capturedAtProgress {
+            encoderProgressAt = now
+            return
+        }
+        // After startup, unchanged screens are idle, not encoder failures.
+        // A static window can produce only one complete frame at startup;
+        // recover if even that first frame never produces compressed output.
+        let missingFirstFrame = !encoderHasOutput && counts.captured > capturedAtProgress
+        let waitingForCallback = counts.encoderSubmitted > counts.encoderCallbacks
+        guard (missingFirstFrame || waitingForCallback || counts.captured >= capturedAtProgress + 8),
+              now - encoderProgressAt >= 1 else { return }
+        let nextRate = [60.0, 30.0].first { $0 < profile.framesPerSecond }
+        engine.remoteApplicationDiagnostic(event: "encoder_stalled",
+            detail: "peer=\(peerID) session=\(operation.uuidString) generation=\(lastSurface?.identity.generation ?? 0) width=\(profile.pixels.width) height=\(profile.pixels.height) fps=\(profile.framesPerSecond) captured=\(counts.captured) encoded=\(counts.encoded) submitted=\(counts.encoderSubmitted) dropped=\(counts.encoderDropped) nextFPS=\(nextRate ?? 0)")
+        guard preferences.adaptation != .fixed, let nextRate else {
+            throw RemoteApplicationError.unsupported("远端已捕获画面，但硬件编码器未能输出视频，请降低远程画面的刷新率或分辨率后重新连接")
+        }
+        encoderRateLimit = nextRate
+        encoderProgressAt = now
     }
     private func sendError(_ text: String) {
         status = text; var message = RemoteMessage(.error); message.text = text; plane.send(message)
     }
     private func stopCapture() async {
-        running = false; controlRequest = UUID(); plane.input.stop(); await capture.stop()
+        running = false; controlRequest = UUID(); pendingCapture = nil
+        lastSurface = nil
+        plane.input.stop(); await capture.stop()
         if role == .host { RemoteApplicationManager.shared.releaseHostControl(self) }
         let old = encoder; encoder = nil; plane.setEncoder(nil)
         if let old { await Task.detached { old.stop() }.value }
@@ -792,6 +875,7 @@ struct VideoCanvas: NSViewRepresentable {
     func updateNSView(_ view: RemoteVideoView, context: Context) {
         view.frames = session.plane.frames; view.metrics = session.metrics
         view.surfaceLayout = session.presentationSurface
+        view.replacesWindowControls = true
         view.onContentSize = { [weak session] in session?.didPresent($0) }
         view.inputEnabled = session.role == .viewer && session.running && !session.viewerPaused && !session.awaitingResumeSurface
         view.onFocus = { [weak session] in session?.canvasFocus($0) }

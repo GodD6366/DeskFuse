@@ -69,7 +69,9 @@ for folder in (
 print(hasher.hexdigest())
 PY
 )"
-FINGERPRINT_FILE="$SDK_DIR/.rust-fingerprint"
+# Each target/profile owns its cache evidence. A successful arm64 build must
+# never validate stale Intel libraries left by an earlier source revision.
+FINGERPRINT_FILE="$SDK_DIR/.rust-fingerprint-$TARGET_TRIPLE-$CONFIGURATION"
 SKIP_RUST=0
 if [[ "${UNIDESK_FORCE_RUST:-0}" != 1 \
   && -f "$FINGERPRINT_FILE" \

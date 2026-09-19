@@ -3,7 +3,9 @@ use super::{
     ApplyResult, CaptureSource, CapturedContent, ClipboardApplyPort, ClipboardCapturePort,
     ContentData, ContentToApply, ContentType, NativeRevision,
 };
-use crate::{Pasteboard, PlatformResult, REMOTE_ORIGIN_MARKER_TYPE};
+use crate::{
+    Pasteboard, PasteboardItem, PasteboardRepresentation, PlatformResult, REMOTE_ORIGIN_MARKER_TYPE,
+};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -77,29 +79,71 @@ pub fn apply_clipboard(
             current_revision: NativeRevision(current),
         });
     }
+    let marker = content
+        .remote_origin_marker
+        .as_deref()
+        .unwrap_or(REMOTE_ORIGIN_MARKER_TYPE);
     if !content.data.items.is_empty() {
-        pasteboard.write_items(&content.data.items)?;
+        let mut items = content.data.items.clone();
+        attach_origin_marker(&mut items, marker);
+        pasteboard.write_items(&items)?;
     } else if !content.data.file_urls.is_empty() {
         pasteboard.write_file_urls(&content.data.file_urls)?;
+        pasteboard.write_remote_origin_marker(marker)?;
     } else if content.data.mime == "image/png" && !content.data.bytes.is_empty() {
-        pasteboard.write_png(&content.data.bytes)?;
+        pasteboard.write_items(&[origin_item(
+            "public.png",
+            content.data.bytes.clone(),
+            marker,
+        )])?;
     } else if let Some(text) = content.data.as_text() {
-        pasteboard.write_text(text)?;
+        pasteboard.write_items(&[origin_item(
+            "public.utf8-plain-text",
+            text.as_bytes().to_vec(),
+            marker,
+        )])?;
     } else if !content.data.bytes.is_empty() {
-        pasteboard.write_text(&String::from_utf8_lossy(&content.data.bytes))?;
+        pasteboard.write_items(&[origin_item(
+            "public.utf8-plain-text",
+            content.data.bytes.clone(),
+            marker,
+        )])?;
     } else {
         return Ok(ApplyResult::Rejected {
             reason: "empty clipboard payload".into(),
         });
     }
-    if let Some(marker) = &content.remote_origin_marker {
-        pasteboard.write_remote_origin_marker(marker)?;
-    } else {
-        pasteboard.write_remote_origin_marker(REMOTE_ORIGIN_MARKER_TYPE)?;
-    }
     Ok(ApplyResult::Applied {
         new_revision: NativeRevision(pasteboard.change_count()?),
     })
+}
+
+fn origin_item(type_name: &str, data: Vec<u8>, marker: &str) -> PasteboardItem {
+    PasteboardItem {
+        representations: vec![
+            PasteboardRepresentation {
+                type_name: type_name.into(),
+                data,
+            },
+            PasteboardRepresentation {
+                type_name: REMOTE_ORIGIN_MARKER_TYPE.into(),
+                data: marker.as_bytes().to_vec(),
+            },
+        ],
+    }
+}
+
+fn attach_origin_marker(items: &mut [PasteboardItem], marker: &str) {
+    let Some(first) = items.first_mut() else {
+        return;
+    };
+    first
+        .representations
+        .retain(|representation| representation.type_name != REMOTE_ORIGIN_MARKER_TYPE);
+    first.representations.push(PasteboardRepresentation {
+        type_name: REMOTE_ORIGIN_MARKER_TYPE.into(),
+        data: marker.as_bytes().to_vec(),
+    });
 }
 
 #[async_trait]

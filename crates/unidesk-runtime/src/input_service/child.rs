@@ -177,11 +177,15 @@ impl ChildConnection {
             .spawn(move || {
                 // A blocked main application only blocks this thread. Producers replace
                 // the watch value; they never wait for the GUI or IPC socket to drain.
+                let mut previous: Option<ServiceSnapshot> = None;
                 while !signal.load(Ordering::Acquire) {
                     let value = updates.borrow_and_update().clone();
-                    if write_frame(&mut output, &value).is_err() {
-                        signal.store(true, Ordering::Release);
-                        break;
+                    if previous.as_ref() != Some(&value) {
+                        if write_frame(&mut output, &value).is_err() {
+                            signal.store(true, Ordering::Release);
+                            break;
+                        }
+                        previous = Some(value);
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }

@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import VideoToolbox
 
-public final class H264Decoder: @unchecked Sendable {
+public final class VideoDecoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "uniDesk.remote.decode", qos: .userInteractive)
     private let lock = NSLock()
     private var pending = EncodedFrameQueue()
@@ -9,16 +9,17 @@ public final class H264Decoder: @unchecked Sendable {
     private var stopped = false
     private var session: VTDecompressionSession?
     private var format: CMVideoFormatDescription?
-    private var parameterSets: (Data, Data)?
+    private var parameterSets: (codec: VideoCodec, vps: Data, sps: Data, pps: Data)?
     private let metrics: MediaMetrics
     private let expectedPixels: PixelSize
+    private let expectedCodec: VideoCodec
     private let output: @Sendable (Result<DecodedVideoFrame, RemoteApplicationError>) -> Void
     private let keyFrameNeeded: @Sendable () -> Void
 
-    public init(surface: SurfaceIdentity, expectedPixels: PixelSize, metrics: MediaMetrics,
+    public init(surface: SurfaceIdentity, expectedPixels: PixelSize, expectedCodec: VideoCodec = .h264, metrics: MediaMetrics,
                 keyFrameNeeded: @escaping @Sendable () -> Void,
                 output: @escaping @Sendable (Result<DecodedVideoFrame, RemoteApplicationError>) -> Void) {
-        pending.reset(to: surface); self.metrics = metrics; self.expectedPixels = expectedPixels
+        pending.reset(to: surface); self.metrics = metrics; self.expectedPixels = expectedPixels; self.expectedCodec = expectedCodec
         self.keyFrameNeeded = keyFrameNeeded; self.output = output
     }
 
@@ -59,20 +60,41 @@ public final class H264Decoder: @unchecked Sendable {
 
     private func configure(_ frame: EncodedVideoFrame) throws {
         guard frame.keyFrame else { throw RemoteApplicationError.malformedFrame }
-        if let parameterSets, parameterSets.0 == frame.sps, parameterSets.1 == frame.pps, session != nil { return }
+        guard frame.codec == expectedCodec else { throw RemoteApplicationError.unsupported("收到的编码格式与协商结果不一致") }
+        if let parameterSets, parameterSets.codec == frame.codec,
+           parameterSets.vps == frame.vps, parameterSets.sps == frame.sps,
+           parameterSets.pps == frame.pps, session != nil { return }
         if let session { VTDecompressionSessionInvalidate(session) }
         session = nil; format = nil
         var description: CMVideoFormatDescription?
-        let status = frame.sps.withUnsafeBytes { sps in
-            frame.pps.withUnsafeBytes { pps in
-                let pointers = [sps.baseAddress!.assumingMemoryBound(to: UInt8.self), pps.baseAddress!.assumingMemoryBound(to: UInt8.self)]
-                let sizes = [sps.count, pps.count]
-                return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: kCFAllocatorDefault,
-                    parameterSetCount: 2, parameterSetPointers: pointers, parameterSetSizes: sizes,
-                    nalUnitHeaderLength: 4, formatDescriptionOut: &description)
+        let status: OSStatus
+        if frame.codec == .hevc {
+            status = frame.vps.withUnsafeBytes { (vps: UnsafeRawBufferPointer) in
+                frame.sps.withUnsafeBytes { (sps: UnsafeRawBufferPointer) in
+                    frame.pps.withUnsafeBytes { (pps: UnsafeRawBufferPointer) in
+                        let pointers = [vps.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                        sps.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                        pps.baseAddress!.assumingMemoryBound(to: UInt8.self)]
+                        let sizes = [vps.count, sps.count, pps.count]
+                        return CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: kCFAllocatorDefault,
+                            parameterSetCount: 3, parameterSetPointers: pointers, parameterSetSizes: sizes,
+                            nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &description)
+                    }
+                }
+            }
+        } else {
+            status = frame.sps.withUnsafeBytes { (sps: UnsafeRawBufferPointer) in
+                frame.pps.withUnsafeBytes { (pps: UnsafeRawBufferPointer) in
+                    let pointers = [sps.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                    pps.baseAddress!.assumingMemoryBound(to: UInt8.self)]
+                    let sizes = [sps.count, pps.count]
+                    return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: kCFAllocatorDefault,
+                        parameterSetCount: 2, parameterSetPointers: pointers, parameterSetSizes: sizes,
+                            nalUnitHeaderLength: 4, formatDescriptionOut: &description)
+                }
             }
         }
-        guard status == noErr, let description else { throw RemoteApplicationError.codec("读取 H.264 配置", status) }
+        guard status == noErr, let description else { throw RemoteApplicationError.codec("读取 \(frame.codec.label) 配置", status) }
         let dimensions = CMVideoFormatDescriptionGetDimensions(description)
         guard expectedPixels.isValid, Int(dimensions.width) == expectedPixels.width,
               Int(dimensions.height) == expectedPixels.height else { throw RemoteApplicationError.invalidGeometry }
@@ -86,7 +108,7 @@ public final class H264Decoder: @unchecked Sendable {
         let result = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: description,
             decoderSpecification: specification, imageBufferAttributes: attributes as CFDictionary,
             outputCallback: nil, decompressionSessionOut: &created)
-        guard result == noErr, let created else { throw RemoteApplicationError.codec("创建 H.264 硬件解码器", result) }
+        guard result == noErr, let created else { throw RemoteApplicationError.codec("创建 \(frame.codec.label) 硬件解码器", result) }
         var hardware: Unmanaged<CFTypeRef>?
         let read = VTSessionCopyProperty(created, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
                                         allocator: kCFAllocatorDefault, valueOut: &hardware)
@@ -97,7 +119,8 @@ public final class H264Decoder: @unchecked Sendable {
         }
         let realTime = VTSessionSetProperty(created, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         guard realTime == noErr else { VTDecompressionSessionInvalidate(created); throw RemoteApplicationError.codec("配置实时解码", realTime) }
-        session = created; format = description; parameterSets = (frame.sps, frame.pps)
+        session = created; format = description
+        parameterSets = (frame.codec, frame.vps, frame.sps, frame.pps)
         metrics.update { $0.decoderHardwareEvidence = read == noErr ? "VT UsingHardware=true" : "VT RequireHardware=true; optional status property unsupported" }
     }
 
@@ -150,15 +173,15 @@ public final class H264Decoder: @unchecked Sendable {
 public final class LocalMediaPipeline: @unchecked Sendable {
     public let metrics: MediaMetrics
     public let latest: LatestVideoFrame
-    private var encoder: H264Encoder?
-    private var decoder: H264Decoder?
+    private var encoder: VideoEncoder?
+    private var decoder: VideoDecoder?
 
     public init(surface: SurfaceIdentity, profile: VideoProfile, metrics: MediaMetrics = MediaMetrics(),
                 latest: LatestVideoFrame = LatestVideoFrame(),
                 onError: @escaping @Sendable (RemoteApplicationError) -> Void) throws {
         self.metrics = metrics; self.latest = latest
         latest.reset(surface)
-        decoder = H264Decoder(surface: surface, expectedPixels: profile.pixels, metrics: metrics, keyFrameNeeded: { [weak self] in
+        decoder = VideoDecoder(surface: surface, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics, keyFrameNeeded: { [weak self] in
             self?.encoder?.requestKeyFrame()
         }, output: { result in
             switch result {
@@ -166,7 +189,7 @@ public final class LocalMediaPipeline: @unchecked Sendable {
             case .failure(let error): onError(error)
             }
         })
-        encoder = try H264Encoder(surface: surface, profile: profile, metrics: metrics) { [weak self] result in
+        encoder = try VideoEncoder(surface: surface, profile: profile, metrics: metrics) { [weak self] result in
             switch result {
             case .success(let frame): self?.decoder?.submit(frame)
             case .failure(let error): self?.decoder?.invalidate(); onError(error)

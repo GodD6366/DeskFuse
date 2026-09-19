@@ -48,6 +48,7 @@ impl InputCoordinator {
                 .name("unidesk-input-ui".into())
                 .spawn(move || {
                     let mut previous: Option<unidesk_runtime::input_service::NativeStatus> = None;
+                    let mut previous_input: Option<unidesk_core::InputSharingSnapshot> = None;
                     let mut previous_recording = None;
                     let mut previous_pid = 0;
                     while !stop.load(Ordering::Acquire) {
@@ -90,9 +91,11 @@ impl InputCoordinator {
                             let _ = ui.unbounded_send(UiEvent::PermissionSnapshot(permissions));
                             previous = Some(native);
                         }
-                        let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(
-                            runtime.input_snapshot(),
-                        )));
+                        let input = runtime.input_snapshot();
+                        if previous_input.as_ref() != Some(&input) {
+                            previous_input = Some(input.clone());
+                            let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(input)));
+                        }
                         thread::sleep(Duration::from_millis(100));
                     }
                 })
@@ -795,22 +798,34 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
         .name("unidesk-input-observer".into())
         .spawn(move || {
             let permissions = create_permission_service();
+            let mut last_topology: Option<(Instant, Result<unidesk_core::DisplayTopology, String>)> =
+                None;
             while !stopping.load(Ordering::Acquire) {
                 let started_at = Instant::now();
                 let started_wall = SystemTime::now();
+                let topology = match last_topology.as_ref() {
+                    Some((at, value))
+                        if at.elapsed() < Duration::from_millis(500) && value.is_ok() =>
+                    {
+                        value.clone()
+                    }
+                    _ => {
+                        let next = display_topology().map_err(|error| error.to_string());
+                        last_topology = Some((started_at, next.clone()));
+                        next
+                    }
+                };
                 let observation = NativeObservation {
                     permission: permissions.snapshot(),
                     session_active: crate::platform::session_is_active(),
-                    topology: display_topology().map_err(|error| error.to_string()),
+                    topology,
                     started_at,
                     started_wall,
                 };
                 if tx.send(Some(observation)).is_err() {
                     break;
                 }
-                // Check permissions every 100ms for responsive UI. When a user grants
-                // a permission in System Settings and returns to the app, this interval
-                // determines the maximum delay before the UI reflects the new state.
+                // 辅助功能用廉价 AX 查询保持 100ms；显示器枚举更重，上面单独节流。
                 thread::park_timeout(Duration::from_millis(100));
             }
         })
@@ -872,6 +887,7 @@ async fn run(
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
+    let mut previous_ui_snapshot: Option<InputSharingSnapshot> = None;
     let mut recording_active = false;
     let started = Instant::now();
     let mut next_refresh = Instant::now();
@@ -1213,7 +1229,10 @@ async fn run(
                     };
                     state.report_native(&runtime,&snapshot,status,reason).await;
                     if recording_active {let _=ui.unbounded_send(UiEvent::InputRecordingReady(true));}
-                    let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(snapshot.clone())));
+                    if previous_ui_snapshot.as_ref() != Some(&snapshot) {
+                        previous_ui_snapshot = Some(snapshot.clone());
+                        let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(snapshot.clone())));
+                    }
                     if previous_permission != Some(permission) {
                         let _=ui.unbounded_send(UiEvent::PermissionSnapshot(permission));
                         previous_permission=Some(permission);

@@ -69,14 +69,6 @@ import UniDeskEngine
             NSApp.terminate(nil)
             return
         }
-        // Also hand off to an older build that predates this lock. Once all
-        // installed copies use the lock, the branch above handles the race.
-        if let other = runningInstance() {
-            other.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            closeInstanceLock()
-            NSApp.terminate(nil)
-            return
-        }
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()
@@ -85,7 +77,17 @@ import UniDeskEngine
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { AppStore.shared.terminate() }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { AppStore.shared.openMain(); return true }
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        if #available(macOS 14.2, *) {
+            return RemoteApplicationDockController.shared.makeDockMenu()
+        }
+        return nil
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if #available(macOS 14.2, *), RemoteApplicationManager.shared.focusViewer() { return true }
+        AppStore.shared.openMain()
+        return true
+    }
 
     private func runningInstance() -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: "com.unidesk.app")
@@ -102,7 +104,8 @@ import UniDeskEngine
         let directory = support.appendingPathComponent("uniDesk", isDirectory: true)
         do { try manager.createDirectory(at: directory, withIntermediateDirectories: true) } catch { return false }
         let path = directory.appendingPathComponent("instance.lock").path
-        let fd = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        // Helpers must not retain the app's lock after the main process exits.
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { return false }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
@@ -112,12 +115,6 @@ import UniDeskEngine
         return true
     }
 
-    private func closeInstanceLock() {
-        guard instanceLockFD >= 0 else { return }
-        _ = flock(instanceLockFD, LOCK_UN)
-        close(instanceLockFD)
-        instanceLockFD = -1
-    }
 }
 /// Assigns window identity and presentation without removing the native
 /// titlebar, its traffic lights, or its drag region.

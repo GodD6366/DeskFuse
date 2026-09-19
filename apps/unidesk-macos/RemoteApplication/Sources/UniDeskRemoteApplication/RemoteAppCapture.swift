@@ -105,6 +105,7 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let rect: CGRect
         var applicationRect: CGRect?
         var auxiliaryRects: [CGRect] = []
+        var windowControlRects: [CGRect] = []
         var usesDisplayFilter = mode == .desktop
         var chromiumMatched = false
         if mode == .desktop {
@@ -130,7 +131,8 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
             // Retain room already used by a candidate panel while typing. This
             // prevents every show/hide from changing coordinates and the lease.
             let normalWindows = windows.filter { $0.windowLayer == 0 }
-            guard let union = crop.update(windows: (normalWindows.isEmpty ? windows : normalWindows).map(\.frame), display: display.frame, gestureActive: gestureActive) else {
+            let baseWindows = normalWindows.isEmpty ? windows : normalWindows
+            guard let union = crop.update(windows: baseWindows.map(\.frame), display: display.frame, gestureActive: gestureActive) else {
                 throw RemoteApplicationError.noWindow
             }
             applicationRect = union
@@ -143,7 +145,18 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
                 }
             }
             rect = candidateExtent.intersection(display.frame)
-            auxiliaryRects = (windows + auxiliaryWindows).compactMap { window in
+            // Derive controls from live window frames, never the frozen crop's
+            // origin. Clip after positioning, so off-screen controls stay gone.
+            windowControlRects = baseWindows.compactMap { window in
+                let cover = CGRect(origin: window.frame.origin,
+                    size: CGSize(width: min(88, window.frame.width), height: min(40, window.frame.height)))
+                    .intersection(rect)
+                return cover.isNull || cover.isEmpty ? nil : cover
+            }
+            let baseWindowIDs = Set(baseWindows.map(\.windowID))
+            // A moving main window is still part of the base video. Treating
+            // its overflow as an auxiliary panel composites it a second time.
+            auxiliaryRects = (windows.filter { !baseWindowIDs.contains($0.windowID) } + auxiliaryWindows).compactMap { window in
                 let visible = window.frame.intersection(rect)
                 guard !visible.isNull, !visible.isEmpty, !union.contains(visible) else { return nil }
                 return visible
@@ -158,7 +171,7 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let note = "bundle=\(application.bundleIdentifier) owned=\(ownedWindows.count) onScreen=\(windows.count) chromium=\(chromiumMatched) displayFilter=\(usesDisplayFilter)"
         return Source(filter: filter, surface: try CaptureSurface(identity: identity, displayID: display.displayID,
             displayFrame: display.frame, contentRect: rect, pointPixelScale: scale, sourceHz: hz,
-            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects),
+            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects, windowControlRects: windowControlRects),
             applicationIDs: mode == .desktop ? [] : included.map(\.processID).sorted(), note: note)
     }
 
@@ -170,36 +183,6 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         guard filterApplications != source.applicationIDs, let stream else { return }
         try await stream.updateContentFilter(source.filter)
         filterApplications = source.applicationIDs
-    }
-
-    /// Update the captured region while keeping the ScreenCaptureKit stream
-    /// and encoder alive. Applications such as WeChat and Chromium create
-    /// transient child windows for previews; stopping the stream for every
-    /// geometry change leaves the receiver waiting for a new IDR and also
-    /// invalidates the input lease. The encoded dimensions stay fixed by the
-    /// existing profile, while sourceRect tracks the new logical region.
-    public func updateConfiguration(source: Source, profile: VideoProfile) async throws {
-        guard let stream else { return }
-        let configuration = SCStreamConfiguration()
-        configuration.width = profile.pixels.width; configuration.height = profile.pixels.height
-        configuration.sourceRect = source.surface.displayLocalRect
-        configuration.destinationRect = CGRect(x: 0, y: 0, width: profile.pixels.width, height: profile.pixels.height)
-        configuration.preservesAspectRatio = false
-        configuration.minimumFrameInterval = CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000)
-        configuration.queueDepth = 3
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        configuration.captureResolution = .best
-        configuration.includeChildWindows = true
-        configuration.ignoreShadowsDisplay = true
-        configuration.showsCursor = false
-        configuration.capturesAudio = false
-        configuration.colorSpaceName = CGColorSpace.sRGB
-        configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
-        try await stream.updateConfiguration(configuration)
-        if filterApplications != source.applicationIDs {
-            try await stream.updateContentFilter(source.filter)
-            filterApplications = source.applicationIDs
-        }
     }
 
     public func start(source: Source, profile: VideoProfile, metrics: MediaMetrics,

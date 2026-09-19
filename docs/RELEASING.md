@@ -50,6 +50,20 @@ CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --hom
 
 ## 维护者本地构建／验证
 
+### 双架构手动安装包
+
+```sh
+./scripts/package-macos.sh --release
+```
+
+使用本机现有签名证书，依次构建 arm64 和 Intel x86_64 安装包。默认只分配一次新构建号和发行 ID，两个包共用同一描述，输出到 `dist/{version}-build{number}/`。目录包含两个 DMG、对应 ZIP、`release.json`、`.signing-arm64`、`.signing-x86_64` 和合并的 `SHA256SUMS`。已有产物拒绝覆盖；两个架构都验证成功后才汇总产物。
+
+此模式写入 `update-channel=manual`，应用不启动 GitHub 或 LAN 更新器，仅支持手动安装更新。它不会创建 GitHub Release，也不会自动安装本机应用。签名沿用 `.codesign-identity` / `CODESIGN_IDENTITY`；需要 ad-hoc 时显式使用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --release`。本机 Apple Development 签名不等于 Developer ID 公证。
+
+可用 `RELEASE_METADATA=/绝对路径/release.json` 指定发行描述，或用失败输出目录中的描述重试；根目录 `release.json` 不会被自动读取或改写。`DIST_DIR` 可覆盖输出目录。`--release` 不与 `--lan`、`--homebrew`、`--auto`、`UNIDESK_MACOS_ARCH` 或 `DMG_PATH` 混用。单独构建一个手动安装包可使用 `UNIDESK_MACOS_ARCH=x86_64 ./scripts/package-macos.sh --manual`。
+
+### 单架构局域网包
+
 Python 3.11+；已安装仓库固定 Rust 工具链及 aarch64-apple-darwin target。
 
 ```sh

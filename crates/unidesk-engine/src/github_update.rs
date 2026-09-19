@@ -21,9 +21,17 @@ const INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 const DMG_LIMIT: u64 = 512 * 1024 * 1024;
 
 pub(crate) fn is_public_bundle() -> bool {
+    has_update_channel("github")
+}
+
+pub(crate) fn is_manual_bundle() -> bool {
+    has_update_channel("manual")
+}
+
+fn has_update_channel(expected: &str) -> bool {
     installer::current_bundle().ok().is_some_and(|bundle| {
         std::fs::read_to_string(bundle.join("Contents/Resources/update-channel"))
-            .is_ok_and(|channel| channel.trim() == "github")
+            .is_ok_and(|channel| channel.trim() == expected)
     })
 }
 

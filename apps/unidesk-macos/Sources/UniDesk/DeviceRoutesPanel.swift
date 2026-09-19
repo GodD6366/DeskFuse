@@ -48,8 +48,8 @@ struct DeviceRoutesPanel: View {
                                     .font(.system(.callout, design: .monospaced))
                                     .textSelection(.enabled)
                                     .lineLimit(1)
-                                if let error = route.probeError {
-                                    Text("探测失败：\(error)")
+                                if route.probeError != nil {
+                                    Text("探测失败")
                                         .font(.caption)
                                         .foregroundStyle(.orange)
                                         .lineLimit(2)

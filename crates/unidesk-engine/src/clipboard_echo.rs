@@ -112,12 +112,38 @@ impl ContentLedger {
     }
 }
 
+pub(crate) fn snapshot_plain_texts(snapshot: &PasteboardSnapshot) -> Vec<String> {
+    let mut texts = Vec::new();
+    if let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty()) {
+        texts.push(text.to_owned());
+    }
+    for representation in snapshot.items.iter().flat_map(|item| &item.representations) {
+        if !matches!(
+            representation.type_name.as_str(),
+            "public.utf8-plain-text" | "public.plain-text"
+        ) {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&representation.data) else {
+            continue;
+        };
+        let text = text.trim_end_matches('\0');
+        if !text.is_empty() && !texts.iter().any(|existing| existing == text) {
+            texts.push(text.to_owned());
+        }
+    }
+    texts
+}
+
 pub(crate) fn snapshot_equivalent_ids(snapshot: &PasteboardSnapshot) -> Vec<String> {
     let mut ids = Vec::new();
-    if snapshot.file_urls.is_empty()
-        && let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty())
-    {
-        ids.extend(text_equivalent_ids(text));
+    if let Some(digest) = crate::clipboard_image::snapshot_digest(snapshot) {
+        ids.push(digest);
+    }
+    if snapshot.file_urls.is_empty() {
+        for text in snapshot_plain_texts(snapshot) {
+            ids.extend(text_equivalent_ids(&text));
+        }
     }
     if let Some(png) = snapshot.png.as_deref() {
         ids.extend(image_equivalent_ids(png));
@@ -157,6 +183,15 @@ fn text_equivalent_ids(text: &str) -> Vec<String> {
     let normalized = normalize_clipboard_text(text);
     if normalized != text {
         ids.push(hashed("text", normalized.as_bytes()));
+    }
+    // 接力回写常补一个尾随换行，不视为另一次复制。
+    let trimmed = normalized.trim_end_matches(['\n', '\r']);
+    if trimmed != normalized.as_str() {
+        ids.push(hashed("text", trimmed.as_bytes()));
+    }
+    let raw_trimmed = text.trim_end_matches(['\n', '\r']);
+    if raw_trimmed != text {
+        ids.push(hashed("text", raw_trimmed.as_bytes()));
     }
     ids
 }
@@ -217,6 +252,25 @@ mod tests {
         let mut ledger = ContentLedger::default();
         assert!(!ledger.observe(text_equivalent_ids("hello\r\n")));
         assert!(ledger.observe(text_equivalent_ids("hello\n")));
+        assert!(ledger.observe(text_equivalent_ids("hello")));
         assert!(!ledger.observe(text_equivalent_ids("other")));
+    }
+
+    #[test]
+    fn utf8_plain_text_item_shares_the_string_alias() {
+        let from_string = snapshot_equivalent_ids(&PasteboardSnapshot {
+            text: Some("same card".into()),
+            ..Default::default()
+        });
+        let from_item = snapshot_equivalent_ids(&PasteboardSnapshot {
+            items: vec![unidesk_platform::PasteboardItem {
+                representations: vec![unidesk_platform::PasteboardRepresentation {
+                    type_name: "public.utf8-plain-text".into(),
+                    data: b"same card\n".to_vec(),
+                }],
+            }],
+            ..Default::default()
+        });
+        assert!(from_string.iter().any(|id| from_item.contains(id)));
     }
 }

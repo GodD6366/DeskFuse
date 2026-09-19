@@ -16,6 +16,7 @@ import UniDeskRemoteApplication
     @ObservationIgnored private var pickers: [String: RemoteApplicationPickerWindow] = [:]
     @ObservationIgnored private var viewerOwner: UUID?
     @ObservationIgnored private var hostOwner: UUID?
+    @ObservationIgnored private var focusedViewerID: UUID?
     private init() {}
 
     func start(engine: Engine) {
@@ -76,6 +77,8 @@ import UniDeskRemoteApplication
         guard let engine else { return }
         if let existing = viewers.values.first(where: { $0.peerID == picker.peerID && $0.applicationKey == application.applicationKey }),
            let window = windows[existing.id] {
+            focusedViewerID = existing.id
+            RemoteApplicationDockController.shared.focus(id: existing.id)
             window.showWindow(nil); window.window?.deminiaturize(nil); window.window?.makeKeyAndOrderFront(nil)
             if !existing.active && !existing.busy { existing.reconnectApplication() }
             return
@@ -85,13 +88,40 @@ import UniDeskRemoteApplication
         viewers[session.id] = session
         let controller = RemoteApplicationWindow(session: session)
         windows[session.id] = controller
+        focusedViewerID = session.id
+        let dockTitle = "\(session.applicationName) — \(session.peerName)"
+        RemoteApplicationDockController.shared.present(id: session.id, title: dockTitle, iconPNG: application.iconPNG)
         controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
         Task { await session.start() }
     }
     func closeViewer(_ session: RemoteApplicationSession) {
         session.releaseControl(resumeSharing: true)
         viewers.removeValue(forKey: session.id); windows.removeValue(forKey: session.id)
+        if focusedViewerID == session.id { focusedViewerID = viewers.keys.first }
+        RemoteApplicationDockController.shared.close(id: session.id)
+        if let focusedViewerID { RemoteApplicationDockController.shared.focus(id: focusedViewerID) }
         Task { await session.stop() }
+    }
+
+    func viewerDidBecomeKey(_ session: RemoteApplicationSession) {
+        guard viewers[session.id] != nil else { return }
+        focusedViewerID = session.id
+        RemoteApplicationDockController.shared.focus(id: session.id)
+    }
+
+    func focusViewer() -> Bool {
+        focusViewer(id: focusedViewerID ?? viewers.keys.first)
+    }
+
+    func focusViewer(id: UUID?) -> Bool {
+        guard let id,
+              let controller = windows[id] else { return false }
+        focusedViewerID = id
+        RemoteApplicationDockController.shared.focus(id: id)
+        controller.showWindow(nil)
+        controller.window?.deminiaturize(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        return true
     }
     func closePicker(_ session: RemoteApplicationSession) {
         guard pickers[session.peerID]?.session === session else { return }
@@ -126,6 +156,8 @@ import UniDeskRemoteApplication
         try? engine?.setRemoteApplicationHosting(enabled: false)
         let sessions = Array(hosts.values) + Array(viewers.values) + pickers.values.map(\.session)
         for session in sessions { session.releaseControl(resumeSharing: true); session.yieldHostControl() }
+        focusedViewerID = nil
+        RemoteApplicationDockController.shared.reset()
         Task { for session in sessions { await session.stop() } }
     }
 }
@@ -162,6 +194,7 @@ import UniDeskRemoteApplication
 @MainActor private final class RemoteCanvasWindow: NSWindow {
     enum LocalAction { case menu, close, minimize, zoom, release }
     var localAction: ((LocalAction) -> Void)?
+    var pointerMoved: ((NSPoint) -> Void)?
     private var consumedKeys = Set<UInt16>()
     private var lastShortcutTimestamp: TimeInterval?
     override var canBecomeKey: Bool { true }
@@ -197,6 +230,9 @@ import UniDeskRemoteApplication
         handleLocalShortcut(event) || super.performKeyEquivalent(with: event)
     }
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .mouseMoved {
+            pointerMoved?(event.locationInWindow)
+        }
         if event.type == .keyUp, consumedKeys.remove(event.keyCode) != nil { return }
         if handleLocalShortcut(event) { return }
         super.sendEvent(event)
@@ -220,8 +256,14 @@ import UniDeskRemoteApplication
             styleMask: [.borderless, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "\(session.applicationName) — \(session.peerName)"
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
+        window.pointerMoved = { [weak self, weak window] point in
+            guard let self, let window else { return }
+            let size = window.contentView?.bounds.size ?? window.frame.size
+            self.chrome.updatePointer(point, windowSize: size)
+        }
         window.localAction = { [weak self] action in
             guard let self else { return }
             self.session.canvasFocus(false)
@@ -306,6 +348,7 @@ import UniDeskRemoteApplication
     func windowDidMiniaturize(_ notification: Notification) { session.setViewerVisible(false) }
     func windowDidDeminiaturize(_ notification: Notification) { session.setViewerVisible(true) }
     func windowDidBecomeKey(_ notification: Notification) {
+        RemoteApplicationManager.shared.viewerDidBecomeKey(session)
         session.autoAcquire = session.running && !session.viewerPaused && !session.awaitingResumeSurface
     }
 

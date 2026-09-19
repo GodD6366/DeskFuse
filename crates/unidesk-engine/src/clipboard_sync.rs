@@ -434,6 +434,13 @@ impl Sync {
                 crate::workflow_sharing::content_type(&snapshot),
                 &selection,
             );
+            // A source image hash cannot describe a workflow's output, and an
+            // explicit file send must retain its requested file semantics.
+            if (explicit || selected.workflow.is_some())
+                && let Some(metadata) = self.metadata.get_mut(&revision)
+            {
+                metadata.image_digest = None;
+            }
             Self::status(
                 ui,
                 target.0,

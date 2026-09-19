@@ -4,7 +4,7 @@ public struct RemoteMessage: Codable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case hello, acquire, controlReady, applications, launch, surface, layout, frame, presented, input, heartbeat, release, keyFrame, preferences, pause, resume, stop, error
     }
-    public var version = 1
+    public var version = 2
     public var kind: Kind
     public var applications: [RemoteApplicationInfo]?
     public var application: UUID?
@@ -15,6 +15,7 @@ public struct RemoteMessage: Codable, Sendable {
     public var input: RemoteInputEvent?
     public var sequence: UInt64 = 0
     public var preferences: VideoPreferences?
+    public var capabilities: MediaCapabilities?
     public var text: String?
     public init(_ kind: Kind) { self.kind = kind }
 }
@@ -32,7 +33,7 @@ public enum RemoteWire {
     public static func decode(_ data: Data) throws -> RemoteMessage {
         guard !data.isEmpty, data.count <= maximum else { throw RemoteApplicationError.malformedFrame }
         let message = try PropertyListDecoder().decode(RemoteMessage.self, from: data)
-        guard message.version == 1 else { throw RemoteApplicationError.unsupported("两端测试程序版本不一致") }
+        guard message.version == 2 else { throw RemoteApplicationError.unsupported("两端测试程序版本不一致，请同时更新两端") }
         if let frame = message.frame { try frame.validate() }
         return message
     }

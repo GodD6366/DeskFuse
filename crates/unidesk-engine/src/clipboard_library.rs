@@ -159,8 +159,25 @@ impl QueryRow {
 }
 
 const QUERY_SELECT: &str = "SELECT i.id,i.global_id,i.summary,i.search_text,i.payload IS NOT NULL,i.ordinary,COALESCE(i.title,''),COALESCE(i.ocr_text,''),COALESCE(i.ocr_version,0),COALESCE(i.remote,0),MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) FROM cl_items i";
+// Keep original records and manual-list membership intact. Ordinary history
+// presents one exact image, preferring a usable native image over a file alias
+// or a remote index that has not downloaded its payload.
+const UNIQUE_IMAGE_ROW: &str = "(i.ordinary=0 OR i.digest NOT LIKE 'image-v1:%' OR NOT EXISTS(SELECT 1 FROM cl_items d WHERE d.ordinary=1 AND d.digest=i.digest AND (d.payload IS NOT NULL,COALESCE(json_extract(d.summary,'$.file_count'),0)=0,d.id) > (i.payload IS NOT NULL,COALESCE(json_extract(i.summary,'$.file_count'),0)=0,i.id)))";
 const QUERY_ORDER: &str =
     "MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) DESC,i.id DESC";
+// Metadata after the payload column can live on SQLite overflow pages. Merely
+// omitting the BLOB from SELECT does not prevent walking those pages. Keep both
+// the image winner comparison and the complete list projection in covering
+// indexes, so counts, pages and smart rules never need the payload table pages.
+const QUERY_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS cl_items_image_identity ON cl_items(
+    digest,ordinary,(payload IS NOT NULL),
+    (COALESCE(json_extract(summary,'$.file_count'),0)=0),id);
+CREATE INDEX IF NOT EXISTS cl_items_metadata_page ON cl_items(
+    MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC,
+    global_id,summary,search_text,(payload IS NOT NULL),ordinary,
+    title,ocr_text,ocr_version,remote,digest,search_index);
+";
 pub struct Library {
     db: Mutex<Connection>,
     device: Mutex<String>,
@@ -285,6 +302,7 @@ END;").map_err(err)?;
             )
             .map_err(err)?;
         }
+        db.execute_batch(QUERY_INDEXES).map_err(err)?;
         let this = Self {
             db: Mutex::new(db),
             device: Mutex::new(String::new()),
@@ -293,11 +311,52 @@ END;").map_err(err)?;
             state_cache: Mutex::new(None),
         };
         this.import_legacy()?;
+        this.migrate_image_digests()?;
         this.seed_default_lists()?;
         this.prune()?;
         this.last_prune_ms.store(now_ms(), Ordering::Release);
         this.reconcile_index()?;
         Ok(this)
+    }
+    fn migrate_image_digests(&self) -> Result<()> {
+        let mut db = self.db.lock().map_err(err)?;
+        if db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='image_digest_v1')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(err)?
+        {
+            return Ok(());
+        }
+        let tx = db.transaction().map_err(err)?;
+        let ids = tx.prepare("SELECT id FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL AND json_extract(summary,'$.kind')='image'")
+            .map_err(err)?.query_map([], |r| r.get::<_, u64>(0)).map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>().map_err(err)?;
+        // Stream payloads one at a time; never load the image history into RAM.
+        for id in ids {
+            let bytes: Vec<u8> = tx
+                .query_row("SELECT payload FROM cl_items WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(err)?;
+            if let Ok(snapshot) = decode(&bytes)
+                && let Some(digest) = crate::clipboard_image::snapshot_digest(&snapshot)
+            {
+                tx.execute(
+                    "UPDATE cl_items SET digest=?1 WHERE id=?2",
+                    params![digest, id],
+                )
+                .map_err(err)?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO cl_meta(key,value) VALUES('image_digest_v1','1')",
+            [],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)
     }
     fn seed_default_lists(&self) -> Result<()> {
         // Identical bootstrap operations on every device deduplicate on sync.
@@ -414,6 +473,17 @@ END;").map_err(err)?;
 
     pub fn set_local_device(&self, id: String) -> Result<()> {
         *self.device.lock().map_err(err)? = id;
+        // Publish migrated hashes through normal sync operations, so old remote
+        // index rows acquire the same identity without deleting anyone's data.
+        let ids = {
+            let db = self.db.lock().map_err(err)?;
+            db.prepare("SELECT i.id FROM cl_items i LEFT JOIN cl_records r ON r.key='index:' || i.global_id WHERE i.ordinary=1 AND i.remote=0 AND i.digest LIKE 'image-v1:%' AND (r.key IS NULL OR COALESCE(json_extract(r.value,'$.digest'),'')<>i.digest)")
+                .map_err(err)?.query_map([], |r| r.get::<_, u64>(0)).map_err(err)?
+                .collect::<std::result::Result<Vec<_>, _>>().map_err(err)?
+        };
+        for id in ids {
+            self.publish_index_for(id)?;
+        }
         Ok(())
     }
     pub fn settings(&self) -> Result<Settings> {
@@ -492,26 +562,42 @@ END;").map_err(err)?;
         let tx = db.transaction().map_err(err)?;
         let mut found: Option<u64> = tx
             .query_row(
-                "SELECT id FROM cl_items WHERE digest=?1 AND ordinary=1 LIMIT 1",
+                "SELECT id FROM cl_items WHERE digest=?1 AND ordinary=1 ORDER BY payload IS NOT NULL DESC,COALESCE(json_extract(summary,'$.file_count'),0)=0 DESC,id DESC LIMIT 1",
                 [&fingerprint],
                 |r| r.get(0),
             )
             .optional()
             .map_err(err)?;
-        // 接力回写可能带上 TIFF 预览，digest 方案变了；用已有纯文本行兜底合并。
+        if let Some(id) = found
+            && fingerprint.starts_with("image-v1:")
+            && !snapshot.file_urls.is_empty()
+            && tx.query_row("SELECT payload IS NOT NULL AND COALESCE(json_extract(summary,'$.file_count'),0)=0 FROM cl_items WHERE id=?1", [id], |r| r.get::<_, bool>(0)).map_err(err)?
+        {
+            // Handoff's file alias must not replace a durable, directly pasteable
+            // image with a cache path that may later disappear.
+            tx.execute("UPDATE cl_items SET last_used=?1 WHERE id=?2", params![now_ms(), id]).map_err(err)?;
+            tx.commit().map_err(err)?;
+            drop(db);
+            self.changed();
+            return Ok(Some(id));
+        }
+        // 接力回写可能带上 TIFF/PNG 预览，digest 方案变了；用已有纯文本行兜底合并。
+        let mut found_by_text = false;
         if found.is_none()
             && snapshot.file_urls.is_empty()
-            && snapshot.png.is_none()
-            && let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty())
+            && let Some(text) = crate::clipboard_echo::snapshot_plain_texts(snapshot)
+                .into_iter()
+                .next()
         {
             found = tx
                 .query_row(
                     "SELECT id FROM cl_items WHERE ordinary=1 AND search_text=?1 AND json_extract(summary,'$.kind')='text' LIMIT 1",
-                    [crate::clipboard_echo::normalize_clipboard_text(text).to_lowercase()],
+                    [crate::clipboard_echo::normalize_clipboard_text(&text).to_lowercase()],
                     |r| r.get(0),
                 )
                 .optional()
                 .map_err(err)?;
+            found_by_text = found.is_some();
         }
         let id = if let Some(id) = found {
             id
@@ -523,15 +609,26 @@ END;").map_err(err)?;
             .map_err(err)?;
             tx.last_insert_rowid() as u64
         };
-        let s = summary(id, snapshot, &origin);
+        let mut s = summary(id, snapshot, &origin);
+        if found_by_text
+            && s.kind != "text"
+            && let Some(text) = crate::clipboard_echo::snapshot_plain_texts(snapshot)
+                .into_iter()
+                .next()
+        {
+            s.kind = "text".into();
+            s.has_image = false;
+            s.mime = "text/plain".into();
+            s.preview = text.chars().take(160).collect();
+            s.length = text.len() as u64;
+        }
         let blob_hash = hex::encode(Sha256::digest(&bytes));
-        let search = snapshot
-            .text
-            .as_deref()
-            .map(crate::clipboard_echo::normalize_clipboard_text)
-            .unwrap_or_default()
-            .to_lowercase();
-        tx.execute("UPDATE cl_items SET payload=?1,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7 WHERE id=?8",params![bytes,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id]).map_err(err)?;
+        let search = crate::clipboard_echo::snapshot_plain_texts(snapshot)
+            .into_iter()
+            .next()
+            .map(|text| crate::clipboard_echo::normalize_clipboard_text(&text).to_lowercase())
+            .unwrap_or_default();
+        tx.execute("UPDATE cl_items SET payload=?1,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7,digest=?9,remote=0 WHERE id=?8",params![bytes,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id,fingerprint]).map_err(err)?;
         tx.commit().map_err(err)?;
         drop(db);
         self.changed();
@@ -616,6 +713,9 @@ END;").map_err(err)?;
             .optional()
             .map_err(err)?
             .flatten();
+        // Decode outside the connection lock: a large native image must not
+        // block metadata queries while bincode expands its representations.
+        drop(db);
         decode(&bytes.ok_or("内容尚未同步或历史已过期")?)
     }
     /// Return only a display-sized derivative across FFI, not the 1600px
@@ -649,6 +749,7 @@ END;").map_err(err)?;
                 r.get(0)
             })
             .map_err(err)?;
+        drop(db);
         let mut s: Summary = serde_json::from_str(&raw).map_err(err)?;
         project_image_file(&mut s);
         Ok(ClipboardHistoryItem {
@@ -675,7 +776,7 @@ END;").map_err(err)?;
     ) -> Result<Vec<(u64, PasteboardSnapshot, String, Option<u64>)>> {
         self.prune()?;
         let db = self.db.lock().map_err(err)?;
-        let mut statement = db.prepare("SELECT id,payload,summary FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC LIMIT ?1").map_err(err)?;
+        let mut statement = db.prepare(&format!("SELECT i.id,i.payload,i.summary FROM cl_items i WHERE i.ordinary=1 AND i.payload IS NOT NULL AND {UNIQUE_IMAGE_ROW} ORDER BY MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) DESC,i.id DESC LIMIT ?1")).map_err(err)?;
         let mut rows = statement.query([limit]).map_err(err)?;
         let mut recent = Vec::new();
         let mut retained_bytes = 0usize;
@@ -832,6 +933,7 @@ END;").map_err(err)?;
             clauses.push("EXISTS(SELECT 1 FROM cl_records m WHERE m.key='member:' || ? || ':' || CASE WHEN i.ordinary=0 AND i.global_id LIKE 'archive:%' THEN substr(i.global_id,9) ELSE i.global_id END AND m.deleted=0)".into());
             filter_params.push(SqlValue::Text(list_id.unwrap_or_default().to_string()));
         } else {
+            clauses.push(UNIQUE_IMAGE_ROW.into());
             // An archive with a live ordinary source is hidden outside manual
             // lists. The old per-row SELECT EXISTS is now one indexed predicate.
             clauses.push("NOT (i.ordinary=0 AND i.global_id LIKE 'archive:%' AND EXISTS(SELECT 1 FROM cl_items base WHERE base.global_id=substr(i.global_id,9) AND base.ordinary=1))".into());
@@ -1672,7 +1774,9 @@ fn memberships_for(
         .map(|_| "key LIKE ?")
         .collect::<Vec<_>>()
         .join(" OR ");
-    let sql = format!("SELECT value FROM cl_records WHERE deleted=0 AND ({predicates})");
+    let sql = format!(
+        "SELECT value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0 AND ({predicates})"
+    );
     let params = item_ids
         .iter()
         .map(|item_id| SqlValue::Text(format!("member:%:{item_id}")))
@@ -1713,7 +1817,7 @@ fn settings_db(db: &Connection) -> Result<Settings> {
 }
 fn lists_db(db: &Connection) -> Result<Vec<List>> {
     let mut stmt = db
-        .prepare("SELECT value FROM cl_records WHERE key LIKE 'list:%' AND deleted=0")
+        .prepare("SELECT value FROM cl_records WHERE key GLOB 'list:*' AND deleted=0")
         .map_err(err)?;
     let mut lists = stmt
         .query_map([], |r| r.get::<_, String>(0))
@@ -1726,7 +1830,7 @@ fn lists_db(db: &Connection) -> Result<Vec<List>> {
 fn members_db(db: &Connection) -> Result<Vec<(String, String)>> {
     let lists = lists_db(db)?;
     let mut stmt = db
-        .prepare("SELECT value FROM cl_records WHERE key LIKE 'member:%' AND deleted=0")
+        .prepare("SELECT value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0")
         .map_err(err)?;
     let mut out = vec![];
     for raw in stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)? {
@@ -1877,7 +1981,7 @@ fn materialize_index(db: &Connection, v: &Value, author: &str) -> Result<()> {
 
 fn reconcile_index_db(db: &Connection) -> Result<()> {
     let mut stmt = db
-        .prepare("SELECT value,author FROM cl_records WHERE key LIKE 'index:%' AND deleted=0")
+        .prepare("SELECT value,author FROM cl_records WHERE key GLOB 'index:*' AND deleted=0")
         .map_err(err)?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -2056,19 +2160,23 @@ fn project_image_file(summary: &mut Summary) {
 /// The exact `digest` covers every pasted representation, so a synced copy and
 /// a richer local capture of the same text get different digests and used to
 /// create two rows. Plain text is therefore keyed by its bytes even when a
-/// TIFF preview is attached (Handoff often adds one). Real PNG/JPEG/HEIC
-/// copies keep the full digest so captions do not merge different images.
-/// Files keep the exact digest because equal names can still mean different content.
+/// TIFF preview is attached (Handoff often adds one). Images use exact decoded
+/// pixels, including a single image file alias. Other files keep the full digest.
 fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
     if snapshot.file_urls.is_empty()
-        && !is_primary_image(snapshot)
-        && let Some(text) = snapshot.text.as_deref().filter(|text| !text.is_empty())
+        && let Some(text) = crate::clipboard_echo::snapshot_plain_texts(snapshot)
+            .into_iter()
+            .next()
+        && (!is_primary_image(snapshot) || text_outranks_companion_image(&text))
     {
-        let normalized = crate::clipboard_echo::normalize_clipboard_text(text);
+        let normalized = crate::clipboard_echo::normalize_clipboard_text(&text);
         let mut buf = Vec::with_capacity(normalized.len() + 5);
         buf.extend_from_slice(b"text\0");
         buf.extend_from_slice(normalized.as_bytes());
         return Ok(hex::encode(Sha256::digest(&buf)));
+    }
+    if let Some(image_digest) = crate::clipboard_image::snapshot_digest(snapshot) {
+        return Ok(image_digest);
     }
     digest(snapshot)
 }
@@ -2080,6 +2188,10 @@ fn is_primary_image(s: &PasteboardSnapshot) -> bool {
                 "public.png" | "public.jpeg" | "public.heic"
             )
         })
+}
+/// 接力给长文本配的 TIFF/PNG 预览不能另开一条历史。短图注仍跟图像走。
+fn text_outranks_companion_image(text: &str) -> bool {
+    text.contains('\n') || text.chars().count() > 80
 }
 fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
     let lan_photo = s
@@ -2122,11 +2234,14 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
                 .join("、"),
             s.file_urls.len(),
         )
-    } else if s.png.is_some()
+    } else if (s.png.is_some()
         || s.items.iter().flat_map(|i| &i.representations).any(|r| {
             ["public.png", "public.jpeg", "public.tiff", "public.heic"]
                 .contains(&r.type_name.as_str())
-        })
+        }))
+        && crate::clipboard_echo::snapshot_plain_texts(s)
+            .first()
+            .is_none_or(|text| !text_outranks_companion_image(text))
     {
         (
             "image",
@@ -2134,7 +2249,10 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
             "图像".into(),
             s.png.as_ref().map_or(0, Vec::len),
         )
-    } else if let Some(text) = &s.text {
+    } else if let Some(text) = crate::clipboard_echo::snapshot_plain_texts(s)
+        .into_iter()
+        .next()
+    {
         (
             "text",
             "text/plain".into(),
@@ -2174,7 +2292,7 @@ fn reconcile_archives(db: &Connection) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     {
         let mut stmt = db
-            .prepare("SELECT value FROM cl_records WHERE key LIKE 'member:%'")
+            .prepare("SELECT value FROM cl_records WHERE key GLOB 'member:*'")
             .map_err(err)?;
         for raw in stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)? {
             let v: Value = serde_json::from_str(&raw.map_err(err)?).map_err(err)?;
@@ -2268,6 +2386,115 @@ fn member_winner(db: &Connection, key: &str) -> Result<Value> {
                 ))
         })
         .ok_or_else(|| "成员操作缺失".into())
+}
+
+#[cfg(test)]
+mod query_performance_tests {
+    use super::*;
+
+    #[test]
+    fn image_dedup_and_pages_use_metadata_indexes_with_large_payloads() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            r#"CREATE TABLE cl_items(
+                id INTEGER PRIMARY KEY,global_id TEXT UNIQUE,digest TEXT,summary TEXT,
+                payload BLOB,search_text TEXT,search_index TEXT,copied INTEGER,
+                imported INTEGER,ordinary INTEGER,title TEXT,ocr_text TEXT,
+                ocr_version INTEGER,remote INTEGER,last_used INTEGER);
+             CREATE INDEX cl_items_digest ON cl_items(digest);
+             CREATE INDEX cl_items_usage_order ON cl_items(
+                MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);
+             INSERT INTO cl_items VALUES
+                (1,'remote-old','image-v1:a','{"file_count":0}',NULL,'','',10,10,1,NULL,NULL,0,1,NULL),
+                (2,'native','image-v1:a','{"file_count":0}',zeroblob(2097152),'','',20,20,1,NULL,NULL,0,0,NULL),
+                (3,'file-alias','image-v1:a','{"file_count":1}',zeroblob(2097152),'','',30,30,1,NULL,NULL,0,0,NULL),
+                (4,'remote-new','image-v1:a','{"file_count":0}',NULL,'','',40,40,1,NULL,NULL,0,1,NULL),
+                (5,'text','text:a','{"file_count":0}',X'0102','text','text',50,50,1,NULL,NULL,0,0,NULL),
+                (6,'archive:native','image-v1:a','{"file_count":0}',zeroblob(2097152),'','',60,60,0,NULL,NULL,0,0,NULL);"#,
+        ).unwrap();
+        let sql = format!("{QUERY_SELECT} WHERE {UNIQUE_IMAGE_ROW} ORDER BY {QUERY_ORDER}");
+        let query_ids = |sql: &str| {
+            db.prepare(sql)
+                .unwrap()
+                .query_map([], |row| row.get::<_, u64>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let original = query_ids(&sql);
+        assert_eq!(original, [6, 5, 2]);
+        db.execute_batch(QUERY_INDEXES).unwrap();
+        db.execute_batch(QUERY_INDEXES).unwrap(); // Existing stores reopen safely.
+        assert_eq!(query_ids(&sql), original);
+        assert_eq!(query_ids(&format!("{sql} LIMIT 2")), [6, 5]);
+        let cursor_sql = format!(
+            "{QUERY_SELECT} WHERE {UNIQUE_IMAGE_ROW} AND
+             (MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)),i.id)<(50,5)
+             ORDER BY {QUERY_ORDER} LIMIT 2"
+        );
+        assert_eq!(query_ids(&cursor_sql), [2]);
+        let count_sql = format!("SELECT COUNT(*) FROM cl_items i WHERE {UNIQUE_IMAGE_ROW}");
+        assert_eq!(
+            db.query_row(&count_sql, [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        for statement in [&sql, &format!("{sql} LIMIT 21"), &count_sql] {
+            let plan = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n");
+            assert!(plan.contains("INDEX cl_items_image_identity"), "{plan}");
+            if statement != &count_sql {
+                assert!(plan.contains("INDEX cl_items_metadata_page"), "{plan}");
+            }
+            // SQLite 3.46 does not label expression indexes as COVERING in the
+            // plan text. Verify the actual VM never reads a cl_items column.
+            let root: i64 = db
+                .query_row(
+                    "SELECT rootpage FROM sqlite_master WHERE name='cl_items'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let ops = db
+                .prepare(&format!("EXPLAIN {statement}"))
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            let table_cursors: HashSet<i64> = ops
+                .iter()
+                .filter(|(op, _, p2)| op == "OpenRead" && *p2 == root)
+                .map(|(_, p1, _)| *p1)
+                .collect();
+            let table_reads: Vec<_> = ops
+                .iter()
+                .filter(|(op, p1, _)| op == "Column" && table_cursors.contains(p1))
+                .collect();
+            assert!(
+                table_reads.is_empty(),
+                "payload table reads: {table_reads:?}; {plan}"
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT length(payload) FROM cl_items WHERE id=2", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2_097_152
+        );
+    }
 }
 
 #[cfg(test)]

@@ -37,10 +37,10 @@ impl Default for EngineState {
     }
 }
 impl EngineState {
-    pub fn apply(&mut self, event: UiEvent) {
-        self.revision = self.revision.saturating_add(1);
+    /// 状态未变时返回 false，调用方不得因此刷新 Swift 快照。
+    pub fn apply(&mut self, event: UiEvent) -> bool {
         let model = &mut self.model;
-        match event {
+        let changed = match event {
             UiEvent::FilePasteAcquiring {
                 paste_id,
                 transfer_id,
@@ -48,6 +48,7 @@ impl EngineState {
                 self.file_paste_acquiring.insert(paste_id.to_string());
                 self.file_paste_sources
                     .insert(paste_id.to_string(), transfer_id.to_string());
+                true
             }
             UiEvent::FilePasteLinked {
                 paste_id,
@@ -62,19 +63,63 @@ impl EngineState {
                 } else {
                     self.file_paste_retryable.remove(&paste_id.to_string());
                 }
+                true
             }
-            UiEvent::DebugLoggingChanged(enabled) => self.debug_logging_enabled = enabled,
-            UiEvent::WorkflowRun(_) | UiEvent::WorkflowCatalogChanged => {}
-            UiEvent::RuntimeView(view) => model.apply_runtime_view(view),
-            UiEvent::RuntimeEvent(event) => model.apply_runtime_event(event),
-            UiEvent::BridgeError(error) => model.record_runtime_error(error),
-            UiEvent::UpdateSnapshot(snapshot) => model.updates = snapshot,
-            UiEvent::InputRecordingReady(ready) => self.recording = ready,
-            UiEvent::InputLockStatus(locked) => model.input_locked = locked,
-            UiEvent::InputSharingSnapshot(snapshot) => model.input_sharing = *snapshot,
-            UiEvent::PermissionSnapshot(snapshot) => model.apply_permission_snapshot(snapshot),
+            UiEvent::DebugLoggingChanged(enabled) => {
+                if self.debug_logging_enabled == enabled {
+                    return false;
+                }
+                self.debug_logging_enabled = enabled;
+                true
+            }
+            UiEvent::WorkflowRun(_) | UiEvent::WorkflowCatalogChanged => true,
+            UiEvent::RuntimeView(view) => {
+                model.apply_runtime_view(view);
+                true
+            }
+            UiEvent::RuntimeEvent(event) => {
+                model.apply_runtime_event(event);
+                true
+            }
+            UiEvent::BridgeError(error) => {
+                model.record_runtime_error(error);
+                true
+            }
+            UiEvent::UpdateSnapshot(snapshot) => {
+                model.updates = snapshot;
+                true
+            }
+            UiEvent::InputRecordingReady(ready) => {
+                if self.recording == ready {
+                    return false;
+                }
+                self.recording = ready;
+                true
+            }
+            UiEvent::InputLockStatus(locked) => {
+                if model.input_locked == locked {
+                    return false;
+                }
+                model.input_locked = locked;
+                true
+            }
+            UiEvent::InputSharingSnapshot(snapshot) => {
+                if model.input_sharing == *snapshot {
+                    return false;
+                }
+                model.input_sharing = *snapshot;
+                true
+            }
+            UiEvent::PermissionSnapshot(snapshot) => {
+                if model.permissions == snapshot {
+                    return false;
+                }
+                model.apply_permission_snapshot(snapshot);
+                true
+            }
             UiEvent::ClipboardDelivery { peer_id, phase } => {
                 model.clipboard_delivery.insert(peer_id, phase);
+                true
             }
             UiEvent::ClipboardStatus {
                 enabled,
@@ -82,12 +127,22 @@ impl EngineState {
                 last_len,
                 last_sequence,
                 error,
-            } => model.apply_clipboard_status(enabled, last_mime, last_len, last_sequence, error),
-            UiEvent::ClipboardHistory(items) => model.clipboard_history = items,
-            UiEvent::FileTransferSettings(settings) => self.file_settings = settings,
+            } => {
+                model.apply_clipboard_status(enabled, last_mime, last_len, last_sequence, error);
+                true
+            }
+            UiEvent::ClipboardHistory(items) => {
+                model.clipboard_history = items;
+                true
+            }
+            UiEvent::FileTransferSettings(settings) => {
+                self.file_settings = settings;
+                true
+            }
             UiEvent::TransferCacheStatus { snapshot, message } => {
                 self.cache = snapshot;
                 self.cache_message = message;
+                true
             }
             UiEvent::TransferStatus {
                 transfer_id,
@@ -143,20 +198,34 @@ impl EngineState {
                         model.apply_transfer_status(delivery);
                     }
                 }
+                true
             }
             UiEvent::RemoteControlStatus {
                 peer_id,
                 active,
                 display,
                 error,
-            } => model.apply_remote_control_status(
-                peer_id.map(|id| id.to_string()),
-                active,
-                display,
-                error,
-            ),
-            UiEvent::InputStatus { error } => model.apply_input_status(error),
-            _ => {}
+            } => {
+                model.apply_remote_control_status(
+                    peer_id.map(|id| id.to_string()),
+                    active,
+                    display,
+                    error,
+                );
+                true
+            }
+            UiEvent::InputStatus { error } => {
+                if model.input_error == error {
+                    return false;
+                }
+                model.apply_input_status(error);
+                true
+            }
+            _ => true,
+        };
+        if changed {
+            self.revision = self.revision.saturating_add(1);
         }
+        changed
     }
 }

@@ -23,6 +23,24 @@ import Testing
     #expect(unknown.reason != nil)
 }
 
+@Test func codecPreferenceCarriesThroughRequestedProfile() throws {
+    var preference = VideoPreferences()
+    #expect(preference.codec == .automatic)
+    #expect(try VideoProfile.requested(native: PixelSize(width: 1920, height: 1080), sourceHz: 60,
+                                       preferences: preference, codec: .hevc).codec == .hevc)
+    preference.codec = .h264
+    #expect(try VideoProfile.requested(native: PixelSize(width: 1920, height: 1080), sourceHz: 60,
+                                       preferences: preference).codec == .h264)
+}
+
+@Test func hevcCapabilitySelectionIsExplicit() {
+    let hevc = MediaCapabilities(h264HardwareDecoder: true, hevcHardwareDecoder: true)
+    let h264 = MediaCapabilities.h264Only
+    #expect(hevc.supportsDecoder(.hevc))
+    #expect(!h264.supportsDecoder(.hevc))
+    #expect(h264.supportsDecoder(.automatic))
+}
+
 @Test func adaptationRequiresSustainedPressureAndRecoversOriginal() {
     let original = VideoProfile(pixels: PixelSize(width: 6016, height: 3384), framesPerSecond: 120)
     var adaptation = VideoAdaptation(profile: original, preference: .clarity)
@@ -92,6 +110,19 @@ private func identity(_ generation: UInt64 = 1) -> SurfaceIdentity {
 private func frame(_ sequence: UInt64, key: Bool = false, generation: UInt64 = 1) -> EncodedVideoFrame {
     EncodedVideoFrame(surface: identity(generation), sequence: sequence, presentationNanoseconds: 0,
         keyFrame: key, sps: key ? Data([1]) : Data(), pps: key ? Data([2]) : Data(), bytes: Data([0, 0, 0, 1, 0x65]))
+}
+
+@Test func hevcKeyFrameRequiresVPSAndRejectsH264ParameterShape() {
+    let surface = identity()
+    let valid = EncodedVideoFrame(surface: surface, codec: .hevc, sequence: 1, presentationNanoseconds: 0,
+        keyFrame: true, vps: Data([1]), sps: Data([2]), pps: Data([3]), bytes: Data([0, 0, 0, 1, 0x26]))
+    #expect(throws: Never.self) { try valid.validate() }
+    let missingVPS = EncodedVideoFrame(surface: surface, codec: .hevc, sequence: 1, presentationNanoseconds: 0,
+        keyFrame: true, sps: Data([2]), pps: Data([3]), bytes: Data([0, 0, 0, 1, 0x26]))
+    #expect(throws: RemoteApplicationError.self) { try missingVPS.validate() }
+    let mixed = EncodedVideoFrame(surface: surface, codec: .h264, sequence: 1, presentationNanoseconds: 0,
+        keyFrame: true, vps: Data([1]), sps: Data([2]), pps: Data([3]), bytes: Data([0, 0, 0, 1, 0x65]))
+    #expect(throws: RemoteApplicationError.self) { try mixed.validate() }
 }
 
 @Test func missingReferenceRequiresKeyFrameInsteadOfDisplayingCorruption() {

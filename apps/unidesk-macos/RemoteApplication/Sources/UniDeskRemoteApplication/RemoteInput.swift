@@ -140,20 +140,6 @@ public final class RemoteInputRelay: @unchecked Sendable {
         }
     }
 
-    /// Keep an active lease while the capture source moves or a preview panel
-    /// changes the source rectangle. The helper accepts another configure for
-    /// the same surface identity and updates its coordinate rect in place.
-    /// This avoids revoking control merely because a child window appeared.
-    public func updateSurface(_ value: CaptureSurface) {
-        lock.withLock {
-            guard surface?.identity == value.identity else { return }
-            surface = value
-            guard configured else { return }
-            var packet = InputHelperPacket(.configure)
-            packet.surface = value.identity; packet.processID = target; packet.rect = value.contentRect
-            if !transmit(packet) { releaseLocked() }
-        }
-    }
     public func encoded(_ frame: EncodedVideoFrame) {
         lock.withLock { if frame.surface == surface?.identity { latestEncoded = frame.sequence } }
     }

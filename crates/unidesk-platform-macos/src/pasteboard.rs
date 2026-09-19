@@ -17,6 +17,10 @@ pub use unidesk_platform::{
     REMOTE_ORIGIN_MARKER_TYPE, UNIVERSAL_CLIPBOARD_TYPE,
 };
 
+fn is_universal_clipboard_type(type_name: &str) -> bool {
+    type_name == UNIVERSAL_CLIPBOARD_TYPE
+}
+
 fn is_remote_bookkeeping(type_name: &str) -> bool {
     matches!(
         type_name,
@@ -200,8 +204,9 @@ fn write_items(
     let mut objects = Vec::with_capacity(items.len());
     for item in items {
         let native = objc2_app_kit::NSPasteboardItem::new();
+        let mut wrote = false;
         for representation in &item.representations {
-            if is_remote_bookkeeping(&representation.type_name) {
+            if is_universal_clipboard_type(&representation.type_name) {
                 continue;
             }
             let kind = NSString::from_str(&representation.type_name);
@@ -209,9 +214,16 @@ fn write_items(
             if !native.setData_forType(&data, &kind) {
                 return Err(PlatformError::PasteboardWriteFailed);
             }
+            wrote = true;
+        }
+        if !wrote {
+            continue;
         }
         objects
             .push(ProtocolObject::<dyn objc2_app_kit::NSPasteboardWriting>::from_retained(native));
+    }
+    if objects.is_empty() {
+        return Err(PlatformError::PasteboardWriteFailed);
     }
     pasteboard.prepareForNewContentsWithOptions(
         objc2_app_kit::NSPasteboardContentsOptions::CurrentHostOnly,

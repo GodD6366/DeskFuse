@@ -9,8 +9,8 @@ final class SessionDataPlane: @unchecked Sendable {
     let frames = LatestVideoFrame()
     let input = RemoteInputRelay()
     private let lock = NSLock()
-    private var decoder: H264Decoder?
-    private var encoder: H264Encoder?
+    private var decoder: VideoDecoder?
+    private var encoder: VideoEncoder?
     private var peer: RemotePeer?
     private var identity: SurfaceIdentity?
     private var presentedSequence: UInt64 = 0
@@ -21,7 +21,7 @@ final class SessionDataPlane: @unchecked Sendable {
     func begin(_ token: UUID) { lock.withLock { connectionToken = token } }
     func isCurrent(_ token: UUID) -> Bool { lock.withLock { connectionToken == token } }
     func setPeer(_ peer: RemotePeer?) { lock.withLock { self.peer = peer } }
-    func setEncoder(_ value: H264Encoder?) { lock.withLock { encoder = value } }
+    func setEncoder(_ value: VideoEncoder?) { lock.withLock { encoder = value } }
     func requestKey() { lock.withLock { encoder }?.requestKeyFrame() }
     func sendFrame(_ frame: EncodedVideoFrame) {
         input.encoded(frame)
@@ -35,7 +35,7 @@ final class SessionDataPlane: @unchecked Sendable {
         }
         _ = try CaptureSurface(identity: surface.identity, displayID: surface.displayID, displayFrame: surface.displayFrame,
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz)
-        let next = H264Decoder(surface: surface.identity, expectedPixels: profile.pixels, metrics: metrics,
+        let next = VideoDecoder(surface: surface.identity, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics,
             keyFrameNeeded: { [weak self] in self?.send(RemoteMessage(.keyFrame)) }, output: { [weak self] result in
                 switch result {
                 case .success(let frame): self?.frames.publish(frame)
@@ -43,7 +43,7 @@ final class SessionDataPlane: @unchecked Sendable {
                 }
             })
         var accepted = false
-        let old = lock.withLock { () -> H264Decoder? in
+        let old = lock.withLock { () -> VideoDecoder? in
             guard connectionToken == token else { return nil }
             accepted = true; frames.reset(surface.identity)
             let old = decoder; decoder = next; identity = surface.identity; presentedSequence = 0; enabled = false
@@ -95,7 +95,7 @@ final class SessionDataPlane: @unchecked Sendable {
     func release() { lock.withLock { enabled = false }; send(RemoteMessage(.release)) }
     func reset() {
         input.stop()
-        let old = lock.withLock { () -> H264Decoder? in
+        let old = lock.withLock { () -> VideoDecoder? in
             let old = decoder; decoder = nil; encoder = nil; peer = nil; identity = nil; enabled = false; connectionToken = UUID(); frames.reset(nil); return old
         }
         old?.stop(); frames.reset(nil)
@@ -129,6 +129,7 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
     var selected: UUID?
     var applicationQuery = ""
     var preferences = VideoPreferences()
+    private var remoteCapabilities = MediaCapabilities.h264Only
     var scale: VideoViewScale = .fit
     var status = "两台 Mac 打开此测试程序；先在 B 端开始共享"
     var sourceDescription = "尚未采集"
@@ -146,7 +147,7 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
     @ObservationIgnored var metrics = MediaMetrics()
     @ObservationIgnored private let catalog = ApplicationCatalog()
     @ObservationIgnored private var capture = RemoteAppCapture()
-    @ObservationIgnored private var encoder: H264Encoder?
+    @ObservationIgnored private var encoder: VideoEncoder?
     @ObservationIgnored private var listener: RemoteListener?
     @ObservationIgnored private var peer: RemotePeer?
     @ObservationIgnored private var monitor: Task<Void, Never>?
@@ -274,9 +275,9 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
                 self.connected = ready; self.status = message
                 if ready {
                     self.lastClientHeartbeat = ProcessInfo.processInfo.systemUptime
-                    if host { var value = RemoteMessage(.applications); value.applications = self.applications; self.plane.send(value) }
-                    else {
-                        var hello = RemoteMessage(.hello); hello.text = try? RemoteTLSIdentity.token(code: self.code); self.plane.send(hello)
+                    if !host {
+                        var hello = RemoteMessage(.hello); hello.text = try? RemoteTLSIdentity.token(code: self.code)
+                        hello.capabilities = .local; self.plane.send(hello)
                     }
                 } else { await self.stop(); self.status = message }
             }
@@ -287,6 +288,7 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
         if role == .host {
             switch message.kind {
             case .hello:
+                remoteCapabilities = message.capabilities ?? .h264Only
                 var value = RemoteMessage(.applications); value.applications = applications; plane.send(value)
             case .launch:
                 guard !busy, let application = message.application else { return }
@@ -329,7 +331,7 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
                 guard let surface = message.surface, let profile = message.profile else { return }
                 releaseControl(); lastSurface = surface; running = true
                 sourceDescription = "B 源：\(Int(surface.contentRect.width)) × \(Int(surface.contentRect.height)) pt · \(surface.nativePixels.label) px"
-                actualDescription = "传输：\(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
+                actualDescription = "传输：\(profile.codec.label) · \(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
                 status = "远端画面已配置，点击画面获取控制"
             case .controlReady:
                 guard controlPending, message.identity == lastSurface?.identity else { return }
@@ -373,6 +375,19 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
     func releaseControl() {
         controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
     }
+    private func selectedVideoCodec() throws -> VideoCodec {
+        switch preferences.codec {
+        case .h264: return .h264
+        case .hevc:
+            guard remoteCapabilities.supportsDecoder(.hevc) else {
+                throw RemoteApplicationError.unsupported("远端不支持 H.265 硬件解码")
+            }
+            return .hevc
+        case .automatic:
+            return remoteCapabilities.supportsDecoder(.hevc) ? .hevc : .h264
+        }
+    }
+
     private func refreshCapture(token: UUID) async throws {
         guard !changing, let process, operation == token else { return }
         changing = true; defer { changing = false }
@@ -382,7 +397,9 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
             identity: identity, gestureActive: plane.input.gestureActive)
         guard operation == token else { return }
         let surface = source.surface
-        let profile = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz, preferences: preferences)
+        let selectedCodec = try selectedVideoCodec()
+        var profile = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz,
+                                                 preferences: preferences, codec: selectedCodec)
         if lastSurface?.contentRect == surface.contentRect, lastSurface?.displayID == surface.displayID,
            lastSurface?.pointPixelScale == surface.pointPixelScale, lastSurface?.sourceHz == surface.sourceHz,
            lastProfile == profile, lastMode == mode { return }
@@ -391,8 +408,9 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
         if let old { await Task.detached { old.stop() }.value }
         guard operation == token else { return }
         let plane = plane, metrics = metrics
-        let next = try await Task.detached { [weak self] in
-            try H264Encoder(surface: identity, profile: profile, metrics: metrics) { [weak self] result in
+        let makeEncoder: (VideoProfile) async throws -> VideoEncoder = { [weak self] requestedProfile in
+            try await Task.detached { [weak self] in
+            try VideoEncoder(surface: identity, profile: requestedProfile, metrics: metrics) { [weak self] result in
                 guard plane.isCurrent(token) else { return }
                 switch result {
                 case .success(let frame): plane.sendFrame(frame)
@@ -404,7 +422,17 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
                     }
                 }
             }
-        }.value
+            }.value
+        }
+        let next: VideoEncoder
+        do {
+            next = try await makeEncoder(profile)
+        } catch {
+            guard preferences.codec == .automatic, profile.codec == .hevc else { throw error }
+            profile = VideoProfile(codec: .h264, pixels: profile.pixels, framesPerSecond: profile.framesPerSecond,
+                                   bitrate: profile.bitrate, reason: "H.265 硬件编码不可用，已回退 H.264")
+            next = try await makeEncoder(profile)
+        }
         guard operation == token else { next.stop(); return }
         encoder = next; plane.setEncoder(next); plane.input.setSurface(surface)
         var message = RemoteMessage(.surface); message.surface = surface; message.profile = profile; plane.send(message)
@@ -418,7 +446,7 @@ enum SpikeRole: String, CaseIterable { case viewer = "A 端 · 控制远端", ho
         guard operation == token else { return }
         generation += 1; lastSurface = surface; lastProfile = profile; lastMode = mode
         sourceDescription = "源：\(surface.nativePixels.label) px"
-        actualDescription = "编码：\(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz"
+        actualDescription = "编码：\(profile.codec.label) · \(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
         status = "正在共享 \(process.localizedName ?? "应用") · 在 A 端点击画面操作"
     }
     private func sendError(_ text: String) {
@@ -507,6 +535,9 @@ struct SpikeView: View {
                 HStack {
                     Picker("分辨率", selection: $session.preferences.resolution) {
                         ForEach(ResolutionPreference.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    Picker("视频编码", selection: $session.preferences.codec) {
+                        ForEach(VideoCodec.allCases, id: \.self) { Text($0.label).tag($0) }
                     }
                     Picker("刷新率", selection: $session.preferences.refresh) {
                         ForEach(RefreshPreference.allCases, id: \.self) { Text($0.label).tag($0) }

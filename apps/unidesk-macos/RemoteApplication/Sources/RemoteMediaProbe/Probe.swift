@@ -16,7 +16,7 @@ private final class Errors: @unchecked Sendable {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             if arguments.contains("--help") {
-                print("unidesk-media-probe [--width 1920] [--height 1080] [--fps 60] [--seconds 3]\nSynthetic local hardware codec probe. No screen capture, input, QUIC, or input-to-photon claim.")
+                print("unidesk-media-probe [--codec h264|hevc] [--width 1920] [--height 1080] [--fps 60] [--seconds 3]\nSynthetic local hardware codec probe. No screen capture, input, QUIC, or input-to-photon claim.")
                 return
             }
             func option(_ name: String, _ fallback: Int) throws -> Int {
@@ -28,11 +28,19 @@ private final class Errors: @unchecked Sendable {
             }
             let size = PixelSize(width: try option("--width", 1920), height: try option("--height", 1080))
             let fps = try option("--fps", 60), seconds = try option("--seconds", 3)
+            let codec: VideoCodec
+            if let index = arguments.firstIndex(of: "--codec"), index + 1 < arguments.count {
+                switch arguments[index + 1].lowercased() {
+                case "h264": codec = .h264
+                case "hevc", "h265": codec = .hevc
+                default: throw RemoteApplicationError.unsupported("Invalid --codec; use h264 or hevc")
+                }
+            } else { codec = .h264 }
             guard size.isValid, size.width % 2 == 0, size.height % 2 == 0, fps <= 120, seconds <= 600 else {
                 throw RemoteApplicationError.unsupported("Invalid dimensions, fps, or duration")
             }
             let surface = SurfaceIdentity(session: UUID(), epoch: 1, generation: 1, configuration: 1)
-            let profile = VideoProfile(pixels: size, framesPerSecond: Double(fps))
+            let profile = VideoProfile(codec: codec, pixels: size, framesPerSecond: Double(fps))
             let errors = Errors()
             let pipeline = try LocalMediaPipeline(surface: surface, profile: profile) { errors.append($0) }
             defer { pipeline.stop() }

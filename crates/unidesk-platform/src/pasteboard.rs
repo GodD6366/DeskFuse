@@ -166,7 +166,22 @@ impl Pasteboard for MemoryPasteboard {
             text: state.text.clone(),
             png: state.png.clone(),
             file_urls: state.file_urls.clone(),
-            items: state.items.clone(),
+            items: state
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let representations = item
+                        .representations
+                        .iter()
+                        .filter(|representation| {
+                            representation.type_name != REMOTE_ORIGIN_MARKER_TYPE
+                                && representation.type_name != UNIVERSAL_CLIPBOARD_TYPE
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (!representations.is_empty()).then_some(PasteboardItem { representations })
+                })
+                .collect(),
         })
     }
 
@@ -255,7 +270,11 @@ impl Pasteboard for MemoryPasteboard {
             .map(|r| r.data.clone());
         state.file_urls.clear();
         state.items = items.to_vec();
-        state.remote_origin_marker = None;
+        state.remote_origin_marker = items
+            .iter()
+            .flat_map(|item| &item.representations)
+            .find(|representation| representation.type_name == REMOTE_ORIGIN_MARKER_TYPE)
+            .and_then(|representation| String::from_utf8(representation.data.clone()).ok());
         state.universal_clipboard = items
             .iter()
             .flat_map(|item| &item.representations)

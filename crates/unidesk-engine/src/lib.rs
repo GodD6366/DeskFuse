@@ -20,6 +20,7 @@ pub mod workflow_catalog;
 pub mod workflow_sharing;
 
 mod clipboard_echo;
+mod clipboard_image;
 pub mod clipboard_library;
 
 pub mod library_files;

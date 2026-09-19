@@ -5,11 +5,22 @@ import UniDeskRemoteApplication
 
 @MainActor @Observable final class RemoteWindowChrome {
     var menuPresented = false
+    var controlsRevealed = false
+
+    /// Keep the local chrome out of the remote app's way until the pointer is
+    /// close to the top-center affordance. This is driven by the window event
+    /// stream so the hidden trigger never becomes a transparent input shield.
+    func updatePointer(_ point: NSPoint, windowSize: CGSize) {
+        let distanceFromTop = windowSize.height - point.y
+        let distanceFromCenter = abs(point.x - windowSize.width / 2)
+        controlsRevealed = distanceFromTop <= 68 && distanceFromCenter <= 148
+    }
 }
 
 /// Borderless remote canvas with local traffic lights and a centered menu.
 @available(macOS 14.2, *)
 struct RemoteApplicationView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var session: RemoteApplicationSession
     var chooseApplication: () -> Void
     var closeWindow: () -> Void
@@ -51,33 +62,42 @@ struct RemoteApplicationView: View {
         }
         .overlay(alignment: .topLeading) {
             RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
-                .frame(width: 72, height: 24)
-                .padding(.horizontal, 8).padding(.vertical, 6)
-                // This must be opaque: a material would let B's screen-control
-                // indicator show through the local window controls.
-                .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+                .frame(width: 56, height: 20)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                // The video renderer covers B's titlebar controls separately
+                // in source coordinates; this capsule only sizes local buttons.
+                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.1), lineWidth: 0.5)
+                }
                 .clipShape(Capsule())
-                .padding(.leading, 6).padding(.top, 5)
+                .padding(.leading, 7).padding(.top, 6)
         }
         .overlay(alignment: .top) {
             HStack(spacing: 4) {
-                RemoteCanvasDragHandle().frame(width: 24, height: 26).help("拖动以移动远程窗口")
+                RemoteCanvasDragHandle().frame(width: 22, height: 22).help("拖动以移动远程窗口")
                 Button {
                     session.canvasFocus(false)
                     chrome.menuPresented.toggle()
-                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 26) }
+                } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
                 .buttonStyle(.plain).help("远程应用菜单（⌃⌥⌘空格）")
                 .popover(isPresented: $chrome.menuPresented, arrowEdge: .top) {
                     localActions.padding(14).frame(width: 300)
                 }
             }
-            .font(.system(size: 12)).padding(.horizontal, 6).padding(.vertical, 3)
-            .background(.regularMaterial, in: Capsule()).padding(.top, 8)
-            // Keep the local control strip mounted and hit-testable. Hiding it
-            // while the pointer crosses from the canvas into the strip causes
-            // SwiftUI to alternate hover state and dismiss the popover.
-            .opacity(1)
-            .allowsHitTesting(true)
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 5).padding(.vertical, 3)
+            .background(.thinMaterial, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.1), lineWidth: 0.5)
+            }
+            .padding(.top, 6)
+            .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
+            .scaleEffect(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0.9, anchor: .top)
+            .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
+            // The window reports pointer proximity independently, so an
+            // invisible trigger is unnecessary and would steal remote input.
+            .allowsHitTesting(chrome.controlsRevealed || chrome.menuPresented)
         }
         .onChange(of: session.preferences) { _, _ in session.changePreferences() }
     }
@@ -88,6 +108,9 @@ struct RemoteApplicationView: View {
             Divider()
             Picker("分辨率", selection: $session.preferences.resolution) {
                 ForEach(ResolutionPreference.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            Picker("视频编码", selection: $session.preferences.codec) {
+                ForEach(VideoCodec.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             Picker("刷新率", selection: $session.preferences.refresh) {
                 ForEach(RefreshPreference.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -123,12 +146,12 @@ private struct RemoteTrafficLights: NSViewRepresentable {
     var zoom: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 72, height: 24))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 56, height: 20))
         let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
         let hints = ["关闭远程窗口（⌃⌥⌘W）", "最小化（⌃⌥⌘M）", "最大化 / 还原（⌃⌥⌘F）"]
         for (index, type) in types.enumerated() {
             guard let button = NSWindow.standardWindowButton(type, for: [.titled, .closable, .miniaturizable, .resizable]) else { continue }
-            button.frame = NSRect(x: 2 + index * 24, y: 3, width: 16, height: 16)
+            button.frame = NSRect(x: 2 + index * 18, y: 3, width: 13, height: 13)
             button.tag = index; button.target = context.coordinator; button.action = #selector(Coordinator.activate(_:))
             button.toolTip = hints[index]; button.setAccessibilityLabel(hints[index])
             view.addSubview(button)

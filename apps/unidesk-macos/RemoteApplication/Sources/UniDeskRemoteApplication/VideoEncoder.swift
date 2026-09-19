@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import VideoToolbox
 
-public final class H264Encoder: @unchecked Sendable {
+public final class VideoEncoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "uniDesk.remote.encode", qos: .userInteractive)
     private let lock = NSLock()
     private var latest: CapturedVideoFrame?
@@ -27,15 +27,18 @@ public final class H264Encoder: @unchecked Sendable {
             kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true,
         ]
         let status = VTCompressionSessionCreate(allocator: kCFAllocatorDefault,
-            width: Int32(profile.pixels.width), height: Int32(profile.pixels.height), codecType: kCMVideoCodecType_H264,
+            width: Int32(profile.pixels.width), height: Int32(profile.pixels.height), codecType: profile.codec.codecType,
             encoderSpecification: specification as CFDictionary, imageBufferAttributes: nil,
             compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &created)
-        guard status == noErr, let created else { throw RemoteApplicationError.codec("创建 H.264 硬件编码器", status) }
+        guard status == noErr, let created else { throw RemoteApplicationError.codec("创建 \(profile.codec.label) 硬件编码器", status) }
         session = created
         do {
             try set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
             try set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse)
-            try set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel)
+            let profileLevel: CFTypeRef = profile.codec == .hevc
+                ? kVTProfileLevel_HEVC_Main_AutoLevel
+                : kVTProfileLevel_H264_High_AutoLevel
+            try set(kVTCompressionPropertyKey_ProfileLevel, profileLevel)
             try set(kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: profile.framesPerSecond))
             try set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: profile.bitrate))
             try set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NSNumber(value: 1))
@@ -93,6 +96,7 @@ public final class H264Encoder: @unchecked Sendable {
             sequence += 1; let frameSequence = sequence
             let properties = forceKeyFrame ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
             forceKeyFrame = false; inFlight += 1
+            metrics.update { $0.encoderSubmitted += 1 }
             let started = ProcessInfo.processInfo.systemUptime
             let status = VTCompressionSessionEncodeFrame(session, imageBuffer: frame.buffer,
                 presentationTimeStamp: frame.timestamp, duration: CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000),
@@ -103,11 +107,16 @@ public final class H264Encoder: @unchecked Sendable {
                     // Submission sequence numbers now have a gap, so resume with
                     // a key frame for the receiver's reference-chain validation.
                     let dropped = status == noErr && (flags.contains(.frameDropped) || sample == nil)
+                    self.metrics.update {
+                        $0.encoderCallbacks += 1
+                        if dropped { $0.encoderDropped += 1 }
+                    }
                     if status != noErr {
                         self.output(.failure(.codec("编码视频帧", status)))
                     } else if !dropped, let sample {
                         do {
-                            let encoded = try Self.extract(sample, surface: self.surface, sequence: frameSequence)
+                            let encoded = try Self.extract(sample, codec: self.profile.codec,
+                                                           surface: self.surface, sequence: frameSequence)
                             self.metrics.update { $0.hardwareEncoder = true }
                             self.metrics.encode(duration: ProcessInfo.processInfo.systemUptime - started, bytes: encoded.bytes.count)
                             if !self.lock.withLock({ self.stopped }) { self.output(.success(encoded)) }
@@ -139,7 +148,8 @@ public final class H264Encoder: @unchecked Sendable {
 
     deinit { if let session { VTCompressionSessionInvalidate(session) } }
 
-    private static func extract(_ sample: CMSampleBuffer, surface: SurfaceIdentity, sequence: UInt64) throws -> EncodedVideoFrame {
+    private static func extract(_ sample: CMSampleBuffer, codec: VideoCodec,
+                                surface: SurfaceIdentity, sequence: UInt64) throws -> EncodedVideoFrame {
         guard CMSampleBufferDataIsReady(sample), let block = CMSampleBufferGetDataBuffer(sample),
               let format = CMSampleBufferGetFormatDescription(sample) else { throw RemoteApplicationError.malformedFrame }
         let size = CMBlockBufferGetDataLength(block)
@@ -149,22 +159,35 @@ public final class H264Encoder: @unchecked Sendable {
         guard copied == noErr else { throw RemoteApplicationError.codec("读取编码帧", copied) }
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
         let key = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-        var sps = Data(), pps = Data()
+        var vps = Data(), sps = Data(), pps = Data()
         if key {
             func parameter(_ index: Int) throws -> Data {
                 var pointer: UnsafePointer<UInt8>?
                 var length = 0, count = 0
                 var header: Int32 = 0
-                let result = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: index,
-                    parameterSetPointerOut: &pointer, parameterSetSizeOut: &length, parameterSetCountOut: &count, nalUnitHeaderLengthOut: &header)
+                let result: OSStatus
+                if codec == .hevc {
+                    result = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, parameterSetIndex: index,
+                        parameterSetPointerOut: &pointer, parameterSetSizeOut: &length, parameterSetCountOut: &count,
+                        nalUnitHeaderLengthOut: &header)
+                } else {
+                    result = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: index,
+                        parameterSetPointerOut: &pointer, parameterSetSizeOut: &length, parameterSetCountOut: &count,
+                        nalUnitHeaderLengthOut: &header)
+                }
                 guard result == noErr, let pointer, length > 0, length <= 65536, header == 4 else { throw RemoteApplicationError.malformedFrame }
                 return Data(bytes: pointer, count: length)
             }
-            sps = try parameter(0); pps = try parameter(1)
+            if codec == .hevc {
+                vps = try parameter(0); sps = try parameter(1); pps = try parameter(2)
+            } else {
+                sps = try parameter(0); pps = try parameter(1)
+            }
         }
         let pts = CMTimeConvertScale(CMSampleBufferGetPresentationTimeStamp(sample), timescale: 1_000_000_000, method: .default)
-        let frame = EncodedVideoFrame(surface: surface, sequence: sequence, presentationNanoseconds: pts.value,
-                                      keyFrame: key, sps: sps, pps: pps, bytes: bytes)
+        let frame = EncodedVideoFrame(surface: surface, codec: codec, sequence: sequence,
+                                      presentationNanoseconds: pts.value, keyFrame: key,
+                                      vps: vps, sps: sps, pps: pps, bytes: bytes)
         try frame.validate()
         return frame
     }

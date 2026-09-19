@@ -39,6 +39,16 @@ import Testing
     #expect(throws: (any Error).self) { try RemoteWire.parameters(code: "123456") }
 }
 
+@Test func wireRoundTripPreservesHevcProfileAndCapabilities() throws {
+    var message = RemoteMessage(.hello)
+    message.capabilities = MediaCapabilities(h264HardwareDecoder: true, hevcHardwareDecoder: true)
+    message.profile = VideoProfile(codec: .hevc, pixels: PixelSize(width: 1920, height: 1080), framesPerSecond: 60)
+    let decoded = try RemoteWire.decode(Data(RemoteWire.encode(message).dropFirst(4)))
+    #expect(decoded.version == 2)
+    #expect(decoded.capabilities?.hevcHardwareDecoder == true)
+    #expect(decoded.profile?.codec == .hevc)
+}
+
 /// Exercises only the authenticated protocol. Never captures screen or injects
 /// input, and makes no claim about two-device reachability or user interaction.
 private final class ProtocolFixture: @unchecked Sendable {

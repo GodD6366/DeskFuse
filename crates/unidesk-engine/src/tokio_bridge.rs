@@ -1479,7 +1479,14 @@ async fn run_worker(
     );
 
     let permission_service = create_permission_service();
-    emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, None);
+    let mut last_permission = None;
+    emit_permission_snapshot(
+        &ui_sender,
+        permission_service.as_ref(),
+        &diagnostics,
+        None,
+        &mut last_permission,
+    );
 
     let runtime = match build_runtime(&diagnostics).await {
         Ok(runtime) => runtime,
@@ -1602,6 +1609,17 @@ async fn run_worker(
     );
 
     let public_updates = crate::github_update::is_public_bundle();
+    let manual_updates = crate::github_update::is_manual_bundle();
+    let manual_update_view = unidesk_runtime::updates::LanUpdateView {
+        installed: unidesk_update::installer::current_bundle()
+            .and_then(|bundle| unidesk_update::installer::installed_release(&bundle))
+            .ok(),
+        message: "此版本仅支持手动安装更新".into(),
+        ..Default::default()
+    };
+    if manual_updates {
+        let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(manual_update_view.clone()));
+    }
     let mut github_updater = if public_updates {
         match crate::github_update::GitHubUpdater::start() {
             Ok(updater) => Some(updater),
@@ -1621,7 +1639,7 @@ async fn run_worker(
         None
     };
     #[cfg(not(test))]
-    let updater = if public_updates {
+    let updater = if public_updates || manual_updates {
         None
     } else {
         match crate::app_update::start(runtime.clone()) {
@@ -1881,7 +1899,8 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::RefreshPermissions) => {
-                        emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref());
+                        last_permission = None;
+                        emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
                     }
                     Some(TokioCommand::CheckForUpdates) => {
                         if let Some(updater) = &mut github_updater {
@@ -1890,7 +1909,7 @@ async fn run_worker(
                         } else if let Some(updater) = &updater {
                             updater.check_now();
                             let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else { command_error = Some("更新服务不可用".into()); }
+                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
                         if let Some(updater) = &mut github_updater {
@@ -1901,12 +1920,13 @@ async fn run_worker(
                             updater.download_and_install_now();
                             update_tick.reset_immediately();
                             let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else { command_error = Some("更新服务不可用".into()); }
+                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
                     }
                     Some(TokioCommand::Snapshot) => {
                         clipboard_history.publish(&ui_sender);
                         if let Some(updater) = &github_updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
                         else if let Some(updater) = &updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
+                        else if manual_updates { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(manual_update_view.clone())); }
                         file_policy.emit(&ui_sender,None);
                         let _ = ui_sender.unbounded_send(UiEvent::RuntimeView(runtime.snapshot_view()));
                     }
@@ -2081,6 +2101,7 @@ async fn run_worker(
                                 device_id: Some(runtime.snapshot_view().snapshot.local_device_id.to_hex()),
                                 created_at_ms: Some(crate::clipboard_library::now_ms()),
                                 no_history: false,
+                                ..Default::default()
                             });
                             let library = crate::clipboard_library::global()?;
                             let (id, index_warning) = library.ingest_preserving_commit(&snapshot, "手机网页")?;
@@ -2435,6 +2456,29 @@ async fn run_worker(
                 if let Ok(count)=pasteboard.change_count() {
                     clipboard_sync.refresh(&runtime,count,clipboard_enabled,&ui_sender);
                     while let Some(ready)=clipboard_sync.poll(pasteboard.change_count().unwrap_or(count),&runtime,&ui_sender,&diagnostics,&file_policy.outgoing) {
+                        // Recognize an image echo before a Deferred file reference
+                        // clears the current screenshot or a native write races Cmd-V.
+                        let incoming_image = if ready.payload.mime == CLIPBOARD_FILE_MIME {
+                            ready.metadata.image_digest.clone()
+                        } else {
+                            crate::clipboard_image::snapshot_digest(&PasteboardSnapshot {
+                                png: (ready.payload.mime == "image/png").then(|| ready.payload.data.clone()),
+                                items: ready.items.clone().unwrap_or_default(),
+                                ..Default::default()
+                            })
+                        };
+                        if let Some(incoming_image) = incoming_image
+                            && let Ok(current) = pasteboard.read()
+                            && crate::clipboard_image::snapshot_digest(&current).as_ref() == Some(&incoming_image)
+                            && pasteboard.change_count().ok() == Some(current.change_count)
+                        {
+                            // Leave local capture pending if the screenshot has
+                            // not been recorded yet; an echo must not swallow it.
+                            crate::diagnostics::record!(&diagnostics, DiagnosticLevel::Info,
+                                "clipboard", "image_echo_before_write", Some(format!("peer={} change_count={}", ready.peer, current.change_count)), None);
+                            clipboard_sync.finish(ready, unidesk_protocol::clipboard_sync::APPLIED, &runtime);
+                            continue;
+                        }
                         let applied=if ready.payload.mime==CLIPBOARD_FILE_MIME {
                             if let Ok(frame @ ClipboardFileFrame::Deferred {..})=ClipboardFileFrame::decode(&ready.payload.data) {
                                 let id=frame.transfer_id();
@@ -2691,7 +2735,7 @@ async fn run_worker(
             }
             _ = permission_tick.tick() => {
                 file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,&pasteboard,&pending_incoming_file,&paste_requested,&paste_target_pid).await;
-                emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref());
+                emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
             }
             captured = file_paste_requests.recv() => {
                 if let Some(captured) = captured {
@@ -2961,22 +3005,27 @@ impl ClipboardLoopGuard {
         // Universal Clipboard is Apple's own cross-device copy. uniDesk's
         // trusted session will deliver the same content (or has already done
         // so), so importing this system echo would create a second history
-        // row. Do not add it to the ledger: an explicit local recopy after the
-        // Handoff marker is cleared must remain a real new copy.
+        // row. Remember its aliases because Handoff can later strip the marker.
         if pasteboard
             .contains_type(UNIVERSAL_CLIPBOARD_TYPE)
             .unwrap_or(false)
         {
+            // 仍写入账本：接力随后可能去掉标记、只改表示，后续无标记回写也要认出来。
+            let _ = self
+                .ledger
+                .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
             return true;
         }
         let marker = pasteboard.read_remote_origin_marker().ok().flatten();
         if !snapshot.file_urls.is_empty() {
-            // File paths change when a peer receives them into its private
-            // cache, so a byte-for-byte local fingerprint is not available
-            // without re-reading whole files. The private marker is bound to
-            // the exact current pasteboard item and is cleared by any local
-            // copy, making it the authoritative file-loop guard.
-            return marker.is_some_and(|value| value.starts_with("unidesk-clipboard-file-v1:"));
+            if marker.is_some_and(|value| value.starts_with("unidesk-clipboard-file-v1:")) {
+                return true;
+            }
+            // Handoff often turns a native screenshot into a PNG file and
+            // removes all markers. Its path differs, but exact pixels do not.
+            return self
+                .ledger
+                .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
         }
         let Some(fingerprint) = clipboard_snapshot_fingerprint(snapshot) else {
             return false;
@@ -3138,6 +3187,7 @@ async fn push_local_clipboard(
     }
     if let Ok(library) = crate::clipboard_library::global() {
         let origin = library.origin(&snapshot, "本机");
+        let image_digest = crate::clipboard_image::snapshot_digest(&snapshot);
         clipboard_bundle::attach_source_metadata(
             &mut snapshot,
             &clipboard_bundle::SourceMetadata {
@@ -3145,6 +3195,7 @@ async fn push_local_clipboard(
                 device_id: (!origin.device_id.is_empty()).then_some(origin.device_id),
                 created_at_ms: origin.copied_at_ms,
                 no_history: origin.no_history,
+                image_digest,
             },
         );
     } else {
@@ -4641,6 +4692,7 @@ fn emit_permission_snapshot(
     service: &dyn PermissionService,
     diagnostics: &Diagnostics,
     input: Option<&unidesk_runtime::input_service::ServiceControl>,
+    last: &mut Option<unidesk_platform::PermissionSnapshot>,
 ) {
     let snapshot = service.snapshot();
     #[cfg(target_os = "macos")]
@@ -4651,6 +4703,10 @@ fn emit_permission_snapshot(
     let snapshot = crate::input_coordinator::helper_permissions(&native, snapshot.full_disk_access);
     #[cfg(not(target_os = "macos"))]
     let _ = input;
+    if last.as_ref() == Some(&snapshot) {
+        return;
+    }
+    *last = Some(snapshot);
     crate::diagnostics::record!(
         diagnostics,
         DiagnosticLevel::Info,
@@ -4775,9 +4831,9 @@ mod tests {
         assert!(echoed.change_count > local.change_count);
         assert!(loop_guard.should_suppress(&pasteboard, &echoed));
 
-        // Adding/removing a trailing newline changes the actual content.
+        // 接力回写常去掉或补上尾随换行，10 秒窗口内仍视为同一条。
         pasteboard.write_text("帮我安装 kimi code").unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
@@ -4793,10 +4849,10 @@ mod tests {
         let handoff = pasteboard.read().unwrap();
         assert!(loop_guard.should_suppress(&pasteboard, &handoff));
 
-        // A real local copy clears Apple's bookkeeping type. Because the
-        // suppressed Handoff was never added to the ledger, this copy is
-        // allowed through even when its bytes happen to be identical.
+        // 去掉标记后的接力改写仍是回声。不同内容的新复制不受影响。
         pasteboard.write_png(&[1, 2, 3]).unwrap();
+        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        pasteboard.write_png(&[4, 5, 6]).unwrap();
         let local = pasteboard.read().unwrap();
         assert!(!loop_guard.should_suppress(&pasteboard, &local));
     }

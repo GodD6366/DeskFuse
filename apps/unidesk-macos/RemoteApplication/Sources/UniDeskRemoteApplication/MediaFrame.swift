@@ -7,23 +7,35 @@ import Foundation
 public struct EncodedVideoFrame: Codable, Sendable {
     public static let maximumBytes = 16 * 1024 * 1024
     public let surface: SurfaceIdentity
+    public let codec: VideoCodec
     public let sequence: UInt64
     public let presentationNanoseconds: Int64
     public let keyFrame: Bool
+    public let vps: Data
     public let sps: Data
     public let pps: Data
     public let bytes: Data
 
-    public init(surface: SurfaceIdentity, sequence: UInt64, presentationNanoseconds: Int64,
-                keyFrame: Bool, sps: Data = Data(), pps: Data = Data(), bytes: Data) {
-        self.surface = surface; self.sequence = sequence; self.presentationNanoseconds = presentationNanoseconds
-        self.keyFrame = keyFrame; self.sps = sps; self.pps = pps; self.bytes = bytes
+    public init(surface: SurfaceIdentity, codec: VideoCodec = .h264, sequence: UInt64, presentationNanoseconds: Int64,
+                keyFrame: Bool, vps: Data = Data(), sps: Data = Data(), pps: Data = Data(), bytes: Data) {
+        self.surface = surface; self.codec = codec; self.sequence = sequence
+        self.presentationNanoseconds = presentationNanoseconds; self.keyFrame = keyFrame
+        self.vps = vps; self.sps = sps; self.pps = pps; self.bytes = bytes
     }
 
     public func validate() throws {
         guard sequence > 0, !bytes.isEmpty, bytes.count <= Self.maximumBytes,
-              sps.count <= 65536, pps.count <= 65536,
-              !keyFrame || (!sps.isEmpty && !pps.isEmpty) else { throw RemoteApplicationError.malformedFrame }
+              vps.count <= 65536, sps.count <= 65536, pps.count <= 65536 else {
+            throw RemoteApplicationError.malformedFrame
+        }
+        if keyFrame {
+            let validParameterSets = codec == .hevc
+                ? (!vps.isEmpty && !sps.isEmpty && !pps.isEmpty)
+                : (!sps.isEmpty && !pps.isEmpty && vps.isEmpty)
+            guard validParameterSets else { throw RemoteApplicationError.malformedFrame }
+        } else {
+            guard vps.isEmpty && sps.isEmpty && pps.isEmpty else { throw RemoteApplicationError.malformedFrame }
+        }
         var offset = 0
         while offset < bytes.count {
             guard bytes.count - offset >= 4 else { throw RemoteApplicationError.malformedFrame }
@@ -43,18 +55,24 @@ public struct EncodedFrameQueue: Sendable {
     private var frames: [EncodedVideoFrame] = []
     private let capacity: Int
     private var surface: SurfaceIdentity?
+    private var codec: VideoCodec?
     private var lastSequence: UInt64 = 0
     private var needsKey = true
     public var count: Int { frames.count }
 
     public init(capacity: Int = 3) { precondition(capacity > 0); self.capacity = capacity }
     public mutating func reset(to identity: SurfaceIdentity) {
-        frames.removeAll(keepingCapacity: true); surface = identity; lastSequence = 0; needsKey = true
+        frames.removeAll(keepingCapacity: true); surface = identity; codec = nil; lastSequence = 0; needsKey = true
     }
     public mutating func invalidate() { frames.removeAll(keepingCapacity: true); needsKey = true }
 
     public mutating func offer(_ frame: EncodedVideoFrame) -> FrameAdmission {
         guard frame.surface == surface, frame.sequence > lastSequence else { return .stale }
+        if let codec, codec != frame.codec {
+            invalidate()
+            guard frame.keyFrame else { return .needsKeyFrame }
+        }
+        if frame.keyFrame { codec = frame.codec }
         if (needsKey || (lastSequence != 0 && frame.sequence != lastSequence + 1)) && !frame.keyFrame {
             invalidate(); return .needsKeyFrame
         }
@@ -132,6 +150,9 @@ public struct MediaStatistics: Codable, Sendable {
     public var capturedStarted: UInt64 = 0
     public var capturedOther: UInt64 = 0
     public var replacedBeforeEncode: UInt64 = 0
+    public var encoderSubmitted: UInt64 = 0
+    public var encoderCallbacks: UInt64 = 0
+    public var encoderDropped: UInt64 = 0
     public var encoded: UInt64 = 0
     public var decoded: UInt64 = 0
     public var presented: UInt64 = 0

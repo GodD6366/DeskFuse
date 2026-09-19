@@ -13,6 +13,13 @@ struct UpdateControls: View {
     let store: AppStore
     let update: UpdateState
 
+    // This is immutable package configuration, independent of updater progress.
+    private static let manualInstallation: Bool = {
+        guard let url = Bundle.main.url(forResource: "update-channel", withExtension: nil),
+              let channel = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return channel.trimmingCharacters(in: .whitespacesAndNewlines) == "manual"
+    }()
+
     private var actionTitle: String {
         if update.manualRequested { return update.ready ? "正在准备安装…" : "正在下载安装…" }
         if update.ready { return "立即安装并重启" }
@@ -27,7 +34,7 @@ struct UpdateControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             LabeledContent("当前版本", value: "\(update.version) · build \(update.build)")
-            LabeledContent("更新来源", value: update.github ? "GitHub / Homebrew" : "可信局域网")
+            LabeledContent("更新来源", value: Self.manualInstallation ? "手动安装" : (update.github ? "GitHub / Homebrew" : "可信局域网"))
             if let target = update.targetVersion {
                 LabeledContent("更新版本", value: target)
             }
@@ -40,7 +47,10 @@ struct UpdateControls: View {
             if let error = update.error {
                 Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            if update.github {
+            if Self.manualInstallation {
+                Text("下载新版安装包后手动安装。此版本不会自动检查、下载或安装更新。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if update.github {
                 HStack {
                     if canInstallImmediately { immediateInstallButton }
                     if let address = update.releaseUrl, let url = URL(string: address) {

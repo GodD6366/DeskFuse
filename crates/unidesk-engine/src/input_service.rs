@@ -224,7 +224,14 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                 if let Some(error) = error { status.native.error = Some(format!("输入设置尚未保存：{error}")); }
                 status.native.update_paused = child.pause.load(Ordering::Acquire) == 2;
                 if let Ok(lines) = diagnostics.try_lock() { status.diagnostics = lines.clone(); }
-                child.status.send_replace(status.clone());
+                child.status.send_if_modified(|current| {
+                    if current == &status {
+                        false
+                    } else {
+                        *current = status.clone();
+                        true
+                    }
+                });
             }
             Some(packet) = child.remote.recv() => { remote_input.receive(packet, &authority); },
             Some((id,command)) = child.commands.recv() => {
