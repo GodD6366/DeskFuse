@@ -94,7 +94,8 @@ impl InputCoordinator {
                         let input = runtime.input_snapshot();
                         if previous_input.as_ref() != Some(&input) {
                             previous_input = Some(input.clone());
-                            let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(input)));
+                            let _ =
+                                ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(input)));
                         }
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -798,8 +799,10 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
         .name("unidesk-input-observer".into())
         .spawn(move || {
             let permissions = create_permission_service();
-            let mut last_topology: Option<(Instant, Result<unidesk_core::DisplayTopology, String>)> =
-                None;
+            let mut last_topology: Option<(
+                Instant,
+                Result<unidesk_core::DisplayTopology, String>,
+            )> = None;
             while !stopping.load(Ordering::Acquire) {
                 let started_at = Instant::now();
                 let started_wall = SystemTime::now();
