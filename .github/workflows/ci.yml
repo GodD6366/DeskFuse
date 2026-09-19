@@ -53,7 +53,7 @@ jobs:
 
   macos-build:
     name: macOS arm64 DMG
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.event_name != 'workflow_call' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 90
     steps:
