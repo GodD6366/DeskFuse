@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   preflight:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 10
     outputs:
       exists: ${{ steps.probe.outputs.exists }}
@@ -155,7 +155,7 @@ jobs:
 
   publish:
     needs: [macos-arm64, macos-x86_64]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 20
     permissions:
       contents: write
@@ -182,7 +182,7 @@ jobs:
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64
           cp dist/x86_64/signing-x86_64.txt dist/.signing-x86_64
           python3 scripts/release.py inventory --directory dist --commit "$GITHUB_SHA"
-          (cd dist && sha256sum -c SHA256SUMS)
+          (cd dist && shasum -a 256 -c SHA256SUMS)
       - name: Verify, upload draft, then publish prerelease
         env:
           GH_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
@@ -202,7 +202,7 @@ jobs:
   # cask is written only to the public distribution repository.
   cask:
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 15
     permissions:
       contents: write
