@@ -89,13 +89,15 @@ fn format_order_and_remote_markers_are_ignored_but_latest_snapshot_is_retained()
     let restored = pasteboard.read().unwrap();
     assert_eq!(restored.items.len(), 1);
     assert_eq!(restored.items[0].representations.len(), 2);
-    assert!(restored.items[0]
-        .representations
-        .iter()
-        .all(|representation| !matches!(
-            representation.type_name.as_str(),
-            "com.unidesk.clipboard-origin" | "com.apple.is-remote-clipboard"
-        )));
+    assert!(
+        restored.items[0]
+            .representations
+            .iter()
+            .all(|representation| !matches!(
+                representation.type_name.as_str(),
+                "com.unidesk.clipboard-origin" | "com.apple.is-remote-clipboard"
+            ))
+    );
 }
 
 #[test]
