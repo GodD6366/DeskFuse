@@ -47,6 +47,9 @@ dirs.workspace = true
 [lints.rust]
 unsafe_code = "warn"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.clippy]
 all = "warn"
 

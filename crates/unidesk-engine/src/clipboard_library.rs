@@ -184,6 +184,9 @@ pub struct Library {
     generation: AtomicU64,
     last_prune_ms: AtomicU64,
     state_cache: Mutex<Option<(u64, String)>>,
+    // Drop the connection before removing its test database directory.
+    #[cfg(test)]
+    _test_directory: tempfile::TempDir,
 }
 static LIBRARY: OnceLock<Arc<Library>> = OnceLock::new();
 static LIBRARY_INIT: Mutex<()> = Mutex::new(());
@@ -206,9 +209,14 @@ pub fn global() -> Result<Arc<Library>> {
 impl Library {
     fn open() -> Result<Self> {
         // Ensure the canonical store has performed its own versioned migrations first.
-        let _canonical = unidesk_store::SQLiteStore::new().map_err(err)?;
-        let mut db = Connection::open(unidesk_store::SQLiteStore::default_path().map_err(err)?)
-            .map_err(err)?;
+        #[cfg(test)]
+        let test_directory = tempfile::tempdir().map_err(err)?;
+        #[cfg(test)]
+        let database_path = test_directory.path().join("state.sqlite3");
+        #[cfg(not(test))]
+        let database_path = unidesk_store::SQLiteStore::default_path().map_err(err)?;
+        let _canonical = unidesk_store::SQLiteStore::open(&database_path).map_err(err)?;
+        let mut db = Connection::open(&database_path).map_err(err)?;
         unidesk_store::configure_connection(&mut db).map_err(err)?;
         db.execute_batch("PRAGMA foreign_keys=ON;
    CREATE TABLE IF NOT EXISTS cl_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -304,6 +312,8 @@ END;").map_err(err)?;
         }
         db.execute_batch(QUERY_INDEXES).map_err(err)?;
         let this = Self {
+            #[cfg(test)]
+            _test_directory: test_directory,
             db: Mutex::new(db),
             device: Mutex::new(String::new()),
             generation: AtomicU64::new(1),
