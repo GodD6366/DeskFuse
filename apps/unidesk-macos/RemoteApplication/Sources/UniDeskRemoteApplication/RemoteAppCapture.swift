@@ -172,6 +172,36 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         filterApplications = source.applicationIDs
     }
 
+    /// Update the captured region while keeping the ScreenCaptureKit stream
+    /// and encoder alive. Applications such as WeChat and Chromium create
+    /// transient child windows for previews; stopping the stream for every
+    /// geometry change leaves the receiver waiting for a new IDR and also
+    /// invalidates the input lease. The encoded dimensions stay fixed by the
+    /// existing profile, while sourceRect tracks the new logical region.
+    public func updateConfiguration(source: Source, profile: VideoProfile) async throws {
+        guard let stream else { return }
+        let configuration = SCStreamConfiguration()
+        configuration.width = profile.pixels.width; configuration.height = profile.pixels.height
+        configuration.sourceRect = source.surface.displayLocalRect
+        configuration.destinationRect = CGRect(x: 0, y: 0, width: profile.pixels.width, height: profile.pixels.height)
+        configuration.preservesAspectRatio = false
+        configuration.minimumFrameInterval = CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000)
+        configuration.queueDepth = 3
+        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        configuration.captureResolution = .best
+        configuration.includeChildWindows = true
+        configuration.ignoreShadowsDisplay = true
+        configuration.showsCursor = false
+        configuration.capturesAudio = false
+        configuration.colorSpaceName = CGColorSpace.sRGB
+        configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+        try await stream.updateConfiguration(configuration)
+        if filterApplications != source.applicationIDs {
+            try await stream.updateContentFilter(source.filter)
+            filterApplications = source.applicationIDs
+        }
+    }
+
     public func start(source: Source, profile: VideoProfile, metrics: MediaMetrics,
                       sink: @escaping @Sendable (CapturedVideoFrame) -> Void,
                       failed: @escaping @Sendable (String) -> Void) async throws {

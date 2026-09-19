@@ -95,6 +95,7 @@ Without a signing certificate, add `CODESIGN_IDENTITY=-` explicitly; add `--buil
 apps/           SwiftUI app, Windows service, diagnostic probes
 crates/         Domain, protocol, identity, storage, network, transfer, input and platform modules
 scripts/        Development, checks, asset generation, packaging and release tools
+site/           Project homepage (GitHub Pages, deployed by the pages.yml workflow)
 Casks/          Public Homebrew cask (also the tap)
 resources/      Source SVG, bundle metadata, third-party icons, public transfer guides
 design/current/ Current interface behavior and icon resources

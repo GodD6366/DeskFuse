@@ -35,6 +35,12 @@ final class SessionDataPlane: @unchecked Sendable {
     func setPeer(_ peer: RemotePeer?) { lock.withLock { self.peer = peer } }
     func setEncoder(_ value: H264Encoder?) { lock.withLock { encoder = value } }
     func setMetrics(_ value: MediaMetrics?) { lock.withLock { metrics = value } }
+    func updateSurface(_ value: CaptureSurface) {
+        // The host side owns the capture surface through RemoteInputRelay;
+        // the viewer side also keeps the same relay surface after a layout
+        // update. The relay itself rejects stale identities.
+        input.updateSurface(value)
+    }
     func requestKey() { lock.withLock { encoder }?.requestKeyFrame() }
     func sendFrame(_ frame: EncodedVideoFrame) {
         input.encoded(frame)
@@ -560,12 +566,13 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                         detail: "peer=\(self.peerID) generation=\(surface.identity.generation)")
                 }
             case .layout:
-                guard let surface = message.surface, surface.identity == lastSurface?.identity,
-                      surface.contentRect == lastSurface?.contentRect else { return }
+                guard let surface = message.surface, surface.identity == lastSurface?.identity else { return }
                 guard let validated = try? surface.withIdentity(surface.identity) else { return }
                 layoutDiagnostic(validated)
                 plane.frames.updateLayout(validated)
+                plane.updateSurface(validated)
                 lastSurface = validated; presentationSurface = validated
+                presentationSizeChanged?((validated.applicationRect ?? validated.contentRect).size)
             case .controlReady:
                 guard controlPending, message.identity == lastSurface?.identity else { return }
                 controlPending = false; controlling = true; plane.setEnabled(true)
@@ -676,6 +683,34 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         guard operation == token, !capturePaused else { return }
         let surface = source.surface
         let profile = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz, preferences: preferences)
+        if encoder != nil, let previous = lastSurface, let activeProfile = lastProfile, lastMode == mode {
+            // Keep one media identity alive while a preview or child window
+            // changes the logical capture rectangle. ScreenCaptureKit can
+            // update sourceRect in place; restarting here used to create a
+            // long no-encoded-frame window and revoke the input lease.
+            let layout = try surface.withIdentity(previous.identity)
+            if layout != previous || activeProfile != profile {
+                do {
+                    try await capture.updateConfiguration(source: source, profile: activeProfile)
+                    plane.input.updateSurface(layout)
+                    lastSurface = layout
+                    layoutDiagnostic(layout)
+                    var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
+                    return
+                } catch {
+                    // Fall through to the existing full restart if the OS
+                    // rejects an in-place configuration update.
+                }
+            } else {
+                try await capture.updateFilter(source)
+                if previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects {
+                    lastSurface = layout
+                    layoutDiagnostic(layout)
+                    var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
+                }
+                return
+            }
+        }
         if encoder != nil, lastSurface?.contentRect == surface.contentRect, lastSurface?.displayID == surface.displayID,
            lastSurface?.pointPixelScale == surface.pointPixelScale, lastSurface?.sourceHz == surface.sourceHz,
            lastProfile == profile, lastMode == mode {

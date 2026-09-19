@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 import UniDeskEngine
 
 @main @MainActor struct UniDeskApp: App {
@@ -56,9 +57,25 @@ import UniDeskEngine
 
 }
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var instanceLockFD: Int32 = -1
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let other = NSRunningApplication.runningApplications(withBundleIdentifier: "com.unidesk.app").first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
-            other.activate(options: [.activateAllWindows]); NSApp.terminate(nil); return
+        // NSRunningApplication enumeration alone has a startup race: two
+        // launches can both observe no peer and both keep their Dock icon.
+        // An advisory lock is released by the kernel when the owning process
+        // exits, so it does not leave a stale PID marker after a crash.
+        guard acquireInstanceLock() else {
+            activateExistingInstance()
+            NSApp.terminate(nil)
+            return
+        }
+        // Also hand off to an older build that predates this lock. Once all
+        // installed copies use the lock, the branch above handles the race.
+        if let other = runningInstance() {
+            other.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            closeInstanceLock()
+            NSApp.terminate(nil)
+            return
         }
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
@@ -69,6 +86,38 @@ import UniDeskEngine
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { AppStore.shared.terminate() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { AppStore.shared.openMain(); return true }
+
+    private func runningInstance() -> NSRunningApplication? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.unidesk.app")
+            .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+    }
+
+    private func activateExistingInstance() {
+        runningInstance()?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+    }
+
+    private func acquireInstanceLock() -> Bool {
+        let manager = FileManager.default
+        guard let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return false }
+        let directory = support.appendingPathComponent("uniDesk", isDirectory: true)
+        do { try manager.createDirectory(at: directory, withIntermediateDirectories: true) } catch { return false }
+        let path = directory.appendingPathComponent("instance.lock").path
+        let fd = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return false }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            close(fd)
+            return false
+        }
+        instanceLockFD = fd
+        return true
+    }
+
+    private func closeInstanceLock() {
+        guard instanceLockFD >= 0 else { return }
+        _ = flock(instanceLockFD, LOCK_UN)
+        close(instanceLockFD)
+        instanceLockFD = -1
+    }
 }
 /// Assigns window identity and presentation without removing the native
 /// titlebar, its traffic lights, or its drag region.

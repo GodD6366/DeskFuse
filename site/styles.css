@@ -238,7 +238,7 @@ code { font-family: var(--mono); font-size: 0.86em; }
 .steps a:hover { border-bottom-style: solid; }
 .steps li::marker { color: var(--brand-a); font-weight: 700; }
 
-.platforms { max-width: 960px; margin: 22px auto 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.platforms { max-width: 960px; margin: 22px auto 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .platform { background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .platform-name { font-size: 13.5px; font-weight: 600; }
 .platform-status { font-size: 12px; }
