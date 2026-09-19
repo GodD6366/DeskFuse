@@ -163,7 +163,7 @@ import UniDeskRemoteApplication
 }
 
 @available(macOS 14.2, *)
-@MainActor final class RemoteApplicationPickerWindow: NSWindowController, NSWindowDelegate {
+@MainActor final class RemoteApplicationPickerWindow: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     let session: RemoteApplicationSession
     init(session: RemoteApplicationSession) {
         self.session = session
@@ -176,6 +176,17 @@ import UniDeskRemoteApplication
         window.contentMinSize = NSSize(width: 844, height: 420)
         window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
+        // A bare titlebar uses compact edge spacing. Let AppKit supply the
+        // standard unified-toolbar height and traffic-light insets instead of
+        // moving the standard buttons inside private titlebar views.
+        let toolbar = NSToolbar(identifier: "unidesk-remote-application-picker")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.showsBaselineSeparator = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
         let content = NSHostingController(rootView: RemoteApplicationPicker(session: session) { application in
             RemoteApplicationManager.shared.openApplication(application, from: session)
         })
@@ -187,6 +198,8 @@ import UniDeskRemoteApplication
         window.center()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace] }
     func windowWillClose(_ notification: Notification) { RemoteApplicationManager.shared.closePicker(session) }
 }
 

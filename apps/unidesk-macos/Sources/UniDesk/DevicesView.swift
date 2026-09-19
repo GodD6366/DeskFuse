@@ -176,6 +176,19 @@ struct DevicesView: View {
                 }
             }
             .listStyle(.inset)
+            // List's primary action handles double-click without competing
+            // with native single-click selection or the row's launch button.
+            .contextMenu(forSelectionType: String.self) { _ in
+                EmptyView()
+            } primaryAction: { ids in
+                guard ids.count == 1, let id = ids.first,
+                      let device = snapshot.devices.first(where: { $0.id == id }),
+                      device.trusted, device.connected, !device.blocked else { return }
+                selected = id
+                if #available(macOS 14.2, *) {
+                    RemoteApplicationManager.shared.open(device)
+                }
+            }
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 52)
         }

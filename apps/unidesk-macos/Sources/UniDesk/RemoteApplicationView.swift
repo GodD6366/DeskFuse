@@ -20,7 +20,6 @@ import UniDeskRemoteApplication
 /// Borderless remote canvas with local traffic lights and a centered menu.
 @available(macOS 14.2, *)
 struct RemoteApplicationView: View {
-    @Environment(\.colorScheme) private var colorScheme
     @Bindable var session: RemoteApplicationSession
     var chooseApplication: () -> Void
     var closeWindow: () -> Void
@@ -60,47 +59,48 @@ struct RemoteApplicationView: View {
                     .padding(12).allowsHitTesting(false)
             }
         }
-        .overlay(alignment: .topLeading) {
-            RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
-                .frame(width: 56, height: 20)
-                .padding(.horizontal, 7).padding(.vertical, 4)
-                // The video renderer covers B's titlebar controls separately
-                // in source coordinates; this capsule only sizes local buttons.
-                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.1), lineWidth: 0.5)
-                }
-                .clipShape(Capsule())
-                .padding(.leading, 7).padding(.top, 6)
-        }
         .overlay(alignment: .top) {
-            HStack(spacing: 4) {
-                RemoteCanvasDragHandle().frame(width: 22, height: 22).help("拖动以移动远程窗口")
-                Button {
-                    session.canvasFocus(false)
-                    chrome.menuPresented.toggle()
-                } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
-                .buttonStyle(.plain).help("远程应用菜单（⌃⌥⌘空格）")
-                .popover(isPresented: $chrome.menuPresented, arrowEdge: .top) {
-                    localActions.padding(14).frame(width: 300)
+            NativeGlassGroup {
+                ZStack(alignment: .top) {
+                    trafficLights.frame(maxWidth: .infinity, alignment: .leading)
+                    menuControls.frame(maxWidth: .infinity, alignment: .center)
                 }
             }
-            .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 5).padding(.vertical, 3)
-            .background(.thinMaterial, in: Capsule())
-            .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.1), lineWidth: 0.5)
-            }
-            .padding(.top, 6)
-            .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
-            .scaleEffect(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0.9, anchor: .top)
-            .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
-            // The window reports pointer proximity independently, so an
-            // invisible trigger is unnecessary and would steal remote input.
-            .allowsHitTesting(chrome.controlsRevealed || chrome.menuPresented)
         }
         .onChange(of: session.preferences) { _, _ in session.changePreferences() }
     }
+    private var trafficLights: some View {
+        RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
+            .frame(width: 56, height: 20)
+            .padding(.horizontal, 7).padding(.vertical, 4)
+            .modifier(NativeGlassBackdrop(cornerRadius: 14))
+            .padding(.leading, 7).padding(.top, 6)
+    }
+
+    private var menuControls: some View {
+        HStack(spacing: 4) {
+            RemoteCanvasDragHandle().frame(width: 22, height: 22).help("拖动以移动远程窗口")
+            Button {
+                session.canvasFocus(false)
+                chrome.menuPresented.toggle()
+            } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
+            .buttonStyle(.plain).help("远程应用菜单（⌃⌥⌘空格）")
+            .popover(isPresented: $chrome.menuPresented, arrowEdge: .top) {
+                localActions.padding(14).frame(width: 300)
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .modifier(NativeGlassBackdrop(cornerRadius: 14))
+        .padding(.top, 6)
+        .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
+        .scaleEffect(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0.9, anchor: .top)
+        .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
+        // The window reports pointer proximity independently, so an
+        // invisible trigger is unnecessary and would steal remote input.
+        .allowsHitTesting(chrome.controlsRevealed || chrome.menuPresented)
+    }
+
     private var localActions: some View {
         VStack(alignment: .leading, spacing: 10) {
             localAction("打开其他应用…", shortcut: nil, action: chooseApplication)

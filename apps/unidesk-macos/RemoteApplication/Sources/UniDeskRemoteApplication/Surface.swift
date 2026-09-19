@@ -21,13 +21,10 @@ public struct CaptureSurface: Codable, Equatable, Sendable {
     /// Presentation metadata. Input remains normalized to the entire capture.
     public let applicationRect: CGRect?
     public let auxiliaryRects: [CGRect]?
-    /// Live window-control bounds in Quartz points. Unlike contentRect, these
-    /// continue moving during a drag while the input/capture geometry is frozen.
-    public let windowControlRects: [CGRect]?
 
     public init(identity: SurfaceIdentity, displayID: UInt32, displayFrame: CGRect, contentRect: CGRect,
                 pointPixelScale: Double, sourceHz: Double?, applicationRect: CGRect? = nil,
-                auxiliaryRects: [CGRect]? = nil, windowControlRects: [CGRect]? = nil) throws {
+                auxiliaryRects: [CGRect]? = nil) throws {
         let values = [displayFrame.minX, displayFrame.minY, displayFrame.width, displayFrame.height,
                       contentRect.minX, contentRect.minY, contentRect.width, contentRect.height, pointPixelScale]
         guard values.allSatisfy(\.isFinite), pointPixelScale > 0, !displayFrame.isEmpty,
@@ -37,30 +34,17 @@ public struct CaptureSurface: Codable, Equatable, Sendable {
         }
         self.identity = identity; self.displayID = displayID; self.displayFrame = displayFrame
         self.contentRect = contentRect; self.pointPixelScale = pointPixelScale; self.sourceHz = sourceHz
-        for rect in [applicationRect].compactMap({ $0 }) + (auxiliaryRects ?? []) + (windowControlRects ?? []) {
+        for rect in [applicationRect].compactMap({ $0 }) + (auxiliaryRects ?? []) {
             guard [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite),
                   !rect.isEmpty, contentRect.contains(rect) else { throw RemoteApplicationError.invalidGeometry }
         }
         self.applicationRect = applicationRect; self.auxiliaryRects = auxiliaryRects
-        self.windowControlRects = windowControlRects
     }
 
     public func withIdentity(_ identity: SurfaceIdentity) throws -> CaptureSurface {
         try CaptureSurface(identity: identity, displayID: displayID, displayFrame: displayFrame,
             contentRect: contentRect, pointPixelScale: pointPixelScale, sourceHz: sourceHz,
-            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects, windowControlRects: windowControlRects)
-    }
-
-    /// Project live controls into the still-active stream during crop debounce.
-    /// Never change the pixel-to-input mapping until the new surface is ready.
-    public func withWindowControlRects(_ rects: [CGRect]?) throws -> CaptureSurface {
-        let visible = rects?.compactMap { rect -> CGRect? in
-            let clipped = rect.intersection(contentRect)
-            return clipped.isNull || clipped.isEmpty ? nil : clipped
-        }
-        return try CaptureSurface(identity: identity, displayID: displayID, displayFrame: displayFrame,
-            contentRect: contentRect, pointPixelScale: pointPixelScale, sourceHz: sourceHz,
-            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects, windowControlRects: visible)
+            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects)
     }
 
     /// Layout-only updates may share an identity only while pixel-to-input

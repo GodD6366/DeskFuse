@@ -54,8 +54,7 @@ final class SessionDataPlane: @unchecked Sendable {
         setMetrics(metrics)
         _ = try CaptureSurface(identity: surface.identity, displayID: surface.displayID, displayFrame: surface.displayFrame,
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz,
-            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects,
-            windowControlRects: surface.windowControlRects)
+            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects)
         let next = VideoDecoder(surface: surface.identity, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics,
             keyFrameNeeded: { [weak self] in self?.send(RemoteMessage(.keyFrame)) }, output: { [weak self] result in
                 guard let self, self.lock.withLock({ self.connectionToken == token && self.identity == surface.identity }) else { return }
@@ -731,8 +730,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             pendingCapture = nil
             try await capture.updateFilter(source)
             guard operation == token, !capturePaused, running, lastSurface?.identity == previous.identity else { return }
-            if previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects
-                || previous.windowControlRects != surface.windowControlRects {
+            if previous.applicationRect != surface.applicationRect || previous.auxiliaryRects != surface.auxiliaryRects {
                 let layout = try surface.withIdentity(previous.identity)
                 lastSurface = layout
                 layoutDiagnostic(layout)
@@ -744,11 +742,6 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         // needs a new identity so old pixels cannot use new input coordinates.
         // Layout-only changes above keep their stream and native lease.
         if encoder != nil, let previous = lastSurface, !previous.hasSameCaptureGeometry(as: surface) {
-            let layout = try previous.withWindowControlRects(surface.windowControlRects)
-            if layout.windowControlRects != previous.windowControlRects {
-                lastSurface = layout
-                var message = RemoteMessage(.layout); message.surface = layout; plane.send(message)
-            }
             let now = ProcessInfo.processInfo.systemUptime
             if let pending = pendingCapture, pending.surface.hasSameCaptureGeometry(as: surface),
                pending.profile == profile, pending.mode == mode {
@@ -875,7 +868,6 @@ struct VideoCanvas: NSViewRepresentable {
     func updateNSView(_ view: RemoteVideoView, context: Context) {
         view.frames = session.plane.frames; view.metrics = session.metrics
         view.surfaceLayout = session.presentationSurface
-        view.replacesWindowControls = true
         view.onContentSize = { [weak session] in session?.didPresent($0) }
         view.inputEnabled = session.role == .viewer && session.running && !session.viewerPaused && !session.awaitingResumeSurface
         view.onFocus = { [weak session] in session?.canvasFocus($0) }

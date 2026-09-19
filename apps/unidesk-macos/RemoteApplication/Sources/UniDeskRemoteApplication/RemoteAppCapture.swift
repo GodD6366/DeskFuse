@@ -105,7 +105,6 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let rect: CGRect
         var applicationRect: CGRect?
         var auxiliaryRects: [CGRect] = []
-        var windowControlRects: [CGRect] = []
         var usesDisplayFilter = mode == .desktop
         var chromiumMatched = false
         if mode == .desktop {
@@ -145,14 +144,6 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
                 }
             }
             rect = candidateExtent.intersection(display.frame)
-            // Derive controls from live window frames, never the frozen crop's
-            // origin. Clip after positioning, so off-screen controls stay gone.
-            windowControlRects = baseWindows.compactMap { window in
-                let cover = CGRect(origin: window.frame.origin,
-                    size: CGSize(width: min(88, window.frame.width), height: min(40, window.frame.height)))
-                    .intersection(rect)
-                return cover.isNull || cover.isEmpty ? nil : cover
-            }
             let baseWindowIDs = Set(baseWindows.map(\.windowID))
             // A moving main window is still part of the base video. Treating
             // its overflow as an auxiliary panel composites it a second time.
@@ -171,7 +162,7 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let note = "bundle=\(application.bundleIdentifier) owned=\(ownedWindows.count) onScreen=\(windows.count) chromium=\(chromiumMatched) displayFilter=\(usesDisplayFilter)"
         return Source(filter: filter, surface: try CaptureSurface(identity: identity, displayID: display.displayID,
             displayFrame: display.frame, contentRect: rect, pointPixelScale: scale, sourceHz: hz,
-            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects, windowControlRects: windowControlRects),
+            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects),
             applicationIDs: mode == .desktop ? [] : included.map(\.processID).sorted(), note: note)
     }
 
