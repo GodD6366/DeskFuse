@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>uniDesk — 在所有设备间，自由流转</title>
+  <meta name="description" content="uniDesk 是 macOS 优先的原生桌面协作工具：剪贴板同步、文件传输、暂存抽屉、键鼠共享，基于 QUIC 加密，在可信设备间自由流转。" />
+  <meta property="og:title" content="uniDesk — 在所有设备间，自由流转" />
+  <meta property="og:description" content="macOS 优先的原生桌面协作：剪贴板同步 · 文件传输 · 暂存抽屉 · 键鼠共享" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="assets/shot-clipboard.jpg" />
+  <link rel="icon" type="image/png" href="assets/icon.png" />
+  <link rel="stylesheet" href="styles.css?v=20260919b" />
+</head>
+<body>
+  <!-- 背景层：极光 + 网格 + 噪点 -->
+  <div class="bg" aria-hidden="true">
+    <div class="aurora aurora-1"></div>
+    <div class="aurora aurora-2"></div>
+    <div class="aurora aurora-3"></div>
+    <div class="grid-overlay"></div>
+  </div>
+
+  <!-- 导航 -->
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="#top">
+        <img src="assets/icon.png" alt="uniDesk 图标" class="nav-logo" />
+        <span>uniDesk</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#features">功能</a>
+        <a href="#screenshots">界面</a>
+        <a href="#compare">对比</a>
+        <a href="#install">安装</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/GodD6366/unidesk-release" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary btn-sm" href="#install">立即下载</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-inner reveal">
+        <div class="hero-icon-wrap">
+          <img src="assets/icon.png" alt="uniDesk" class="hero-icon" />
+          <div class="hero-icon-glow"></div>
+        </div>
+        <div class="hero-badge">
+          <span class="pulse-dot"></span>
+          <span id="version-badge">最新版本 v0.3.0 · macOS arm64 / Intel · Windows x64</span>
+        </div>
+        <h1 class="hero-title">
+          在所有设备间<br /><span class="grad-text">自由流转</span>
+        </h1>
+        <p class="hero-sub">
+          uniDesk 是 macOS 优先的原生桌面协作工具 —— 剪贴板同步、文件传输、暂存抽屉、键鼠共享，
+          由 Rust 引擎与 SwiftUI 打造，经 QUIC 加密，只在你的可信设备之间运行。
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary btn-lg" id="download-btn" href="https://github.com/GodD6366/unidesk-release/releases" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            下载 macOS 版
+          </a>
+          <a class="btn btn-glass btn-lg" href="#install">查看安装方式</a>
+        </div>
+        <p class="hero-note">macOS 14+ · Apple Silicon · Developer ID 签名与公证 · QUIC 加密传输</p>
+      </div>
+      <div class="hero-shot reveal" data-tilt>
+        <div class="shot-frame">
+          <div class="shot-frame-bar"><i></i><i></i><i></i></div>
+          <img src="assets/shot-clipboard.jpg" alt="uniDesk 剪贴板界面" />
+        </div>
+      </div>
+    </section>
+
+    <!-- 特性条 -->
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track">
+        <span>剪贴板同步</span><i>✦</i><span>跨设备历史</span><i>✦</i><span>图片内容搜索</span><i>✦</i><span>文件按需传输</span><i>✦</i><span>暂存抽屉</span><i>✦</i><span>键鼠共享</span><i>✦</i><span>QUIC 加密</span><i>✦</i><span>局域网优先</span><i>✦</i><span>Liquid Glass</span><i>✦</i><span>Rust + SwiftUI</span><i>✦</i>
+        <span>剪贴板同步</span><i>✦</i><span>跨设备历史</span><i>✦</i><span>图片内容搜索</span><i>✦</i><span>文件按需传输</span><i>✦</i><span>暂存抽屉</span><i>✦</i><span>键鼠共享</span><i>✦</i><span>QUIC 加密</span><i>✦</i><span>局域网优先</span><i>✦</i><span>Liquid Glass</span><i>✦</i><span>Rust + SwiftUI</span><i>✦</i>
+      </div>
+    </div>
+
+    <!-- 功能 Bento -->
+    <section class="section" id="features">
+      <div class="section-head reveal">
+        <p class="eyebrow">能做什么</p>
+        <h2>一台 Mac 放不下的时候<br />uniDesk 把它们连成一体</h2>
+      </div>
+      <div class="bento">
+        <article class="card card-wide reveal">
+          <div class="card-icon">📋</div>
+          <h3>剪贴板同步</h3>
+          <p>文本、图片与原生格式在可信设备间实时同步。在 Mac 上复制，到另一台设备直接粘贴 —— 不依赖 iCloud，局域网内即时抵达。</p>
+          <div class="card-visual clipboard-demo" aria-hidden="true">
+            <div class="chip chip-a">https://www.apple.com/cn</div>
+            <div class="chip chip-b">IMG_2887.JPG · 2.4 MB</div>
+            <div class="chip chip-c">真正的效率，是让技术隐形。</div>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">🔍</div>
+          <h3>剪贴板历史</h3>
+          <p>跨设备同步的剪贴板历史，支持图片内容搜索。昨天复制过的截图，今天搜得到。</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">🗂️</div>
+          <h3>文件传输</h3>
+          <p>按需传输，小文件可提前送达；完整保留名称与文件夹结构，历史缓存有容量上限与清理回执。</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">🧺</div>
+          <h3>暂存抽屉</h3>
+          <p>把文件拖进 240 × 240 的悬浮抽屉暂存，整批拖出到 Finder，或直接发送给另一台设备。</p>
+        </article>
+        <article class="card card-wide reveal">
+          <div class="card-icon">🖱️</div>
+          <h3>屏幕与键鼠共享</h3>
+          <p>一套键鼠跨屏控制多台设备：真实显示器布局、独立开关、权限状态可见，紧急收回一键生效。不再受同一 Apple 账号限制。</p>
+          <div class="card-visual displays-demo" aria-hidden="true">
+            <div class="display-box d1"><span>MacBook Pro</span></div>
+            <div class="display-box d2"><span>iMac</span></div>
+            <div class="cursor-dot"></div>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">📡</div>
+          <h3>设备发现与配对</h3>
+          <p>自动发现局域网设备，也可手动输入 IPv4 定位；配对仍需对端确认，IP 不作为信任依据。</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon">🔐</div>
+          <h3>QUIC 加密与隐私</h3>
+          <p>传输基于 QUIC 加密，设备身份持久可信。日志只记录元数据、状态与哈希 —— 永不记录剪贴板正文。</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 界面展示 -->
+    <section class="section" id="screenshots">
+      <div class="section-head reveal">
+        <p class="eyebrow">界面</p>
+        <h2>原生 SwiftUI 打造<br />macOS 26 上的 Liquid Glass</h2>
+      </div>
+      <div class="shot-tabs reveal" role="tablist">
+        <button class="shot-tab active" data-shot="clipboard" role="tab">剪贴板</button>
+        <button class="shot-tab" data-shot="devices" role="tab">设备</button>
+        <button class="shot-tab" data-shot="sharing" role="tab">分享与传输</button>
+      </div>
+      <div class="shot-stage reveal" data-tilt>
+        <div class="shot-frame shot-frame-lg">
+          <div class="shot-frame-bar"><i></i><i></i><i></i></div>
+          <img id="shot-image" src="assets/shot-clipboard.jpg" alt="uniDesk 界面截图" />
+        </div>
+        <p class="shot-caption" id="shot-caption">剪贴板历史：文本、图片、文件一目了然，支持图片内容搜索</p>
+      </div>
+    </section>
+
+    <!-- 对比 -->
+    <section class="section" id="compare">
+      <div class="section-head reveal">
+        <p class="eyebrow">对比</p>
+        <h2>为什么不是连续互通或 Deskflow</h2>
+      </div>
+      <div class="table-wrap reveal">
+        <table class="compare-table">
+          <thead>
+            <tr><th>功能</th><th>macOS 连续互通</th><th>Deskflow</th><th class="hl">uniDesk</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>键鼠跨屏</td><td>仅限同 Apple 账号</td><td>屏幕位置无法自由摆放</td><td class="hl">✅</td></tr>
+            <tr><td>剪贴板同步</td><td>依赖 iCloud，稳定性不佳</td><td>仅基础文字、小图片</td><td class="hl">✅</td></tr>
+            <tr><td>文件传输</td><td>AirDrop</td><td>❌</td><td class="hl">✅ 支持文件夹</td></tr>
+            <tr><td>文件暂存抽屉</td><td>❌</td><td>❌</td><td class="hl">✅</td></tr>
+            <tr><td>剪贴板历史</td><td>❌</td><td>❌</td><td class="hl">✅ 跨设备，图片可搜</td></tr>
+            <tr><td>加密传输</td><td>✅</td><td>TLS</td><td class="hl">QUIC</td></tr>
+          </tbody>
+        </table>
+        <p class="table-note">对比依据 2026-09：Apple 通用控制 / 通用剪贴板支持文档、Deskflow 官方仓库。</p>
+      </div>
+    </section>
+
+    <!-- 安装 -->
+    <section class="section" id="install">
+      <div class="section-head reveal">
+        <p class="eyebrow">安装</p>
+        <h2>两种方式，一分钟上手</h2>
+      </div>
+      <div class="install-grid">
+        <article class="install-card reveal">
+          <div class="install-card-head">
+            <h3>Homebrew <span class="tag">推荐</span></h3>
+            <p>macOS 14+ · Apple Silicon，一条命令装好，随 brew 更新。</p>
+          </div>
+          <div class="code-block">
+            <button class="copy-btn" data-copy="brew trust --cask godd6366/unidesk/unidesk && brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release && brew install --cask godd6366/unidesk/unidesk">复制</button>
+            <pre><code>brew trust --cask godd6366/unidesk/unidesk
+brew tap godd6366/unidesk \
+  https://github.com/GodD6366/unidesk-release
+brew install --cask godd6366/unidesk/unidesk</code></pre>
+          </div>
+          <p class="install-note">升级：<code>brew update && brew upgrade --cask unidesk</code></p>
+        </article>
+        <article class="install-card reveal">
+          <div class="install-card-head">
+            <h3>手动安装 DMG</h3>
+            <p>从 GitHub Releases 下载并校验，拖入 Applications 即可。</p>
+          </div>
+          <ol class="steps">
+            <li><a id="release-link" href="https://github.com/GodD6366/unidesk-release/releases" target="_blank" rel="noopener">下载对应平台安装包与 SHA256SUMS</a></li>
+            <li>运行 <code>shasum -a 256 -c SHA256SUMS</code> 校验完整性</li>
+            <li>打开 DMG，把 uniDesk.app 拖进「应用程序」</li>
+            <li>按提示允许局域网访问；键鼠共享另需辅助功能授权</li>
+          </ol>
+          <p class="install-note">公开预发行经 Developer ID 签名并公证，可直接打开。</p>
+        </article>
+      </div>
+      <div class="platforms reveal">
+        <div class="platform"><span class="platform-name">macOS 14+ · Apple Silicon</span><span class="platform-status ok">主平台</span></div>
+        <div class="platform"><span class="platform-name">macOS 26+</span><span class="platform-status ok">原生 Liquid Glass</span></div>
+        <div class="platform"><span class="platform-name">Windows x64</span><span class="platform-status warn">实验性离线安装器</span></div>
+        <div class="platform"><span class="platform-name">Intel Mac</span><span class="platform-status ok">x86_64 DMG</span></div>
+        <div class="platform"><span class="platform-name">Linux</span><span class="platform-status muted">不在首发范围</span></div>
+      </div>
+    </section>
+
+    <!-- 结尾 CTA -->
+    <section class="final-cta reveal">
+      <h2>让设备之间的边界<span class="grad-text">消失</span></h2>
+      <a class="btn btn-primary btn-lg" href="#install">立即开始使用</a>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="assets/icon.png" alt="" class="nav-logo" />
+        <span>uniDesk</span>
+        <p>macOS 优先的原生桌面协作工具<br />Rust 2024 引擎 · SwiftUI 客户端</p>
+      </div>
+      <div class="footer-links">
+        <div>
+          <h4>下载</h4>
+          <a href="https://github.com/GodD6366/unidesk-release/releases" target="_blank" rel="noopener">GitHub Releases</a>
+          <a href="https://github.com/GodD6366/unidesk-release" target="_blank" rel="noopener">Homebrew Tap</a>
+        </div>
+        <div>
+          <h4>项目</h4>
+          <a href="#features">功能</a>
+          <a href="#compare">对比</a>
+          <a href="#install">安装</a>
+        </div>
+      </div>
+    </div>
+    <p class="footer-copy">© 2026 uniDesk · 预发行阶段，构建通过不代表真实两机验收</p>
+  </footer>
+
+  <script src="script.js?v=20260919b"></script>
+</body>
+</html>

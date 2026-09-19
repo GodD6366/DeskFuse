@@ -10,7 +10,7 @@
 - 重构剪贴板工作区、预览、设备路由、分享传输和设置入口，改善列表与窗口交互。
 - 改进剪贴板库持久化、GitHub 更新元数据和本地 macOS 打包流程，增加 Intel 架构安装包构建入口。
 
-发行边界：公开 GitHub 预发行仍按 arm64 资产和 CI 合同发布；Intel DMG 为本机实验性包。签名、公证、UI、Finder 粘贴/拖出及真实两机行为需分别验收。
+发行边界：公开 GitHub 预发行同时构建 macOS arm64、macOS Intel 和 Windows x64 安装包；Homebrew cask 仍固定 arm64 DMG。签名、公证、UI、Finder 粘贴/拖出及真实两机行为需分别验收。
 
 ## [0.2.3] — 剪贴板、设备连接与构建流程改进
 

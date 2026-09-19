@@ -56,6 +56,8 @@ class ReleaseTests(unittest.TestCase):
 
     def make_inventory(self):
         (self.root / "uniDesk-arm64.dmg").write_bytes(b"test fixture, not a DMG")
+        (self.root / "uniDesk-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
+        (self.root / "uniDesk-windows-x64-setup.exe").write_bytes(b"windows fixture, not an installer")
         with patch.object(release, "version", return_value="0.1.0"), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit)
 
@@ -63,8 +65,9 @@ class ReleaseTests(unittest.TestCase):
         self.make_inventory()
         release.verify_inventory(self.root, self.data, self.commit)
         info = json.loads((self.root / "build-info.json").read_text())
-        self.assertEqual(info["signing"], "ad-hoc")
-        self.assertFalse(info["notarized"])
+        self.assertEqual({item["target"] for item in info["targets"]}, set(release.TARGET_ASSETS.values()))
+        self.assertEqual(info["targets"][0]["signing"], "ad-hoc")
+        self.assertFalse(info["targets"][0]["notarized"])
         with self.assertRaises(ValueError):
             release.verify_inventory(self.root, self.data, "b" * 40)
 
@@ -72,8 +75,8 @@ class ReleaseTests(unittest.TestCase):
         (self.root / ".signing").write_text("developer-id\ntrue\n")
         self.make_inventory()
         info = json.loads((self.root / "build-info.json").read_text())
-        self.assertEqual(info["signing"], "developer-id")
-        self.assertTrue(info["notarized"])
+        self.assertTrue(all(item["signing"] == "developer-id" for item in info["targets"] if item["target"].endswith("apple-darwin")))
+        self.assertTrue(all(item["notarized"] for item in info["targets"] if item["target"].endswith("apple-darwin")))
         release.verify_inventory(self.root, self.data, self.commit)
 
     def test_notarized_ad_hoc_is_rejected(self):

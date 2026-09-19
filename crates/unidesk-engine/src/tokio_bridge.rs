@@ -57,7 +57,7 @@ use unidesk_identity::MemoryIdentityProvider;
 use unidesk_platform::ports::{
     ApplyResult, ContentData, ContentToApply, NativeRevision, apply_clipboard,
 };
-use unidesk_platform::{Pasteboard, PasteboardSnapshot};
+use unidesk_platform::{Pasteboard, PasteboardSnapshot, UNIVERSAL_CLIPBOARD_TYPE};
 use unidesk_platform_macos::{CapturedFilePaste, FilePasteCapture, FilePasteReference};
 #[cfg(test)]
 use unidesk_runtime::{ProviderFuture, TransportConnection, TransportProvider};
@@ -2917,13 +2917,30 @@ impl Default for ClipboardLoopGuard {
 impl ClipboardLoopGuard {
     const CAPACITY: usize = 64;
 
-    fn remember_remote_payload(&mut self, payload: &ClipboardPayload, change_count: i64) {
+    /// Remember a payload written by uniDesk and report whether an equivalent
+    /// clipboard value was already observed during the echo window.
+    ///
+    /// Apple Universal Clipboard can arrive before uniDesk's own transfer. In
+    /// that order the local poll has already put the Handoff representation in
+    /// the ledger; treating the later uniDesk payload as a duplicate keeps the
+    /// history row single even when the native representations differ.
+    fn remember_remote_payload(
+        &mut self,
+        payload: &ClipboardPayload,
+        snapshot: Option<&PasteboardSnapshot>,
+        change_count: i64,
+    ) -> bool {
         self.remember(
             clipboard_fingerprint(&payload.mime, &payload.data),
             change_count,
         );
-        self.ledger
-            .observe(crate::clipboard_echo::payload_equivalent_ids(payload));
+        let mut equivalent_ids = crate::clipboard_echo::payload_equivalent_ids(payload);
+        if let Some(snapshot) = snapshot {
+            equivalent_ids.extend(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
+        }
+        equivalent_ids.sort();
+        equivalent_ids.dedup();
+        self.ledger.observe(equivalent_ids)
     }
 
     fn remember(&mut self, fingerprint: String, change_count: i64) {
@@ -2941,6 +2958,17 @@ impl ClipboardLoopGuard {
         pasteboard: &impl Pasteboard,
         snapshot: &PasteboardSnapshot,
     ) -> bool {
+        // Universal Clipboard is Apple's own cross-device copy. uniDesk's
+        // trusted session will deliver the same content (or has already done
+        // so), so importing this system echo would create a second history
+        // row. Do not add it to the ledger: an explicit local recopy after the
+        // Handoff marker is cleared must remain a real new copy.
+        if pasteboard
+            .contains_type(UNIVERSAL_CLIPBOARD_TYPE)
+            .unwrap_or(false)
+        {
+            return true;
+        }
         let marker = pasteboard.read_remote_origin_marker().ok().flatten();
         if !snapshot.file_urls.is_empty() {
             // File paths change when a peer receives them into its private
@@ -4258,13 +4286,14 @@ fn finish_native_clipboard(
     metadata: Option<&clipboard_bundle::SourceMetadata>,
 ) -> bool {
     let applied = result.is_ok();
+    let mut duplicate_of_recent_clipboard = false;
     if result.is_ok() {
         // AppKit can synthesize legacy aliases. Bind the marker to the
         // actual installed representations, including legacy peer writes.
-        let fingerprint = pasteboard
-            .read()
-            .ok()
-            .and_then(|snapshot| clipboard_snapshot_fingerprint(&snapshot))
+        let applied_snapshot = pasteboard.read().ok();
+        let fingerprint = applied_snapshot
+            .as_ref()
+            .and_then(clipboard_snapshot_fingerprint)
             .unwrap_or_else(|| clipboard_fingerprint(&payload.mime, &payload.data));
         if let Err(error) = pasteboard.write_remote_origin_marker(&fingerprint) {
             crate::diagnostics::record!(
@@ -4279,7 +4308,10 @@ fn finish_native_clipboard(
         // Writing the marker may advance changeCount too. Bind the fallback
         // only after the complete remote write, never to historical content.
         if let Ok(count) = pasteboard.change_count() {
-            state.loop_guard.remember_remote_payload(payload, count);
+            duplicate_of_recent_clipboard =
+                state
+                    .loop_guard
+                    .remember_remote_payload(payload, applied_snapshot.as_ref(), count);
             state.loop_guard.remember(fingerprint, count);
         }
     }
@@ -4288,7 +4320,16 @@ fn finish_native_clipboard(
     *state.last_change_count = pasteboard.change_count().ok();
     match result {
         Ok(()) => {
-            if let Ok(mut snapshot) = pasteboard.read() {
+            if duplicate_of_recent_clipboard {
+                crate::diagnostics::record!(
+                    diagnostics,
+                    DiagnosticLevel::Info,
+                    "clipboard",
+                    "remote_history_duplicate_suppressed",
+                    Some(format!("peer={} mime={}", peer_id.to_hex(), payload.mime)),
+                    None,
+                );
+            } else if let Ok(mut snapshot) = pasteboard.read() {
                 let unknown = clipboard_bundle::SourceMetadata {
                     no_history: true,
                     ..Default::default()
@@ -4741,6 +4782,62 @@ mod tests {
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
         assert!(!loop_guard.should_suppress(&pasteboard, &incoming));
+    }
+
+    #[test]
+    fn universal_clipboard_is_suppressed_without_poisoning_a_later_local_copy() {
+        let pasteboard = MemoryPasteboard::new();
+        let mut loop_guard = ClipboardLoopGuard::default();
+        pasteboard.write_png(&[1, 2, 3]).unwrap();
+        pasteboard.mark_universal_clipboard().unwrap();
+        let handoff = pasteboard.read().unwrap();
+        assert!(loop_guard.should_suppress(&pasteboard, &handoff));
+
+        // A real local copy clears Apple's bookkeeping type. Because the
+        // suppressed Handoff was never added to the ledger, this copy is
+        // allowed through even when its bytes happen to be identical.
+        pasteboard.write_png(&[1, 2, 3]).unwrap();
+        let local = pasteboard.read().unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+    }
+
+    #[test]
+    fn remote_payload_after_handoff_is_recognized_as_a_history_duplicate() {
+        let pasteboard = MemoryPasteboard::new();
+        let mut loop_guard = ClipboardLoopGuard::default();
+        let items = vec![unidesk_platform::PasteboardItem {
+            representations: vec![unidesk_platform::PasteboardRepresentation {
+                type_name: "public.tiff".into(),
+                data: vec![1, 2, 3],
+            }],
+        }];
+        pasteboard.write_items(&items).unwrap();
+        let handoff = pasteboard.read().unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &handoff));
+
+        // Native rich images travel through the clipboard bundle MIME, so
+        // payload-only matching is insufficient. The applied native snapshot
+        // must participate in the same equivalence ledger.
+        let payload = ClipboardPayload::new(
+            clipboard_bundle::MIME,
+            clipboard_bundle::encode(&items).unwrap(),
+            1,
+        )
+        .unwrap();
+        assert!(loop_guard.remember_remote_payload(
+            &payload,
+            Some(&handoff),
+            handoff.change_count + 1,
+        ));
+
+        // The first remote delivery on a clean host must still be retained;
+        // the native snapshot and payload are observed as one logical value.
+        let mut fresh_guard = ClipboardLoopGuard::default();
+        assert!(!fresh_guard.remember_remote_payload(
+            &payload,
+            Some(&handoff),
+            handoff.change_count + 1,
+        ));
     }
 
     #[test]

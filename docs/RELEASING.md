@@ -5,9 +5,11 @@
 | 产物 | 用途 |
 | --- | --- |
 | `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
+| `dist/uniDesk-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
+| `dist/uniDesk-windows-x64-setup.exe` | Windows x64 实验性离线桌面安装器；不作为 LAN 自动更新载荷 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
-| `dist/build-info.json` | 源 commit、工具链、架构、签名状态和 DMG 哈希 |
-| `dist/SHA256SUMS` | 上述三个文件的 SHA-256；校验和本身不是发行签名 |
+| `dist/build-info.json` | 源 commit、工具链、三个目标、签名状态和资产哈希 |
+| `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
 | `dist/uniDesk-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
 
@@ -67,9 +69,9 @@ RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
 
 无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 Homebrew 的 `dist/homebrew/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
-打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
+打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、目标架构、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 
-Intel Mac 目前只提供本机实验性 DMG，不加入公开 arm64 Release，也不生成当前仅支持 arm64 的 LAN 更新清单。使用相同的发行描述构建 x86_64 包：
+Intel Mac 使用相同的发行描述构建 x86_64 包。Intel 包和公开 Release 不使用 LAN 更新清单：
 
 ```sh
 UNIDESK_MACOS_ARCH=x86_64 CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 \
@@ -81,11 +83,11 @@ UNIDESK_MACOS_ARCH=x86_64 UNIDESK_DMG_FINDER_LAYOUT=0 \
 
 该包包含 x86_64 主程序、输入服务和更新 helper，默认使用 GitHub 更新渠道；签名、公证和 Intel 设备行为仍需单独验收。
 
-只有从已提交、与产物一致的源码构建后，才能生成对外构建信息：
+只有在已提交、与三平台产物一致的源码上，发布 job 才生成完整对外构建信息。发布 job 会在合并 arm64、x86_64 和 Windows 资产后运行：
 
 ```sh
-python3 scripts/release.py inventory --commit "$(git rev-parse HEAD)"
-(cd dist && shasum -a 256 -c SHA256SUMS)
+python3 scripts/release.py inventory --directory dist --commit "$(git rev-parse HEAD)"
+(cd dist && sha256sum -c SHA256SUMS)
 ```
 
 ## GitHub 预发行流程
@@ -100,13 +102,13 @@ git push origin v0.1.0
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
 2. 调用相同 CI：macOS 检查、Windows 原生适配器和服务检查均成功才继续。
-3. `xcode-27` Apple Silicon runner 使用已提交 descriptor 和固定 Rust target，导入 Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple，验证 DMG，再生成四件套。缺少 Apple secret 时失败。
+3. `xcode-27` Apple Silicon runner 分别构建 arm64 和 x86_64 DMG；Windows x86_64 runner 生成 NSIS 离线安装器。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple，Windows job 使用相同 descriptor 并检查 PE x64。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
 
 当前 `xcode-27` 是 GitHub 的预览镜像，用于满足已使用的 SDK 27 API；发布前须确认该镜像可用并检查实际运行结果。
 
-Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首次远端运行必须独立检查结果，不能拿本地通过替代。Windows 不产出公开安装包。
+Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首次远端运行必须独立检查结果，不能拿本地通过替代。Windows 安装、SCM、Explorer、剪贴板、键鼠和两机行为仍需独立验收。
 
 ### Homebrew cask
 

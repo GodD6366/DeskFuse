@@ -6,7 +6,7 @@ Source is now private. Public installers and the Homebrew tap live in [unidesk-r
 
 A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
 
-> Early prerelease: macOS ships an Apple Silicon test build, Windows is an experimental implementation; a passing build is not two-device acceptance.
+> Early prerelease: GitHub ships macOS arm64, macOS Intel, and Windows x64 installers; a passing build is not two-device acceptance.
 
 ## What it does
 
@@ -38,8 +38,8 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 | --- | --- |
 | macOS 14+, Apple Silicon | Main platform, arm64 DMG |
 | macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
-| Intel Mac | No release, no compatibility claim |
-| Windows x64 | Native adapters and service checkpoint; no GUI, installer or full cross-platform collaboration |
+| Intel Mac | x86_64 DMG is released; behavior and device acceptance are tracked separately from arm64 |
+| Windows x64 | Experimental offline installer is released; full cross-platform collaboration and device acceptance still require separate validation |
 | Linux | Not a first-release target |
 
 ## Download and install
@@ -68,7 +68,7 @@ Internal signed packages continue using trusted LAN automatic updates; public pa
 
 ### Manual DMG install
 
-1. Download `uniDesk-arm64.dmg`, `SHA256SUMS`, `release.json` and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+1. Download the package for your device (`uniDesk-arm64.dmg`, `uniDesk-x86_64.dmg`, or `uniDesk-windows-x64-setup.exe`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
 2. Open the DMG and drag `uniDesk.app` into Applications; run only one instance per device.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
 
@@ -106,7 +106,7 @@ docs/           Architecture, feature contracts, release and support boundaries
 
 ## Known limitations
 
-- The Windows service package is not a GUI or installer; real SCM, session switching and cross-platform features need separate acceptance.
+- The Windows installer is an experimental offline desktop package; installation, SCM, session switching and cross-platform features need separate acceptance.
 - Native Finder paste, drag-out, permission changes, Wi-Fi input crossing and real two-device behavior cannot be replaced by CI.
 - GitHub CI does not sign LAN update payloads; the coordinator build supports automatic macOS LAN updates, and older versions need one manual base install, see [RELEASING.md](docs/RELEASING.md).
 - Logs contain metadata, state and hashes only; check attachments before filing issues and never upload clipboard contents, device keys or credentials.

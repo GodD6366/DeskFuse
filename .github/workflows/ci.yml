@@ -80,7 +80,6 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
-          python3 scripts/release.py inventory
       - name: Upload main-branch build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -88,8 +87,6 @@ jobs:
           path: |
             dist/uniDesk-arm64.dmg
             dist/release.json
-            dist/build-info.json
-            dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 

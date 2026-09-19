@@ -18,6 +18,10 @@ import UniDeskEngine
     @ObservationIgnored private var outsideMonitor: Any?
     @ObservationIgnored private var localMouseMonitor: Any?
     @ObservationIgnored private var target: NSRunningApplication?
+    /// The status-item click can briefly make uniDesk frontmost before the
+    /// action is delivered. Keep the last external app so reopening the panel
+    /// does not lose the destination for a subsequent double-click paste.
+    @ObservationIgnored private var lastExternalTarget: NSRunningApplication?
     @ObservationIgnored private var hotKey: EventHotKeyRef?
     @ObservationIgnored private var handler: EventHandlerRef?
     @ObservationIgnored private var resignObserver: NSObjectProtocol?
@@ -197,7 +201,14 @@ import UniDeskEngine
         closingForPaste = false
         session = UUID()
         let frontmost = NSWorkspace.shared.frontmostApplication
-        target = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
+        if let frontmost, frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           !frontmost.isTerminated {
+            lastExternalTarget = frontmost
+        }
+        let currentTarget = frontmost.flatMap { app in
+            app.processIdentifier == ProcessInfo.processInfo.processIdentifier || app.isTerminated ? nil : app
+        }
+        target = currentTarget ?? (lastExternalTarget?.isTerminated == false ? lastExternalTarget : nil)
         let mouse = NSEvent.mouseLocation
         let screen = atPointer
             ? (NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main)
@@ -264,7 +275,10 @@ import UniDeskEngine
     func pasteRestoredContent(expectedChangeCount: Int64, in presentation: UUID) async throws {
         guard presentation == session else { throw ClipboardPanelFailure.cancelled }
         guard AXIsProcessTrusted() else { throw ClipboardPanelFailure.message("请在系统设置 → 隐私与安全性 → 辅助功能中授权 uniDesk；内容已复制，可手动粘贴。") }
-        guard let target, !target.isTerminated else { throw ClipboardPanelFailure.message("原目标应用不可用；内容已复制，可手动粘贴。") }
+        guard let target = (target?.isTerminated == false ? target : nil)
+                ?? (lastExternalTarget?.isTerminated == false ? lastExternalTarget : nil) else {
+            throw ClipboardPanelFailure.message("原目标应用不可用；内容已复制，可手动粘贴。")
+        }
         closingForPaste = true
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)

@@ -16,9 +16,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import shutil
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = ("uniDesk-arm64.dmg", "release.json", "build-info.json", "SHA256SUMS")
+ASSETS = (
+    "uniDesk-arm64.dmg",
+    "uniDesk-x86_64.dmg",
+    "uniDesk-windows-x64-setup.exe",
+    "release.json",
+    "build-info.json",
+    "SHA256SUMS",
+)
+TARGET_ASSETS = {
+    "uniDesk-arm64.dmg": "aarch64-apple-darwin",
+    "uniDesk-x86_64.dmg": "x86_64-apple-darwin",
+    "uniDesk-windows-x64-setup.exe": "x86_64-pc-windows-msvc",
+}
 
 
 def version(root: Path = ROOT) -> str:
@@ -60,9 +73,9 @@ def prepare(out: Path) -> None:
     validate(out, version())
 
 
-def signing_status(directory: Path) -> tuple[str, bool]:
+def signing_status(directory: Path, sidecar: Path | None = None) -> tuple[str, bool]:
     allowed = {"ad-hoc", "apple-development", "developer-id"}
-    sidecar = directory / ".signing"
+    sidecar = sidecar or directory / ".signing"
     if sidecar.is_file():
         lines = [line.strip() for line in sidecar.read_text().splitlines() if line.strip()]
         if len(lines) != 2 or lines[0] not in allowed or lines[1] not in {"true", "false"}:
@@ -82,11 +95,42 @@ def inventory(directory: Path, commit: str) -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("expected full source commit SHA")
     release = validate(directory / "release.json", version())
-    kind, notarized = signing_status(directory)
+    missing = [name for name in ASSETS[:-2] if not (directory / name).is_file()]
+    if missing:
+        raise ValueError(f"release assets missing: {', '.join(missing)}")
+    targets = []
+    for name, target in TARGET_ASSETS.items():
+        sidecar = None
+        if name.endswith("arm64.dmg"):
+            sidecar = directory / ".signing-arm64"
+        elif name.endswith("x86_64.dmg"):
+            sidecar = directory / ".signing-x86_64"
+        if sidecar is not None and not sidecar.is_file():
+            sidecar = directory / ".signing"
+        if name.endswith(".dmg"):
+            kind, notarized = signing_status(directory, sidecar)
+            target_info = {
+                "asset": name,
+                "target": target,
+                "sha256": checksum(directory / name),
+                "signing": kind,
+                "notarized": notarized,
+            }
+        else:
+            target_info = {
+                "asset": name,
+                "target": target,
+                "sha256": checksum(directory / name),
+                "signing": "not-signed",
+                "notarized": False,
+            }
+        targets.append(target_info)
+    rustc = "unavailable"
+    if shutil.which("rustc"):
+        rustc = subprocess.check_output(["rustc", "--version"], text=True).strip()
     write_json(directory / "build-info.json", {
-        "commit": commit, "release": release, "target": "aarch64-apple-darwin",
-        "minimum_macos": "14.0", "signing": kind, "notarized": notarized,
-        "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+        "commit": commit, "release": release, "targets": targets,
+        "minimum_macos": "14.0", "rustc": rustc,
         "dmg_sha256": checksum(directory / ASSETS[0]),
     })
     (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in ASSETS if name != "SHA256SUMS"))
@@ -106,15 +150,29 @@ def verify_inventory(directory: Path, release: dict, commit: str) -> None:
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
     info = json.loads((directory / "build-info.json").read_text())
-    kind = info.get("signing")
-    notarized = info.get("notarized")
-    if kind not in {"ad-hoc", "apple-development", "developer-id"} or not isinstance(notarized, bool):
+    targets = info.get("targets")
+    if not isinstance(targets, list) or len(targets) != len(TARGET_ASSETS):
         raise ValueError("existing build information conflicts with source")
-    if notarized and kind != "developer-id":
+    by_asset = {}
+    for target_info in targets:
+        if not isinstance(target_info, dict):
+            raise ValueError("existing build information conflicts with source")
+        asset = target_info.get("asset")
+        if asset in by_asset or asset not in TARGET_ASSETS:
+            raise ValueError("existing build information conflicts with source")
+        if target_info.get("target") != TARGET_ASSETS[asset] or target_info.get("sha256") != actual[asset]:
+            raise ValueError("existing build information conflicts with source")
+        if target_info.get("signing") not in {"ad-hoc", "apple-development", "developer-id", "not-signed"}:
+            raise ValueError("existing build information conflicts with source")
+        if not isinstance(target_info.get("notarized"), bool):
+            raise ValueError("existing build information conflicts with source")
+        if target_info["notarized"] and target_info["signing"] != "developer-id":
+            raise ValueError("existing build information conflicts with source")
+        by_asset[asset] = target_info
+    if set(by_asset) != set(TARGET_ASSETS):
         raise ValueError("existing build information conflicts with source")
     if (info.get("commit") != commit or info.get("release") != release
-            or info.get("dmg_sha256") != actual[ASSETS[0]]
-            or info.get("target") != "aarch64-apple-darwin"):
+            or info.get("dmg_sha256") != actual[ASSETS[0]]):
         raise ValueError("existing build information conflicts with source")
 
 
@@ -161,14 +219,16 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
         print("Existing published release verified; unchanged.")
         return
     info = json.loads((directory / "build-info.json").read_text())
-    if info.get("signing") == "developer-id" and info.get("notarized") is True:
+    arm64_info = next(item for item in info["targets"] if item["asset"] == "uniDesk-arm64.dmg")
+    if arm64_info.get("signing") == "developer-id" and arm64_info.get("notarized") is True:
         signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
     else:
         signing_note = "**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations."
-    notes = (f"macOS 14+ · Apple Silicon (arm64)\n\n"
+    notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64) DMG\n"
+             "Windows x64 offline desktop installer\n\n"
              f"{signing_note}\n\n"
              f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"
-             "Windows remains experimental source/service work, not an installable desktop release. "
+             "The Windows installer is experimental and unsigned. "
              "Build/package checks do not establish Finder paste, drag-out, native input permissions or physical two-device acceptance. "
              "No signed LAN auto-update payload is published.\n\n")
     changelog = (ROOT / "CHANGELOG.md").read_text()
