@@ -214,7 +214,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: unexpected release tag: $RELEASE_TAG" >&2; exit 1; }
           mkdir -p dist
-          gh release download "$RELEASE_TAG" --repo "$UNIDESK_RELEASE_REPOSITORY" --pattern uniDesk-arm64.dmg --dir dist
+          gh release download "$RELEASE_TAG" --repo "$UNIDESK_RELEASE_REPOSITORY" --pattern uniDesk-arm64.dmg --dir dist --clobber
           python3 source/scripts/update-cask.py --dmg dist/uniDesk-arm64.dmg --version "$version" --cask distribution/Casks/unidesk.rb
       - name: Commit refreshed cask
         env:
