@@ -6,7 +6,7 @@
 
 uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：在可信设备间同步剪贴板、传输文件、暂存并拖出文件，并提供独立开关的键鼠共享。交互约定见[当前界面与行为约定](design/current/README.md)。
 
-> 开发预发行：GitHub 提供 macOS arm64、macOS Intel 和 Windows x64 安装包；构建通过不代表真实两机验收。
+> 开发预发行：GitHub 提供 macOS arm64 和 macOS Intel 安装包；Windows 构建暂跳过，构建通过不代表真实两机验收。
 
 ## 能做什么
 
@@ -39,7 +39,7 @@ uniDesk 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：�
 | macOS 14+、Apple Silicon | 主平台，发行 arm64 DMG |
 | macOS 26+ | 导航与操作层使用原生 Liquid Glass，旧系统回退标准材质 |
 | Intel Mac | 发行 x86_64 DMG，功能和实机验收与 arm64 分开记录 |
-| Windows x64 | 发行实验性离线安装器；完整跨平台协作和实机验收仍需单独验证 |
+| Windows x64 | 暂不随 0.3.1 公开预发行提供安装包；完整跨平台协作和实机验收仍需单独验证 |
 | Linux | 不在首发范围 |
 
 ## 下载与安装
@@ -68,7 +68,7 @@ brew update && brew upgrade --cask unidesk
 
 ### 手动安装 DMG
 
-1. 按设备从同一 Release 下载 `uniDesk-arm64.dmg`、`uniDesk-x86_64.dmg` 或 `uniDesk-windows-x64-setup.exe`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
+1. 按设备从同一 Release 下载 `uniDesk-arm64.dmg` 或 `uniDesk-x86_64.dmg`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
 2. 打开 DMG，把 `uniDesk.app` 拖进 Applications；同一设备只运行一份实例。
 3. 按提示允许局域网访问；键鼠共享还需辅助功能授权、可信局域网会话、设备激活和可用显示器布局。
 

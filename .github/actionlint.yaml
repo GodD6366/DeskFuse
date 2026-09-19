@@ -3,4 +3,8 @@
 # Keep all other runner-label checks enabled; do not accept arbitrary labels.
 self-hosted-runner:
   labels:
+    - self-hosted
+    - macOS
+    - ARM64
+    - unidesk-macos
     - xcode-27

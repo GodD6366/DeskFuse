@@ -57,7 +57,6 @@ class ReleaseTests(unittest.TestCase):
     def make_inventory(self):
         (self.root / "uniDesk-arm64.dmg").write_bytes(b"test fixture, not a DMG")
         (self.root / "uniDesk-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
-        (self.root / "uniDesk-windows-x64-setup.exe").write_bytes(b"windows fixture, not an installer")
         with patch.object(release, "version", return_value="0.1.0"), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit)
 

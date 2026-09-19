@@ -38,12 +38,14 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.exists != 'true'
     uses: ./.github/workflows/ci.yml
+    with:
+      skip_windows: true
 
   macos-arm64:
     needs: [preflight, checks]
     if: needs.preflight.outputs.exists != 'true'
     name: macOS arm64 DMG
-    runs-on: xcode-27 # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -99,7 +101,7 @@ jobs:
     needs: [preflight, checks]
     if: needs.preflight.outputs.exists != 'true'
     name: macOS Intel x86_64 DMG
-    runs-on: xcode-27 # Cross-compiles the Intel target with the same macOS 27 SDK
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Cross-compiles the Intel target with the same macOS 27 SDK
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -151,42 +153,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  windows-x86_64:
-    needs: [preflight, checks]
-    if: needs.preflight.outputs.exists != 'true'
-    name: Windows x86_64 installer
-    runs-on: windows-2022
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install pinned x86_64 Rust target
-        shell: pwsh
-        run: |
-          rustup show active-toolchain
-          rustup target add x86_64-pc-windows-msvc
-      - name: Install NSIS
-        shell: pwsh
-        run: choco install nsis --yes --no-progress
-      - name: Build unsigned x86_64 offline installer
-        shell: pwsh
-        run: |
-          $snapshot = Join-Path $env:RUNNER_TEMP 'unidesk-source.json'
-          .\scripts\snapshot-windows-source.ps1 -OutputPath $snapshot
-          $output = Join-Path $env:GITHUB_WORKSPACE 'dist-windows'
-          New-Item -ItemType Directory -Force -Path $output | Out-Null
-          .\scripts\package-windows.ps1 -SourceSnapshot $snapshot -ReleaseMetadata .\release.json -OutputDirectory $output
-          $installer = Get-ChildItem -LiteralPath $output -Filter '*-windows-x64-setup.exe' | Select-Object -First 1
-          if (!$installer) { throw 'Windows x64 installer was not produced' }
-          Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $output 'uniDesk-windows-x64-setup.exe') -Force
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-windows-x86_64
-          path: dist-windows/uniDesk-windows-x64-setup.exe
-          if-no-files-found: error
-          retention-days: 14
-
   publish:
-    needs: [macos-arm64, macos-x86_64, windows-x86_64]
+    needs: [macos-arm64, macos-x86_64]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -204,16 +172,11 @@ jobs:
         with:
           name: release-macos-x86_64
           path: dist/x86_64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-windows-x86_64
-          path: dist/windows
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
           cp dist/arm64/uniDesk-arm64.dmg dist/
           cp dist/x86_64/uniDesk-x86_64.dmg dist/
-          cp dist/windows/uniDesk-windows-x64-setup.exe dist/
           cmp dist/arm64/release.json dist/x86_64/release.json
           cp dist/arm64/release.json dist/release.json
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64

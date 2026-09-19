@@ -6,9 +6,8 @@
 | --- | --- |
 | `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
 | `dist/uniDesk-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
-| `dist/uniDesk-windows-x64-setup.exe` | Windows x64 实验性离线桌面安装器；不作为 LAN 自动更新载荷 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
-| `dist/build-info.json` | 源 commit、工具链、三个目标、签名状态和资产哈希 |
+| `dist/build-info.json` | 源 commit、工具链、两个 macOS 目标、签名状态和资产哈希 |
 | `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
 | `dist/uniDesk-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
@@ -97,7 +96,7 @@ UNIDESK_MACOS_ARCH=x86_64 UNIDESK_DMG_FINDER_LAYOUT=0 \
 
 该包包含 x86_64 主程序、输入服务和更新 helper，默认使用 GitHub 更新渠道；签名、公证和 Intel 设备行为仍需单独验收。
 
-只有在已提交、与三平台产物一致的源码上，发布 job 才生成完整对外构建信息。发布 job 会在合并 arm64、x86_64 和 Windows 资产后运行：
+只有在已提交、与两个 macOS 产物一致的源码上，发布 job 才生成完整对外构建信息。发布 job 会在合并 arm64 和 x86_64 资产后运行：
 
 ```sh
 python3 scripts/release.py inventory --directory dist --commit "$(git rev-parse HEAD)"
@@ -115,8 +114,8 @@ git push origin v0.1.0
 ```
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
-2. 调用相同 CI：macOS 检查、Windows 原生适配器和服务检查均成功才继续。
-3. `xcode-27` Apple Silicon runner 分别构建 arm64 和 x86_64 DMG；Windows x86_64 runner 生成 NSIS 离线安装器。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple，Windows job 使用相同 descriptor 并检查 PE x64。缺少 Apple secret 时 macOS jobs 失败。
+2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `unidesk-macos`, `xcode-27` runner，Windows 检查和构建均跳过。
+3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
 

@@ -156,4 +156,4 @@ macOS arm64 已接入完整客户端更新流程：可信物理局域网库存�
 
 Windows 已新增原生 WPF 桌面、托盘、当前用户历史和本地暂存区，设备配对及受限业务 IPC 已接入服务；文字/图片/富文本经 clipboard-sync-v2 与原生写入回执交接，当前最多 16 MiB。普通已解锁桌面已接入独立 42425 input-only runtime 与用户态 helper，当前阶段先支持 Mac 主控到 Windows 被控，带 1.5 秒原生释放看门狗和紧急收回。首次手动安装的 NSIS 脚本已提供。**尚未全功能对齐**：远端文件/OLE、Windows 主控、高完整性/安全桌面输入、自动升级/回滚、工作流和 Windows 原生安装/两机验收仍未完成。完整进度见 [WINDOWS_CLIENT.md](WINDOWS_CLIENT.md)，当前 IPC 见 [WINDOWS_DESKTOP_IPC.md](WINDOWS_DESKTOP_IPC.md)；旧服务检查点见 [WINDOWS_SERVICE_CHECKPOINT.md](WINDOWS_SERVICE_CHECKPOINT.md)。
 
-GitHub 预发行同时提供 macOS arm64 DMG、macOS x86_64 DMG 和 Windows x64 离线安装器；版本由提交的 release.json 描述，构建机不分配编号。发行私钥与 ledger 不进入 CI；未签名的 update ZIP 不公开为 LAN 更新载荷。参见 [发行指南](RELEASING.md)。
+GitHub 0.3.1 预发行提供 macOS arm64 DMG 和 macOS x86_64 DMG；Windows 构建暂跳过。版本由提交的 release.json 描述，构建机不分配编号。发行私钥与 ledger 不进入 CI；未签名的 update ZIP 不公开为 LAN 更新载荷。参见 [发行指南](RELEASING.md)。

@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parent.parent
 ASSETS = (
     "uniDesk-arm64.dmg",
     "uniDesk-x86_64.dmg",
-    "uniDesk-windows-x64-setup.exe",
     "release.json",
     "build-info.json",
     "SHA256SUMS",
@@ -30,7 +29,6 @@ ASSETS = (
 TARGET_ASSETS = {
     "uniDesk-arm64.dmg": "aarch64-apple-darwin",
     "uniDesk-x86_64.dmg": "x86_64-apple-darwin",
-    "uniDesk-windows-x64-setup.exe": "x86_64-pc-windows-msvc",
 }
 
 
@@ -224,11 +222,9 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
         signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
     else:
         signing_note = "**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations."
-    notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64) DMG\n"
-             "Windows x64 offline desktop installer\n\n"
+    notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64) DMG\n\n"
              f"{signing_note}\n\n"
              f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"
-             "The Windows installer is experimental and unsigned. "
              "Build/package checks do not establish Finder paste, drag-out, native input permissions or physical two-device acceptance. "
              "No signed LAN auto-update payload is published.\n\n")
     changelog = (ROOT / "CHANGELOG.md").read_text()

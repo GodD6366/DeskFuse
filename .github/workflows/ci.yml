@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      skip_windows:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ concurrency:
 jobs:
   macos:
     name: macOS arm64 checks
-    runs-on: xcode-27 # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -52,7 +57,7 @@ jobs:
   macos-build:
     name: macOS arm64 DMG
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: xcode-27
+    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -91,6 +96,7 @@ jobs:
           retention-days: 14
 
   windows:
+    if: ${{ !inputs.skip_windows }}
     name: Windows experimental adapters and service
     runs-on: windows-2022
     timeout-minutes: 90

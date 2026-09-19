@@ -6,7 +6,7 @@ Source is now private. Public installers and the Homebrew tap live in [unidesk-r
 
 A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
 
-> Early prerelease: GitHub ships macOS arm64, macOS Intel, and Windows x64 installers; a passing build is not two-device acceptance.
+> Early prerelease: GitHub ships macOS arm64 and Intel installers; Windows builds are temporarily skipped, and a passing build is not two-device acceptance.
 
 ## What it does
 
@@ -39,7 +39,7 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 | macOS 14+, Apple Silicon | Main platform, arm64 DMG |
 | macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
 | Intel Mac | x86_64 DMG is released; behavior and device acceptance are tracked separately from arm64 |
-| Windows x64 | Experimental offline installer is released; full cross-platform collaboration and device acceptance still require separate validation |
+| Windows x64 | No installer in the 0.3.1 prerelease; full cross-platform collaboration and device acceptance still require separate validation |
 | Linux | Not a first-release target |
 
 ## Download and install
@@ -68,7 +68,7 @@ Internal signed packages continue using trusted LAN automatic updates; public pa
 
 ### Manual DMG install
 
-1. Download the package for your device (`uniDesk-arm64.dmg`, `uniDesk-x86_64.dmg`, or `uniDesk-windows-x64-setup.exe`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+1. Download the package for your device (`uniDesk-arm64.dmg` or `uniDesk-x86_64.dmg`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
 2. Open the DMG and drag `uniDesk.app` into Applications; run only one instance per device.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
 

@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.3.1] — HEVC 远程串流与 macOS 安装包
+
+- 增加 HEVC 远程串流协商与 H.264 回退，完善远程应用窗口、媒体帧和会话恢复。
+- 增加 macOS arm64 与 Intel x86_64 手动安装包和对应更新元数据。
+- 本次 GitHub 预发行使用 Self-hosted macOS runner，仅构建 macOS 资产；Windows 构建暂跳过。
+
+发行边界：本轮公开 Release 仅提供 macOS arm64 和 x86_64 DMG；签名、公证、UI、Finder 粘贴/拖出及真实两机行为需分别验收。
+
 ## [0.3.0] — 远程应用与工作区界面改进
 
 - 增强远程应用捕获、媒体帧处理和多窗口控制，改进编码帧丢失后的恢复。
