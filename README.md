@@ -95,7 +95,6 @@ CODESIGN_IDENTITY=- ./scripts/build_and_run.sh
 apps/           SwiftUI 应用、Windows 服务、诊断探针
 crates/         领域模型、协议、身份、存储、网络、传输、输入及平台实现
 scripts/        开发、检查、资源生成、打包与发行工具
-site/           项目首页（GitHub Pages，由 pages.yml 工作流部署）
 Casks/          公开 Homebrew cask（同时作为 tap）
 resources/      原始 SVG、bundle 元数据、第三方图标、公开传输引导材料
 design/current/ 当前界面行为规范与图标资源
