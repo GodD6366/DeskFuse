@@ -7,7 +7,6 @@ import UniDeskRemoteApplication
 @available(macOS 14.2, *)
 @MainActor @Observable final class RemoteApplicationManager {
     static let shared = RemoteApplicationManager()
-    var hosting = UserDefaults.standard.bool(forKey: "unidesk.remoteApplicationHosting")
     private(set) var hosts: [UUID: RemoteApplicationSession] = [:]
     private(set) var viewers: [UUID: RemoteApplicationSession] = [:]
     var error: String?
@@ -24,16 +23,18 @@ import UniDeskRemoteApplication
         incoming = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let enabled = self.hosting
                 let channel = await Task.detached { () -> RemoteApplicationChannel? in
-                    try? engine.setRemoteApplicationHosting(enabled: enabled)
+                    // Entering the authenticated device network enables remote
+                    // application hosting automatically. There is no separate
+                    // per-device switch in the product surface anymore.
+                    try? engine.setRemoteApplicationHosting(enabled: true)
                     return try? engine.takeRemoteApplication()
                 }.value
                 self.hosts = self.hosts.filter { $0.value.active || $0.value.busy }
                 if let channel {
                     // Each application uses its own bounded media stream on the
                     // existing authenticated connection; never replace siblings.
-                    if !self.hosting || self.hosts.count >= 16 { channel.close() }
+                    if self.hosts.count >= 16 { channel.close() }
                     else {
                         let peerID = channel.peerId()
                         let name = AppStore.shared.snapshot?.devices.first { $0.id == peerID }?.name ?? "已配对设备"
@@ -45,11 +46,6 @@ import UniDeskRemoteApplication
                 do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
-    }
-    func setHosting(_ enabled: Bool) {
-        hosting = enabled; UserDefaults.standard.set(enabled, forKey: "unidesk.remoteApplicationHosting")
-        try? engine?.setRemoteApplicationHosting(enabled: enabled)
-        if !enabled { stopHosting() }
     }
     func stopHosting() {
         let sessions = Array(hosts.values)
@@ -313,23 +309,4 @@ import UniDeskRemoteApplication
         session.autoAcquire = session.running && !session.viewerPaused && !session.awaitingResumeSurface
     }
 
-}
-
-@available(macOS 14.2, *)
-struct RemoteApplicationAccessView: View {
-    @Bindable private var remote = RemoteApplicationManager.shared
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("允许已配对设备使用本机远程应用", isOn: Binding(get: { remote.hosting }, set: { remote.setHosting($0) }))
-            Text("使用现有设备配对。控制期间独占前台，并临时暂停跨屏键鼠共享。")
-                .font(.caption).foregroundStyle(.secondary)
-            Button("屏幕录制权限") { RemoteAppCapture.requestScreenRecordingPermission() }
-            let activeHosts = remote.hosts.values.filter { $0.running }
-            if !activeHosts.isEmpty {
-                Text("正在共享 \(activeHosts.count) 个应用").font(.caption)
-                Button("结束所有远程会话") { remote.stopHosting() }
-            }
-            if let error = remote.error { Text(error).font(.caption).foregroundStyle(.red) }
-        }
-    }
 }

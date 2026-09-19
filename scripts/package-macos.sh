@@ -20,7 +20,7 @@ done
 # a coordinator build number or seed the running app's updater.
 PACKAGE_MODE=lan
 AUTO_INSTALL=0
-usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew] [--auto]" >&2; exit 2; }
+usage() { echo "usage: UNIDESK_MACOS_ARCH={arm64|x86_64} scripts/package-macos.sh [--lan|--homebrew] [--auto]" >&2; exit 2; }
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --lan) ;;
@@ -37,7 +37,28 @@ if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" == homebrew ]]; then
   exit 2
 fi
 
-TARGET_TRIPLE="aarch64-apple-darwin"
+MACOS_ARCH="${UNIDESK_MACOS_ARCH:-arm64}"
+case "$MACOS_ARCH" in
+  arm64)
+    TARGET_TRIPLE="aarch64-apple-darwin"
+    EXPECTED_ARCH="arm64"
+    ARTIFACT_SUFFIX="arm64"
+    ;;
+  x86_64)
+    TARGET_TRIPLE="x86_64-apple-darwin"
+    EXPECTED_ARCH="x86_64"
+    ARTIFACT_SUFFIX="x86_64"
+    if [[ "$PACKAGE_MODE" == lan ]]; then
+      echo "error: Intel packages require --homebrew; LAN update manifests currently target arm64 only" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "error: UNIDESK_MACOS_ARCH must be arm64 or x86_64" >&2
+    exit 2
+    ;;
+esac
+export UNIDESK_MACOS_ARCH="$MACOS_ARCH"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 PACKAGE_NAME="unidesk-ffi"
 BINARY_NAME="${BINARY_NAME:-unidesk-app}"
@@ -131,7 +152,7 @@ elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" == "true" ]]; then
 else
   DIST_DIR="$LOCAL_PACKAGE_ROOT/dist/${APP_VERSION}-build${BUILD_VERSION}"
 fi
-DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/uniDesk-arm64.dmg}"
+DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX.dmg}"
 mkdir -p "$DIST_DIR"
 DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
@@ -170,8 +191,8 @@ if [[ ! -x "$BINARY_PATH" ]]; then
 fi
 
 ARCHES="$(lipo -archs "$BINARY_PATH")"
-if [[ "$ARCHES" != "arm64" ]]; then
-  echo "error: expected an arm64-only binary, got: $ARCHES" >&2
+if [[ "$ARCHES" != "$EXPECTED_ARCH" ]]; then
+  echo "error: expected a $EXPECTED_ARCH-only binary, got: $ARCHES" >&2
   exit 1
 fi
 
@@ -213,7 +234,7 @@ unidesk_codesign \
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 # Preserve the exact signed bundle for later release signing and LAN forwarding.
-UPDATE_ZIP="$STAGING_DIR/uniDesk-arm64-update.zip"
+UPDATE_ZIP="$STAGING_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 
 # Release authorization is independent of pairing and platform code signing.
@@ -231,7 +252,7 @@ pathlib.Path(sys.argv[3]).write_text(json.dumps(manifest))
 PYMANIFEST
   cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
   cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- verify "$ROOT_DIR/resources/unidesk-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
-  mkdir -p "$DMG_SOURCE_DIR/.updates"
+mkdir -p "$DMG_SOURCE_DIR/.updates"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$DMG_SOURCE_DIR/.updates/"
   # Finder copies only the .app. Carry the exact signed payload with that copy
   # so a manually installed peer can serve updates after ejecting its DMG.
@@ -314,7 +335,7 @@ hdiutil detach "$MOUNT_POINT" -quiet
 ATTACHED=0
 
 # Validate before replacing an existing deliverable.
-FINAL_DMG="$STAGING_DIR/uniDesk-arm64.dmg"
+FINAL_DMG="$STAGING_DIR/uniDesk-$ARTIFACT_SUFFIX.dmg"
 hdiutil convert "$RW_DMG" -ov -format UDZO -o "$FINAL_DMG" >/dev/null
 if [[ "$SIGNING_KIND" == "developer-id" ]]; then
   codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$FINAL_DMG"
@@ -332,7 +353,7 @@ else
 fi
 unidesk_write_signing_status "$DIST_DIR" "$NOTARIZED"
 mv "$FINAL_DMG" "$DMG_PATH"
-mv "$UPDATE_ZIP" "$DIST_DIR/uniDesk-arm64-update.zip"
+mv "$UPDATE_ZIP" "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then
   cp "$STAGING_DIR/manifest.json" "$DIST_DIR/manifest.json"
 else
@@ -345,12 +366,12 @@ fi
 # Refresh checksums with every successful package, including custom DMG paths.
 (
   cd "$DIST_DIR"
-  shasum -a 256 "${DMG_PATH#"$DIST_DIR/"}" uniDesk-arm64-update.zip release.json
+  shasum -a 256 "${DMG_PATH#"$DIST_DIR/"}" "uniDesk-$ARTIFACT_SUFFIX-update.zip" release.json
   if [[ "$SIGNED_UPDATE" == "1" ]]; then shasum -a 256 manifest.json; fi
 ) > "$STAGING_DIR/SHA256SUMS"
 mv "$STAGING_DIR/SHA256SUMS" "$DIST_DIR/SHA256SUMS"
 printf 'release: %s build %s\n' "$APP_VERSION" "$BUILD_VERSION"
-printf 'update payload: %s\n' "$DIST_DIR/uniDesk-arm64-update.zip"
+printf 'update payload: %s\n' "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
 printf 'created: %s\n' "$DMG_PATH"
 shasum -a 256 "$DMG_PATH"
 
@@ -361,7 +382,7 @@ if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
   mkdir -p "$UPDATE_ROOT"
   chmod 700 "$UPDATE_ROOT"
   SEED_STAGE="$(mktemp -d "$UPDATE_ROOT/.seed-XXXXXX")"
-  cp "$DIST_DIR/uniDesk-arm64-update.zip" "$DIST_DIR/manifest.json" "$SEED_STAGE/"
+  cp "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip" "$DIST_DIR/manifest.json" "$SEED_STAGE/"
   python3 - "$SEED_STAGE" "$UPDATE_ROOT/inbox" <<'PYSEED'
 import pathlib,sys,shutil
 stage,destination=map(pathlib.Path,sys.argv[1:])

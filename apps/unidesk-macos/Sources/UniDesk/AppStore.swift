@@ -14,6 +14,9 @@ import UniDeskEngine
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
     static let hideDockIconDefaultsKey = "unidesk.hideDockIcon"
     var clipboardNavigation: ClipboardNavigationRequest?
+    /// One-shot request from the sidebar footer to show the local device in the
+    /// devices inspector without duplicating selection state in the store.
+    var deviceSelectionRequest = 0
     var pendingRequests: Set<UInt64> = []
     var pairingDecisions: Set<String> = []
     var client: EngineClient?
@@ -174,6 +177,10 @@ import UniDeskEngine
         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "unidesk-main" }) { window.makeKeyAndOrderFront(nil) }
         else { showMainWindow?() }
     }
+    func showLocalDevice() {
+        selectedPage = .devices
+        deviceSelectionRequest &+= 1
+    }
     func confirmSelfTest() {
         guard selfTest else { return }
         Task {
@@ -198,9 +205,13 @@ import UniDeskEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "键鼠共享", devices = "设备", transfers = "传输", lanTransfer = "局域网传输"
+    case clipboard = "剪贴板", input = "屏幕与键鼠", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
+    /// The transfer queue is presented together with LAN sharing. Keep the
+    /// legacy case for deep links and existing command code, but do not expose
+    /// a second top-level destination in the redesigned sidebar.
+    static var allCases: [Page] { [.clipboard, .input, .devices, .lanTransfer] }
     var id: Self { self }
-    var symbol: String { switch self { case .clipboard: "doc"; case .input: "computermouse"; case .devices: "display"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "qrcode" } }
+    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane" } }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

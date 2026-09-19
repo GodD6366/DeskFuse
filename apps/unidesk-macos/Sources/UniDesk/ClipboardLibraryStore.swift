@@ -2,6 +2,13 @@ import Foundation
 import Observation
 import UniDeskEngine
 
+enum ClipboardPaging {
+    static let pageSize = 20
+    /// Keep a small scrolling window in Swift. SQLite remains the source of
+    /// truth, so searching or reopening can always fetch older pages again.
+    static let maxLoadedItems = 100
+}
+
 struct ClipboardLibraryRule: Codable, Equatable, Identifiable {
     var id = UUID().uuidString
     var field = "text"
@@ -50,10 +57,15 @@ struct ClipboardLibraryItem: Codable {
     var sort_at_ms: UInt64?
     var native: HistoryItem { HistoryItem(id: id, sourceAppId: source_app_id, sourceDeviceId: source_device_id, copiedAtMs: copied_at_ms, mime: mime, length: length, preview: preview, source: source, hasImage: has_image, fileCount: file_count) }
 }
+struct ClipboardLibraryCursor: Codable, Equatable {
+    var sort_at_ms: UInt64
+    var id: UInt64
+}
 struct ClipboardLibraryPage: Codable {
     var items: [ClipboardLibraryItem]
     var total: Int
     var next_offset: Int?
+    var next_cursor: ClipboardLibraryCursor?
 }
 /// Per-record presentation facts for history rows and cards. Derived from the
 /// library projection; not persisted Swift business state.
@@ -113,16 +125,19 @@ struct ClipboardLibraryState: Codable {
         return result.map { ClipboardLibraryChoice(id: $0.id, name: displaySource($0.name, id: $0.id, snapshot: snapshot)) }
     }
 
-    func query(listID: String?, search: String, source: String?, offset: Int = 0) async throws -> ClipboardLibraryPage {
+    func query(listID: String?, search: String, source: String?, offset: Int = 0, cursor: ClipboardLibraryCursor? = nil) async throws -> ClipboardLibraryPage {
         guard let client = AppStore.shared.client else { throw LibraryError(message: "引擎尚未就绪") }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
         var request: [String: Any] = ["op": "items", "list_id": listID as Any? ?? NSNull(), "query": search, "kind": "all",
-            "source": source as Any? ?? NSNull(), "offset": offset, "limit": 50,
+            "source": source as Any? ?? NSNull(), "offset": offset, "limit": ClipboardPaging.pageSize,
             "day_start_ms": Int64(today.timeIntervalSince1970 * 1000), "yesterday_start_ms": Int64(yesterday.timeIntervalSince1970 * 1000),
             "day_end_ms": Int64(tomorrow.timeIntervalSince1970 * 1000), "timezone": TimeZone.current.identifier]
+        if let cursor {
+            request["cursor"] = ["sort_at_ms": cursor.sort_at_ms, "id": cursor.id]
+        }
         var windows: [String: [String: Int64]] = [:]
         if let list = lists.first(where: { $0.id == listID }) {
             let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")

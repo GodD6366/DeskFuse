@@ -64,7 +64,6 @@ struct ClipboardHistoryPane: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             searchField
-            ClipboardLibraryTabs(selectedListID: $listID, spacious: true)
             HStack(spacing: 10) {
                 Menu {
                     Picker("来源设备", selection: $source) {
@@ -97,7 +96,17 @@ struct ClipboardHistoryPane: View {
     private func listContent(proxy: ScrollViewProxy) -> some View {
         interact(
             List(selection: $selected) {
-                ForEach(items, id: \.id) { item in
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if startsDayGroup(at: index) {
+                        Text(dayTitle(item))
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, index == 0 ? 4 : 14)
+                            .padding(.bottom, 2)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+                    }
                     ClipboardHistoryRow(item: item, selectedImage: nil,
                                         client: client, appID: appIDs[item.id], title: titles[item.id],
                                         meta: metas[item.id], ocrHit: ocrHit(item.id),
@@ -125,6 +134,21 @@ struct ClipboardHistoryPane: View {
             .environment(\.defaultMinListRowHeight, 68),
             proxy: proxy
         )
+    }
+
+    private func startsDayGroup(at index: Int) -> Bool {
+        guard index > 0 else { return true }
+        let previous = items[index - 1].copiedDate
+        let current = items[index].copiedDate
+        guard let previous, let current else { return previous == nil && current != nil }
+        return !Calendar.current.isDate(previous, inSameDayAs: current)
+    }
+
+    private func dayTitle(_ item: HistoryItem) -> String {
+        guard let date = item.copiedDate else { return "其他" }
+        if Calendar.current.isDateInToday(date) { return "今天" }
+        if Calendar.current.isDateInYesterday(date) { return "昨天" }
+        return date.formatted(.dateTime.month(.abbreviated).day())
     }
 
     private func gridContent(proxy: ScrollViewProxy) -> some View {

@@ -6,14 +6,16 @@ struct ClipboardLibraryTabs: View {
     @Bindable var library = ClipboardLibraryStore.shared
     @Binding var selectedListID: String?
     var spacious = false
+    var vertical = false
+    var counts: [String: Int] = [:]
     @State private var editing: ClipboardLibraryList?
     var body: some View {
-        HStack(spacing: 6) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    tab("全部", id: nil)
+        Group {
+            if vertical {
+                VStack(alignment: .leading, spacing: 4) {
+                    verticalTab("全部", id: nil, symbol: "rectangle.stack", count: counts["all"])
                     ForEach(library.lists) { list in
-                        tab(list.name, id: list.id)
+                        verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: counts[list.id])
                             .contextMenu {
                                 Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
                                 Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
@@ -25,25 +27,32 @@ struct ClipboardLibraryTabs: View {
                                 }
                             }
                     }
+                    Divider().padding(.vertical, 8)
+                    newListButton(label: "新建智能分组", vertical: true)
                 }
-            }.scrollIndicators(.hidden)
-            Menu {
-                Button("新建智能列表…") { editing = ClipboardLibraryList(kind: "smart", rules: [ClipboardLibraryRule()]) }
-                Button("新建手动列表…") { editing = ClipboardLibraryList() }
-                Divider()
-                Menu("按类型新建智能分组") {
-                    Button("文字…") { editTypeGroup(name: "文字", value: "text") }
-                    Button("图片…") { editTypeGroup(name: "图片", value: "image") }
-                    Button("文件…") { editTypeGroup(name: "文件", value: "files") }
+            } else {
+                HStack(spacing: 6) {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            tab("全部", id: nil)
+                            ForEach(library.lists) { list in
+                                tab(list.name, id: list.id)
+                                    .contextMenu {
+                                        Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
+                                        Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
+                                        Button("向后移动") { move(list, by: 1) }.disabled(library.lists.last?.id == list.id)
+                                        Divider()
+                                        Button("删除列表", role: .destructive) {
+                                            if selectedListID == list.id { selectedListID = nil }
+                                            library.perform(["op": "delete_list", "id": list.id])
+                                        }
+                                    }
+                            }
+                        }
+                    }.scrollIndicators(.hidden)
+                    newListButton(label: nil, vertical: false)
                 }
-            } label: {
-                Image(systemName: "plus")
-                    .frame(width: spacious ? WorkspaceControlMetrics.height : nil,
-                           height: spacious ? WorkspaceControlMetrics.height : nil)
             }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("新建列表")
-                .background(spacious ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
-                            in: RoundedRectangle(cornerRadius: 9))
         }
         .sheet(item: $editing) { list in
             ClipboardLibraryEditor(initial: list, onSaved: { selectedListID = $0 })
@@ -66,6 +75,66 @@ struct ClipboardLibraryTabs: View {
                             : spacious ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
                             in: RoundedRectangle(cornerRadius: spacious ? 9 : 100))
         }.buttonStyle(.plain).accessibilityAddTraits(selectedListID == id ? .isSelected : [])
+    }
+
+    private func verticalTab(_ name: String, id: String?, symbol: String, count: Int?) -> some View {
+        Button { selectedListID = id } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 18)
+                Text(name).lineLimit(1)
+                Spacer(minLength: 0)
+                if let count { Text("\(count)").font(.caption).monospacedDigit().foregroundStyle(.secondary) }
+            }
+            .font(.callout)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .foregroundStyle(selectedListID == id ? Color.accentColor : Color.primary)
+            .background(selectedListID == id ? Color.accentColor.opacity(0.14) : .clear,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedListID == id ? .isSelected : [])
+    }
+
+    private func symbol(for list: ClipboardLibraryList) -> String {
+        switch list.name {
+        case "图片": "photo"
+        case "文件": "folder"
+        case "文字": "text.alignleft"
+        default: list.kind == "smart" ? "line.3.horizontal.decrease.circle" : "list.bullet"
+        }
+    }
+
+    @ViewBuilder private func newListButton(label: String?, vertical: Bool) -> some View {
+        Menu {
+            Button("新建智能列表…") { editing = ClipboardLibraryList(kind: "smart", rules: [ClipboardLibraryRule()]) }
+            Button("新建手动列表…") { editing = ClipboardLibraryList() }
+            Divider()
+            Menu("按类型新建智能分组") {
+                Button("文字…") { editTypeGroup(name: "文字", value: "text") }
+                Button("图片…") { editTypeGroup(name: "图片", value: "image") }
+                Button("文件…") { editTypeGroup(name: "文件", value: "files") }
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(.secondary)
+                Text(label ?? "")
+                if label == nil { EmptyView() }
+            }
+            .font(.callout)
+            .frame(maxWidth: vertical ? .infinity : nil, alignment: .leading)
+            .padding(.horizontal, vertical ? 10 : 0)
+            .frame(height: vertical ? 34 : (spacious ? WorkspaceControlMetrics.height : 30))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .fixedSize(horizontal: !vertical, vertical: false)
+        .help("新建列表")
+        .background(spacious && !vertical ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
+                    in: RoundedRectangle(cornerRadius: 9))
     }
     private func move(_ list: ClipboardLibraryList, by step: Int) {
         var ids = library.lists.map(\.id)

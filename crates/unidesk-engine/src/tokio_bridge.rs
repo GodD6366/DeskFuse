@@ -2569,10 +2569,13 @@ async fn run_worker(
                         input_coordinator.resume_after_update();
                     }
                     if !updater.install_abandoned() && install_handoff.is_none() && updater.ready() {
-                        let files_idle = incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
+                        let force_install = updater.force_install();
+                        let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
                             && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
-                            && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty();
-                        updater.installation_waiting(if !files_idle {
+                            && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
+                        updater.installation_waiting(if force_install {
+                            "正在立即安装，将跳过传输或粘贴等待"
+                        } else if !files_idle {
                             "已请求安装，等待当前文件传输或粘贴完成"
                         } else {
                             "已请求安装，正在结束键鼠共享并等待本地导出完成"
@@ -2581,7 +2584,7 @@ async fn run_worker(
                             if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
                                 let admitted = {
                                     let mut closed = input_signals.update_admission.lock().unwrap();
-                                    if cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire) {
+                                    if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
                                         *closed = true; true
                                     } else { false }
                                 };
@@ -2616,9 +2619,10 @@ async fn run_worker(
                         && let Some((release,path)) = updater.ready() && let Some(status) = updater.snapshot().status {
                         stage_task = Some(crate::app_update::stage(release,path,status));
                     }
-                    let files_idle = incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
+                    let force_install = updater.force_install();
+                    let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
                         && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
-                        && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty();
+                        && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
                     // The helper waits for this process to exit before touching the
                     // bundle. A handoff that has not ended the process by its deadline
                     // must give the running app back, so the user keeps a working
@@ -2640,6 +2644,8 @@ async fn run_worker(
                         if updater.ready().is_some() {
                             updater.installation_waiting(if !staged {
                                 "正在校验并准备安装，新版就绪后将重新启动"
+                            } else if force_install {
+                                "正在立即安装，将跳过传输或粘贴等待"
                             } else if !files_idle {
                                 "已请求安装，等待当前文件传输或粘贴完成"
                             } else {
@@ -2651,7 +2657,7 @@ async fn run_worker(
                                 // Native exports and UI commands share this admission lock.
                                 let admitted = {
                                     let mut closed = input_signals.update_admission.lock().unwrap();
-                                    if cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire) {
+                                    if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
                                         *closed = true; true
                                     } else { false }
                                 };

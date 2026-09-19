@@ -125,6 +125,12 @@ public final class LatestVideoFrame: @unchecked Sendable {
 
 public struct MediaStatistics: Codable, Sendable {
     public var captured: UInt64 = 0
+    /// Non-complete samples ScreenCaptureKit delivered, kept as buckets so a
+    /// stream that never produces `.complete` frames is visible in statistics.
+    public var capturedIdle: UInt64 = 0
+    public var capturedBlank: UInt64 = 0
+    public var capturedStarted: UInt64 = 0
+    public var capturedOther: UInt64 = 0
     public var replacedBeforeEncode: UInt64 = 0
     public var encoded: UInt64 = 0
     public var decoded: UInt64 = 0

@@ -16,7 +16,6 @@ struct RemoteApplicationView: View {
     var minimizeWindow: () -> Void
     var zoomWindow: () -> Void
     @Bindable var chrome: RemoteWindowChrome
-    @State private var hovering = false
 
     var body: some View {
         ZStack {
@@ -42,7 +41,6 @@ struct RemoteApplicationView: View {
             }
         }
         .frame(minWidth: 1, minHeight: 1)
-        .onHover { hovering = $0 }
         .overlay(alignment: .bottom) {
             if session.running && !session.controlling {
                 Text(session.status).font(.caption)
@@ -53,11 +51,12 @@ struct RemoteApplicationView: View {
         }
         .overlay(alignment: .topLeading) {
             RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
-                .frame(width: 60, height: 16)
+                .frame(width: 72, height: 24)
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 // This must be opaque: a material would let B's screen-control
                 // indicator show through the local window controls.
                 .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+                .clipShape(Capsule())
                 .padding(.leading, 6).padding(.top, 5)
         }
         .overlay(alignment: .top) {
@@ -74,8 +73,11 @@ struct RemoteApplicationView: View {
             }
             .font(.system(size: 12)).padding(.horizontal, 6).padding(.vertical, 3)
             .background(.regularMaterial, in: Capsule()).padding(.top, 8)
-            .opacity(hovering || chrome.menuPresented || session.failure != nil ? 1 : 0)
-            .allowsHitTesting(hovering || chrome.menuPresented || session.failure != nil)
+            // Keep the local control strip mounted and hit-testable. Hiding it
+            // while the pointer crosses from the canvas into the strip causes
+            // SwiftUI to alternate hover state and dismiss the popover.
+            .opacity(1)
+            .allowsHitTesting(true)
         }
         .onChange(of: session.preferences) { _, _ in session.changePreferences() }
     }
@@ -121,12 +123,12 @@ private struct RemoteTrafficLights: NSViewRepresentable {
     var zoom: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 60, height: 16))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 72, height: 24))
         let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
         let hints = ["关闭远程窗口（⌃⌥⌘W）", "最小化（⌃⌥⌘M）", "最大化 / 还原（⌃⌥⌘F）"]
         for (index, type) in types.enumerated() {
             guard let button = NSWindow.standardWindowButton(type, for: [.titled, .closable, .miniaturizable, .resizable]) else { continue }
-            button.frame = NSRect(x: index * 22, y: 1, width: 14, height: 14)
+            button.frame = NSRect(x: 2 + index * 24, y: 3, width: 16, height: 16)
             button.tag = index; button.target = context.coordinator; button.action = #selector(Coordinator.activate(_:))
             button.toolTip = hints[index]; button.setAccessibilityLabel(hints[index])
             view.addSubview(button)

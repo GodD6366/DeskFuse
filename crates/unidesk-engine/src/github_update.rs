@@ -53,6 +53,8 @@ pub(crate) struct GitHubUpdater {
     last_check: Instant,
     offer: Option<GitHubOffer>,
     ready: bool,
+    /// Set by the second install request to bypass the normal file-idle wait.
+    force_install: bool,
     install_abandoned: bool,
 }
 impl GitHubUpdater {
@@ -71,6 +73,7 @@ impl GitHubUpdater {
             last_check: Instant::now(),
             offer: None,
             ready: false,
+            force_install: false,
             install_abandoned: false,
         };
         updater.check_now();
@@ -92,10 +95,19 @@ impl GitHubUpdater {
                 "更新未安装，当前版本保持可用；退出并重新启动 uniDesk 后可重试".into();
             return;
         }
+        let already_requested = self.view.manual_requested;
+        if !already_requested {
+            self.force_install = false;
+        }
         self.view.manual_requested = true;
         self.view.error = None;
         if self.ready {
-            self.view.message = "正在准备主动安装，完成后将重新启动".into();
+            if already_requested {
+                self.force_install = true;
+                self.view.message = "正在立即安装，将跳过传输或粘贴等待".into();
+            } else {
+                self.view.message = "正在准备主动安装，完成后将重新启动".into();
+            }
             return;
         }
         if matches!(
@@ -121,12 +133,16 @@ impl GitHubUpdater {
     pub(crate) fn install_abandoned(&self) -> bool {
         self.install_abandoned
     }
+    pub(crate) fn force_install(&self) -> bool {
+        self.force_install && self.ready && !self.install_abandoned
+    }
     pub(crate) fn installation_waiting(&mut self, message: &str) {
         if self.view.manual_requested || self.ready {
             self.view.message = message.into();
         }
     }
     pub(crate) fn installing(&mut self) {
+        self.force_install = false;
         if let Some(status) = &mut self.view.status {
             status.phase = UpdatePhase::Installing;
         }
@@ -135,6 +151,7 @@ impl GitHubUpdater {
     pub(crate) fn abandon_install(&mut self, reason: &str) {
         self.install_abandoned = true;
         self.ready = false;
+        self.force_install = false;
         self.view.manual_requested = false;
         if let Some(status) = &mut self.view.status
             && matches!(
@@ -367,6 +384,7 @@ impl GitHubUpdater {
     }
     fn fail_install(&mut self, error: &str, quarantine: bool) {
         self.ready = false;
+        self.force_install = false;
         self.view.checking = false;
         self.view.manual_requested = false;
         if let Some(status) = &mut self.view.status {

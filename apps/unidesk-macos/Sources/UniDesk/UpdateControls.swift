@@ -20,6 +20,10 @@ struct UpdateControls: View {
         return "立即下载安装"
     }
 
+    private var canInstallImmediately: Bool {
+        update.ready && update.manualRequested
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             LabeledContent("当前版本", value: "\(update.version) · build \(update.build)")
@@ -38,6 +42,7 @@ struct UpdateControls: View {
             }
             if update.github {
                 HStack {
+                    if canInstallImmediately { immediateInstallButton }
                     if let address = update.releaseUrl, let url = URL(string: address) {
                         Link("打开 GitHub 发布页", destination: url).buttonStyle(.borderedProminent)
                     }
@@ -47,10 +52,18 @@ struct UpdateControls: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 ViewThatFits(in: .horizontal) {
-                    HStack { installButton; checkButton }
-                    VStack(alignment: .leading) { installButton; checkButton }
+                    HStack {
+                        installButton
+                        if canInstallImmediately { immediateInstallButton }
+                        checkButton
+                    }
+                    VStack(alignment: .leading) {
+                        installButton
+                        if canInstallImmediately { immediateInstallButton }
+                        checkButton
+                    }
                 }
-                Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 uniDesk；正在传输、粘贴或导出的文件会等待完成。")
+                Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 uniDesk；正在传输、粘贴或导出的文件会等待完成。点击“立即安装”可跳过等待。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -60,6 +73,12 @@ struct UpdateControls: View {
         Button(actionTitle) { store.send(.downloadAndInstallUpdate) }
             .buttonStyle(.borderedProminent)
             .disabled(!update.available || update.manualRequested)
+    }
+
+    private var immediateInstallButton: some View {
+        Button("立即安装") { store.send(.downloadAndInstallUpdate) }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canInstallImmediately)
     }
 
     private var checkButton: some View {

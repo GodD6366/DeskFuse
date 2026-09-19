@@ -27,14 +27,14 @@ struct ClipboardPreviewPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let ocrText, !ocrText.isEmpty { ocrSection(ocrText) }
             WorkflowRunStatusView(compact: true)
-            NativeGlassGroup {
-                VStack(alignment: .leading, spacing: 12) {
-                    footer
-                    if let stagingHint {
-                        Text(stagingHint)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            metadataCard
+            VStack(alignment: .leading, spacing: 12) {
+                if let stagingHint {
+                    Text(stagingHint)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                NativeGlassGroup {
                     actions.frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
@@ -267,6 +267,38 @@ struct ClipboardPreviewPane: View {
             }
         }
         .font(.caption).foregroundStyle(.secondary)
+    }
+
+    private var metadataCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            metadataRow("种类", value: formatName)
+            metadataRow("大小", value: item.fileCount > 0 ? "\(byteCount(item.length))（\(item.fileCount) 项）" : byteCount(item.length))
+            if let width = media.pixelWidth, let height = media.pixelHeight {
+                metadataRow("尺寸", value: "\(width) × \(height)")
+            }
+            metadataRow("来源设备", value: item.source)
+            if let date = item.copiedDate {
+                metadataRow("添加时间", value: date.formatted(date: .abbreviated, time: .shortened))
+            }
+        }
+        .font(.callout)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary) }
+    }
+
+    private func metadataRow(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 62, alignment: .leading)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
     }
 
     private var metadata: some View {

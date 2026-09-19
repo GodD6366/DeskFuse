@@ -20,6 +20,7 @@ final class SessionDataPlane: @unchecked Sendable {
     private let lock = NSLock()
     private var decoder: H264Decoder?
     private var encoder: H264Encoder?
+    private var metrics: MediaMetrics?
     private var peer: RemotePeer?
     private var identity: SurfaceIdentity?
     private var presentedSequence: UInt64 = 0
@@ -33,6 +34,7 @@ final class SessionDataPlane: @unchecked Sendable {
     func isCurrent(_ token: UUID) -> Bool { lock.withLock { connectionToken == token } }
     func setPeer(_ peer: RemotePeer?) { lock.withLock { self.peer = peer } }
     func setEncoder(_ value: H264Encoder?) { lock.withLock { encoder = value } }
+    func setMetrics(_ value: MediaMetrics?) { lock.withLock { metrics = value } }
     func requestKey() { lock.withLock { encoder }?.requestKeyFrame() }
     func sendFrame(_ frame: EncodedVideoFrame) {
         input.encoded(frame)
@@ -44,6 +46,7 @@ final class SessionDataPlane: @unchecked Sendable {
         guard profile.pixels.isValid, profile.framesPerSecond.isFinite, (1...120).contains(profile.framesPerSecond) else {
             throw RemoteApplicationError.invalidGeometry
         }
+        setMetrics(metrics)
         _ = try CaptureSurface(identity: surface.identity, displayID: surface.displayID, displayFrame: surface.displayFrame,
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz,
             applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects)
@@ -125,7 +128,8 @@ final class SessionDataPlane: @unchecked Sendable {
                 let now = ProcessInfo.processInfo.systemUptime
                 guard now - self.lastDiagnostic >= 1 else { return nil }
                 self.lastDiagnostic = now
-                return "peer=\(self.peerID) host=\(host) healthy=\(healthy) enabled=\(self.enabled) sentInput=\(self.sequence) receivedInput=\(self.receivedInput) presented=\(self.presentedSequence) generation=\(self.identity?.generation ?? 0) heartbeatAgeMs=\(Int((now-self.lastPeerHeartbeat)*1000))"
+                let counters = self.metrics?.snapshot()
+                return "peer=\(self.peerID) host=\(host) healthy=\(healthy) enabled=\(self.enabled) sentInput=\(self.sequence) receivedInput=\(self.receivedInput) presented=\(self.presentedSequence) generation=\(self.identity?.generation ?? 0) heartbeatAgeMs=\(Int((now-self.lastPeerHeartbeat)*1000)) captured=\(counters?.captured ?? 0) idle=\(counters?.capturedIdle ?? 0) blank=\(counters?.capturedBlank ?? 0) started=\(counters?.capturedStarted ?? 0) other=\(counters?.capturedOther ?? 0) encoded=\(counters?.encoded ?? 0) decoded=\(counters?.decoded ?? 0) chainResets=\(counters?.chainResets ?? 0)"
             }
             if let detail { self.engine.remoteApplicationDiagnostic(event: "data_progress", detail: detail) }
         }
@@ -198,6 +202,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     }
     func didPresent(_ size: CGSize) {
         hasPresentedFrame = true; startupAttempts = 0
+        firstFrameWatch?.cancel(); firstFrameWatch = nil
         presentationSizeChanged?(size)
     }
     /// Only failed startup connections retry automatically. A stopped/closed
@@ -280,6 +285,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     @ObservationIgnored private var controlPending = false
     @ObservationIgnored private var controlRequest = UUID()
     @ObservationIgnored private var pendingClick: [(RemoteInputEvent, SurfaceIdentity)] = []
+    @ObservationIgnored private var firstFrameWatch: Task<Void, Never>?
 
     private func diagnostic(_ event: String) {
         engine.remoteApplicationDiagnostic(event: event,
@@ -300,6 +306,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         capturePaused = false; resumePending = false
         operation = UUID(); let token = operation; plane.begin(token)
         metrics = MediaMetrics(); statistics = MediaStatistics()
+        plane.setMetrics(metrics)
         do {
             if role == .host {
                 guard RemoteAppCapture.hasScreenRecordingPermission else {
@@ -452,6 +459,14 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     guard operation == token, let process else { return }
                     guard !capturePaused else { return }
                     _ = process.activate(options: [.activateAllWindows])
+                    // Launch completion can precede the first visible window.
+                    // Give LaunchServices a short bounded window to finish
+                    // activation before ScreenCaptureKit enumerates windows.
+                    for _ in 0..<20 {
+                        guard operation == token, !process.isTerminated else { throw RemoteApplicationError.noWindow }
+                        if NSWorkspace.shared.frontmostApplication?.processIdentifier == process.processIdentifier { break }
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
                     try plane.input.start(processID: process.processIdentifier)
                     running = true
                     try await waitForInitialCapture(token: token)
@@ -530,6 +545,20 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 sourceDescription = "B 源：\(Int(surface.contentRect.width)) × \(Int(surface.contentRect.height)) pt · \(surface.nativePixels.label) px"
                 actualDescription = "传输：\(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
                 status = "远端画面已配置，点击画面获取控制"
+                // A configured surface with no arriving frame currently looks
+                // identical to a live stream. Surface the stall, nudge a fresh
+                // key frame, and leave a diagnostic breadcrumb.
+                firstFrameWatch?.cancel()
+                firstFrameWatch = Task { [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: .seconds(10))
+                    guard !Task.isCancelled, self.operation == token, self.running, !self.hasPresentedFrame,
+                          !self.controlling, !self.controlPending, self.failure == nil, self.connected else { return }
+                    self.status = "正在等待远端画面…"
+                    self.plane.send(RemoteMessage(.keyFrame))
+                    self.engine.remoteApplicationDiagnostic(event: "first_frame_timeout",
+                        detail: "peer=\(self.peerID) generation=\(surface.identity.generation)")
+                }
             case .layout:
                 guard let surface = message.surface, surface.identity == lastSurface?.identity,
                       surface.contentRect == lastSurface?.contentRect else { return }
@@ -643,6 +672,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         let identity = SurfaceIdentity(session: token, epoch: 1, generation: generation + 1, configuration: generation + 1)
         let source = try await capture.source(processID: process.processIdentifier, displayID: nil, mode: mode,
             identity: identity, gestureActive: plane.input.gestureActive)
+        engine.remoteApplicationDiagnostic(event: "capture_source", detail: "peer=\(peerID) \(source.note)")
         guard operation == token, !capturePaused else { return }
         let surface = source.surface
         let profile = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz, preferences: preferences)
@@ -710,6 +740,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     }
     func stop() async {
         startupReconnect?.cancel(); startupReconnect = nil
+        firstFrameWatch?.cancel(); firstFrameWatch = nil
         operation = UUID(); monitor?.cancel(); monitor = nil
         releaseControl(resumeSharing: true); peer?.stop(); peer = nil
         active = false; connected = false

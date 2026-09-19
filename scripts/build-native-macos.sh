@@ -15,13 +15,29 @@ export MACOSX_DEPLOYMENT_TARGET=14.0
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 [[ "${SDK_VERSION%%.*}" -ge 27 ]] || { echo "error: full Xcode 27+ with macOS 27+ SDK is required by the current native source (runtime minimum remains macOS 14)" >&2; exit 1; }
+MACOS_ARCH="${UNIDESK_MACOS_ARCH:-arm64}"
+case "$MACOS_ARCH" in
+  arm64)
+    SWIFT_TRIPLE="arm64-apple-macosx14.0"
+    TARGET_TRIPLE="aarch64-apple-darwin"
+    APP_OBJECTS_ARCH="arm64"
+    ;;
+  x86_64)
+    SWIFT_TRIPLE="x86_64-apple-macosx14.0"
+    TARGET_TRIPLE="x86_64-apple-darwin"
+    APP_OBJECTS_ARCH="x86_64"
+    ;;
+  *)
+    echo "error: UNIDESK_MACOS_ARCH must be arm64 or x86_64" >&2
+    exit 2
+    ;;
+esac
 # Swift Build can incorrectly stamp the deployment target as the linked SDK.
 # Pass the *actual selected SDK* to both compilation and the real linker, so
 # AppKit opts into modern system chrome while the minimum OS remains 14.0.
 SWIFT_FLAGS=(--build-system swiftbuild --package-path "$ROOT_DIR/apps/unidesk-macos" --configuration "$CONFIGURATION"
-  --triple arm64-apple-macosx14.0 --sdk "$SDK_PATH"
+  --triple "$SWIFT_TRIPLE" --sdk "$SDK_PATH"
   -Xlinker -platform_version -Xlinker macos -Xlinker "$MACOSX_DEPLOYMENT_TARGET" -Xlinker "$SDK_VERSION")
-TARGET_TRIPLE=aarch64-apple-darwin
 export UNIDESK_INPUT_BUILD_ID="${UNIDESK_INPUT_BUILD_ID:-dev-$(git rev-parse --short=12 HEAD)}"
 RELEASE_FLAG=""
 if [[ "$CONFIGURATION" == release ]]; then RELEASE_FLAG="--release"; fi
@@ -91,7 +107,7 @@ echo "native executable: $DESTINATION/unidesk-app (minimum macOS 14.0; linked SD
 PROCESSOR="$(xcrun --find appintentsmetadataprocessor)"
 CONFIGURATION_TITLE=Debug
 [[ "$CONFIGURATION" != release ]] || CONFIGURATION_TITLE=Release
-APP_OBJECTS="$ROOT_DIR/apps/unidesk-macos/.build/out/Intermediates.noindex/uniDesk.build/$CONFIGURATION_TITLE/unidesk-app-p.build/Objects-normal/arm64"
+APP_OBJECTS="$ROOT_DIR/apps/unidesk-macos/.build/out/Intermediates.noindex/uniDesk.build/$CONFIGURATION_TITLE/unidesk-app-p.build/Objects-normal/$APP_OBJECTS_ARCH"
 SOURCE_LIST="$APP_OBJECTS/unidesk-app.SwiftFileList"
 OUTPUT_MAP="$APP_OBJECTS/unidesk-app-OutputFileMap.json"
 CONST_LIST="$DESTINATION/app-intents-const-values.list"
@@ -112,7 +128,7 @@ rm -rf "$DESTINATION/Metadata.appintents"
   --module-name UniDesk --sdk-root "$SDK_PATH" \
   --xcode-version "$(xcodebuild -version | awk '/Build version/ {print $3}')" \
   --platform-family macOS --deployment-target "$MACOSX_DEPLOYMENT_TARGET" \
-  --target-triple arm64-apple-macosx14.0 \
+  --target-triple "$SWIFT_TRIPLE" \
   --source-file-list "$SOURCE_LIST" --swift-const-vals-list "$CONST_LIST" \
   --deployment-aware-processing
 python3 - "$DESTINATION/Metadata.appintents" <<'PYINTENTS'

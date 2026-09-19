@@ -15,8 +15,19 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let raw = attachments.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
-              let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+              let raw = attachments.first?[.status] as? Int, let status = SCFrameStatus(rawValue: raw) else {
+            metrics.update { $0.capturedOther += 1 }
+            return
+        }
+        guard status == .complete, let image = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            switch status {
+            case .idle: metrics.update { $0.capturedIdle += 1 }
+            case .blank: metrics.update { $0.capturedBlank += 1 }
+            case .started: metrics.update { $0.capturedStarted += 1 }
+            default: metrics.update { $0.capturedOther += 1 }
+            }
+            return
+        }
         metrics.update { $0.captured += 1 }
         sink(CapturedVideoFrame(surface: surface, buffer: image, timestamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
     }
@@ -31,6 +42,8 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         public let filter: SCContentFilter
         public let surface: CaptureSurface
         public let applicationIDs: [pid_t]
+        /// Host-side capture provenance for diagnostics; never crosses the wire.
+        public let note: String
     }
     private var stream: SCStream?
     private var output: CaptureOutput?
@@ -49,7 +62,8 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         }
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard let application = content.applications.first(where: { $0.processID == processID }) else { throw RemoteApplicationError.noWindow }
-        let windows = content.windows.filter { $0.owningApplication?.processID == processID && $0.isOnScreen && !$0.frame.isEmpty }
+        let ownedWindows = content.windows.filter { $0.owningApplication?.processID == processID }
+        let windows = ownedWindows.filter { $0.isOnScreen && !$0.frame.isEmpty }
         let pinnedDisplay = displayID ?? (gestureActive ? currentDisplay : nil)
         let display = pinnedDisplay.flatMap { id in content.displays.first { $0.displayID == id } }
             ?? content.displays.max { a, b in
@@ -91,11 +105,28 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let rect: CGRect
         var applicationRect: CGRect?
         var auxiliaryRects: [CGRect] = []
+        var usesDisplayFilter = mode == .desktop
+        var chromiumMatched = false
         if mode == .desktop {
             filter = SCContentFilter(display: display, excludingWindows: [])
             rect = display.frame
         } else {
-            filter = SCContentFilter(display: display, including: included, exceptingWindows: [])
+            // Chromium renders the page through separate GPU/renderer surfaces.
+            // Both application and window filters can then return only the
+            // transparent desktop-independent layer. Capture the display for
+            // Chromium and keep the stream's sourceRect limited to the union
+            // of the browser windows calculated below.
+            let chromiumBundleIDs: Set<String> = [
+                "com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium",
+                "com.microsoft.edgemac", "com.brave.Browser", "com.vivaldi.Vivaldi"
+            ]
+            chromiumMatched = chromiumBundleIDs.contains(application.bundleIdentifier) && !windows.isEmpty
+            if chromiumMatched {
+                filter = SCContentFilter(display: display, excludingWindows: [])
+                usesDisplayFilter = true
+            } else {
+                filter = SCContentFilter(display: display, including: included, exceptingWindows: [])
+            }
             // Retain room already used by a candidate panel while typing. This
             // prevents every show/hide from changing coordinates and the lease.
             let normalWindows = windows.filter { $0.windowLayer == 0 }
@@ -124,10 +155,11 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let maximum = screen?.maximumFramesPerSecond ?? 0
         let hz: Double? = refresh > 0 ? refresh : (maximum > 0 ? Double(maximum) : nil)
         let scale = Double(filter.pointPixelScale)
+        let note = "bundle=\(application.bundleIdentifier) owned=\(ownedWindows.count) onScreen=\(windows.count) chromium=\(chromiumMatched) displayFilter=\(usesDisplayFilter)"
         return Source(filter: filter, surface: try CaptureSurface(identity: identity, displayID: display.displayID,
             displayFrame: display.frame, contentRect: rect, pointPixelScale: scale, sourceHz: hz,
             applicationRect: applicationRect, auxiliaryRects: auxiliaryRects),
-            applicationIDs: mode == .desktop ? [] : included.map(\.processID).sorted())
+            applicationIDs: mode == .desktop ? [] : included.map(\.processID).sorted(), note: note)
     }
 
     private var candidateBase: CGRect?

@@ -19,6 +19,7 @@ struct MenuBarClipboardView: View {
     @State private var pageItems: [ClipboardLibraryItem] = []
     @State private var commandHeld = false
     @State private var nextOffset: Int?
+    @State private var nextCursor: ClipboardLibraryCursor?
     @State private var calendarRevision = 0
     @State private var searching = false
     @State private var pageRequest = UUID()
@@ -377,24 +378,44 @@ struct MenuBarClipboardView: View {
             // Debounce typing, not panel presentation or history refresh.
             if !append && !query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
             let retainedCount = presentationOrder.isEmpty ? 0 : pageItems.count
-            var result = try await library.query(listID: listID, search: query, source: source, offset: append ? (nextOffset ?? 0) : 0)
+            var result = try await library.query(
+                listID: listID,
+                search: query,
+                source: source,
+                offset: append ? (nextOffset ?? 0) : 0,
+                cursor: append ? nextCursor : nil
+            )
             // A reuse revision must not collapse an already paged presentation
-            // back to 50 rows, moving or dropping the record just clicked.
+            // back to one page, moving or dropping the record just clicked.
             while !append, result.items.count < retainedCount, let offset = result.next_offset {
                 guard !Task.isCancelled, pageRequest == request, requested == searchKey, panelActive else { return }
-                let next = try await library.query(listID: listID, search: query, source: source, offset: offset)
+                let next = try await library.query(
+                    listID: listID,
+                    search: query,
+                    source: source,
+                    offset: offset,
+                    cursor: result.next_cursor
+                )
                 result.items += next.items
                 result.next_offset = next.next_offset
+                result.next_cursor = next.next_cursor
             }
             guard !Task.isCancelled, pageRequest == request, requested == searchKey, panelActive else { return }
             if append {
                 let existing = Set(pageItems.map(\.id)); pageItems += result.items.filter { !existing.contains($0.id) }
             } else { pageItems = result.items }
+            if pageItems.count > ClipboardPaging.maxLoadedItems {
+                pageItems.removeFirst(pageItems.count - ClipboardPaging.maxLoadedItems)
+            }
             if !presentationOrder.isEmpty {
                 let known = Set(presentationOrder)
                 presentationOrder += result.items.map(\.id).filter { !known.contains($0) }
+                if presentationOrder.count > ClipboardPaging.maxLoadedItems {
+                    presentationOrder.removeFirst(presentationOrder.count - ClipboardPaging.maxLoadedItems)
+                }
             }
             nextOffset = result.next_offset
+            nextCursor = result.next_cursor
             for item in result.items where item.has_image && (item.ocr_version ?? 0) < ClipboardOCRIndexer.version {
                 ClipboardOCRIndexer.shared.schedule(item.id, client: store.client)
             }
@@ -417,9 +438,10 @@ struct MenuBarClipboardView: View {
         commandHeld = false
         panelActive = false; session = UUID(); copying = false
         pageRequest = UUID(); searching = false
-        if pageItems.count > 50 {
-            pageItems = Array(pageItems.prefix(50))
-            nextOffset = 50
+        nextCursor = nil
+        if pageItems.count > ClipboardPaging.maxLoadedItems {
+            pageItems = Array(pageItems.suffix(ClipboardPaging.maxLoadedItems))
+            nextOffset = pageItems.count
         }
         fileAvailability = [:]
         cancelPreparation()

@@ -1,16 +1,22 @@
 import AppKit
 import SwiftUI
+import UniDeskRemoteApplication
 import UniDeskEngine
 
 struct SettingsPermissionsView: View {
     let store: AppStore
     let permissions: [Permission]
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var screenRecordingGranted = false
 
     var body: some View {
         Form {
             Section {
                 ForEach(permissions, id: \.name) { permission in
                     permissionRow(permission)
+                }
+                if #available(macOS 14.2, *) {
+                    screenRecordingRow
                 }
                 if permissions.isEmpty {
                     Text("正在读取系统权限…").foregroundStyle(.secondary)
@@ -29,6 +35,56 @@ struct SettingsPermissionsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshScreenRecordingPermission() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshScreenRecordingPermission() }
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private var screenRecordingRow: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "rectangle.dashed.badge.record")
+                .font(.system(size: 20))
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("屏幕录制").font(.body.weight(.medium))
+                Text("远程应用访问本机窗口时捕获屏幕内容")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Label(screenRecordingGranted ? "已授权" : "未授权或需要操作",
+                  systemImage: screenRecordingGranted ? "checkmark.circle.fill" : "circle.dashed")
+                .font(.caption)
+                .foregroundStyle(screenRecordingGranted ? Color.green : Color.secondary)
+                .frame(width: 120, alignment: .leading)
+            Button(screenRecordingGranted ? "查看设置" : "前往授权") {
+                if screenRecordingGranted {
+                    openScreenRecordingSettings()
+                } else {
+                    _ = RemoteAppCapture.requestScreenRecordingPermission()
+                }
+                refreshScreenRecordingPermission()
+            }
+            .buttonStyle(.bordered)
+            .frame(width: 88)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("屏幕录制，\(screenRecordingGranted ? "已授权" : "未授权")")
+    }
+
+    private func refreshScreenRecordingPermission() {
+        guard #available(macOS 14.2, *) else { return }
+        screenRecordingGranted = RemoteAppCapture.hasScreenRecordingPermission
+    }
+
+    private func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func permissionRow(_ permission: Permission) -> some View {

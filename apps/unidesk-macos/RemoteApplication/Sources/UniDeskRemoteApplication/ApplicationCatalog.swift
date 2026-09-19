@@ -72,7 +72,11 @@ public struct RemoteApplicationInfo: Codable, Identifiable, Equatable, Sendable 
             throw RemoteApplicationError.unsupported("应用已移除，请刷新应用列表")
         }
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
+        // Some applications (notably System Settings and document based apps)
+        // create their first on-screen window only after activation. Let
+        // LaunchServices perform the initial activation; the session still
+        // explicitly verifies the foreground process before arming input.
+        configuration.activates = true
         return try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
     }
 }

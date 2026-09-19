@@ -112,22 +112,22 @@ struct SidebarNavRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .frame(width: 18, alignment: .center)
+                .frame(width: 24, alignment: .center)
             Text(title)
-                .font(.system(size: 13.5, weight: selected ? .semibold : .regular))
+                .font(.system(size: 16, weight: selected ? .semibold : .regular))
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.accentColor.opacity(0.12) : .clear,
+        .background(selected ? Color.accentColor.opacity(0.14) : .clear,
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .background(NativeListSelection())
-        .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
     }
 }

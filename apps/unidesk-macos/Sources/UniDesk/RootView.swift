@@ -13,7 +13,7 @@ struct RootView: View {
         HStack(spacing: 0) {
             if visibility != .detailOnly {
                 MainSidebar(store: store, visibility: $visibility)
-                    .frame(width: 196)
+                    .frame(width: 250)
             }
             workspace
         }
@@ -39,10 +39,12 @@ struct RootView: View {
                 // extends into, keeping the button fully clickable.
                 .padding(.horizontal, 20).padding(.top, 20)
             }
-            if store.selectedPage == .clipboard {
-                ClipboardWorkspaceHeader { store.shelf?.show() }
-            }
-            MainContentView(store: store, historySearchRequest: historySearchRequest, deviceSearchRequest: deviceSearchRequest)
+            MainContentView(
+                store: store,
+                historySearchRequest: historySearchRequest,
+                deviceSearchRequest: deviceSearchRequest,
+                localDeviceRequest: store.deviceSelectionRequest
+            )
         }
         .modifier(WorkspaceContentSurface())
         .padding(12)
@@ -51,24 +53,7 @@ struct RootView: View {
         // sidebar keeps the system safe area for the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
     }
-}
 
-private struct ClipboardWorkspaceHeader: View {
-    let openShelf: () -> Void
-
-    var body: some View {
-        HStack(spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("剪贴板").font(.system(size: 28, weight: .bold))
-                Text("在设备之间，接着用").font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            WorkspaceChromeButton("暂存区", systemImage: "tray", help: "打开文件暂存区（⇧⌘D）", action: openShelf)
-        }
-        .padding(.horizontal, 28)
-        .padding(.top, 20)
-        .padding(.bottom, 18)
-    }
 }
 
 private struct SearchClipboardKey: FocusedValueKey {

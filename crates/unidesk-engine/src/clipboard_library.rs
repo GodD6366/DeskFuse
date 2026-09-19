@@ -1,11 +1,13 @@
 //! SQLite-backed clipboard library. Native payloads remain lazy, opaque and local.
 use crate::model::ClipboardHistoryItem;
 use bincode::Options;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -117,10 +119,54 @@ struct Summary {
     source_app_name: Option<String>,
     kind: String,
 }
+
+#[derive(Clone, Debug)]
+struct QueryRow {
+    id: u64,
+    global_id: String,
+    summary: String,
+    search_text: String,
+    available: bool,
+    title: String,
+    ocr_text: String,
+    ocr_version: i64,
+    remote: bool,
+    sort_at_ms: i64,
+}
+
+impl QueryRow {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        let _: bool = row.get(5)?;
+        Ok(Self {
+            id: row.get(0)?,
+            global_id: row.get(1)?,
+            summary: row.get(2)?,
+            search_text: row.get(3)?,
+            available: row.get(4)?,
+            title: row.get(6)?,
+            ocr_text: row.get(7)?,
+            ocr_version: row.get(8)?,
+            remote: row.get(9)?,
+            sort_at_ms: row.get(10)?,
+        })
+    }
+
+    fn member_id(&self) -> &str {
+        self.global_id
+            .strip_prefix("archive:")
+            .unwrap_or(&self.global_id)
+    }
+}
+
+const QUERY_SELECT: &str = "SELECT i.id,i.global_id,i.summary,i.search_text,i.payload IS NOT NULL,i.ordinary,COALESCE(i.title,''),COALESCE(i.ocr_text,''),COALESCE(i.ocr_version,0),COALESCE(i.remote,0),MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) FROM cl_items i";
+const QUERY_ORDER: &str =
+    "MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) DESC,i.id DESC";
 pub struct Library {
     db: Mutex<Connection>,
     device: Mutex<String>,
     generation: AtomicU64,
+    last_prune_ms: AtomicU64,
+    state_cache: Mutex<Option<(u64, String)>>,
 }
 static LIBRARY: OnceLock<Arc<Library>> = OnceLock::new();
 static LIBRARY_INIT: Mutex<()> = Mutex::new(());
@@ -149,7 +195,7 @@ impl Library {
         unidesk_store::configure_connection(&mut db).map_err(err)?;
         db.execute_batch("PRAGMA foreign_keys=ON;
    CREATE TABLE IF NOT EXISTS cl_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS cl_items(id INTEGER PRIMARY KEY AUTOINCREMENT,global_id TEXT UNIQUE NOT NULL,digest TEXT NOT NULL,summary TEXT NOT NULL,payload BLOB,search_text TEXT NOT NULL DEFAULT '',copied INTEGER,imported INTEGER NOT NULL,ordinary INTEGER NOT NULL DEFAULT 1,blob_hash TEXT,origin_device TEXT);
+   CREATE TABLE IF NOT EXISTS cl_items(id INTEGER PRIMARY KEY AUTOINCREMENT,global_id TEXT UNIQUE NOT NULL,digest TEXT NOT NULL,summary TEXT NOT NULL,payload BLOB,search_text TEXT NOT NULL DEFAULT '',search_index TEXT NOT NULL DEFAULT '',copied INTEGER,imported INTEGER NOT NULL,ordinary INTEGER NOT NULL DEFAULT 1,blob_hash TEXT,origin_device TEXT);
    CREATE INDEX IF NOT EXISTS cl_items_date ON cl_items(copied DESC,id DESC);
    CREATE INDEX IF NOT EXISTS cl_items_page_order ON cl_items(COALESCE(copied,imported) DESC,id DESC);
    CREATE INDEX IF NOT EXISTS cl_items_digest ON cl_items(digest);
@@ -187,15 +233,69 @@ impl Library {
             "last_used",
             "ALTER TABLE cl_items ADD COLUMN last_used INTEGER",
         )?;
-        db.execute_batch("CREATE INDEX IF NOT EXISTS cl_items_usage_order ON cl_items(MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);").map_err(err)?;
+        add_column(
+            "search_index",
+            "ALTER TABLE cl_items ADD COLUMN search_index TEXT NOT NULL DEFAULT ''",
+        )?;
+        db.execute_batch("CREATE INDEX IF NOT EXISTS cl_items_usage_order ON cl_items(MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);
+CREATE VIRTUAL TABLE IF NOT EXISTS cl_items_fts USING fts5(search_index, content='cl_items', content_rowid='id', tokenize='trigram', detail=none);
+CREATE TRIGGER IF NOT EXISTS cl_items_search_ai AFTER INSERT ON cl_items BEGIN
+    UPDATE cl_items SET search_index=trim(coalesce(new.search_text,'') || char(10) || coalesce(new.title,'') || char(10) || coalesce(new.ocr_text,'') || char(10) || coalesce(json_extract(new.summary,'$.preview'),'') || char(10) || coalesce(json_extract(new.summary,'$.source'),'') ) WHERE id=new.id;
+    INSERT INTO cl_items_fts(rowid,search_index) SELECT new.id,search_index FROM cl_items WHERE id=new.id;
+END;
+CREATE TRIGGER IF NOT EXISTS cl_items_search_au AFTER UPDATE OF summary,search_text,title,ocr_text ON cl_items BEGIN
+    UPDATE cl_items SET search_index=trim(coalesce(new.search_text,'') || char(10) || coalesce(new.title,'') || char(10) || coalesce(new.ocr_text,'') || char(10) || coalesce(json_extract(new.summary,'$.preview'),'') || char(10) || coalesce(json_extract(new.summary,'$.source'),'') ) WHERE id=new.id;
+    INSERT INTO cl_items_fts(cl_items_fts,rowid,search_index) VALUES('delete',old.id,old.search_index);
+    INSERT INTO cl_items_fts(rowid,search_index) SELECT new.id,search_index FROM cl_items WHERE id=new.id;
+END;
+CREATE TRIGGER IF NOT EXISTS cl_items_search_ad AFTER DELETE ON cl_items BEGIN
+    INSERT INTO cl_items_fts(cl_items_fts,rowid,search_index) VALUES('delete',old.id,old.search_index);
+END;").map_err(err)?;
+        let search_index_version: Option<String> = db
+            .query_row(
+                "SELECT value FROM cl_meta WHERE key='search_index_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        let fts_rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM cl_items_fts", [], |row| row.get(0))
+            .map_err(err)?;
+        let item_rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM cl_items", [], |row| row.get(0))
+            .map_err(err)?;
+        if search_index_version.as_deref() != Some("1") || fts_rows != item_rows {
+            // Build the denormalized search document once. The FTS table stores
+            // only its on-disk index; row payloads and OCR are never retained in
+            // the Rust process while querying.
+            db.execute(
+                "UPDATE cl_items SET search_index=trim(coalesce(search_text,'') || char(10) || coalesce(title,'') || char(10) || coalesce(ocr_text,'') || char(10) || coalesce(json_extract(summary,'$.preview'),'') || char(10) || coalesce(json_extract(summary,'$.source'),'') )",
+                [],
+            )
+            .map_err(err)?;
+            db.execute(
+                "INSERT INTO cl_items_fts(cl_items_fts) VALUES('rebuild')",
+                [],
+            )
+            .map_err(err)?;
+            db.execute(
+                "INSERT INTO cl_meta(key,value) VALUES('search_index_v1','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [],
+            )
+            .map_err(err)?;
+        }
         let this = Self {
             db: Mutex::new(db),
             device: Mutex::new(String::new()),
             generation: AtomicU64::new(1),
+            last_prune_ms: AtomicU64::new(0),
+            state_cache: Mutex::new(None),
         };
         this.import_legacy()?;
         this.seed_default_lists()?;
         this.prune()?;
+        this.last_prune_ms.store(now_ms(), Ordering::Release);
         this.reconcile_index()?;
         Ok(this)
     }
@@ -294,6 +394,9 @@ impl Library {
     }
     fn changed(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut cache) = self.state_cache.lock() {
+            *cache = None;
+        }
     }
     /// Local reuse changes ordering, never the original source/copy metadata.
     /// Called only after the native pasteboard write has succeeded.
@@ -612,6 +715,7 @@ impl Library {
         if n > 0 {
             self.changed()
         }
+        self.last_prune_ms.store(now_ms(), Ordering::Release);
         Ok(())
     }
     pub fn clear_history(&self) -> Result<()> {
@@ -624,14 +728,40 @@ impl Library {
         Ok(())
     }
     pub fn query(&self, request: &str) -> Result<String> {
-        self.prune()?;
+        self.maybe_prune()?;
         let q: Value = serde_json::from_str(request).map_err(err)?;
         if q["op"] == "state" {
             return self.state();
         }
         self.query_items(q)
     }
+    /// Retention cleanup is maintenance work. Running it before every keystroke
+    /// turns a search into a full write transaction, so keep the query path
+    /// bounded and let the explicit maintenance call do the immediate cleanup.
+    fn maybe_prune(&self) -> Result<()> {
+        let now = now_ms();
+        let last = self.last_prune_ms.load(Ordering::Acquire);
+        if now.saturating_sub(last) < 60_000 {
+            return Ok(());
+        }
+        if self
+            .last_prune_ms
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            && let Err(error) = self.prune()
+        {
+            self.last_prune_ms.store(0, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    }
     fn state(&self) -> Result<String> {
+        let generation = self.generation();
+        if let Some((cached_generation, value)) = self.state_cache.lock().map_err(err)?.as_ref()
+            && *cached_generation == generation
+        {
+            return Ok(value.clone());
+        }
         let db = self.db.lock().map_err(err)?;
         let lists = lists_db(&db)?;
         let settings = settings_db(&db)?;
@@ -660,7 +790,9 @@ impl Library {
                 devices.insert(d.clone(), json!({"id":d,"name":s}));
             }
         }
-        serde_json::to_string(&json!({"lists":lists,"settings":settings,"apps":apps.values().collect::<Vec<_>>(),"devices":devices.values().collect::<Vec<_>>(),"revision":self.generation()})).map_err(err)
+        let value = serde_json::to_string(&json!({"lists":lists,"settings":settings,"apps":apps.values().collect::<Vec<_>>(),"devices":devices.values().collect::<Vec<_>>(),"revision":generation})).map_err(err)?;
+        *self.state_cache.lock().map_err(err)? = Some((generation, value.clone()));
+        Ok(value)
     }
     fn query_items(&self, q: Value) -> Result<String> {
         let db = self.db.lock().map_err(err)?;
@@ -674,140 +806,241 @@ impl Library {
         let query = q["query"].as_str().unwrap_or("").trim().to_lowercase();
         let kind = q["kind"].as_str().unwrap_or("all");
         let source = q["source"].as_str();
-        let offset = q["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = q["limit"].as_u64().unwrap_or(50).clamp(1, 100) as usize;
-        // Iterate only summaries/text from SQLite; payloads and image bytes are never read here.
-        let needs_text = !query.is_empty()
-            || selected.is_some_and(|list| list.rules.iter().any(|rule| rule.field == "text"));
-        let sql = if needs_text {
-            "SELECT id,global_id,summary,search_text,payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) FROM cl_items ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC"
+        // Twenty rows are enough to fill the visible history and keep OCR/title
+        // strings bounded in the client. Callers may request a smaller page.
+        let offset = q["offset"].as_u64().unwrap_or(0).min(100_000_000) as usize;
+        let limit = q["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+        let cursor_sort_at_ms = q["cursor"]["sort_at_ms"]
+            .as_u64()
+            .or_else(|| q["cursor_sort_at_ms"].as_u64());
+        let cursor_id = q["cursor"]["id"]
+            .as_u64()
+            .or_else(|| q["cursor_id"].as_u64());
+        let cursor = cursor_sort_at_ms.zip(cursor_id);
+        let manual = selected.is_some_and(|list| list.kind == "manual");
+        // These two cases can be answered entirely by SQLite. Smart-list rules
+        // still need Summary decoding, but the iterator remains streaming and
+        // never builds a 100k-row Rust collection.
+        let fast_path = (selected.is_none() || manual) && kind == "all";
+
+        let mut clauses: Vec<String> = Vec::with_capacity(5);
+        let mut filter_params: Vec<SqlValue> = Vec::with_capacity(8);
+        if manual {
+            // A manual list shows the frozen archive when one exists, and its
+            // membership key is indexed by the primary key of cl_records.
+            clauses.push("NOT (i.ordinary=1 AND EXISTS(SELECT 1 FROM cl_items a WHERE a.global_id='archive:' || i.global_id AND a.ordinary=0))".into());
+            clauses.push("EXISTS(SELECT 1 FROM cl_records m WHERE m.key='member:' || ? || ':' || CASE WHEN i.ordinary=0 AND i.global_id LIKE 'archive:%' THEN substr(i.global_id,9) ELSE i.global_id END AND m.deleted=0)".into());
+            filter_params.push(SqlValue::Text(list_id.unwrap_or_default().to_string()));
         } else {
-            "SELECT id,global_id,summary,'',payload IS NOT NULL,ordinary,COALESCE(title,''),COALESCE(ocr_text,''),COALESCE(ocr_version,0),COALESCE(remote,0),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) FROM cl_items ORDER BY MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC"
-        };
-        let mut stmt = db.prepare(sql).map_err(err)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, u64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, bool>(4)?,
-                    r.get::<_, bool>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, String>(7)?,
-                    r.get::<_, i64>(8)?,
-                    r.get::<_, bool>(9)?,
-                    r.get::<_, i64>(10)?,
-                ))
-            })
-            .map_err(err)?;
-        let memberships = members_db(&db)?;
-        let mut total = 0usize;
-        let mut items = vec![];
-        for row in rows {
-            let (
-                id,
-                gid,
-                raw,
-                text,
-                available,
-                ordinary,
-                title,
-                ocr_text,
-                ocr_version,
-                remote,
-                sort_at_ms,
-            ) = row.map_err(err)?;
-            let title_lower = title.to_lowercase();
-            let ocr_lower = ocr_text.to_lowercase();
-            let mut s: Summary = serde_json::from_str(&raw).map_err(err)?;
-            project_image_file(&mut s);
-            let member: Vec<_> = memberships
+            // An archive with a live ordinary source is hidden outside manual
+            // lists. The old per-row SELECT EXISTS is now one indexed predicate.
+            clauses.push("NOT (i.ordinary=0 AND i.global_id LIKE 'archive:%' AND EXISTS(SELECT 1 FROM cl_items base WHERE base.global_id=substr(i.global_id,9) AND base.ordinary=1))".into());
+            // Orphaned archive rows are never shown. Restrict the membership
+            // probe to active list IDs so deleted-list tombstones stay hidden
+            // without materializing every membership in Rust.
+            if lists.is_empty() {
+                clauses.push("i.ordinary=1".into());
+            } else {
+                let active_memberships = lists
+                    .iter()
+                    .map(|_| {
+                        "m.key='member:' || ? || ':' || CASE WHEN i.ordinary=0 AND i.global_id LIKE 'archive:%' THEN substr(i.global_id,9) ELSE i.global_id END"
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                clauses.push(format!(
+                    "(i.ordinary=1 OR EXISTS(SELECT 1 FROM cl_records m WHERE m.deleted=0 AND ({active_memberships})))"
+                ));
+                filter_params.extend(lists.iter().map(|list| SqlValue::Text(list.id.clone())));
+            }
+        }
+        if let Some(source) = source {
+            clauses.push("(json_extract(i.summary,'$.source_device_id')=? OR json_extract(i.summary,'$.source')=?)".into());
+            filter_params.push(SqlValue::Text(source.to_string()));
+            filter_params.push(SqlValue::Text(source.to_string()));
+        }
+        if !query.is_empty() {
+            if let Some(fts_query) = fts_query(&query) {
+                clauses.push(
+                    "i.id IN (SELECT rowid FROM cl_items_fts WHERE cl_items_fts MATCH ?)".into(),
+                );
+                filter_params.push(SqlValue::Text(fts_query));
+                // Trigram candidates can contain the same trigrams in a
+                // different order. Keep the original substring predicate as
+                // the exact, low-memory verification step.
+                clauses.push("i.search_index LIKE '%' || ? || '%' COLLATE NOCASE".into());
+                filter_params.push(SqlValue::Text(query.clone()));
+            } else {
+                clauses.push("i.search_index LIKE '%' || ? || '%' COLLATE NOCASE".into());
+                filter_params.push(SqlValue::Text(query.clone()));
+            }
+        }
+        let where_sql = clauses.join(" AND ");
+
+        if fast_path {
+            let count_sql = format!("SELECT COUNT(*) FROM cl_items i WHERE {where_sql}");
+            let total: usize = db
+                .query_row(&count_sql, params_from_iter(filter_params.iter()), |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(err)?
+                .max(0) as usize;
+
+            let mut page_clauses = clauses;
+            let mut page_params = filter_params;
+            if let Some((sort_at_ms, id)) = cursor {
+                page_clauses.push(
+                    "(MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported))<? OR (MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported))=? AND i.id<?))".into(),
+                );
+                page_params.push(SqlValue::Integer(sort_at_ms.min(i64::MAX as u64) as i64));
+                page_params.push(SqlValue::Integer(sort_at_ms.min(i64::MAX as u64) as i64));
+                page_params.push(SqlValue::Integer(id.min(i64::MAX as u64) as i64));
+            }
+            let page_sql = format!(
+                "{QUERY_SELECT} WHERE {} ORDER BY {QUERY_ORDER} LIMIT ? OFFSET ?",
+                page_clauses.join(" AND ")
+            );
+            page_params.push(SqlValue::Integer((limit + 1) as i64));
+            page_params.push(SqlValue::Integer(
+                if cursor.is_some() { 0 } else { offset } as i64
+            ));
+            let mut stmt = db.prepare(&page_sql).map_err(err)?;
+            let rows = stmt
+                .query_map(params_from_iter(page_params.iter()), QueryRow::from_row)
+                .map_err(err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(err)?;
+            let has_more = rows.len() > limit;
+            let mut page = rows;
+            page.truncate(limit);
+            let memberships = memberships_for(&db, &page, &lists)?;
+            let items = page
                 .iter()
-                .filter(|(_, v)| v == &gid || *v == format!("archive:{gid}"))
-                .map(|(l, _)| l.clone())
-                .collect();
-            if !ordinary && member.is_empty() {
-                continue;
-            }
-            // Manual lists display the pinned archive, not both it and its
-            // refreshable ordinary-history source row.
-            if ordinary
-                && selected.is_some_and(|l| l.kind == "manual")
-                && db
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM cl_items WHERE global_id=?1 AND ordinary=0)",
-                        [format!("archive:{gid}")],
-                        |r| r.get::<_, bool>(0),
+                .map(|row| {
+                    self.query_item_value(
+                        row,
+                        memberships
+                            .get(row.member_id())
+                            .cloned()
+                            .unwrap_or_default(),
                     )
-                    .map_err(err)?
-            {
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let next_cursor = if has_more {
+                page.last()
+                    .map(|row| json!({"sort_at_ms": row.sort_at_ms.max(0) as u64, "id": row.id}))
+            } else {
+                None
+            };
+            return serde_json::to_string(&json!({
+                "items": items,
+                "total": total,
+                "next_offset": has_more.then_some(offset.saturating_add(limit)),
+                "next_cursor": next_cursor,
+                "revision": self.generation()
+            }))
+            .map_err(err);
+        }
+
+        // Smart lists have arbitrary rule combinations. Keep their existing
+        // semantics, but stream the SQL rows and apply cursor/offset after the
+        // rule match so `total` remains the full result count.
+        let sql = format!("{QUERY_SELECT} WHERE {where_sql} ORDER BY {QUERY_ORDER}");
+        let mut stmt = db.prepare(&sql).map_err(err)?;
+        let rows = stmt
+            .query_map(params_from_iter(filter_params.iter()), QueryRow::from_row)
+            .map_err(err)?;
+        let mut total = 0usize;
+        let mut after_cursor = cursor.is_none();
+        let mut visible_count = 0usize;
+        let page_offset = if cursor.is_some() { 0 } else { offset };
+        let mut page: Vec<(QueryRow, Summary)> = Vec::with_capacity(limit);
+        let mut has_more = false;
+        for row in rows {
+            let row = row.map_err(err)?;
+            let mut summary: Summary = serde_json::from_str(&row.summary).map_err(err)?;
+            project_image_file(&mut summary);
+            if kind != "all" && kind != summary.kind {
                 continue;
             }
-            if !ordinary
-                && selected.is_none_or(|l| l.kind != "manual")
-                && gid.starts_with("archive:")
-                && db
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM cl_items WHERE global_id=?1 AND ordinary=1)",
-                        [&gid[8..]],
-                        |r| r.get::<_, bool>(0),
+            let title_lower = row.title.to_lowercase();
+            let ocr_lower = row.ocr_text.to_lowercase();
+            if let Some(list) = selected {
+                let matches = |(index, rule): (usize, &Rule)| {
+                    matches_rule(
+                        index,
+                        rule,
+                        &summary,
+                        &row.search_text,
+                        &title_lower,
+                        &ocr_lower,
+                        &q,
                     )
-                    .map_err(err)?
-            {
-                continue;
-            }
-            if kind != "all" && kind != s.kind {
-                continue;
-            }
-            if source.is_some_and(|v| s.source_device_id.as_deref() != Some(v) && s.source != v) {
-                continue;
-            }
-            if !query.is_empty()
-                && !text.contains(&query)
-                && !title_lower.contains(&query)
-                && !ocr_lower.contains(&query)
-                && !s.preview.to_lowercase().contains(&query)
-                && !s.source.to_lowercase().contains(&query)
-            {
-                continue;
-            }
-            if let Some(l) = selected {
-                if l.kind == "manual" {
-                    if !member.contains(&l.id) {
-                        continue;
-                    }
+                };
+                let matches = if list.match_mode == "any" {
+                    list.rules.iter().enumerate().any(matches)
                 } else {
-                    let matches = |(i, r): (usize, &Rule)| {
-                        matches_rule(i, r, &s, &text, &title_lower, &ocr_lower, &q)
-                    };
-                    if !(if l.match_mode == "any" {
-                        l.rules.iter().enumerate().any(matches)
-                    } else {
-                        l.rules.iter().enumerate().all(matches)
-                    }) {
-                        continue;
-                    }
+                    list.rules.iter().enumerate().all(matches)
+                };
+                if !matches {
+                    continue;
                 }
             }
-            if total >= offset && items.len() < limit {
-                let mut value = serde_json::to_value(s).map_err(err)?;
-                value["id"] = json!(id);
-                value["available"] = json!(available);
-                value["memberships"] = json!(member);
-                value["title"] = json!(title);
-                value["ocr_text"] = json!(ocr_text);
-                value["ocr_version"] = json!(ocr_version.max(0) as u64);
-                value["remote"] = json!(remote);
-                // Same key the page is ordered by, so the client can interleave
-                // snapshot-only records without reordering the page.
-                value["sort_at_ms"] = json!(sort_at_ms.max(0) as u64);
-                items.push(value);
+            total = total.saturating_add(1);
+            if let Some((cursor_sort, cursor_row_id)) = cursor
+                && !after_cursor
+            {
+                let row_sort = row.sort_at_ms.max(0) as u64;
+                if row_sort < cursor_sort || (row_sort == cursor_sort && row.id < cursor_row_id) {
+                    after_cursor = true;
+                } else {
+                    continue;
+                }
             }
-            total += 1;
+            if visible_count < page_offset {
+                visible_count += 1;
+                continue;
+            }
+            if page.len() < limit {
+                page.push((row, summary));
+                visible_count += 1;
+            } else {
+                has_more = true;
+            }
         }
-        serde_json::to_string(&json!({"items":items,"total":total,"next_offset":if offset+limit<total{Some(offset+limit)}else{None},"revision":self.generation()})).map_err(err)
+        let page_rows: Vec<QueryRow> = page.iter().map(|(row, _)| row.clone()).collect();
+        let memberships = memberships_for(&db, &page_rows, &lists)?;
+        let items = page
+            .into_iter()
+            .map(|(row, mut summary)| {
+                let member = memberships
+                    .get(row.member_id())
+                    .cloned()
+                    .unwrap_or_default();
+                query_item_value_with_summary(&row, &mut summary, member)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            page_rows
+                .last()
+                .map(|row| json!({"sort_at_ms": row.sort_at_ms.max(0) as u64, "id": row.id}))
+        } else {
+            None
+        };
+        serde_json::to_string(&json!({
+            "items": items,
+            "total": total,
+            "next_offset": has_more.then_some(offset.saturating_add(limit)),
+            "next_cursor": next_cursor,
+            "revision": self.generation()
+        }))
+        .map_err(err)
+    }
+
+    fn query_item_value(&self, row: &QueryRow, memberships: Vec<String>) -> Result<Value> {
+        let mut summary: Summary = serde_json::from_str(&row.summary).map_err(err)?;
+        project_image_file(&mut summary);
+        query_item_value_with_summary(row, &mut summary, memberships)
     }
     pub fn mutate(&self, request: &str) -> Result<String> {
         let q: Value = serde_json::from_str(request).map_err(err)?;
@@ -1377,6 +1610,97 @@ impl Library {
         Ok(serde_json::from_str(&raw).unwrap_or_default())
     }
 }
+fn fts_query(query: &str) -> Option<String> {
+    let chars: Vec<char> = query.chars().collect();
+    if chars.len() < 3 {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let mut terms = Vec::with_capacity(chars.len() - 2);
+    for window in chars.windows(3) {
+        let term: String = window.iter().collect();
+        if seen.insert(term.clone()) {
+            // detail=none FTS5 indexes individual trigram tokens but does not
+            // support phrase queries. Quoted single-token terms keep punctuation
+            // and whitespace literal while the SQL LIKE below verifies order.
+            terms.push(format!("\"{}\"", term.replace('\"', "\"\"")));
+        }
+    }
+    (!terms.is_empty()).then(|| terms.join(" AND "))
+}
+
+fn query_item_value_with_summary(
+    row: &QueryRow,
+    summary: &mut Summary,
+    memberships: Vec<String>,
+) -> Result<Value> {
+    let mut value = serde_json::to_value(summary).map_err(err)?;
+    value["id"] = json!(row.id);
+    value["available"] = json!(row.available);
+    value["memberships"] = json!(memberships);
+    value["title"] = json!(row.title);
+    value["ocr_text"] = json!(row.ocr_text);
+    value["ocr_version"] = json!(row.ocr_version.max(0) as u64);
+    value["remote"] = json!(row.remote);
+    // Same key the page is ordered by, so the client can interleave snapshot
+    // rows without reordering the returned page.
+    value["sort_at_ms"] = json!(row.sort_at_ms.max(0) as u64);
+    Ok(value)
+}
+
+fn memberships_for(
+    db: &Connection,
+    rows: &[QueryRow],
+    lists: &[List],
+) -> Result<HashMap<String, Vec<String>>> {
+    if rows.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let active: HashSet<&str> = lists.iter().map(|list| list.id.as_str()).collect();
+    let mut result: HashMap<String, Vec<String>> = HashMap::new();
+    let item_ids: Vec<String> = rows
+        .iter()
+        .map(QueryRow::member_id)
+        .map(str::to_owned)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    // One SQLite scan for the page is cheaper than one full membership scan per
+    // row. The returned values are still bounded by the page's item IDs.
+    let predicates = item_ids
+        .iter()
+        .map(|_| "key LIKE ?")
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let sql = format!("SELECT value FROM cl_records WHERE deleted=0 AND ({predicates})");
+    let params = item_ids
+        .iter()
+        .map(|item_id| SqlValue::Text(format!("member:%:{item_id}")))
+        .collect::<Vec<_>>();
+    let mut stmt = db.prepare(&sql).map_err(err)?;
+    for raw in stmt
+        .query_map(params_from_iter(params.iter()), |value| {
+            value.get::<_, String>(0)
+        })
+        .map_err(err)?
+    {
+        let value: Value = serde_json::from_str(&raw.map_err(err)?).map_err(err)?;
+        let Some(list_id) = value["list_id"].as_str() else {
+            continue;
+        };
+        let Some(member_id) = value["item_id"].as_str() else {
+            continue;
+        };
+        if active.contains(list_id) {
+            result
+                .entry(member_id.to_string())
+                .or_default()
+                .push(list_id.to_string());
+        }
+    }
+    Ok(result)
+}
+
 fn settings_db(db: &Connection) -> Result<Settings> {
     let raw: Option<String> = db
         .query_row("SELECT value FROM cl_meta WHERE key='settings'", [], |r| {

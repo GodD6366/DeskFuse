@@ -16,7 +16,13 @@ for command_name in hdiutil codesign lipo python3; do
   fi
 done
 
-DMG_PATH="${1:-${DMG_PATH:-$ROOT_DIR/dist/uniDesk-arm64.dmg}}"
+MACOS_ARCH="${UNIDESK_MACOS_ARCH:-arm64}"
+case "$MACOS_ARCH" in
+  arm64) EXPECTED_ARCH="arm64"; ARTIFACT_SUFFIX="arm64" ;;
+  x86_64) EXPECTED_ARCH="x86_64"; ARTIFACT_SUFFIX="x86_64" ;;
+  *) echo "error: UNIDESK_MACOS_ARCH must be arm64 or x86_64" >&2; exit 2 ;;
+esac
+DMG_PATH="${1:-${DMG_PATH:-$ROOT_DIR/dist/uniDesk-$ARTIFACT_SUFFIX.dmg}}"
 if [[ ! -f "$DMG_PATH" ]]; then
   echo "error: DMG not found: $DMG_PATH" >&2
   exit 1
@@ -114,7 +120,7 @@ fi
 }
 
 ARCHES="$(lipo -archs "$BINARY_PATH")"
-[[ "$ARCHES" == "arm64" ]] || { echo "error: expected arm64-only binary, got: $ARCHES" >&2; exit 1; }
+[[ "$ARCHES" == "$EXPECTED_ARCH" ]] || { echo "error: expected $EXPECTED_ARCH-only binary, got: $ARCHES" >&2; exit 1; }
 python3 - "$CONTENTS_DIR/Info.plist" <<'PYINPUTSERVICE'
 import plistlib, sys
 with open(sys.argv[1], 'rb') as source:
@@ -133,10 +139,10 @@ if entitlements.get("com.apple.security.automation.apple-events") is not True:
 print("Finder automation: signed Apple Events entitlement present")
 PYAUTOMATION
 [[ -x "$CONTENTS_DIR/MacOS/unidesk-update-helper" ]] || { echo "error: update helper missing" >&2; exit 1; }
-[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-update-helper")" == "arm64" ]] || { echo "error: update helper architecture" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-update-helper")" == "$EXPECTED_ARCH" ]] || { echo "error: update helper architecture" >&2; exit 1; }
 codesign --verify --strict "$CONTENTS_DIR/MacOS/unidesk-update-helper"
 [[ -x "$CONTENTS_DIR/MacOS/unidesk-input-service" ]] || { echo "error: input service missing" >&2; exit 1; }
-[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-input-service")" == "arm64" ]] || { echo "error: input service architecture" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/unidesk-input-service")" == "$EXPECTED_ARCH" ]] || { echo "error: input service architecture" >&2; exit 1; }
 codesign --verify --strict "$CONTENTS_DIR/MacOS/unidesk-input-service"
 # Inspect all shipped Mach-O files: Info.plist alone cannot establish the
 # deployment target, and Rust must be statically linked into the native client.
@@ -161,8 +167,8 @@ if [[ -f "$MOUNT_POINT/.updates/manifest.json" ]]; then
   cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- verify "$ROOT_DIR/resources/unidesk-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
   EMBEDDED_UPDATE="$CONTENTS_DIR/Resources/LanUpdate"
   cmp "$MOUNT_POINT/.updates/manifest.json" "$EMBEDDED_UPDATE/manifest.json"
-  cmp "$MOUNT_POINT/.updates/uniDesk-arm64-update.zip" "$EMBEDDED_UPDATE/uniDesk-arm64-update.zip"
-  python3 - "$CONTENTS_DIR/Resources/release.json" "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE/uniDesk-arm64-update.zip" <<'PYSEED'
+  cmp "$MOUNT_POINT/.updates/uniDesk-$ARTIFACT_SUFFIX-update.zip" "$EMBEDDED_UPDATE/uniDesk-$ARTIFACT_SUFFIX-update.zip"
+  python3 - "$CONTENTS_DIR/Resources/release.json" "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE/uniDesk-$ARTIFACT_SUFFIX-update.zip" <<'PYSEED'
 import json, pathlib, sys, zipfile
 release = json.loads(pathlib.Path(sys.argv[1]).read_text())
 manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())["manifest"]

@@ -69,6 +69,18 @@ RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
 
 打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、arm64、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 
+Intel Mac 目前只提供本机实验性 DMG，不加入公开 arm64 Release，也不生成当前仅支持 arm64 的 LAN 更新清单。使用相同的发行描述构建 x86_64 包：
+
+```sh
+UNIDESK_MACOS_ARCH=x86_64 CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 \
+  DIST_DIR="$PWD/dist/0.3.0-intel" RELEASE_METADATA="$PWD/release.json" \
+  ./scripts/package-macos.sh --homebrew
+UNIDESK_MACOS_ARCH=x86_64 UNIDESK_DMG_FINDER_LAYOUT=0 \
+  ./scripts/verify-dmg.sh dist/0.3.0-intel/uniDesk-x86_64.dmg
+```
+
+该包包含 x86_64 主程序、输入服务和更新 helper，默认使用 GitHub 更新渠道；签名、公证和 Intel 设备行为仍需单独验收。
+
 只有从已提交、与产物一致的源码构建后，才能生成对外构建信息：
 
 ```sh

@@ -71,6 +71,8 @@ struct Shared {
     inventory_refreshed_at: Option<Instant>,
     view: LanUpdateView,
     ready: Option<(VerifiedRelease, PathBuf)>,
+    /// Set by the second install request to bypass the normal file-idle wait.
+    force_install: bool,
     quarantined: BTreeSet<uuid::Uuid>,
     serving: BTreeMap<uuid::Uuid, Serving>,
     receipts: Vec<ServedReceipt>,
@@ -162,6 +164,7 @@ impl LanUpdater {
                 ..Default::default()
             },
             ready: None,
+            force_install: false,
             quarantined,
             serving: BTreeMap::new(),
             attempts: BTreeMap::new(),
@@ -267,10 +270,19 @@ impl LanUpdater {
             state.view.message = ABANDONED_INSTALL.into();
             return;
         }
+        let already_requested = state.view.manual_requested;
+        if !already_requested {
+            state.force_install = false;
+        }
         state.view.manual_requested = true;
         state.view.error = None;
         if state.ready.is_some() {
-            state.view.message = "正在准备主动安装，完成后将重新启动".into();
+            if already_requested {
+                state.force_install = true;
+                state.view.message = "正在立即安装，将跳过传输或粘贴等待".into();
+            } else {
+                state.view.message = "正在准备主动安装，完成后将重新启动".into();
+            }
         } else if !state.view.checking {
             state.view.checking = true;
             state.view.message = "正在查找并下载设备网络中的新版".into();
@@ -284,6 +296,7 @@ impl LanUpdater {
     pub fn abandon_install(&self, reason: &str) {
         let mut state = self.shared.lock().unwrap();
         state.install_abandoned = true;
+        state.force_install = false;
         state.view.manual_requested = false;
         if let Some(status) = &mut state.view.status
             && matches!(
@@ -299,6 +312,10 @@ impl LanUpdater {
     pub fn install_abandoned(&self) -> bool {
         self.shared.lock().unwrap().install_abandoned
     }
+    pub fn force_install(&self) -> bool {
+        let state = self.shared.lock().unwrap();
+        state.force_install && state.ready.is_some()
+    }
     pub fn installation_waiting(&self, message: &str) {
         let mut state = self.shared.lock().unwrap();
         if state.view.manual_requested {
@@ -313,6 +330,7 @@ impl LanUpdater {
     }
     pub fn installing(&self) {
         let mut state = self.shared.lock().unwrap();
+        state.force_install = false;
         if let Some(status) = &mut state.view.status {
             status.phase = UpdatePhase::Installing;
         }
@@ -320,6 +338,7 @@ impl LanUpdater {
     }
     pub fn quarantine(&self, reason: String) {
         let mut state = self.shared.lock().unwrap();
+        state.force_install = false;
         if let Some((release, _)) = state.ready.take() {
             state
                 .quarantined
@@ -1152,6 +1171,7 @@ mod tests {
             attempts: BTreeMap::new(),
             reconnect_confirmed: false,
             install_abandoned: false,
+            force_install: false,
         }));
         let peer = DeviceId::from_bytes([1; 32]);
         let other = DeviceId::from_bytes([2; 32]);
