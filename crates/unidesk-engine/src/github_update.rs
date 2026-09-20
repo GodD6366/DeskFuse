@@ -485,9 +485,15 @@ struct Asset {
 #[derive(Deserialize)]
 struct BuildInfo {
     release: ReleaseVersion,
-    target: String,
-    signing: String,
+    targets: Vec<BuildTarget>,
     dmg_sha256: String,
+}
+#[derive(Deserialize)]
+struct BuildTarget {
+    asset: String,
+    target: String,
+    sha256: String,
+    signing: String,
 }
 
 fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
@@ -662,9 +668,14 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
     }
     let info: BuildInfo =
         serde_json::from_slice(&info_bytes).map_err(|_| "GitHub 构建信息格式无效")?;
+    let arm64 = info
+        .targets
+        .iter()
+        .find(|target| target.asset == DMG_NAME && target.target == "aarch64-apple-darwin")
+        .ok_or("GitHub 构建信息缺少 arm64 目标")?;
     if info.release != release
-        || info.target != "aarch64-apple-darwin"
         || info.dmg_sha256 != sums[DMG_NAME]
+        || arm64.sha256 != sums[DMG_NAME]
     {
         return Err("GitHub 构建信息与发布包不一致".into());
     }
@@ -674,7 +685,7 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
         dmg_url: format!("{DOWNLOAD}/{tag}/{DMG_NAME}"),
         sha256: sums[DMG_NAME].clone(),
         size,
-        developer_id: info.signing == "developer-id",
+        developer_id: arm64.signing == "developer-id",
     })
 }
 
