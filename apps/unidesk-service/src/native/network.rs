@@ -1,4 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
+use super::remote_app;
 use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
 use unidesk_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
@@ -26,6 +27,7 @@ pub struct Network {
     pub input_runtime: InputOnlyRuntime,
     pub control_port: u16,
     input_transport: QuinnTransport,
+    remote_app_transport: QuinnTransport,
     input_authorized: Mutex<BTreeSet<unidesk_core::DeviceId>>,
     _input_discovery: Mutex<PlatformDiscovery>,
     input_discovery_events: Mutex<DiscoveryHandle>,
@@ -45,7 +47,8 @@ impl Network {
         let control_capabilities = Capabilities::NETWORK
             | Capabilities::DEVICE_NETWORK
             | Capabilities::CLIPBOARD
-            | Capabilities::CLIPBOARD_SYNC_V2;
+            | Capabilities::CLIPBOARD_SYNC_V2
+            | Capabilities::REMOTE_APPLICATION;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
@@ -62,6 +65,9 @@ impl Network {
             .local_addr()
             .map_err(|_| stage(24))?
             .port();
+        // Remote-app sessions arrive on the control transport; keep a shared
+        // handle so the service can serve them without the runtime's mediation.
+        let remote_app_transport = control_transport.clone();
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(
@@ -118,6 +124,7 @@ impl Network {
             input_runtime,
             control_port,
             input_transport,
+            remote_app_transport,
             input_authorized: Mutex::new(BTreeSet::new()),
             _input_discovery: Mutex::new(input_discovery),
             input_discovery_events: Mutex::new(input_events),
@@ -171,6 +178,32 @@ impl Network {
             .map_err(|_| io::Error::other("input authority lock poisoned"))? = allowed;
         self.input_runtime.update_view(view);
         Ok(())
+    }
+
+    /// Drain and serve pending remote-app sessions from trusted peers. Incoming
+    /// sessions are polled by the service loop; each is served on a blocking
+    /// thread so its bounded `receive` waits never stall the Tokio worker.
+    pub fn serve_remote_applications(&self) {
+        while let Some(session) = self.remote_app_transport.take_remote_application() {
+            let peer = session.peer;
+            if remote_app::availability() == remote_app::Availability::Available
+                && self.remote_app_authorized(peer)
+            {
+                tokio::task::spawn_blocking(move || remote_app::serve(session));
+            } else {
+                session.close();
+            }
+        }
+    }
+
+    fn remote_app_authorized(&self, peer: unidesk_core::DeviceId) -> bool {
+        let view = self.runtime.snapshot_view();
+        view.device_network
+            .allows(view.snapshot.local_device_id, peer)
+            && !view.device_network.blocked_peer_ids.contains(&peer)
+            && view.snapshot.peers.iter().any(|entry| {
+                entry.id == peer && entry.trust == TrustState::Trusted
+            })
     }
 }
 

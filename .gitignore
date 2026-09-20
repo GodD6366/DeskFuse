@@ -58,6 +58,9 @@ identity.key
 /apps/unidesk-macos/Sources/UniDeskEngineFFI/*.h
 /apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
 /apps/unidesk-macos/SDK/*.a
+
+# FreeRDP static library bundle (regenerate with scripts/build-freerdp-macos.sh).
+/apps/unidesk-macos/RemoteApplication/Vendor/
 /apps/unidesk-macos/SDK/*.h
 /apps/unidesk-macos/SDK/*.modulemap
 /apps/unidesk-macos/SDK/unidesk-input-macos

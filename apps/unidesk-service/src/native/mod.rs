@@ -5,6 +5,7 @@ mod clipboard_sync;
 mod desktop;
 mod input_helper;
 mod network;
+mod remote_app;
 mod security;
 use crate::{
     policy::same_session,
@@ -248,6 +249,7 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                 _ = clients.join_next(), if !clients.is_empty() => {},
                 _ = desktop_tick.tick() => {
                     if let Ok(mut state) = control.desktop.lock() { state.tick(&network, &control); }
+                    network.serve_remote_applications();
                 },
             }
         }

@@ -64,6 +64,19 @@ pub enum Command {
         message: String,
     },
     ReclaimInput,
+    ListRemoteApps,
+    ListInstalledApps,
+    RegisterRemoteApp {
+        name: String,
+        path: String,
+        display_name: String,
+    },
+    UnregisterRemoteApp {
+        name: String,
+    },
+    RemoteAppConnection {
+        name: String,
+    },
 }
 // Intentionally no Debug: user clipboard body is not diagnostic data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -96,6 +109,17 @@ pub enum Reply {
         state: InputState,
         deliveries: Vec<InputDelivery>,
         sequence: u64,
+    },
+    RemoteApps {
+        available: bool,
+        reason: Option<String>,
+        apps: Vec<RemoteAppInfo>,
+    },
+    InstalledApps {
+        apps: Vec<InstalledAppInfo>,
+    },
+    RemoteAppConnection {
+        rdp: String,
     },
     Queued {
         message: String,
@@ -142,6 +166,7 @@ pub struct Capabilities {
     pub files: bool,
     pub input: bool,
     pub updater: bool,
+    pub remote_app: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InputState {
@@ -200,4 +225,22 @@ pub struct Pending {
     pub expires_at_unix_ms: u64,
     pub owner_name: String,
     pub member_names: Vec<String>,
+}
+
+/// A registered RemoteApp surfaced to the controller for connection.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RemoteAppInfo {
+    pub name: String,
+    pub display_name: String,
+    pub path: String,
+    pub command_line: String,
+    pub icon_path: String,
+    pub icon_index: u32,
+}
+
+/// An installed executable surfaced to the local picker for registration.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct InstalledAppInfo {
+    pub name: String,
+    pub path: String,
 }

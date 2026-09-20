@@ -1,5 +1,5 @@
 //! Authenticated desktop coordinator; shared state never contains private keys.
-use super::{Control, Network, clipboard_sync, security};
+use super::{Control, Network, clipboard_sync, remote_app, security};
 use crate::{
     desktop_protocol as ipc,
     policy::{ClientSession, same_session},
@@ -316,6 +316,7 @@ impl State {
                     .input_heartbeat
                     .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
                 updater: false,
+                remote_app: matches!(remote_app::availability(), remote_app::Availability::Available),
             },
             input: self.input_state(network),
             peers,
@@ -512,6 +513,92 @@ impl State {
                 "unsupported",
                 "authoritative runtime rename is not yet available",
             ),
+            ipc::Command::ListRemoteApps => {
+                let (available, reason) = match remote_app::availability() {
+                    remote_app::Availability::Available => (true, None),
+                    remote_app::Availability::UnsupportedEdition { edition } => (
+                        false,
+                        Some(format!(
+                            "当前 Windows 版本（{edition}）不支持 RemoteApp；需要专业版或更高版本"
+                        )),
+                    ),
+                };
+                let apps = remote_app::list_remote_apps()
+                    .into_iter()
+                    .map(remote_app_info)
+                    .collect();
+                ipc::Reply::RemoteApps {
+                    available,
+                    reason,
+                    apps,
+                }
+            }
+            ipc::Command::ListInstalledApps => {
+                let apps = remote_app::list_installed_apps()
+                    .into_iter()
+                    .map(installed_app_info)
+                    .collect();
+                ipc::Reply::InstalledApps { apps }
+            }
+            ipc::Command::RegisterRemoteApp {
+                name,
+                path,
+                display_name,
+            } => {
+                if name.trim().is_empty() || path.trim().is_empty() {
+                    return ipc::Reply::rejected(
+                        "invalid_request",
+                        "RemoteApp 名称与可执行文件路径不能为空",
+                    );
+                }
+                let full_name = if display_name.trim().is_empty() {
+                    path.rsplit('\\')
+                        .next()
+                        .filter(|stem| !stem.is_empty())
+                        .map(|stem| stem.strip_suffix(".exe").unwrap_or(stem).to_owned())
+                        .unwrap_or_else(|| path.clone())
+                } else {
+                    display_name
+                };
+                let entry = remote_app::RemoteAppEntry {
+                    name,
+                    full_name,
+                    path,
+                    command_line: String::new(),
+                    command_line_setting: 1,
+                    icon_path: String::new(),
+                    icon_index: 0,
+                    show_in_tswa: 0,
+                };
+                match remote_app::register_app(&entry) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected(
+                        "remote_app_unavailable",
+                        "无法写入 RemoteApp 注册表",
+                    ),
+                }
+            }
+            ipc::Command::UnregisterRemoteApp { name } => match remote_app::unregister_app(&name) {
+                Ok(()) => ipc::Reply::queued(),
+                Err(_) => ipc::Reply::rejected(
+                    "remote_app_unavailable",
+                    "无法移除 RemoteApp 注册项",
+                ),
+            },
+            ipc::Command::RemoteAppConnection { name } => {
+                let Some(entry) = remote_app::list_remote_apps()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                else {
+                    return ipc::Reply::rejected(
+                        "not_found",
+                        "该应用尚未注册为 RemoteApp",
+                    );
+                };
+                ipc::Reply::RemoteAppConnection {
+                    rdp: remote_app::rdp_file(&entry),
+                }
+            }
             other => match runtime_command(other) {
                 Some(command) => {
                     self.last_error = None;
@@ -528,6 +615,24 @@ impl State {
         }
     }
 }
+fn remote_app_info(entry: remote_app::RemoteAppEntry) -> ipc::RemoteAppInfo {
+    ipc::RemoteAppInfo {
+        name: entry.name,
+        display_name: entry.full_name,
+        path: entry.path,
+        command_line: entry.command_line,
+        icon_path: entry.icon_path,
+        icon_index: entry.icon_index,
+    }
+}
+
+fn installed_app_info(app: remote_app::InstalledApp) -> ipc::InstalledAppInfo {
+    ipc::InstalledAppInfo {
+        name: app.name,
+        path: app.path,
+    }
+}
+
 fn enum_string(value: &impl serde::Serialize) -> String {
     serde_json::to_value(value)
         .ok()
