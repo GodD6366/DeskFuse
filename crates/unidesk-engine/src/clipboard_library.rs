@@ -939,7 +939,7 @@ END;").map_err(err)?;
     fn query_items_db(&self, db: &Connection, q: Value) -> Result<String> {
         let count_only = q["count_only"].as_bool().unwrap_or(false);
         let list_id = q["list_id"].as_str();
-        let lists = lists_db(&db)?;
+        let lists = lists_db(db)?;
         let selected = if let Some(id) = list_id {
             Some(lists.iter().find(|l| l.id == id).ok_or("列表已删除")?)
         } else {
@@ -1060,7 +1060,7 @@ END;").map_err(err)?;
             let has_more = rows.len() > limit;
             let mut page = rows;
             page.truncate(limit);
-            let memberships = memberships_for(&db, &page, &lists)?;
+            let memberships = memberships_for(db, &page, &lists)?;
             let items = page
                 .iter()
                 .map(|row| {
@@ -1162,7 +1162,7 @@ END;").map_err(err)?;
             return Ok(json!({"total": total}).to_string());
         }
         let page_rows: Vec<QueryRow> = page.iter().map(|(row, _)| row.clone()).collect();
-        let memberships = memberships_for(&db, &page_rows, &lists)?;
+        let memberships = memberships_for(db, &page_rows, &lists)?;
         let items = page
             .into_iter()
             .map(|(row, mut summary)| {
