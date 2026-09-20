@@ -87,6 +87,8 @@ struct ClipboardLibraryState: Codable {
 @MainActor @Observable final class ClipboardLibraryStore {
     static let shared = ClipboardLibraryStore()
     private(set) var lists: [ClipboardLibraryList] = []
+    private(set) var counts: [String: Int] = [:]
+    private var countsKey: String?
     private(set) var settings = ClipboardLibrarySettings()
     private(set) var devices: [ClipboardLibraryChoice] = []
     private(set) var apps: [ClipboardLibraryApp] = []
@@ -127,17 +129,23 @@ struct ClipboardLibraryState: Codable {
 
     func query(listID: String?, search: String, source: String?, offset: Int = 0, cursor: ClipboardLibraryCursor? = nil) async throws -> ClipboardLibraryPage {
         guard let client = AppStore.shared.client else { throw LibraryError(message: "引擎尚未就绪") }
+        var request = itemRequest(listID: listID, search: search, source: source)
+        request["offset"] = offset
+        if let cursor { request["cursor"] = ["sort_at_ms": cursor.sort_at_ms, "id": cursor.id] }
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let response = try await client.libraryQuery(String(decoding: data, as: UTF8.self))
+        return try JSONDecoder().decode(ClipboardLibraryPage.self, from: Data(response.utf8))
+    }
+
+    private func itemRequest(listID: String?, search: String = "", source: String? = nil) -> [String: Any] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
         var request: [String: Any] = ["op": "items", "list_id": listID as Any? ?? NSNull(), "query": search, "kind": "all",
-            "source": source as Any? ?? NSNull(), "offset": offset, "limit": ClipboardPaging.pageSize,
+            "source": source as Any? ?? NSNull(), "limit": ClipboardPaging.pageSize,
             "day_start_ms": Int64(today.timeIntervalSince1970 * 1000), "yesterday_start_ms": Int64(yesterday.timeIntervalSince1970 * 1000),
             "day_end_ms": Int64(tomorrow.timeIntervalSince1970 * 1000), "timezone": TimeZone.current.identifier]
-        if let cursor {
-            request["cursor"] = ["sort_at_ms": cursor.sort_at_ms, "id": cursor.id]
-        }
         var windows: [String: [String: Int64]] = [:]
         if let list = lists.first(where: { $0.id == listID }) {
             let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -158,10 +166,21 @@ struct ClipboardLibraryState: Codable {
             }
         }
         request["rule_windows"] = windows
-        let data = try JSONSerialization.data(withJSONObject: request)
+        return request
+    }
+
+    private func refreshCounts() async throws {
+        guard let client = AppStore.shared.client else { throw LibraryError(message: "引擎尚未就绪") }
+        let key = "\(revision)|\(Calendar.current.startOfDay(for: Date()))|\(TimeZone.current.identifier)"
+        guard countsKey != key else { return }
+        let expectedRevision = revision
+        let requests = [itemRequest(listID: nil)] + lists.map { itemRequest(listID: $0.id) }
+        let data = try JSONSerialization.data(withJSONObject: ["op": "counts", "requests": requests])
         let response = try await client.libraryQuery(String(decoding: data, as: UTF8.self))
-        let page = try JSONDecoder().decode(ClipboardLibraryPage.self, from: Data(response.utf8))
-        return page
+        let updated = try JSONDecoder().decode([String: Int].self, from: Data(response.utf8))
+        guard revision == expectedRevision else { return }
+        if counts != updated { counts = updated }
+        countsKey = key
     }
     func refresh() async {
         do { _ = try await loadSettings() }
@@ -170,10 +189,14 @@ struct ClipboardLibraryState: Codable {
     func loadSettings() async throws -> ClipboardLibrarySettings {
         guard let client = AppStore.shared.client else { throw LibraryError(message: "引擎尚未就绪") }
         let response = try await client.libraryQuery("{\"op\":\"state\"}")
-        return try apply(response)
+        let settings = try apply(response)
+        try await refreshCounts()
+        return settings
     }
     private func apply(_ response: String) throws -> ClipboardLibrarySettings {
         let state = try JSONDecoder().decode(ClipboardLibraryState.self, from: Data(response.utf8))
+        // A poll already in flight must not roll back a completed mutation.
+        guard state.revision >= revision else { return settings }
         // Only publish changed projections. Replacing observed menu data every
         // two seconds interrupts macOS submenu tracking even without mutations.
         if lists != state.lists { lists = state.lists }
@@ -194,7 +217,9 @@ struct ClipboardLibraryState: Codable {
         // The mutation returns the persisted state. Do not hide read-back failures
         // behind a separate refresh that swallows errors.
         let response = try await client.libraryMutate(String(decoding: data, as: UTF8.self))
-        return try apply(response)
+        let settings = try apply(response)
+        try await refreshCounts()
+        return settings
     }
     func save(_ list: ClipboardLibraryList) async throws {
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(list))

@@ -35,14 +35,14 @@ struct MenuBarClipboardRow: View {
                 // Leading: the app that produced the copy.
                 appIcon
                     .frame(width: 28, height: 28)
-                // Middle: the content itself; images get a real preview.
-                VStack(alignment: .leading, spacing: 6) {
+                // Middle: the content itself; text and images are both centered.
+                VStack(spacing: 6) {
                     content
                     if requestFiles {
                         Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
                 VStack(alignment: .trailing, spacing: 15) {
                     HStack(spacing: 4) {
                         if ocrHit {
@@ -99,18 +99,20 @@ struct MenuBarClipboardRow: View {
     @ViewBuilder private var content: some View {
         if item.hasImage {
             if let image {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(spacing: 5) {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
                         .frame(width: 108, height: 72)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                     if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { titleLabel }
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 // Keep a stable slot while the thumbnail loads so rows never jump.
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
                     .frame(width: 108, height: 72)
                     .overlay { if loading { ProgressView().controlSize(.small) } }
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         } else {
             titleLabel
@@ -124,7 +126,8 @@ struct MenuBarClipboardRow: View {
             editing: $editingTitle,
             editsOnDoubleClick: false
         )
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -207,31 +210,31 @@ struct MenuBarClipboardCard: View {
                 .fill(selected ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
                 .overlay(alignment: .bottomTrailing) { watermark }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(spacing: 0) {
                 if hasTitle {
-                    HStack(spacing: 6) {
-                        ClipboardTitleLabel(title: title, fallback: "", editing: $editingTitle)
-                        Spacer(minLength: 4)
+                    ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    content
+                    if requestFiles {
+                        Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    if hasMetadata || index < 9 {
+                        metadata
+                            .frame(maxWidth: .infinity)
+                            .overlay(alignment: .trailing) {
+                                if index < 9 {
+                                    Text("⌘ \(index + 1)").font(.system(size: 11)).monospacedDigit()
+                                        .opacity(showShortcut ? 1 : 0).accessibilityHidden(!showShortcut)
+                                }
+                            }
                     }
                 }
-                content
-                if requestFiles {
-                    Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                if hasMetadata || index < 9 {
-                    metadata
-                        .frame(maxWidth: .infinity)
-                        .overlay(alignment: .trailing) {
-                            if index < 9 {
-                                Text("⌘ \(index + 1)").font(.system(size: 11)).monospacedDigit()
-                                    .opacity(showShortcut ? 1 : 0).accessibilityHidden(!showShortcut)
-                            }
-                        }
-                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)

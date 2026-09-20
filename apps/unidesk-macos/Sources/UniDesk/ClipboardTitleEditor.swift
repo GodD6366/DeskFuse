@@ -34,6 +34,24 @@ struct ClipboardTitleLabel: View {
     }
 }
 
+/// Shared table-like header for titled cards; untitled content has no empty band.
+struct ClipboardCardHeader: View {
+    let title: String?
+    let selected: Bool
+    @Binding var editing: Bool
+
+    var body: some View {
+        ClipboardTitleLabel(title: title, fallback: "", editing: $editing,
+                            font: .system(size: 13, weight: .semibold))
+            .frame(maxWidth: .infinity, alignment: .center)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(selected ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.04))
+            .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+    }
+}
+
 struct ClipboardTitleEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool

@@ -7,15 +7,14 @@ struct ClipboardLibraryTabs: View {
     @Binding var selectedListID: String?
     var spacious = false
     var vertical = false
-    var counts: [String: Int] = [:]
     @State private var editing: ClipboardLibraryList?
     var body: some View {
         Group {
             if vertical {
                 VStack(alignment: .leading, spacing: 4) {
-                    verticalTab("全部", id: nil, symbol: "rectangle.stack", count: counts["all"])
+                    verticalTab("全部", id: nil, symbol: "rectangle.stack", count: library.counts["all"])
                     ForEach(library.lists) { list in
-                        verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: counts[list.id])
+                        verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: library.counts[list.id])
                             .contextMenu {
                                 Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
                                 Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
@@ -34,9 +33,9 @@ struct ClipboardLibraryTabs: View {
                 HStack(spacing: 6) {
                     ScrollView(.horizontal) {
                         HStack(spacing: 6) {
-                            tab("全部", id: nil)
+                            tab("全部", id: nil, count: library.counts["all"])
                             ForEach(library.lists) { list in
-                                tab(list.name, id: list.id)
+                                tab(list.name, id: list.id, count: library.counts[list.id])
                                     .contextMenu {
                                         Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
                                         Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
@@ -49,7 +48,7 @@ struct ClipboardLibraryTabs: View {
                                     }
                             }
                         }
-                    }.scrollIndicators(.hidden)
+                    }.scrollIndicators(.automatic)
                     newListButton(label: nil, vertical: false)
                 }
             }
@@ -65,9 +64,12 @@ struct ClipboardLibraryTabs: View {
         editing = ClipboardLibraryList(name: name, kind: "smart",
             rules: [ClipboardLibraryRule(field: "kind", op: "is", value: value)])
     }
-    private func tab(_ name: String, id: String?) -> some View {
+    private func tab(_ name: String, id: String?, count: Int? = nil) -> some View {
         Button { selectedListID = id } label: {
-            Text(name).lineLimit(1).font(.callout)
+            HStack(spacing: 6) {
+                Text(name).lineLimit(1).font(.callout)
+                if let count { Text("\(count)").font(.caption).monospacedDigit() }
+            }
                 .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 7)
                 .frame(height: spacious ? WorkspaceControlMetrics.height : nil)
                 .foregroundStyle(selectedListID == id ? Color.accentColor : .secondary)

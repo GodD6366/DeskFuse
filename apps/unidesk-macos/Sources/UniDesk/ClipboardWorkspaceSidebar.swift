@@ -5,32 +5,7 @@ import UniDeskEngine
 /// sidebar focused on destinations while the list of saved clipboard groups
 /// stays next to the history it controls.
 struct ClipboardWorkspaceSidebar: View {
-    let snapshot: EngineSnapshot
     @Binding var selectedListID: String?
-    let total: Int
-
-    @Bindable private var library = ClipboardLibraryStore.shared
-
-    private var imageCount: Int {
-        snapshot.history.filter(\.hasImage).count
-    }
-
-    private var fileCount: Int {
-        snapshot.history.filter { $0.fileCount > 0 }.count
-    }
-
-    private var groupCounts: [String: Int] {
-        var result = ["all": max(total, snapshot.history.count)]
-        for list in library.lists {
-            switch list.name {
-            case "图片": result[list.id] = imageCount
-            case "文件": result[list.id] = fileCount
-            case "文字": result[list.id] = snapshot.history.filter { !$0.hasImage && $0.fileCount == 0 }.count
-            default: break
-            }
-        }
-        return result
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,8 +23,7 @@ struct ClipboardWorkspaceSidebar: View {
 
             ClipboardLibraryTabs(
                 selectedListID: $selectedListID,
-                vertical: true,
-                counts: groupCounts
+                vertical: true
             )
             .padding(.horizontal, 10)
 

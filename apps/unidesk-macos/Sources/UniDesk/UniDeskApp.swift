@@ -59,6 +59,10 @@ import UniDeskEngine
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var instanceLockFD: Int32 = -1
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        TransientScrollbars.shared.install()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // NSRunningApplication enumeration alone has a startup race: two
         // launches can both observe no peer and both keep their Dock icon.

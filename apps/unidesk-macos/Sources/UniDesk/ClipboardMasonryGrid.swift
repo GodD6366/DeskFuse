@@ -245,16 +245,21 @@ struct ClipboardHistoryCard: View {
                 .fill(selected ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
                 .overlay(alignment: .bottomTrailing) { watermark }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 8) {
-                if hasTitle { header }
-                content
-                if hasMetadata {
-                    metadata.frame(maxWidth: .infinity, alignment: .center)
+            VStack(spacing: 0) {
+                if hasTitle {
+                    ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
                 }
+                VStack(alignment: .leading, spacing: 10) {
+                    content
+                    if hasMetadata {
+                        metadata.frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
@@ -294,13 +299,6 @@ struct ClipboardHistoryCard: View {
 
     private var hasTitle: Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
     private var hasMetadata: Bool { item.copiedDate != nil || ocrHit || (meta?.remote == true && meta?.available == false) }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            ClipboardTitleLabel(title: title, fallback: "", editing: $editingTitle)
-            Spacer(minLength: 4)
-        }
-    }
 
     private var metadata: some View {
         ZStack {

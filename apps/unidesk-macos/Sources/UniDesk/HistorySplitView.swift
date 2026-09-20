@@ -1,9 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// HSplitView expands the history to its maximum instead of honoring its ideal
-/// width. A native split controller gives it an initial width and holding
-/// priority without replacing the system divider or SwiftUI content/state.
+/// Keep the native divider and allow manual resizing, starting history at its
+/// maximum width while preserving the preview's minimum size.
 struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresentable {
     var expandHistory = false
     @ViewBuilder let history: () -> History
@@ -14,7 +13,7 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
         let detailHost: NSHostingController<Detail>
         private var positioned = false
         private var expanded: Bool
-        private var listWidth: CGFloat = 280
+        private var listWidth: CGFloat = 360
 
         init(history: History, detail: Detail, expanded: Bool) {
             self.expanded = expanded
@@ -61,7 +60,8 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
 
         private func positionHistory() {
             // Expand to the existing history limit, retaining room for preview.
-            splitView.setPosition(expanded ? 360 : listWidth, ofDividerAt: 0)
+            let available = splitView.bounds.width - splitView.dividerThickness - 340
+            splitView.setPosition(min(expanded ? 360 : listWidth, max(240, available)), ofDividerAt: 0)
         }
     }
 

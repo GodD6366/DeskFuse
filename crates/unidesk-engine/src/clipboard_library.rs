@@ -123,7 +123,7 @@ struct Summary {
 #[derive(Clone, Debug)]
 struct QueryRow {
     id: u64,
-    global_id: String,
+    member_id: String,
     summary: String,
     search_text: String,
     available: bool,
@@ -136,10 +136,16 @@ struct QueryRow {
 
 impl QueryRow {
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
-        let _: bool = row.get(5)?;
+        let ordinary: bool = row.get(5)?;
+        let global_id: String = row.get(1)?;
         Ok(Self {
             id: row.get(0)?,
-            global_id: row.get(1)?,
+            // Memberships point to the frozen archive, including from ordinary history.
+            member_id: if ordinary {
+                format!("archive:{global_id}")
+            } else {
+                global_id
+            },
             summary: row.get(2)?,
             search_text: row.get(3)?,
             available: row.get(4)?,
@@ -152,9 +158,7 @@ impl QueryRow {
     }
 
     fn member_id(&self) -> &str {
-        self.global_id
-            .strip_prefix("archive:")
-            .unwrap_or(&self.global_id)
+        &self.member_id
     }
 }
 
@@ -844,6 +848,28 @@ END;").map_err(err)?;
         if q["op"] == "state" {
             return self.state();
         }
+        if q["op"] == "counts" {
+            let db = self.db.lock().map_err(err)?;
+            let lists = lists_db(&db)?;
+            let requests = q["requests"].as_array().ok_or("计数请求无效")?;
+            if requests.len() != lists.len() + 1 {
+                return Err("列表已变化，请刷新".into());
+            }
+            let mut counts = std::collections::BTreeMap::new();
+            for request in requests {
+                let key = request["list_id"].as_str().unwrap_or("all").to_string();
+                // Navigation totals deliberately ignore search, device and pagination.
+                let mut filter = request.clone();
+                filter["query"] = json!("");
+                filter["source"] = Value::Null;
+                filter["kind"] = json!("all");
+                filter["count_only"] = json!(true);
+                let result: Value =
+                    serde_json::from_str(&self.query_items_db(&db, filter)?).map_err(err)?;
+                counts.insert(key, result["total"].clone());
+            }
+            return serde_json::to_string(&counts).map_err(err);
+        }
         self.query_items(q)
     }
     /// Retention cleanup is maintenance work. Running it before every keystroke
@@ -907,6 +933,11 @@ END;").map_err(err)?;
     }
     fn query_items(&self, q: Value) -> Result<String> {
         let db = self.db.lock().map_err(err)?;
+        self.query_items_db(&db, q)
+    }
+
+    fn query_items_db(&self, db: &Connection, q: Value) -> Result<String> {
+        let count_only = q["count_only"].as_bool().unwrap_or(false);
         let list_id = q["list_id"].as_str();
         let lists = lists_db(&db)?;
         let selected = if let Some(id) = list_id {
@@ -940,7 +971,8 @@ END;").map_err(err)?;
             // A manual list shows the frozen archive when one exists, and its
             // membership key is indexed by the primary key of cl_records.
             clauses.push("NOT (i.ordinary=1 AND EXISTS(SELECT 1 FROM cl_items a WHERE a.global_id='archive:' || i.global_id AND a.ordinary=0))".into());
-            clauses.push("EXISTS(SELECT 1 FROM cl_records m WHERE m.key='member:' || ? || ':' || CASE WHEN i.ordinary=0 AND i.global_id LIKE 'archive:%' THEN substr(i.global_id,9) ELSE i.global_id END AND m.deleted=0)".into());
+            clauses.push("EXISTS(SELECT 1 FROM cl_records m WHERE m.key='member:' || ? || ':' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END AND m.deleted=0)".into());
+            clauses.push("NOT EXISTS(SELECT 1 FROM cl_records tombstone WHERE tombstone.key='item:' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END AND tombstone.deleted=1)".into());
             filter_params.push(SqlValue::Text(list_id.unwrap_or_default().to_string()));
         } else {
             clauses.push(UNIQUE_IMAGE_ROW.into());
@@ -956,7 +988,7 @@ END;").map_err(err)?;
                 let active_memberships = lists
                     .iter()
                     .map(|_| {
-                        "m.key='member:' || ? || ':' || CASE WHEN i.ordinary=0 AND i.global_id LIKE 'archive:%' THEN substr(i.global_id,9) ELSE i.global_id END"
+                        "m.key='member:' || ? || ':' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END"
                     })
                     .collect::<Vec<_>>()
                     .join(" OR ");
@@ -998,6 +1030,9 @@ END;").map_err(err)?;
                 .map_err(err)?
                 .max(0) as usize;
 
+            if count_only {
+                return Ok(json!({"total": total}).to_string());
+            }
             let mut page_clauses = clauses;
             let mut page_params = filter_params;
             if let Some((sort_at_ms, id)) = cursor {
@@ -1099,6 +1134,9 @@ END;").map_err(err)?;
                 }
             }
             total = total.saturating_add(1);
+            if count_only {
+                continue;
+            }
             if let Some((cursor_sort, cursor_row_id)) = cursor
                 && !after_cursor
             {
@@ -1119,6 +1157,9 @@ END;").map_err(err)?;
             } else {
                 has_more = true;
             }
+        }
+        if count_only {
+            return Ok(json!({"total": total}).to_string());
         }
         let page_rows: Vec<QueryRow> = page.iter().map(|(row, _)| row.clone()).collect();
         let memberships = memberships_for(&db, &page_rows, &lists)?;
@@ -1231,7 +1272,8 @@ END;").map_err(err)?;
                 // Frozen manual-list archives share the row's global id and must
                 // be removed with it; their sync record gets a tombstone so a
                 // merge cannot resurrect the archive.
-                let mut archived = Vec::new();
+                let mut archived = std::collections::BTreeSet::new();
+                let mut bases = std::collections::BTreeSet::new();
                 {
                     let db = self.db.lock().map_err(err)?;
                     for id in ids {
@@ -1259,19 +1301,42 @@ END;").map_err(err)?;
                                 )
                                 .map_err(err)?;
                         if has_archive {
-                            archived.push(base.clone());
+                            archived.insert(format!("archive:{base}"));
                         }
-                        db.execute("DELETE FROM cl_items WHERE id=?1", [id])
-                            .map_err(err)?;
-                        db.execute(
+                        bases.insert(base);
+                    }
+                }
+                // Persist valid archive tombstones before removing local rows. A
+                // rejected operation must not leave deleted data behind a cached state.
+                for global_id in archived {
+                    let members = {
+                        let db = self.db.lock().map_err(err)?;
+                        let mut stmt = db.prepare(
+                            "SELECT key,value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0 AND json_extract(value,'$.item_id')=?1"
+                        ).map_err(err)?;
+                        stmt.query_map([&global_id], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(err)?
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(err)?
+                    };
+                    for (key, value) in members {
+                        self.local_record(key, serde_json::from_str(&value).map_err(err)?, true)?;
+                    }
+                    self.local_record(format!("item:{global_id}"), json!({"id": global_id}), true)?;
+                }
+                {
+                    let mut db = self.db.lock().map_err(err)?;
+                    let tx = db.transaction().map_err(err)?;
+                    for base in bases {
+                        tx.execute(
                             "DELETE FROM cl_items WHERE global_id=?1 OR global_id=?2",
                             params![base, format!("archive:{base}")],
                         )
                         .map_err(err)?;
                     }
-                }
-                for global_id in archived {
-                    self.local_record(format!("item:{global_id}"), Value::Null, true)?;
+                    tx.commit().map_err(err)?;
                 }
                 self.changed();
             }
@@ -1785,7 +1850,7 @@ fn memberships_for(
         .collect::<Vec<_>>()
         .join(" OR ");
     let sql = format!(
-        "SELECT value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0 AND ({predicates})"
+        "SELECT value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0 AND ({predicates}) AND NOT EXISTS(SELECT 1 FROM cl_records tombstone WHERE tombstone.key='item:' || json_extract(cl_records.value,'$.item_id') AND tombstone.deleted=1)"
     );
     let params = item_ids
         .iter()
@@ -2313,7 +2378,14 @@ fn reconcile_archives(db: &Connection) -> Result<()> {
     }
     let mut retired_hashes = std::collections::BTreeSet::new();
     for id in seen {
-        if active.iter().any(|(_, i)| i == &id) {
+        let deleted: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM cl_records WHERE key=?1 AND deleted=1)",
+                [format!("item:{id}")],
+                |row| row.get(0),
+            )
+            .map_err(err)?;
+        if !deleted && active.iter().any(|(_, i)| i == &id) {
             let raw: Option<String> = db
                 .query_row(
                     "SELECT value FROM cl_records WHERE key=?1 AND deleted=0",
@@ -2396,6 +2468,231 @@ fn member_winner(db: &Connection, key: &str) -> Result<Value> {
                 ))
         })
         .ok_or_else(|| "成员操作缺失".into())
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    fn page(library: &Library, list: Option<&str>) -> Value {
+        serde_json::from_str(
+            &library
+                .query(&json!({"op": "items", "list_id": list}).to_string())
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn counts(library: &Library) -> Value {
+        let state: Value = serde_json::from_str(&library.state().unwrap()).unwrap();
+        let mut requests = vec![
+            json!({"list_id": null, "query": "does-not-match", "source": "missing", "offset": 999}),
+        ];
+        requests.extend(state["lists"].as_array().unwrap().iter().map(|list| {
+            json!({"list_id": list["id"], "query": "does-not-match", "source": "missing", "offset": 999})
+        }));
+        serde_json::from_str(
+            &library
+                .query(&json!({"op": "counts", "requests": requests}).to_string())
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn manual_count(library: &Library, list: &str) -> u64 {
+        counts(library)[list].as_u64().unwrap()
+    }
+
+    #[test]
+    fn navigation_counts_match_full_pages_not_names_filters_or_recent_cache() {
+        let library = Library::open().unwrap();
+        library.set_local_device("count-test".into()).unwrap();
+        for (id, kind) in [
+            ("renamed-images", "image"),
+            ("renamed-files", "files"),
+            ("renamed-text", "text"),
+        ] {
+            library
+                .mutate(
+                    &json!({"op": "save_list", "list": {
+                        "id": id, "name": "custom name", "kind": "smart",
+                        "rules": [{"field": "kind", "op": "is", "value": kind}]
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        {
+            let db = library.db.lock().unwrap();
+            for n in 0..90 {
+                let kind = ["image", "files", "text"][n % 3];
+                let summary = json!({"id": n+1, "mime": "text/plain", "length": 1,
+                    "preview": "fixture", "source": "local", "has_image": kind == "image",
+                    "file_count": if kind == "files" { 1 } else { 0 }, "kind": kind});
+                db.execute("INSERT INTO cl_items(global_id,digest,summary,imported,ordinary) VALUES(?1,?1,?2,?3,1)",
+                    params![format!("fixture:{n}"), summary.to_string(), now_ms()]).unwrap();
+            }
+        }
+        let expected = counts(&library);
+        assert_eq!(expected["all"], 90);
+        for id in ["renamed-images", "renamed-files", "renamed-text"] {
+            assert_eq!(expected[id], 30);
+            assert_eq!(page(&library, Some(id))["total"], expected[id]);
+            assert_eq!(counts(&library), expected);
+        }
+        assert_eq!(page(&library, None)["total"], expected["all"]);
+        assert_eq!(page(&library, None)["items"].as_array().unwrap().len(), 20);
+        library.mutate(&json!({"op": "save_list", "list": {
+            "id": "renamed-images", "name": "files and images", "kind": "smart", "match_mode": "any",
+            "rules": [{"field": "kind", "op": "is", "value": "image"}, {"field": "kind", "op": "is", "value": "files"}]
+        }}).to_string()).unwrap();
+        assert_eq!(counts(&library)["renamed-images"], 60);
+        library
+            .mutate(&json!({"op": "delete_items", "ids": [1]}).to_string())
+            .unwrap();
+        assert_eq!(counts(&library)["all"], 89);
+        assert_eq!(counts(&library)["renamed-images"], 59);
+        assert_eq!(
+            counts(&library)["renamed-images"],
+            page(&library, Some("renamed-images"))["total"]
+        );
+    }
+
+    #[test]
+    fn deleting_archived_items_updates_cached_counts_and_remote_members() {
+        let library = Library::open().unwrap();
+        library.set_local_device("delete-test".into()).unwrap();
+        for id in ["first", "second"] {
+            library
+                .mutate(
+                    &json!({"op": "save_list", "list": {
+                        "id": id, "name": id, "kind": "manual"
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        let mut originals = Vec::new();
+        for text in ["archived one", "archived two"] {
+            let id = library
+                .ingest(
+                    &PasteboardSnapshot {
+                        text: Some(text.into()),
+                        ..Default::default()
+                    },
+                    "local",
+                )
+                .unwrap()
+                .unwrap();
+            for list in ["first", "second"] {
+                library.membership(list, id, true).unwrap();
+            }
+            originals.push(id);
+        }
+        let archived_page = page(&library, Some("first"));
+        let archive_id = archived_page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["preview"].as_str().unwrap().contains("archived two"))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let before = library.generation();
+        assert_eq!(manual_count(&library, "first"), 2);
+        let old_ops = library.export_operations(0, 100).unwrap();
+        let peer = Library::open().unwrap();
+        peer.set_local_device("delete-peer".into()).unwrap();
+        peer.merge_operations(old_ops.clone()).unwrap();
+        assert_eq!(manual_count(&peer, "first"), 2);
+
+        // Mix ordinary and archive IDs as a real batch deletion can do.
+        let response: Value = serde_json::from_str(
+            &library
+                .mutate(
+                    &json!({
+                        "op": "delete_items", "ids": [originals[0], archive_id]
+                    })
+                    .to_string(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(response["revision"].as_u64().unwrap() > before);
+        assert_eq!(manual_count(&library, "first"), 0);
+        assert_eq!(manual_count(&library, "second"), 0);
+        assert_eq!(counts(&library)["all"], 0);
+        peer.merge_operations(library.export_operations(0, 100).unwrap())
+            .unwrap();
+        peer.merge_operations(old_ops).unwrap();
+        assert_eq!(manual_count(&peer, "first"), 0);
+        assert_eq!(manual_count(&peer, "second"), 0);
+
+        library
+            .mutate(&json!({"op": "delete_list", "id": "first"}).to_string())
+            .unwrap();
+        assert!(counts(&library).get("first").is_none());
+        assert_eq!(manual_count(&library, "second"), 0);
+    }
+
+    #[test]
+    fn manual_membership_uses_archive_identity_in_pages_and_badges() {
+        let library = Library::open().unwrap();
+        library
+            .set_local_device("membership-test-device".into())
+            .unwrap();
+        for id in ["first", "second"] {
+            library
+                .mutate(
+                    &json!({
+                        "op": "save_list", "list": {"id": id, "name": id, "kind": "manual"}
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        let id = library
+            .ingest(
+                &PasteboardSnapshot {
+                    text: Some("manual membership regression".into()),
+                    ..Default::default()
+                },
+                "local",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(manual_count(&library, "first"), 0);
+        library.membership("first", id, true).unwrap();
+        assert_eq!(manual_count(&library, "first"), 1);
+        let all = page(&library, None);
+        assert_eq!(all["total"], 1);
+        assert_eq!(all["items"][0]["id"], id);
+        assert_eq!(all["items"][0]["memberships"], json!(["first"]));
+        let manual = page(&library, Some("first"));
+        assert_eq!(manual["total"], 1);
+        let archive = manual["items"][0]["id"].as_u64().unwrap();
+        assert_ne!(archive, id);
+        assert_eq!(manual["items"][0]["memberships"], json!(["first"]));
+
+        // An archive can join a second list and survive ordinary-history cleanup.
+        library.membership("second", archive, true).unwrap();
+        library.clear_history().unwrap();
+        assert_eq!(manual_count(&library, "first"), 1);
+        assert_eq!(manual_count(&library, "second"), 1);
+        assert_eq!(page(&library, None)["total"], 1);
+        assert_eq!(page(&library, Some("second"))["items"][0]["id"], archive);
+        library.membership("first", archive, false).unwrap();
+        assert_eq!(manual_count(&library, "first"), 0);
+        assert_eq!(manual_count(&library, "second"), 1);
+        assert_eq!(page(&library, Some("first"))["total"], 0);
+        assert_eq!(
+            page(&library, None)["items"][0]["memberships"],
+            json!(["second"])
+        );
+        library.membership("second", archive, false).unwrap();
+        assert_eq!(manual_count(&library, "second"), 0);
+        assert_eq!(page(&library, None)["total"], 0);
+    }
 }
 
 #[cfg(test)]

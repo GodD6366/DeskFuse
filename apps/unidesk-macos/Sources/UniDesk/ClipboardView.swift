@@ -45,7 +45,7 @@ struct ClipboardView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ClipboardWorkspaceSidebar(snapshot: snapshot, selectedListID: $listID, total: total)
+            ClipboardWorkspaceSidebar(selectedListID: $listID)
                 .frame(minWidth: 180, idealWidth: 190, maxWidth: 220)
             Divider()
             HistorySplitView(expandHistory: displayMode == .grid) {
@@ -64,8 +64,8 @@ struct ClipboardView: View {
                     onRename: { id, title in library.rename(id, title: title) },
                     previewing: previewing,
                     onTogglePreview: { previewing.toggle() },
-                    onDelete: { id in
-                        library.delete([id])
+                    onDelete: { ids in
+                        library.delete(ids)
                         cancelCopy(); copyError = nil; copiedID = nil; previewing = false
                     },
                     listID: $listID, total: total, memberships: presentation.memberships,

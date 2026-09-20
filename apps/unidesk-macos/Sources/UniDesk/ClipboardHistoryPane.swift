@@ -23,7 +23,14 @@ struct ClipboardHistoryPane: View {
     let onRename: (UInt64, String) -> Void
     let previewing: Bool
     let onTogglePreview: () -> Void
-    let onDelete: (UInt64) -> Void
+    let onDelete: ([UInt64]) -> Void
+    @State private var selection: Set<UInt64> = []
+    @State private var selectionAnchor: UInt64?
+    @State private var itemFrames: [UInt64: CGRect] = [:]
+    @State private var selectionRect: CGRect?
+    @State private var dragBase: Set<UInt64>?
+    @State private var pendingDeletion: [UInt64] = []
+    @State private var confirmingDeletion = false
     @Binding var listID: String?
     let total: Int
     let memberships: [UInt64: [String]]
@@ -59,6 +66,29 @@ struct ClipboardHistoryPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
         .onChange(of: searchRequest) { _, _ in historyFocused = false; searchFocused = true }
+        .onAppear { if let selected { selection = [selected] } }
+        .onChange(of: selected) { _, id in
+            if let id, !selection.contains(id) { selection = [id]; selectionAnchor = id }
+            else if id == nil { selection = [] }
+        }
+        .onChange(of: items.map(\.id)) { _, ids in
+            selection.formIntersection(ids)
+            if let selectionAnchor, !ids.contains(selectionAnchor) { self.selectionAnchor = nil }
+            pendingDeletion = pendingDeletion.filter { ids.contains($0) }
+        }
+        .onChange(of: listID) { _, _ in clearSelection() }
+        .onChange(of: search) { _, _ in clearSelection() }
+        .onChange(of: source) { _, _ in clearSelection() }
+        .confirmationDialog("删除选中的 \(pendingDeletion.count) 条内容？", isPresented: $confirmingDeletion) {
+            Button("删除 \(pendingDeletion.count) 条内容", role: .destructive) {
+                let ids = pendingDeletion
+                pendingDeletion = []
+                onDelete(ids)
+            }
+            Button("取消", role: .cancel) { pendingDeletion = [] }
+        } message: {
+            Text("将删除这些内容的历史记录及所有手动列表中的归档，不只是从当前列表移除。此操作不可撤销。")
+        }
     }
 
     private var header: some View {
@@ -87,6 +117,17 @@ struct ClipboardHistoryPane: View {
                     .accessibilityLabel("共 \(total) 条历史")
                 ClipboardDisplayModePicker(mode: $displayMode)
             }
+            HStack(spacing: 8) {
+                Text("已选 \(selection.count) 条").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("全选已加载") { setSelection(Set(items.map(\.id))) }
+                    .buttonStyle(.borderless).disabled(items.isEmpty)
+                    .help("选择当前已加载的 \(items.count) 条内容（⌘A），不包含尚未加载的分页")
+                Button("删除所选", role: .destructive) { requestDelete(selection) }
+                    .buttonStyle(.borderless).disabled(selection.isEmpty)
+            }
+            .font(.caption)
+            .lineLimit(1)
         }
         .padding(.horizontal, 20)
         .padding(.top, 20)
@@ -95,7 +136,7 @@ struct ClipboardHistoryPane: View {
 
     private func listContent(proxy: ScrollViewProxy) -> some View {
         interact(
-            List(selection: $selected) {
+            List(selection: nativeSelection) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if startsDayGroup(at: index) {
                         Text(dayTitle(item))
@@ -112,9 +153,10 @@ struct ClipboardHistoryPane: View {
                                         meta: metas[item.id], ocrHit: ocrHit(item.id),
                                         memberships: memberships[item.id] ?? [],
                                         onRename: { onRename(item.id, $0) },
-                                        onDelete: { onDelete(item.id) })
+                                        onDelete: { deleteFromContext(item.id) })
+                        .clipboardSelectionFrame(item.id)
                         .padding(.horizontal, 10)
-                        .background(item.id == selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                        .background(selection.contains(item.id) ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
                         .overlay {
                             RoundedRectangle(cornerRadius: 10)
                                 .strokeBorder(item.id == selected && historyFocused ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
@@ -154,10 +196,10 @@ struct ClipboardHistoryPane: View {
     private func gridContent(proxy: ScrollViewProxy) -> some View {
         interact(
             ClipboardMasonryGrid(items: items, selected: selected, columnCount: 2,
-                                 hasMore: hasMore, paginationOffset: paginationOffset, paginationGeneration: paginationGeneration, searching: searching, loadMore: loadMore) { item, isSelected in
+                                 hasMore: hasMore, paginationOffset: paginationOffset, paginationGeneration: paginationGeneration, searching: searching, loadMore: loadMore) { item, _ in
                 ClipboardHistoryCard(
                     item: item,
-                    selected: isSelected,
+                    selected: selection.contains(item.id),
                     selectedImage: nil,
                     client: client,
                     appID: appIDs[item.id],
@@ -167,12 +209,13 @@ struct ClipboardHistoryPane: View {
                     memberships: memberships[item.id] ?? [],
                     onRename: { onRename(item.id, $0) },
                     onSelect: {
-                        selected = item.id
+                        selectItem(item.id)
                         searchFocused = false
                         historyFocused = true
                     },
-                    onDelete: { onDelete(item.id) }
+                    onDelete: { deleteFromContext(item.id) }
                 )
+                .clipboardSelectionFrame(item.id)
             },
             proxy: proxy
         )
@@ -191,20 +234,118 @@ struct ClipboardHistoryPane: View {
                 historyFocused = true
             })
             .onMoveCommand(perform: moveSelection)
-            .onDeleteCommand { if let selected { onDelete(selected) } }
+            .onDeleteCommand { requestDelete(selection) }
+            .onKeyPress(characters: CharacterSet(charactersIn: "a")) { press in
+                guard historyFocused, press.modifiers.contains(.command) else { return .ignored }
+                setSelection(Set(items.map(\.id)))
+                return .handled
+            }
             .onKeyPress(.space) {
                 guard !items.isEmpty, selected != nil else { return .ignored }
                 onTogglePreview()
                 return .handled
             }
             .onKeyPress(.escape) {
-                guard previewing else { return .ignored }
-                onTogglePreview()
+                if previewing { onTogglePreview(); return .handled }
+                guard !selection.isEmpty else { return .ignored }
+                clearSelection()
                 return .handled
             }
             .onChange(of: selected) { _, id in
-                if let id { proxy.scrollTo(id) }
+                if selectionRect == nil, let id { proxy.scrollTo(id) }
             }
+            .coordinateSpace(name: "clipboard-selection")
+            .onPreferenceChange(ClipboardSelectionFrames.self) { itemFrames = $0 }
+            .overlay(alignment: .topLeading) {
+                if let selectionRect {
+                    Rectangle().fill(Color.accentColor.opacity(0.12))
+                        .overlay { Rectangle().strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1) }
+                        .frame(width: selectionRect.width, height: selectionRect.height)
+                        .offset(x: selectionRect.minX, y: selectionRect.minY)
+                        .allowsHitTesting(false)
+                }
+            }
+            .simultaneousGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("clipboard-selection"))
+                .onChanged { value in
+                    if dragBase == nil {
+                        guard !itemFrames.values.contains(where: { $0.contains(value.startLocation) }) else { return }
+                        dragBase = NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.shift) ? selection : []
+                        searchFocused = false
+                        historyFocused = true
+                    }
+                    let rect = CGRect(x: min(value.startLocation.x, value.location.x),
+                                      y: min(value.startLocation.y, value.location.y),
+                                      width: abs(value.location.x - value.startLocation.x),
+                                      height: abs(value.location.y - value.startLocation.y))
+                    selectionRect = rect
+                    let hit = Set(itemFrames.compactMap { rect.intersects($0.value) ? $0.key : nil })
+                    setSelection((dragBase ?? []).union(hit))
+                }
+                .onEnded { _ in
+                    if dragBase != nil { selectionAnchor = selected }
+                    selectionRect = nil; dragBase = nil
+                })
+    }
+
+    private var nativeSelection: Binding<Set<UInt64>> {
+        Binding(get: { selection }, set: { ids in
+            let added = ids.subtracting(selection)
+            let focus = items.first(where: { added.contains($0.id) })?.id
+            setSelection(ids, focus: focus)
+            if let focus { selectionAnchor = focus }
+        })
+    }
+
+    private func setSelection(_ ids: Set<UInt64>, focus: UInt64? = nil) {
+        let valid = ids.intersection(items.map(\.id))
+        selection = valid
+        if let focus, valid.contains(focus) { selected = focus }
+        else if selected.map({ valid.contains($0) }) != true {
+            selected = items.first(where: { valid.contains($0.id) })?.id
+        }
+    }
+
+    private func selectItem(_ id: UInt64) {
+        let modifiers = NSEvent.modifierFlags
+        if modifiers.contains(.shift),
+           let anchor = selectionAnchor ?? selected,
+           let start = items.firstIndex(where: { $0.id == anchor }),
+           let end = items.firstIndex(where: { $0.id == id }) {
+            let range = Set(items[min(start, end)...max(start, end)].map(\.id))
+            setSelection(modifiers.contains(.command) ? selection.union(range) : range, focus: id)
+        } else if modifiers.contains(.command) {
+            var updated = selection
+            if !updated.insert(id).inserted { updated.remove(id) }
+            setSelection(updated, focus: id)
+            selectionAnchor = id
+        } else {
+            setSelection([id], focus: id)
+            selectionAnchor = id
+        }
+    }
+
+    private func clearSelection() {
+        selection = []
+        selected = nil
+        selectionAnchor = nil
+        selectionRect = nil
+        dragBase = nil
+        pendingDeletion = []
+        confirmingDeletion = false
+    }
+
+    private func deleteFromContext(_ id: UInt64) {
+        requestDelete(selection.contains(id) ? selection : [id])
+    }
+
+    private func requestDelete(_ ids: Set<UInt64>) {
+        let targets = items.filter { ids.contains($0.id) }.map(\.id)
+        guard !targets.isEmpty else { return }
+        if targets.count == 1 { onDelete(targets) }
+        else {
+            pendingDeletion = targets
+            confirmingDeletion = true
+        }
     }
 
     /// True when the current search matched a record's recognized image text,
@@ -227,7 +368,7 @@ struct ClipboardHistoryPane: View {
             default: return
             }
             if let id = ClipboardMasonryNavigation.target(items: items, selected: selected, columnCount: 2, direction: navigationDirection) {
-                selected = id
+                selectItem(id)
             }
             return
         }
@@ -239,7 +380,7 @@ struct ClipboardHistoryPane: View {
         default: return
         }
         let next = min(max(current + step, 0), items.count - 1)
-        selected = items[next].id
+        selectItem(items[next].id)
     }
 
     private var searchField: some View {
@@ -308,8 +449,8 @@ private struct ClipboardHistoryRow: View {
             // Region 1: the app that produced the copy.
             appIcon
                 .frame(width: 30, height: 30)
-            // Region 2: the content itself. Images are centered in the row;
-            // text and files keep only their short title.
+            // Region 2: the content itself. Text, files and images are all
+            // centered between the source icon and the timestamp.
             content
             VStack(alignment: .trailing, spacing: 4) {
                 if let date = item.copiedDate {
@@ -365,7 +506,7 @@ private struct ClipboardHistoryRow: View {
 
     @ViewBuilder private var content: some View {
         if item.hasImage {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(spacing: 4) {
                 Group {
                     if let image = thumbnail {
                         Image(nsImage: image).resizable().scaledToFit()
@@ -377,11 +518,11 @@ private struct ClipboardHistoryRow: View {
                 }
                     .frame(width: 76, height: 76)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .frame(maxWidth: .infinity, alignment: .center)
                 if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                     titleLabel
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .center)
         } else {
             titleLabel
         }
@@ -395,7 +536,8 @@ private struct ClipboardHistoryRow: View {
             editsOnDoubleClick: false,
             font: .system(size: 14, weight: .semibold)
         )
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {
