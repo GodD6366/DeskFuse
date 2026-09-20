@@ -31,7 +31,14 @@ struct SettingsPermissionsView: View {
                     .buttonStyle(.borderless)
                 }
             } footer: {
-                Text("状态来自 macOS。仅展示 uniDesk 实际使用的系统权限。")
+                HStack {
+                    Text("状态来自 macOS。仅展示 uniDesk 实际使用的系统权限。")
+                    Spacer()
+                    if store.permissionPrompt.hasSuppressedPermissions {
+                        Button("恢复启动授权提醒") { store.permissionPrompt.resetSuppression() }
+                            .buttonStyle(.borderless)
+                    }
+                }
             }
         }
         .formStyle(.grouped)

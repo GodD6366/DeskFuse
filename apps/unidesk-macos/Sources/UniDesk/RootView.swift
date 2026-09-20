@@ -26,6 +26,16 @@ struct RootView: View {
             store.showMainWindow = { openWindow(id: "main") }
             store.showSettingsWindow = { openSettings() }
         }
+        .sheet(isPresented: permissionPromptBinding) {
+            PermissionPromptView(controller: store.permissionPrompt)
+        }
+    }
+
+    private var permissionPromptBinding: Binding<Bool> {
+        Binding(
+            get: { store.permissionPrompt.presented != nil },
+            set: { show in if !show { store.permissionPrompt.presented = nil } }
+        )
     }
 
     private var workspace: some View {

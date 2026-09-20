@@ -73,6 +73,8 @@ import UniDeskEngine
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()
         AppStore.shared.start()
+        // 自检流程随即退出，不弹权限窗口；其余启动在缺少权限时提示一次。
+        if !AppStore.shared.selfTest { AppStore.shared.permissionPrompt.evaluateAtLaunch() }
         ClipboardPanelController.shared.install(store: AppStore.shared)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

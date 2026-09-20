@@ -23,6 +23,8 @@ import UniDeskEngine
     // These nonblocking native calls bypass the actor queue for emergency/drag callbacks.
     var engine: Engine?
     var shelf: ShelfController?
+    /// Launch-time guidance for permissions used by local features.
+    let permissionPrompt = PermissionPromptController()
     var showMainWindow: (() -> Void)?
     @ObservationIgnored var showSettingsWindow: (() -> Void)?
     var pairingWindow: PairingWindowController?
