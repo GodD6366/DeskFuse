@@ -70,6 +70,8 @@ Windows 补齐托盘、摇动触发、抽屉拖入/拖出，保留 240 × 240 �
 
 SemVer 按优先级比较，随后比较发行编号；不使用 Git 提交数，不把构建元数据当新版本。相同版本/编号出现不同发行 ID 或包哈希是冲突，不任选其一自动安装。同次 Mac/Windows 发行使用同一编号。发行协调端串行分配编号并持久化；失败编号不回收。
 
+公开发行版的更新检查同时查询站点接口与 GitHub：`config/distribution.json` 的 `release_feed_url` 指向 Pages 站点重发的发行列表（`https://deskfuse.godd.cc/api/releases.json`，与 GitHub Releases API 同形），`api.github.com` 在部分网络不可达且匿名配额很低，因此两个来源并行查询后合并，任一个可用即可继续检查。同一版本的 `SHA256SUMS`、`release.json`、`build-info.json` 也按 GitHub 资产路径镜像在站点上（`https://deskfuse.godd.cc/api/releases/<tag>/`），与 GitHub 资产逐字节相同，软件先读站点、失败再回落 GitHub，因此 GitHub 资产 CDN 偶发 504 不再直接阻断检查。安装包仍从 GitHub 下载，大小与 SHA-256 由 `SHA256SUMS` 与 `build-info.json` 校验，并做 Developer ID 签名校验；站点接口与镜像元数据只提供候选版本清单，不能替代发行签名。
+
 配对证明发送设备身份，发行签名证明更新内容的授权，二者不能替代。发行私钥只在协调端的仓库外受限目录保存，不进入源码、安装包、日志或 Windows 构建机。公钥随基础应用固定；拒绝从网络清单导入信任根。平台代码签名、公证和内部发行签名分别记录。
 
 ## 4. 局域网自动同步

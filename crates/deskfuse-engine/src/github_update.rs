@@ -1,5 +1,10 @@
 //! Public distributions check GitHub and install the official DMG after SHA-256
-//! and code-signing checks. GitHub bytes never enter the signed LAN installer.
+//! and code-signing checks.
+//!
+//! The release list and the small per-release metadata files are read from the
+//! site mirror first and fall back to GitHub, so a blocked or throttled GitHub
+//! never blocks an update check. The DMG itself always comes from GitHub, and
+//! GitHub bytes never enter the signed LAN installer.
 use deskfuse_runtime::updates::{GitHubUpdateView, LanUpdateView};
 use deskfuse_update::{
     ArtifactDescriptor, PackageKind, ReleaseVersion, Target, UpdatePhase, UpdateStatus, installer,
@@ -71,7 +76,7 @@ impl GitHubUpdater {
             view: LanUpdateView {
                 installed: Some(installed),
                 github: Some(GitHubUpdateView::default()),
-                message: "公开发行版从 GitHub 检查并安装更新".into(),
+                message: "公开发行版从更新站点与 GitHub 检查并安装更新".into(),
                 ..Default::default()
             },
             task: None,
@@ -90,7 +95,7 @@ impl GitHubUpdater {
         }
         self.view.checking = true;
         self.view.error = None;
-        self.view.message = "正在检查 GitHub 发布版本…".into();
+        self.view.message = "正在检查更新站点与 GitHub 的发布版本…".into();
         self.last_check = Instant::now();
         self.task = Some(Task::Check(tokio::spawn(fetch_offer())));
     }
@@ -220,7 +225,7 @@ impl GitHubUpdater {
         };
         let result = task
             .await
-            .map_err(|error| format!("GitHub 更新检查失败：{error}"))
+            .map_err(|error| format!("更新检查失败：{error}"))
             .and_then(|result| result);
         self.view.checking = false;
         match result {
@@ -233,7 +238,7 @@ impl GitHubUpdater {
                 if !newer {
                     self.offer = None;
                     self.view.github = Some(GitHubUpdateView::default());
-                    self.view.message = "当前版本已是最新，GitHub 没有更高版本".into();
+                    self.view.message = "当前版本已是最新，公开发行版没有更高版本".into();
                     self.view.error = None;
                     self.view.manual_requested = false;
                     return;
@@ -267,7 +272,7 @@ impl GitHubUpdater {
                 self.start_download();
             }
             Err(error) => {
-                self.view.message = "暂时无法确认 GitHub 最新版本，请稍后重试".into();
+                self.view.message = "暂时无法确认公开发行版的最新版本，请稍后重试".into();
                 self.view.error = Some(error);
                 if self.view.manual_requested && self.offer.is_none() {
                     self.view.manual_requested = false;
@@ -557,12 +562,12 @@ async fn fetch_json(url: &str, limit: usize) -> Result<Vec<u8>, String> {
         .kill_on_drop(true)
         .output()
         .await
-        .map_err(|error| format!("无法连接 GitHub：{error}"))?;
+        .map_err(|error| format!("无法连接更新服务器：{error}"))?;
     if !output.status.success() {
-        return Err("GitHub 请求失败（网络、访问限制或发布资产暂不可用）".into());
+        return Err("更新请求失败（网络、访问限制或发布资产暂不可用）".into());
     }
     if output.stdout.len() > limit {
-        return Err("GitHub 响应超过大小限制".into());
+        return Err("更新响应超过大小限制".into());
     }
     Ok(output.stdout)
 }
@@ -605,11 +610,53 @@ async fn download_file(url: &str, dest: &Path, size: u64) -> Result<(), String> 
     Ok(())
 }
 
+async fn fetch_release_list(url: &str) -> Result<Vec<Release>, String> {
+    serde_json::from_slice(&fetch_json(url, 2 * 1024 * 1024).await?)
+        .map_err(|_| "发布列表格式无效".into())
+}
+
+/// 同一个 tag 只保留资产更完整的一份，站点快照与 GitHub 都不会因此丢信息。
+fn merge_release_lists(lists: impl IntoIterator<Item = Vec<Release>>) -> Vec<Release> {
+    let mut merged: Vec<Release> = Vec::new();
+    for release in lists.into_iter().flatten() {
+        match merged
+            .iter()
+            .position(|entry| entry.tag_name == release.tag_name)
+        {
+            Some(index) if release.assets.len() > merged[index].assets.len() => {
+                merged[index] = release;
+            }
+            Some(_) => {}
+            None => merged.push(release),
+        }
+    }
+    merged
+}
+
+/// 站点接口在自定义域名下，api.github.com 在部分网络不可达且匿名配额很低，
+/// 因此两个来源并行查询并合并；只要其中一个可用就继续检查更新。
+async fn release_candidates() -> Result<Vec<Release>, String> {
+    let (feed, api) = tokio::join!(fetch_release_list(FEED), fetch_release_list(API));
+    let merged = merge_release_lists([feed.unwrap_or_default(), api.unwrap_or_default()]);
+    if merged.is_empty() {
+        return Err("更新检查失败：站点接口与 GitHub 均不可用".into());
+    }
+    Ok(merged)
+}
+
+/// 站点按 GitHub 的资产路径镜像元数据；站点缺失或异常时回落到 GitHub 资产 CDN，
+/// 两个来源的字节都与 `SHA256SUMS` 相同，校验逻辑不变。
+async fn fetch_release_file(tag: &str, name: &str, limit: usize) -> Result<Vec<u8>, String> {
+    if let Ok(bytes) = fetch_json(&format!("{FEED_FILES}/{tag}/{name}"), limit).await {
+        return Ok(bytes);
+    }
+    fetch_json(&format!("{DOWNLOAD}/{tag}/{name}"), limit).await
+}
+
 async fn fetch_offer() -> Result<GitHubOffer, String> {
     // /latest excludes prereleases; DeskFuse's public channel currently publishes
     // prereleases, so inspect completed release entries and compare SemVer.
-    let releases: Vec<Release> = serde_json::from_slice(&fetch_json(API, 2 * 1024 * 1024).await?)
-        .map_err(|_| "GitHub 发布列表格式无效")?;
+    let releases = release_candidates().await?;
     let (version, tag, size) = releases
         .into_iter()
         .filter(|release| {
@@ -642,39 +689,38 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
             Some((version, release.tag_name, size))
         })
         .max_by(|a, b| a.0.cmp_precedence(&b.0))
-        .ok_or("GitHub 尚无完整的 macOS 发布包")?;
+        .ok_or("尚无完整的 macOS 发布包")?;
     let sums = checksums(
-        &String::from_utf8(fetch_json(&format!("{DOWNLOAD}/{tag}/SHA256SUMS"), 65536).await?)
+        &String::from_utf8(fetch_release_file(&tag, "SHA256SUMS", 65536).await?)
             .map_err(|_| "SHA256SUMS 不是有效文本")?,
     )?;
-    let release_bytes = fetch_json(&format!("{DOWNLOAD}/{tag}/release.json"), 65536).await?;
+    let release_bytes = fetch_release_file(&tag, "release.json", 65536).await?;
     if sha256_bytes(&release_bytes) != sums["release.json"] {
-        return Err("GitHub 版本描述校验和不匹配".into());
+        return Err("版本描述校验和不匹配".into());
     }
     let release: ReleaseVersion =
-        serde_json::from_slice(&release_bytes).map_err(|_| "GitHub 版本描述格式无效")?;
+        serde_json::from_slice(&release_bytes).map_err(|_| "版本描述格式无效")?;
     if release.version != version
         || !(1..=9999).contains(&release.build_number)
         || release.release_id.is_nil()
     {
-        return Err("GitHub 标签与版本描述不一致".into());
+        return Err("标签与版本描述不一致".into());
     }
-    let info_bytes = fetch_json(&format!("{DOWNLOAD}/{tag}/build-info.json"), 65536).await?;
+    let info_bytes = fetch_release_file(&tag, "build-info.json", 65536).await?;
     if sha256_bytes(&info_bytes) != sums["build-info.json"] {
-        return Err("GitHub 构建信息校验和不匹配".into());
+        return Err("构建信息校验和不匹配".into());
     }
-    let info: BuildInfo =
-        serde_json::from_slice(&info_bytes).map_err(|_| "GitHub 构建信息格式无效")?;
+    let info: BuildInfo = serde_json::from_slice(&info_bytes).map_err(|_| "构建信息格式无效")?;
     let arm64 = info
         .targets
         .iter()
         .find(|target| target.asset == DMG_NAME && target.target == "aarch64-apple-darwin")
-        .ok_or("GitHub 构建信息缺少 arm64 目标")?;
+        .ok_or("构建信息缺少 arm64 目标")?;
     if info.release != release
         || info.dmg_sha256 != sums[DMG_NAME]
         || arm64.sha256 != sums[DMG_NAME]
     {
-        return Err("GitHub 构建信息与发布包不一致".into());
+        return Err("构建信息与发布包不一致".into());
     }
     Ok(GitHubOffer {
         release,
@@ -701,6 +747,106 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
         let map = checksums(text).unwrap();
         assert_eq!(map.len(), 3);
         assert_eq!(map[DMG_NAME].len(), 64);
+    }
+
+    fn release(tag: &str, assets: &[(&str, u64)]) -> Release {
+        let assets: Vec<String> = assets
+            .iter()
+            .map(|(name, size)| format!(r#"{{"name":"{name}","state":"uploaded","size":{size}}}"#))
+            .collect();
+        serde_json::from_str(&format!(
+            r#"{{"tag_name":"{tag}","draft":false,"published_at":"2026-09-21T00:00:00Z","assets":[{}]}}"#,
+            assets.join(",")
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_metadata_mirror_sits_beside_the_feed() {
+        let base = FEED.strip_suffix("releases.json").expect("feed file name");
+        assert_eq!(FEED_FILES, format!("{base}releases"));
+        assert!(FEED_FILES.starts_with("https://"));
+    }
+
+    #[test]
+    fn merged_release_lists_keep_the_complete_entry() {
+        let merged = merge_release_lists([
+            vec![
+                release("v0.5.0", &[("DeskFuse-arm64.dmg", 10)]),
+                release("v0.4.0", &[("DeskFuse-arm64.dmg", 10)]),
+            ],
+            vec![
+                release(
+                    "v0.5.0",
+                    &[
+                        ("DeskFuse-arm64.dmg", 10),
+                        ("release.json", 1),
+                        ("build-info.json", 1),
+                        ("SHA256SUMS", 1),
+                    ],
+                ),
+                release("v0.3.5", &[("DeskFuse-arm64.dmg", 10)]),
+            ],
+        ]);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|entry| entry.tag_name.as_str())
+                .collect::<Vec<_>>(),
+            ["v0.5.0", "v0.4.0", "v0.3.5"]
+        );
+        assert_eq!(merged[0].assets.len(), 4);
+    }
+
+    /// GitHub 的资产 CDN 偶发 504，交叉校验前先重试几次
+    async fn fetch_github_asset_with_retry(tag: &str, name: &str) -> Result<Vec<u8>, String> {
+        let mut last = String::new();
+        for _ in 0..3 {
+            match fetch_json(&format!("{DOWNLOAD}/{tag}/{name}"), 65536).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    }
+
+    #[tokio::test]
+    #[ignore = "live network verification"]
+    async fn live_site_mirror_matches_the_github_assets() {
+        let releases = fetch_release_list(FEED).await.expect("site release list");
+        let tag = releases
+            .iter()
+            .filter(|release| {
+                !release.draft
+                    && release.published_at.is_some()
+                    && [DMG_NAME, "release.json", "build-info.json", "SHA256SUMS"]
+                        .iter()
+                        .all(|name| release.assets.iter().any(|asset| asset.name == *name))
+            })
+            .map(|release| release.tag_name.clone())
+            .next()
+            .expect("an installable release");
+        for name in ["SHA256SUMS", "release.json", "build-info.json"] {
+            let mirror = fetch_json(&format!("{FEED_FILES}/{tag}/{name}"), 65536)
+                .await
+                .unwrap_or_else(|error| panic!("site {tag}/{name}: {error}"));
+            match fetch_github_asset_with_retry(&tag, name).await {
+                Ok(github) => assert_eq!(mirror, github, "{tag}/{name} differs from GitHub"),
+                // 资产 CDN 抖动本身就是站点镜像要挡住的失败，这里只记录不判失败
+                Err(error) => println!("{tag}/{name}: github asset unavailable ({error})"),
+            }
+        }
+        println!("{tag}: site mirror served every metadata file");
+    }
+
+    #[tokio::test]
+    #[ignore = "live network verification"]
+    async fn live_offer_is_reachable_through_the_site_feed() {
+        let offer = fetch_offer().await.expect("live offer");
+        println!(
+            "version={} build={} size={} url={}",
+            offer.release.version, offer.release.build_number, offer.size, offer.release_url
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ class DistributionConfigTests(unittest.TestCase):
             "schema_version": 1,
             "source_repository": "owner/DeskFuse",
             "release_repository": "owner/deskfuse-release",
+            "release_feed_url": "https://deskfuse.example/api/releases.json",
             "homebrew_tap": "owner/deskfuse",
             "app_bundle": "DeskFuse.app",
             "cask_token": "deskfuse",
@@ -47,6 +48,12 @@ class DistributionConfigTests(unittest.TestCase):
     def test_rejects_repository_url_and_workflow_injection(self):
         for value in ("https://example.com/repo", "owner/repo\noutput=bad", "owner/repo/extra"):
             self.active["release_repository"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load()
+
+    def test_rejects_release_feed_url_injection(self):
+        for value in ("http://deskfuse.example/api/releases.json", "https://example.com\noutput=bad"):
+            self.active["release_feed_url"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load()
 

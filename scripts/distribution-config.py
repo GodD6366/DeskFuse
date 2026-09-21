@@ -28,6 +28,8 @@ def load(root: Path = ROOT) -> dict:
     for key in ("source_repository", "release_repository", "homebrew_tap"):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", active[key]):
             raise ValueError(f"invalid {key}")
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?", active["release_feed_url"]):
+        raise ValueError("invalid release_feed_url")
     for value in (*active["assets"].values(), active["app_bundle"], active["cask_token"]):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
             raise ValueError("invalid distribution filename or token")

@@ -3,6 +3,7 @@
   "phase": "deskfuse",
   "source_repository": "GodD6366/DeskFuse",
   "release_repository": "GodD6366/deskfuse-release",
+  "release_feed_url": "https://deskfuse.godd.cc/api/releases.json",
   "product_name": "DeskFuse",
   "application_id": "com.deskfuse.app",
   "app_bundle": "DeskFuse.app",
