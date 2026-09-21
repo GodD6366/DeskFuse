@@ -16,8 +16,17 @@ public final class VideoEncoder: @unchecked Sendable {
     private let flowControlled: Bool
     private var outstanding: [UInt64: Double] = [:]
     private var windowLimit = 6
+    private var measuredPresentationRtt: Double = 0
+    private var measuredNetworkRtt = 0.05
     private var lastKeyRequest = -Double.infinity
     private var currentBitrate: Int
+    private let bitrateFloor: Int
+    /// Connection-local delay floor for congestion detection. It follows lower
+    /// samples immediately and is allowed to rise only a few milliseconds per
+    /// sample, so a steady link never reads as congestion while a deepening
+    /// queue still does. Modelled on RustDesk's in-band TestDelay baseline.
+    private var delayBaseline = 0.05
+    private var hasDelayBaseline = false
     private var badSamples = 0
     private var goodSamples = 0
     private let surface: SurfaceIdentity
@@ -31,6 +40,11 @@ public final class VideoEncoder: @unchecked Sendable {
               profile.framesPerSecond <= 120, profile.bitrate > 0 else { throw RemoteApplicationError.invalidGeometry }
         self.surface = surface; self.profile = profile; self.metrics = metrics; self.output = output
         self.flowControlled = flowControlled; self.currentBitrate = profile.bitrate
+        // A bitrate-targeted encoder answers a starved target by dropping
+        // frames, so keep a floor that still carries motion. High-resolution
+        // profiles bottom out near a tenth of their target, matching RustDesk's
+        // BR_MIN_HIGH_RESOLUTION ratio.
+        self.bitrateFloor = max(750_000, profile.bitrate / 10)
         var created: VTCompressionSession?
         let specification: [CFString: Any] = [
             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
@@ -111,35 +125,71 @@ public final class VideoEncoder: @unchecked Sendable {
     public func acknowledge(surface: SurfaceIdentity, sequence: UInt64) {
         guard surface == self.surface else { return }
         queue.async { [weak self] in
-            guard let self, let started = self.outstanding[sequence] else { return }
-            let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            guard let self else { return }
+            let started = self.outstanding[sequence]
+            // Heartbeats carry a cumulative presented sequence. A late or
+            // skipped ACK must still retire every frame at or below it;
+            // otherwise one missing dictionary entry permanently occupies
+            // the flow-control window and the encoder self-locks.
             self.outstanding = self.outstanding.filter { $0.key > sequence }
-            self.metrics.update {
-                $0.presentationRoundTripMs = elapsed
-                $0.inFlightFrames = self.outstanding.count
+            if let started {
+                let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                self.measuredPresentationRtt = max(0.001, elapsed / 1000)
+                self.refreshWindowLimit()
+                self.metrics.update { $0.presentationRoundTripMs = elapsed }
             }
+            self.metrics.update { $0.inFlightFrames = self.outstanding.count }
             self.drain()
         }
     }
 
-    /// Once-per-second feedback. Lower bitrate before dropping frame rate; the
-    /// capture mailbox keeps only the latest raw frame while the window is full.
+    /// Once-per-second feedback. Congestion is an excess over this connection's
+    /// own learned delay floor rather than an absolute latency, and a bitrate
+    /// target is lowered before anything else because a starved encoder answers
+    /// by dropping frames. RustDesk reaches the same conclusions with its
+    /// in-band TestDelay probe and video_qos ratio control.
     public func updateNetwork(rttMilliseconds: Double, sendWaitMilliseconds: Double, lossPercent: Double?) {
         queue.async { [weak self] in
             guard let self, self.flowControlled, self.session != nil,
                   !self.lock.withLock({ self.stopped }), rttMilliseconds.isFinite else { return }
             let rtt = min(2, max(0.001, rttMilliseconds / 1000))
-            self.windowLimit = min(12, max(3, Int(ceil(self.profile.framesPerSecond * (rtt + 0.05))) + 2))
-            let oldest = self.outstanding.values.min().map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
-            let congested = oldest > max(0.2, rtt * 2 + 0.05) || sendWaitMilliseconds > 30 || (lossPercent ?? 0) > 2
-            self.badSamples = congested ? self.badSamples + 1 : 0
+            self.measuredNetworkRtt = rtt
+            self.refreshWindowLimit()
+            let now = ProcessInfo.processInfo.systemUptime
+            let stalled = self.expireOutstanding(now: now)
+
+            // Queue delay in front of the newest acknowledged frame. With no
+            // acknowledgement yet, fall back to the path RTT instead of a stale
+            // sample. Comparing against the learned floor keeps a link whose
+            // baseline latency is high but stable out of the congestion path;
+            // the earlier absolute `rtt * 2 + 0.05` test saw a 312 ms
+            // presentation round trip as congestion on every sample and walked
+            // the bitrate from ~48 Mbps down to 2.29 Mbps.
+            let observed = self.measuredPresentationRtt > 0 ? self.measuredPresentationRtt : rtt
+            if self.hasDelayBaseline {
+                if observed < self.delayBaseline { self.delayBaseline = observed }
+                else { self.delayBaseline += min(0.005, (observed - self.delayBaseline) * 0.2) }
+            } else {
+                self.delayBaseline = observed; self.hasDelayBaseline = true
+            }
+            let excess = max(0, observed - self.delayBaseline)
+            // 150 ms of queue growth is the same bar RustDesk uses
+            // (DELAY_THRESHOLD_150MS). A single slow write is noise; only a
+            // write that itself takes 150 ms is treated as a pressure signal.
+            let congested = excess > 0.15 || sendWaitMilliseconds > 150 || (lossPercent ?? 0) > 2 || stalled
+            // A full second of excess, or a frame that died waiting for its
+            // acknowledgement, cannot wait for three confirmations.
+            self.badSamples = congested ? self.badSamples + (excess > 1 || stalled ? 3 : 1) : 0
             self.goodSamples = congested ? 0 : self.goodSamples + 1
             var bitrate = self.currentBitrate
             if self.badSamples >= 3 {
-                bitrate = max(min(500_000, self.profile.bitrate), Int(Double(bitrate) * 0.8))
-                self.badSamples = 0
-            } else if self.goodSamples >= 5 {
-                bitrate = min(self.profile.bitrate, Int(Double(bitrate) * 1.05))
+                bitrate = max(self.bitrateFloor, Int(Double(bitrate) * 0.8))
+                self.badSamples = 0; self.goodSamples = 0
+            } else if self.goodSamples >= 3 {
+                // Climb proportionally to what is still missing so a cut is
+                // undone in seconds rather than minutes, then settle on target.
+                let deficit = max(0, self.profile.bitrate - bitrate)
+                bitrate = min(self.profile.bitrate, bitrate + max(250_000, deficit / 4))
                 self.goodSamples = 0
             }
             if bitrate != self.currentBitrate {
@@ -155,10 +205,40 @@ public final class VideoEncoder: @unchecked Sendable {
         }
     }
 
+    /// Bounds queueing to roughly one round trip of frames. Derived from the
+    /// path RTT alone: letting the presentation delay enlarge its own budget
+    /// meant a growing queue widened the window that fed it.
+    private func refreshWindowLimit() {
+        windowLimit = min(24, max(6, Int(ceil(profile.framesPerSecond * (measuredNetworkRtt + 0.05))) + 2))
+    }
+
+    /// Retires frames whose presentation acknowledgement never arrived and
+    /// reports whether any of them sat past a second. A viewer that stops
+    /// acknowledging is congestion the delay sample cannot see, so the caller
+    /// treats it as pressure instead of letting the window quietly refill.
+    @discardableResult
+    private func expireOutstanding(now: Double) -> Bool {
+        guard flowControlled, !outstanding.isEmpty else { return false }
+        let latency = max(0.05, measuredPresentationRtt, measuredNetworkRtt)
+        let timeout = min(2, max(0.3, latency * 2.5))
+        let expired = outstanding.filter { now - $0.value > timeout }
+        guard !expired.isEmpty else { return false }
+        let stalled = expired.contains { now - $0.value > 1 }
+        for sequence in expired.keys { outstanding.removeValue(forKey: sequence) }
+        metrics.update { $0.inFlightFrames = outstanding.count }
+        return stalled
+    }
+
     private func drain() {
         guard let session else { return }
+        expireOutstanding(now: ProcessInfo.processInfo.systemUptime)
         while inFlight < 2 {
-            if flowControlled && outstanding.count >= windowLimit { return }
+            if flowControlled && outstanding.count >= windowLimit {
+                // Re-arm submit(). Returning with scheduled=true used to leave
+                // the encoder permanently asleep after the window filled.
+                lock.withLock { scheduled = false }
+                return
+            }
             guard let frame = lock.withLock({ () -> CapturedVideoFrame? in
                 guard !stopped else { latest = nil; scheduled = false; return nil }
                 guard let frame = latest else { scheduled = false; return nil }
