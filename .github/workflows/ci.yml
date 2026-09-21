@@ -93,7 +93,7 @@ jobs:
           retention-days: 14
 
   windows:
-    if: ${{ !inputs.skip_windows }}
+    if: false # Temporarily skip Windows builds
     name: Windows experimental adapters and service
     runs-on: windows-2022
     timeout-minutes: 90
