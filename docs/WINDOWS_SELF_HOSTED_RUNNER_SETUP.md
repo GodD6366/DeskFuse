@@ -1,11 +1,11 @@
-# uniDesk Windows Self-hosted Runner 配置提示词
+# DeskFuse Windows Self-hosted Runner 配置提示词
 
 将下面这段提示词交给 Windows 机器上的 AI 执行。
 
 ```text
 请把本机 Windows 机器（IP：10.0.0.11）配置成 GitHub Actions self-hosted runner，服务于：
 
-https://github.com/GodD6366/uniDesk
+https://github.com/GodD6366/DeskFuse
 
 目标：
 
@@ -54,7 +54,7 @@ Test-NetConnection github.com -Port 443
 安装目录：
 
 ```text
-C:\actions-runner\unidesk-windows-x64
+C:\actions-runner\deskfuse-windows-x64
 ```
 
 从 GitHub 官方 `actions/runner` release 下载最新的 `actions-runner-win-x64-*.zip`，并用 GitHub Release API 提供的 SHA-256 digest 校验：
@@ -71,9 +71,9 @@ $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 $expected = ($asset.digest -replace '^sha256:', '').ToLowerInvariant()
 if ($actual -ne $expected) { throw "Runner archive checksum mismatch" }
 
-New-Item -ItemType Directory -Force C:\actions-runner\unidesk-windows-x64 | Out-Null
-Expand-Archive -LiteralPath $archive -DestinationPath C:\actions-runner\unidesk-windows-x64 -Force
-Set-Location C:\actions-runner\unidesk-windows-x64
+New-Item -ItemType Directory -Force C:\actions-runner\deskfuse-windows-x64 | Out-Null
+Expand-Archive -LiteralPath $archive -DestinationPath C:\actions-runner\deskfuse-windows-x64 -Force
+Set-Location C:\actions-runner\deskfuse-windows-x64
 ```
 
 ## 3. 获取 registration token
@@ -90,7 +90,7 @@ gh auth status
 
 ```powershell
 $token = gh api --method POST `
-  repos/GodD6366/uniDesk/actions/runners/registration-token `
+  repos/GodD6366/DeskFuse/actions/runners/registration-token `
   --jq .token
 
 if ([string]::IsNullOrWhiteSpace($token)) {
@@ -102,8 +102,8 @@ if ([string]::IsNullOrWhiteSpace($token)) {
 
 使用：
 
-- name：`unidesk-windows-10-0-0-11`
-- labels：`self-hosted`、`windows`、`x64`、`unidesk-windows`、`windows-2022`
+- name：`deskfuse-windows-10-0-0-11`
+- labels：`self-hosted`、`windows`、`x64`、`deskfuse-windows`、`windows-2022`
 
 执行：
 
@@ -111,10 +111,10 @@ if ([string]::IsNullOrWhiteSpace($token)) {
 .\config.cmd `
   --unattended `
   --replace `
-  --url https://github.com/GodD6366/uniDesk `
+  --url https://github.com/GodD6366/DeskFuse `
   --token $token `
-  --name "unidesk-windows-10-0-0-11" `
-  --labels "self-hosted,windows,x64,unidesk-windows,windows-2022" `
+  --name "deskfuse-windows-10-0-0-11" `
+  --labels "self-hosted,windows,x64,deskfuse-windows,windows-2022" `
   --work "_work"
 
 $token = $null
@@ -127,7 +127,7 @@ $token = $null
 使用管理员 PowerShell：
 
 ```powershell
-Set-Location C:\actions-runner\unidesk-windows-x64
+Set-Location C:\actions-runner\deskfuse-windows-x64
 .\svc.cmd install
 .\svc.cmd start
 ```
@@ -145,9 +145,9 @@ Get-Service | Where-Object {
 ## 6. 验证 GitHub 在线状态
 
 ```powershell
-gh api repos/GodD6366/uniDesk/actions/runners --jq '
+gh api repos/GodD6366/DeskFuse/actions/runners --jq '
 .runners[] |
-select(.name=="unidesk-windows-10-0-0-11") |
+select(.name=="deskfuse-windows-10-0-0-11") |
 {name,status,busy,os,labels:[.labels[].name]}
 '
 ```
@@ -155,38 +155,38 @@ select(.name=="unidesk-windows-10-0-0-11") |
 期望：
 
 ```text
-name: unidesk-windows-10-0-0-11
+name: deskfuse-windows-10-0-0-11
 status: online
 os: Windows
 busy: false
-labels 包含 self-hosted、Windows、X64、unidesk-windows、windows-2022
+labels 包含 self-hosted、Windows、X64、deskfuse-windows、windows-2022
 ```
 
 如果是 `offline`，检查：
 
 ```text
-C:\actions-runner\unidesk-windows-x64\_diag
+C:\actions-runner\deskfuse-windows-x64\_diag
 ```
 
 ## 7. 验证 Windows 构建环境
 
-在 uniDesk 仓库目录执行：
+在 DeskFuse 仓库目录执行：
 
 ```powershell
 .\scripts\check-windows-native.ps1
 .\scripts\check-windows-service.ps1
-dotnet build apps\unidesk-windows\UniDesk.Windows.csproj -c Release
+dotnet build apps\deskfuse-windows\DeskFuse.Windows.csproj -c Release
 ```
 
-这些检查不应安装 Windows 服务、不应启动 uniDesk GUI、不应读取真实剪贴板或发送真实输入。
+这些检查不应安装 Windows 服务、不应启动 DeskFuse GUI、不应读取真实剪贴板或发送真实输入。
 
 如需打 Windows 安装包：
 
 ```powershell
-.\scripts\snapshot-windows-source.ps1 -OutputPath "${env:TEMP}\unidesk-source.json"
+.\scripts\snapshot-windows-source.ps1 -OutputPath "${env:TEMP}\deskfuse-source.json"
 
 .\scripts\package-windows.ps1 `
-  -SourceSnapshot "${env:TEMP}\unidesk-source.json" `
+  -SourceSnapshot "${env:TEMP}\deskfuse-source.json" `
   -ReleaseMetadata .\release.json `
   -OutputDirectory .\dist-windows
 ```
@@ -204,7 +204,7 @@ runs-on: windows-2022
 如果要强制只使用这台自有 runner，可把以下两个文件中的 Windows job 改为：
 
 ```yaml
-runs-on: [self-hosted, windows, x64, unidesk-windows]
+runs-on: [self-hosted, windows, x64, deskfuse-windows]
 ```
 
 文件：

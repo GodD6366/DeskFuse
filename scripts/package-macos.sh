@@ -23,7 +23,7 @@ AUTO_INSTALL=0
 RELEASE_PAIR=0
 EXPLICIT_LAN=0
 EXPLICIT_HOMEBREW=0
-usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] (single target: UNIDESK_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
+usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] (single target: DESKFUSE_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --lan) EXPLICIT_LAN=1 ;;
@@ -36,8 +36,8 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 if [[ "$RELEASE_PAIR" == 1 ]]; then
-  if [[ "$EXPLICIT_LAN" == 1 || "$EXPLICIT_HOMEBREW" == 1 || "$AUTO_INSTALL" == 1 || -n "${UNIDESK_MACOS_ARCH:-}" || -n "${DMG_PATH:-}" ]]; then
-    echo "error: --release selects both manual packages; do not combine with --lan, --homebrew, --auto, UNIDESK_MACOS_ARCH or DMG_PATH" >&2
+  if [[ "$EXPLICIT_LAN" == 1 || "$EXPLICIT_HOMEBREW" == 1 || "$AUTO_INSTALL" == 1 || -n "${DESKFUSE_MACOS_ARCH:-}" || -n "${DMG_PATH:-}" ]]; then
+    echo "error: --release selects both manual packages; do not combine with --lan, --homebrew, --auto, DESKFUSE_MACOS_ARCH or DMG_PATH" >&2
     exit 2
   fi
   PACKAGE_MODE=manual
@@ -49,7 +49,7 @@ if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" != lan ]]; then
   exit 2
 fi
 
-MACOS_ARCH="${UNIDESK_MACOS_ARCH:-arm64}"
+MACOS_ARCH="${DESKFUSE_MACOS_ARCH:-arm64}"
 case "$MACOS_ARCH" in
   arm64)
     TARGET_TRIPLE="aarch64-apple-darwin"
@@ -66,16 +66,16 @@ case "$MACOS_ARCH" in
     fi
     ;;
   *)
-    echo "error: UNIDESK_MACOS_ARCH must be arm64 or x86_64" >&2
+    echo "error: DESKFUSE_MACOS_ARCH must be arm64 or x86_64" >&2
     exit 2
     ;;
 esac
-export UNIDESK_MACOS_ARCH="$MACOS_ARCH"
+export DESKFUSE_MACOS_ARCH="$MACOS_ARCH"
 DMG_ASSET="$(python3 scripts/distribution-config.py --value "assets.$MACOS_ARCH")"
 UPDATE_ASSET="${DMG_ASSET%.dmg}-update.zip"
 export MACOSX_DEPLOYMENT_TARGET=14.0
-PACKAGE_NAME="unidesk-ffi"
-BINARY_NAME="${BINARY_NAME:-unidesk-app}"
+PACKAGE_NAME="deskfuse-ffi"
+BINARY_NAME="${BINARY_NAME:-deskfuse-app}"
 WORKSPACE_VERSION="$(python3 "$ROOT_DIR/scripts/release.py" version)"
 APP_VERSION="${APP_VERSION:-$WORKSPACE_VERSION}"
 [[ "$APP_VERSION" == "$WORKSPACE_VERSION" ]] || { echo "error: APP_VERSION differs from workspace" >&2; exit 1; }
@@ -89,7 +89,7 @@ fi
 [[ -z "${BUILD_VERSION:-}" ]] || { echo "error: use only RELEASE_METADATA, not BUILD_VERSION" >&2; exit 1; }
 source "$ROOT_DIR/scripts/codesign-identity.sh"
 source "$ROOT_DIR/scripts/macos-codesign.sh"
-unidesk_resolve_signing_kind
+deskfuse_resolve_signing_kind
 # DIST_DIR is resolved after the build number exists so local packages land in
 # dist/{version}-build{number}/. Explicit DIST_DIR, CI artifact layout, and local
 # homebrew isolation stay unchanged.
@@ -114,13 +114,13 @@ if [[ "$SIGNING_KIND" == "developer-id" ]]; then
 else
   echo "notarization: skipped (requires Developer ID Application)"
 fi
-if [[ "${UNIDESK_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
+if [[ "${DESKFUSE_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
   if [[ "$SIGNING_KIND" != "developer-id" ]]; then
-    echo "error: UNIDESK_REQUIRE_NOTARIZE=1 requires a Developer ID Application identity" >&2
+    echo "error: DESKFUSE_REQUIRE_NOTARIZE=1 requires a Developer ID Application identity" >&2
     exit 1
   fi
-  if ! unidesk_notarize_credentials_ready; then
-    echo "error: UNIDESK_REQUIRE_NOTARIZE=1 needs APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER, or APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID. See docs/NOTARIZE.md" >&2
+  if ! deskfuse_notarize_credentials_ready; then
+    echo "error: DESKFUSE_REQUIRE_NOTARIZE=1 needs APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER, or APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID. See docs/NOTARIZE.md" >&2
     exit 1
   fi
 fi
@@ -128,7 +128,7 @@ fi
 if [[ "$RELEASE_PAIR" == 1 ]]; then
   # Separate output directories prevent the per-target checksum/signing files
   # from replacing one another. Build sequentially: native build paths are shared.
-  RELEASE_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-release.XXXXXX")"
+  RELEASE_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-release.XXXXXX")"
   trap 'rm -rf "$RELEASE_STAGE"' EXIT
   if [[ -z "$RELEASE_METADATA" ]]; then
     RELEASE_METADATA="$RELEASE_STAGE/release.json"
@@ -158,7 +158,7 @@ PYPAIR
   echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" ./scripts/package-macos.sh --release"
   for release_arch in arm64 x86_64; do
     CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
-      UNIDESK_MACOS_ARCH="$release_arch" \
+      DESKFUSE_MACOS_ARCH="$release_arch" \
       DIST_DIR="$RELEASE_STAGE/$release_arch" \
       RELEASE_METADATA="$RELEASE_METADATA" \
       "$ROOT_DIR/scripts/package-macos.sh" --manual
@@ -182,12 +182,12 @@ PYPAIR
   exit 0
 fi
 
-STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-package.XXXXXX")"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-package.XXXXXX")"
 DMG_SOURCE_DIR="$STAGING_DIR/dmg-root"
-APP_BUNDLE="$DMG_SOURCE_DIR/uniDesk.app"
+APP_BUNDLE="$DMG_SOURCE_DIR/DeskFuse.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
-RW_DMG="$STAGING_DIR/uniDesk-rw.dmg"
-MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-dmg-layout.XXXXXX")"
+RW_DMG="$STAGING_DIR/DeskFuse-rw.dmg"
+MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-dmg-layout.XXXXXX")"
 ATTACHED=0
 detach_dmg() {
   if [[ "$ATTACHED" -eq 1 ]]; then
@@ -243,7 +243,7 @@ if [[ "$PACKAGE_MODE" != homebrew ]]; then
   fi
   RELEASE_METADATA="$DIST_DIR/release.json"
   echo "release descriptor: $RELEASE_METADATA"
-  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" UNIDESK_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
+  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" DESKFUSE_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
 fi
 
 "$ROOT_DIR/scripts/generate-assets.sh"
@@ -252,9 +252,9 @@ fi
 # missing target should fail visibly rather than downloading toolchains during
 # a release operation.
 echo "building $PACKAGE_NAME for $TARGET_TRIPLE"
-export UNIDESK_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
+export DESKFUSE_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
 "$ROOT_DIR/scripts/build-native-macos.sh" release
-"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package unidesk-update --bin unidesk-update-helper --target "$TARGET_TRIPLE"
+"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package deskfuse-update --bin deskfuse-update-helper --target "$TARGET_TRIPLE"
 
 CARGO_OUTPUT_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BINARY_PATH="$CARGO_OUTPUT_DIR/native-macos/release/$BINARY_NAME"
@@ -272,10 +272,10 @@ fi
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_SOURCE_DIR/.background"
 cp "$BINARY_PATH" "$CONTENTS_DIR/MacOS/$BINARY_NAME"
 ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/Metadata.appintents"
-cp "$CARGO_OUTPUT_DIR/native-macos/release/unidesk-input-service" "$CONTENTS_DIR/MacOS/unidesk-input-service"
-unidesk_codesign --identifier com.unidesk.app.input-service "$CONTENTS_DIR/MacOS/unidesk-input-service"
-cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/unidesk-update-helper" "$CONTENTS_DIR/MacOS/unidesk-update-helper"
-unidesk_codesign "$CONTENTS_DIR/MacOS/unidesk-update-helper"
+cp "$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-input-service"
+deskfuse_codesign --identifier com.deskfuse.app.input-service "$CONTENTS_DIR/MacOS/deskfuse-input-service"
+cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
+deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
 if [[ "$PACKAGE_MODE" == homebrew ]]; then
   printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
@@ -289,11 +289,11 @@ cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/LICENSE-MIT" "$ROOT_DIR/LICENSE-APACHE" "$ROOT
 cp "$ROOT_DIR/resources/icons/LICENSE" "$CONTENTS_DIR/Resources/LICENSE-LUCIDE"
 python3 "$ROOT_DIR/scripts/third-party-notices.py" --output "$CONTENTS_DIR/Resources/THIRD_PARTY_DEPENDENCIES.txt"
 # Ship the editable vector sources alongside the native macOS representations.
-cp "$ROOT_DIR/resources/uniDesk-icon.svg" "$CONTENTS_DIR/Resources/uniDesk-icon.svg"
-cp "$ROOT_DIR/resources/unidesk-status-icon.svg" "$CONTENTS_DIR/Resources/unidesk-status-icon.svg"
-cp "$ASSET_DIR/uniDesk.icns" "$CONTENTS_DIR/Resources/uniDesk.icns"
-cp "$ASSET_DIR/uniDesk-icon-1024.png" "$CONTENTS_DIR/Resources/uniDesk-icon-1024.png"
-cp "$ASSET_DIR/unidesk-status-icon.png" "$CONTENTS_DIR/Resources/unidesk-status-icon.png"
+cp "$ROOT_DIR/resources/DeskFuse-icon.svg" "$CONTENTS_DIR/Resources/DeskFuse-icon.svg"
+cp "$ROOT_DIR/resources/deskfuse-status-icon.svg" "$CONTENTS_DIR/Resources/deskfuse-status-icon.svg"
+cp "$ASSET_DIR/DeskFuse.icns" "$CONTENTS_DIR/Resources/DeskFuse.icns"
+cp "$ASSET_DIR/DeskFuse-icon-1024.png" "$CONTENTS_DIR/Resources/DeskFuse-icon-1024.png"
+cp "$ASSET_DIR/deskfuse-status-icon.png" "$CONTENTS_DIR/Resources/deskfuse-status-icon.png"
 cp "$ASSET_DIR/dmg-background.png" "$DMG_SOURCE_DIR/.background/installer-background.png"
 ln -s /Applications "$DMG_SOURCE_DIR/Applications"
 
@@ -301,9 +301,9 @@ sed \
   -e "s/@VERSION@/$APP_VERSION/g" \
   -e "s/@BUILD_VERSION@/$BUILD_VERSION/g" \
   "$ROOT_DIR/resources/Info.plist.in" > "$CONTENTS_DIR/Info.plist"
-unidesk_codesign \
+deskfuse_codesign \
   --deep \
-  --entitlements "$ROOT_DIR/resources/uniDesk.entitlements" \
+  --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
   "$APP_BUNDLE"
 
 codesign --verify --deep --strict "$APP_BUNDLE"
@@ -316,17 +316,17 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 # CI can ship a homebrew DMG without the private LAN release key; it cannot
 # publish an automatically installable release until the coordinator signs it.
 SIGNED_UPDATE=0
-RELEASE_KEY="${UNIDESK_RELEASE_KEY:-$HOME/Library/Application Support/uniDesk-release/signing-key.hex}"
+RELEASE_KEY="${DESKFUSE_RELEASE_KEY:-$HOME/Library/Application Support/DeskFuse-release/signing-key.hex}"
 if [[ "$PACKAGE_MODE" == lan && -f "$RELEASE_KEY" ]]; then
   python3 - "$RELEASE_METADATA" "$UPDATE_ZIP" "$STAGING_DIR/unsigned-manifest.json" <<'PYMANIFEST'
 import hashlib,json,pathlib,sys
 release=json.loads(pathlib.Path(sys.argv[1]).read_text())
 payload=pathlib.Path(sys.argv[2])
-manifest={"schema_version":1,"application_id":"com.unidesk.app","release":release,"protocol_major":1,"minimum_update_protocol":1,"artifacts":[{"target":"macos_arm64","kind":"macos_app_zip","file_name":payload.name,"size":payload.stat().st_size,"sha256":hashlib.file_digest(payload.open("rb"),"sha256").hexdigest(),"minimum_os":"14.0.0"}]}
+manifest={"schema_version":1,"application_id":"com.deskfuse.app","release":release,"protocol_major":2,"minimum_update_protocol":1,"artifacts":[{"target":"macos_arm64","kind":"macos_app_zip","file_name":payload.name,"size":payload.stat().st_size,"sha256":hashlib.file_digest(payload.open("rb"),"sha256").hexdigest(),"minimum_os":"14.0.0"}]}
 pathlib.Path(sys.argv[3]).write_text(json.dumps(manifest))
 PYMANIFEST
-  cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
-  cargo run --locked --quiet -p unidesk-update --bin unidesk-release -- verify "$ROOT_DIR/resources/unidesk-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
+  cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
+  cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
 mkdir -p "$DMG_SOURCE_DIR/.updates"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$DMG_SOURCE_DIR/.updates/"
   # Finder copies only the .app. Carry the exact signed payload with that copy
@@ -335,9 +335,9 @@ mkdir -p "$DMG_SOURCE_DIR/.updates"
   # embedding the wrapper in its own ZIP would create a recursive artifact.
   mkdir -p "$CONTENTS_DIR/Resources/LanUpdate"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$CONTENTS_DIR/Resources/LanUpdate/"
-  unidesk_codesign \
+  deskfuse_codesign \
     --deep \
-    --entitlements "$ROOT_DIR/resources/uniDesk.entitlements" \
+    --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
     "$APP_BUNDLE"
   codesign --verify --deep --strict "$APP_BUNDLE"
   SIGNED_UPDATE=1
@@ -351,7 +351,7 @@ fi
 # custom background in .DS_Store, which is then compressed for distribution.
 # Versioned volume names avoid Finder alias collisions with an older mounted installer.
 hdiutil create \
-  -volname "uniDesk $APP_VERSION ($BUILD_VERSION)" \
+  -volname "DeskFuse $APP_VERSION ($BUILD_VERSION)" \
   -srcfolder "$DMG_SOURCE_DIR" \
   -ov \
   -format UDRW \
@@ -364,7 +364,7 @@ ATTACHED=1
 
 # Headless/agent packaging can avoid controlling Finder. The app and
 # Applications link still work; only the custom Finder layout is omitted.
-if [[ "${UNIDESK_DMG_FINDER_LAYOUT:-1}" != "0" ]]; then
+if [[ "${DESKFUSE_DMG_FINDER_LAYOUT:-1}" != "0" ]]; then
 osascript - "$MOUNT_POINT" "$MOUNT_POINT/.background/installer-background.png" <<'APPLESCRIPT'
 on run argv
   set mounted_folder to POSIX file (item 1 of argv) as alias
@@ -385,7 +385,7 @@ on run argv
     set icon size of viewOptions to 116
     set text size of viewOptions to 14
     set background picture of viewOptions to background_file
-    set position of item "uniDesk.app" of installer_window to {250, 280}
+    set position of item "DeskFuse.app" of installer_window to {250, 280}
     set position of item "Applications" of installer_window to {670, 280}
     update mounted_folder without registering applications
     delay 3
@@ -400,7 +400,7 @@ for ((layout_wait = 0; layout_wait < 20; layout_wait++)); do
   sleep 1
 done
 if [[ ! -s "$MOUNT_POINT/.DS_Store" ]]; then
-  echo "error: Finder did not persist DMG layout; use UNIDESK_DMG_FINDER_LAYOUT=0 for an explicitly headless package" >&2
+  echo "error: Finder did not persist DMG layout; use DESKFUSE_DMG_FINDER_LAYOUT=0 for an explicitly headless package" >&2
   exit 1
 fi
 fi
@@ -417,16 +417,16 @@ if [[ "$SIGNING_KIND" == "developer-id" ]]; then
 fi
 # Staple is attached after Apple returns a ticket; the first pass only checks
 # the signed app. A required notarization re-runs the verifier afterwards.
-UNIDESK_REQUIRE_NOTARIZE=0 "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
+DESKFUSE_REQUIRE_NOTARIZE=0 "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
 NOTARIZED=false
-if [[ "$SIGNING_KIND" == "developer-id" ]] && unidesk_notarize_credentials_ready; then
+if [[ "$SIGNING_KIND" == "developer-id" ]] && deskfuse_notarize_credentials_ready; then
   "$ROOT_DIR/scripts/notarize-macos.sh" "$FINAL_DMG"
   NOTARIZED=true
   "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
 else
   echo "notarization: not performed"
 fi
-unidesk_write_signing_status "$DIST_DIR" "$NOTARIZED"
+deskfuse_write_signing_status "$DIST_DIR" "$NOTARIZED"
 mv "$FINAL_DMG" "$DMG_PATH"
 mv "$UPDATE_ZIP" "$DIST_DIR/$UPDATE_ASSET"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then
@@ -453,7 +453,7 @@ shasum -a 256 "$DMG_PATH"
 # Seed the running coordinator only after the full package passes verification.
 # Move a complete sidecar directory; readers never observe a partial manifest.
 if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
-  UPDATE_ROOT="$HOME/Library/Application Support/uniDesk/updates"
+  UPDATE_ROOT="$HOME/Library/Application Support/DeskFuse/updates"
   mkdir -p "$UPDATE_ROOT"
   chmod 700 "$UPDATE_ROOT"
   SEED_STAGE="$(mktemp -d "$UPDATE_ROOT/.seed-XXXXXX")"
@@ -473,15 +473,15 @@ fi
 # --auto: replace the running instance with the freshly packaged app. Only the
 # LAN local-delivery flow reaches this point; homebrew mode rejects --auto.
 if [[ "$AUTO_INSTALL" == 1 ]]; then
-  echo "auto install: stopping running uniDesk processes"
+  echo "auto install: stopping running DeskFuse processes"
   pkill -x "$BINARY_NAME" 2>/dev/null || true
-  pkill -x "unidesk-input-service" 2>/dev/null || true
+  pkill -x "deskfuse-input-service" 2>/dev/null || true
   # Give the app a moment to release the input-service child and file handles.
   for ((wait_round = 0; wait_round < 20; wait_round++)); do
     pgrep -x "$BINARY_NAME" >/dev/null 2>&1 || break
     sleep 0.5
   done
-  INSTALL_PATH="/Applications/uniDesk.app"
+  INSTALL_PATH="/Applications/DeskFuse.app"
   rm -rf "$INSTALL_PATH"
   ditto "$APP_BUNDLE" "$INSTALL_PATH"
   codesign --verify --deep --strict "$INSTALL_PATH"

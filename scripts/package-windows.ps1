@@ -47,7 +47,7 @@ function Assert-Snapshot {
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ne $paths[$path]) { throw "Source changed: $path" }
     }
     # Reject omitted or newly-added build inputs, not just mismatches in supplied entries.
-    $required = & git -C $ProjectRoot ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/unidesk-service apps/unidesk-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
+    $required = & git -C $ProjectRoot ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate source inputs' }
     foreach ($path in $required) {
         if ($path -match '/(bin|obj|target)/') { continue }
@@ -103,7 +103,7 @@ function Assert-ExecutableImports([string]$Path, [string]$PayloadDirectory) {
 Assert-Snapshot
 if ($release.version -notmatch '^\d+\.\d+\.\d+$' -or $release.build_number -lt 0 -or $release.build_number -gt 65535) { throw 'Invalid Windows release version/build' }
 foreach ($part in $release.version.Split('.')) { if ([int]$part -gt 65535) { throw 'Version component exceeds Windows limit' } }
-$stage = Join-Path ([IO.Path]::GetTempPath()) ('unidesk-windows-package-' + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('deskfuse-windows-package-' + [guid]::NewGuid().ToString('N'))
 $payload = Join-Path $stage 'payload'
 [IO.Directory]::CreateDirectory($payload) | Out-Null
 try {
@@ -111,12 +111,12 @@ try {
     if (!$?) { throw 'Desktop build failed' }
     Assert-Snapshot
     $executableImports = [ordered]@{}
-    foreach ($name in @('UniDesk.Windows.exe', 'unidesk-service.exe', 'unidesk-service-client.exe', 'unidesk-input-helper.exe')) {
+    foreach ($name in @('DeskFuse.Windows.exe', 'deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe')) {
         Assert-X64PE (Join-Path $payload $name)
         $executableImports[$name] = Assert-ExecutableImports (Join-Path $payload $name) $payload
     }
     # A self-contained deployment must actually contain its runtime, not just an apphost.
-    foreach ($name in @('coreclr.dll', 'hostfxr.dll', 'UniDesk.Windows.runtimeconfig.json', 'UniDesk.Windows.dll')) {
+    foreach ($name in @('coreclr.dll', 'hostfxr.dll', 'DeskFuse.Windows.runtimeconfig.json', 'DeskFuse.Windows.dll')) {
         if (!(Test-Path -LiteralPath (Join-Path $payload $name) -PathType Leaf)) { throw "Incomplete self-contained payload: $name" }
     }
     Copy-Item -LiteralPath $SourceSnapshot -Destination (Join-Path $payload 'source-snapshot.json')
@@ -133,8 +133,8 @@ try {
     foreach ($dir in Get-ChildItem -LiteralPath $payload -Directory -Recurse | Sort-Object { $_.FullName.Length } -Descending) { $deletes += 'RMDir "$INSTDIR\' + $dir.FullName.Substring($payload.Length + 1) + '"' }
     $deleteInclude = Join-Path $stage 'delete-payload.nsh'
     $deletes | Set-Content -LiteralPath $deleteInclude -Encoding UTF8
-    $installer = Join-Path $stage "uniDesk-$($release.version)-build$($release.build_number)-windows-x64-setup.exe"
-    & $MakeNSIS '/V3' "/DPAYLOAD_DIR=$payload" "/DOUTPUT_FILE=$installer" "/DDELETE_INCLUDE=$deleteInclude" "/DVERSION=$($release.version)" "/DBUILD_NUMBER=$($release.build_number)" (Join-Path $ProjectRoot 'installer\windows\uniDesk.nsi')
+    $installer = Join-Path $stage "DeskFuse-$($release.version)-build$($release.build_number)-windows-x64-setup.exe"
+    & $MakeNSIS '/V3' "/DPAYLOAD_DIR=$payload" "/DOUTPUT_FILE=$installer" "/DDELETE_INCLUDE=$deleteInclude" "/DVERSION=$($release.version)" "/DBUILD_NUMBER=$($release.build_number)" (Join-Path $ProjectRoot 'installer\windows\DeskFuse.nsi')
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $installer)) { throw 'NSIS packaging failed' }
     Assert-Snapshot
     $installerSignature = (Get-AuthenticodeSignature -LiteralPath $installer).Status.ToString()

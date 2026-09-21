@@ -55,8 +55,8 @@ class ReleaseTests(unittest.TestCase):
             release.validate(self.path, "0.1.0")
 
     def make_inventory(self):
-        (self.root / "uniDesk-arm64.dmg").write_bytes(b"test fixture, not a DMG")
-        (self.root / "uniDesk-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
+        (self.root / "DeskFuse-arm64.dmg").write_bytes(b"test fixture, not a DMG")
+        (self.root / "DeskFuse-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
         with patch.object(release, "version", return_value="0.1.0"), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit)
 
@@ -90,7 +90,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_corrupt_asset(self):
         self.make_inventory()
-        (self.root / "uniDesk-arm64.dmg").write_bytes(b"changed")
+        (self.root / "DeskFuse-arm64.dmg").write_bytes(b"changed")
         with self.assertRaises(ValueError):
             release.verify_inventory(self.root, self.data, self.commit)
 

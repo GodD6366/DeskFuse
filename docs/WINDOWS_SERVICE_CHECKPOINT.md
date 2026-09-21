@@ -2,19 +2,19 @@
 
 > 本文保留 2026-09-06 两 EXE 状态包的交付边界。2026-09-13 新增原生桌面、配对及剪贴板业务 IPC 的当前进度见 [Windows 客户端](WINDOWS_CLIENT.md) 和 [desktop v2 IPC](WINDOWS_DESKTOP_IPC.md)；不要把本历史包说明当作当前全部源码状态。
 
-> 本包仅含 Windows x64 服务端和只读状态客户端，**不是 uniDesk GUI、完整安装包或自动更新载荷**。
+> 本包仅含 Windows x64 服务端和只读状态客户端，**不是 DeskFuse GUI、完整安装包或自动更新载荷**。
 > 源码、编译、IPC 回归与真实 SCM/两机验收分开记录。内部包未做发行签名；各 EXE 的 Authenticode 状态见 manifest.json。
 
 ## 已接入的真实实现
 
-- `unidesk-service.exe`：仅接受 Windows Service Control Manager 启动。SCM 状态、停止/关机、会话变化通知；不存在直接 console/network fallback。
+- `deskfuse-service.exe`：仅接受 Windows Service Control Manager 启动。SCM 状态、停止/关机、会话变化通知；不存在直接 console/network fallback。
 - 网络与身份属于服务：LocalSystem/session 0 的 DPAPI 身份；受保护 ProgramData 目录、排他的 runtime lease；真实 SQLite trust/state、QUIC control 与 mDNS。
 - 服务只声明 `NETWORK`，不提前声明 clipboard、transfer、input、LAN updater。IPC 目前只有 `Status`，没有配对批准、用户内容、任意命令、任意路径、提权或安装接口。
-- `unidesk-service-client.exe status`：连接固定 pipe；写请求前用 SCM 查询核对服务端 PID；不会在服务缺失时启动另一套身份或网络。
+- `deskfuse-service-client.exe status`：连接固定 pipe；写请求前用 SCM 查询核对服务端 PID；不会在服务缺失时启动另一套身份或网络。
 
 ## IPC 与会话边界
 
-- 固定 pipe：`\\.\pipe\com.unidesk.app.service.v1`；first-instance 排他创建；拒绝远程 pipe 客户端。
+- 固定 pipe：`\\.\pipe\com.deskfuse.app.service.v1`；first-instance 排他创建；拒绝远程 pipe 客户端。
 - DACL：SYSTEM full access；Interactive Users 只获数据读写、不含 `FILE_CREATE_PIPE_INSTANCE`。没有 Everyone/Network 授权。
 - 客户端以具体数据权限 `FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA` 打开，不申请 pipe-instance 位；使用 overlapped I/O，并只给 `SECURITY_IDENTIFICATION`。服务同步 impersonate 后查询实际 token session、logon LUID、Interactive SID；所有路径先 RevertToSelf 再返回 async executor，恢复失败终止服务进程。
 - token session 必须与 pipe session、活动物理 console session 相同，且非 session 0、非 SYSTEM、未锁定、非 RDP。SID/LUID 只用于内存鉴权，不写入 IPC 状态或诊断。
@@ -26,12 +26,12 @@
 Windows 本机登录桌面 PowerShell：
 
 ```powershell
-.\unidesk-service-client.exe status
+.\deskfuse-service-client.exe status
 ```
 
-服务尚未安装时会明确失败。直接运行 `unidesk-service.exe` 也会失败，这是预期行为。
+服务尚未安装时会明确失败。直接运行 `deskfuse-service.exe` 也会失败，这是预期行为。
 
-目前未提供自动注册服务脚本或 NSIS 安装器。不要将服务注册到 Downloads、桌面或其他普通用户可写目录，也不要以管理员 GUI 常驻替代服务。完整安装器必须先将 EXE/helper/依赖安装到受限的 Program Files 目录，再注册 `UniDeskService` 为 LocalSystem、独立进程、自动启动；服务 DACL不得允许普通用户重配程序路径。首装提权、升级事务、回滚及移除服务保留配对数据仍待完成。
+目前未提供自动注册服务脚本或 NSIS 安装器。不要将服务注册到 Downloads、桌面或其他普通用户可写目录，也不要以管理员 GUI 常驻替代服务。完整安装器必须先将 EXE/helper/依赖安装到受限的 Program Files 目录，再注册 `DeskFuseService` 为 LocalSystem、独立进程、自动启动；服务 DACL不得允许普通用户重配程序路径。首装提权、升级事务、回滚及移除服务保留配对数据仍待完成。
 
 服务在现有内部 QUIC 42424 端口监听并使用 mDNS；本包不修改防火墙、系统策略、账户或配对数据。局域网能否连接必须在后续安装和两机验收中验证。
 
@@ -63,6 +63,6 @@ Windows 本机登录桌面 PowerShell：
 
 - 检查：`scripts/check-windows-service.ps1`（固定 Rust/MSVC x64、service/identity 单测、目标包 strict clippy、两个 Release EXE）。
 - 打包：`scripts/package-windows-service.ps1 -SourceSnapshot <source-snapshot.json>`；对固定源码列表逐文件校验，构建后再次校验，检查 PE x64、SHA-256 与 Authenticode 状态，只打包两个 EXE 和三份说明/元数据。
-- 输出：`dist/windows-service/uniDesk-windows-service-x64.zip`。这是开发检查包，无发行签名，不可导入 LAN 自动更新。
+- 输出：`dist/windows-service/DeskFuse-windows-service-x64.zip`。这是开发检查包，无发行签名，不可导入 LAN 自动更新。
 - CI 验证仅覆盖源码、编译和隔离 fixture；不代表真实 LocalSystem SCM 启动与 GUI console token 接入已验收。
 - ACL 回归验证具体权限客户端双向 I/O 正常，同款数据权限不能创建第二个 server 实例。构建机 fixture 中默认 generic-write 客户端也能打开，因此不把“默认 generic-write 必然被拒绝”作为已证实结论；生产客户端仍明确采用最小具体权限。

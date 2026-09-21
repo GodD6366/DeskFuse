@@ -21,11 +21,11 @@ if (-not $?) { throw 'Service checks failed' }
 foreach ($entry in $source) {
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $entry.path).Hash.ToLowerInvariant() -ne $entry.sha256) { throw "Source changed during build: $($entry.path)" }
 }
-$stage = Join-Path ([IO.Path]::GetTempPath()) ('unidesk-service-package-' + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('deskfuse-service-package-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($stage) | Out-Null
 try {
     $artifacts = @()
-    foreach ($name in @('unidesk-service.exe','unidesk-service-client.exe')) {
+    foreach ($name in @('deskfuse-service.exe','deskfuse-service-client.exe')) {
         $file = Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name"
         $stream = [IO.File]::OpenRead($file)
         try {
@@ -51,8 +51,8 @@ try {
         ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $stage 'manifest.json')
     $out = Join-Path $ProjectRoot 'dist\windows-service'
     [IO.Directory]::CreateDirectory($out) | Out-Null
-    $archive = Join-Path $out 'uniDesk-windows-service-x64.zip'
-    Compress-Archive -LiteralPath @((Join-Path $stage 'unidesk-service.exe'), (Join-Path $stage 'unidesk-service-client.exe'),
+    $archive = Join-Path $out 'DeskFuse-windows-service-x64.zip'
+    Compress-Archive -LiteralPath @((Join-Path $stage 'deskfuse-service.exe'), (Join-Path $stage 'deskfuse-service-client.exe'),
         (Join-Path $stage 'README.md'), (Join-Path $stage 'source-snapshot.json'), (Join-Path $stage 'manifest.json')) -DestinationPath $archive -Force
     Get-FileHash -Algorithm SHA256 -LiteralPath $archive
     Write-Output 'Development service checkpoint packaged. NOT an installer; no application/service was installed.'

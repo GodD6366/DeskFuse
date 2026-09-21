@@ -22,7 +22,7 @@
 
 按项目交包约定，只完成官方构建、本地固定签名与包完整性检查，不运行本机应用、自动化或两机交互测试。待用户双机验收：连续打开至少三个应用、反复切换输入、关闭非活动窗口、最小化/恢复、同应用去重、输入法归属及独立重连；选择器的真实玻璃效果和键盘导航也尚未视觉验收。
 
-交付 `0.2.3 build236`：`dist/0.2.3-build236/uniDesk-arm64.dmg`。官方脚本退出 0，`verify-dmg.sh`、嵌套签名及 `git diff --check` 通过。签名沿用 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。主程序最低 macOS 14.0，linked SDK 27.0。SHA-256：`7fdd47432e15e03c886bfe8fd65e13935ad185fea4ed775658a0fdeb1af658bd`。构建日志：`artifacts/remote-application/multi-window-launcher-package.log`。
+交付 `0.2.3 build236`：`dist/0.2.3-build236/DeskFuse-arm64.dmg`。官方脚本退出 0，`verify-dmg.sh`、嵌套签名及 `git diff --check` 通过。签名沿用 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68；未公证。主程序最低 macOS 14.0，linked SDK 27.0。SHA-256：`7fdd47432e15e03c886bfe8fd65e13935ad185fea4ed775658a0fdeb1af658bd`。构建日志：`artifacts/remote-application/multi-window-launcher-package.log`。
 
 ## build236 截图反馈：尺寸、密度与设备入口
 
@@ -33,4 +33,4 @@
 
 按用户既有交包方式，仅做构建、签名与包完整性检查，不运行本机交互或视觉测试。
 
-交付 `0.2.3 build237`：`dist/0.2.3-build237/uniDesk-arm64.dmg`。官方脚本退出 0；构建、原有 Apple Development 本地签名、嵌套签名、DMG 完整性与差异检查通过，未公证。SHA-256：`0ddae2f341924edf33cb74677577c08a76393d924b05ffaf473982127eb30de8`。构建日志：`artifacts/remote-application/launcher-sizing-device-entry-package.log`。实际窗口尺寸、完整分类显示、七列网格与设备行点击待用户验收。
+交付 `0.2.3 build237`：`dist/0.2.3-build237/DeskFuse-arm64.dmg`。官方脚本退出 0；构建、原有 Apple Development 本地签名、嵌套签名、DMG 完整性与差异检查通过，未公证。SHA-256：`0ddae2f341924edf33cb74677577c08a76393d924b05ffaf473982127eb30de8`。构建日志：`artifacts/remote-application/launcher-sizing-device-entry-package.log`。实际窗口尺寸、完整分类显示、七列网格与设备行点击待用户验收。

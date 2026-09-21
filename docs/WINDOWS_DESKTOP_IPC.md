@@ -4,7 +4,7 @@ Service owns identity/network/trust. Desktop never opens a second runtime.
 
 ## Transport
 
-`\\.\pipe\com.unidesk.app.desktop.v2`: one request/response per connection, four-byte little-endian unsigned JSON UTF-8 byte length, 1..=25165824 bytes. Each exchange authenticates kernel pipe session, token SID and authentication LUID, physical console and unlocked state, and service session epoch. Requests expire after three seconds. Existing `\\.\pipe\com.unidesk.app.service.v1` Status remains unchanged with its 16 KiB bound.
+`\\.\pipe\com.deskfuse.app.desktop.v2`: one request/response per connection, four-byte little-endian unsigned JSON UTF-8 byte length, 1..=25165824 bytes. Each exchange authenticates kernel pipe session, token SID and authentication LUID, physical console and unlocked state, and service session epoch. Requests expire after three seconds. Existing `\\.\pipe\com.deskfuse.app.service.v1` Status remains unchanged with its 16 KiB bound.
 
 Requests have `version:2`, a process-local monotonically increasing `request_id` (u64), and `command` (serde externally tagged). GUI commands share one sequence; the separately authenticated input helper uses its own sequence only for the idempotent helper command subset.
 
@@ -42,7 +42,7 @@ Always `{"version":2,"request_id":<echo>,"result":...}`. `result` is one of:
 Snapshot shape (all keys always present):
 
 ```json
-{"package_version":"0.1.0","session_epoch":0,"client_session_id":1,"sequence":1,"local_device_id":"...","local_name":"uniDesk Windows","network_running":true,"control_port":42424,"capabilities":{"clipboard":true,"files":false,"input":true,"updater":false},"input":{"helper_connected":true,"managed":false,"status":"standby","reason":null,"controller_id":null,"display_count":1},"peers":[],"pending":[],"pairing_status":null,"last_error":null}
+{"package_version":"0.1.0","session_epoch":0,"client_session_id":1,"sequence":1,"local_device_id":"...","local_name":"DeskFuse Windows","network_running":true,"control_port":42424,"capabilities":{"clipboard":true,"files":false,"input":true,"updater":false},"input":{"helper_connected":true,"managed":false,"status":"standby","reason":null,"controller_id":null,"display_count":1},"peers":[],"pending":[],"pairing_status":null,"last_error":null}
 ```
 
 `routes` contain serialized core RouteCandidate values; labels can display `endpoint`, `health`, `kind`. `last_error` and `pairing_status` are bounded metadata-only messages. Capability flags are runtime availability, not user preference; false must visibly disable the relevant UI. Files/updater remain false. Input is true only while the ordinary desktop helper heartbeat and authenticated GUI generation are current; elevated, Winlogon and UAC desktops remain unavailable. Clipboard is true for an active authenticated desktop session; per-peer readiness is additionally gated by the actual HELLO exchange and connection generation. Publish rejects when no eligible trusted peer has completed that handshake. Clipboard uses the existing acknowledged sync v2 protocol and the macOS zlib/fixed-bincode native bundle (common UTI subset), never bare legacy ClipboardPayload MIME. It sends APPLIED only after CommitClipboard(applied:true). TIFF-only mac native images are converted to PNG (prefer existing public.png), with 4,194,304-pixel / 32 MiB decoder allocation limits and PNG output within the remaining 16 MiB common-content budget. Larger or unsupported images are rejected, not silently acknowledged.
@@ -51,7 +51,7 @@ Implementation note for parent integration: runtime currently exposes no rename-
 
 ## Ordinary-desktop input helper
 
-The service owns a separate input-only QUIC runtime on UDP 42425 and advertises `_unidesk-input._udp`; the ordinary control/clipboard runtime on 42424 does not advertise input. `unidesk-input-helper.exe` is launched and supervised by the WPF process, receives no private key or peer authority, and registers only its validated native display topology. Its parent PID is mandatory; parent exit, desktop generation expiry, pipe failure, helper fault or lease expiry releases all injected keys/buttons and stops the helper.
+The service owns a separate input-only QUIC runtime on UDP 42425 and advertises `_deskfuse-input._udp`; the ordinary control/clipboard runtime on 42424 does not advertise input. `deskfuse-input-helper.exe` is launched and supervised by the WPF process, receives no private key or peer authority, and registers only its validated native display topology. Its parent PID is mandatory; parent exit, desktop generation expiry, pipe failure, helper fault or lease expiry releases all injected keys/buttons and stops the helper.
 
 `PollInput` returns ordered `Lease`, `Batch` and `Release` deliveries plus a cursor. The helper has an independent request-id sequence because it is a separate process; these commands are idempotent and still bound to the same kernel-authenticated SID/logon LUID/session and service epoch. Batches carry runtime-validated session/display/state epochs and the existing bounded `SharedInputEvent` array. The helper enforces its own maximum 1,500 ms lease and refuses non-Default desktops. `InputFault` reports a bounded metadata-only reason and marks the exact managed activation unavailable. `ReclaimInput` pauses the current activation and queues a release; Ctrl+Alt+Win+Esc reaches the same path.
 
@@ -61,4 +61,4 @@ This checkpoint wires Mac controller → Windows receiver on the unlocked ordina
 
 客户端读取完整响应后写入单字节 `0x06` 确认；服务保留 pipe 实例至确认/客户端关闭，仍受外层请求超时限制，避免响应尚未被读取便关闭管道。此字节仅确认传输读取，不代表剪贴板 APPLIED（仍必须原生写入后 CommitClipboard）。会话校验失败只回复不含业务数据的 `session_unavailable`，不放宽物理桌面/解锁/身份约束。
 
-用户只打开 uniDesk GUI。GUI 查询 SCM，后台停止时自动请求启动并等待就绪，失败有退避，不使用备用身份或另起网络运行时。安装器仅为 Users 增加现有固定服务的 START 权限，不授予 STOP、修改配置或修改安全描述符权限；GUI 无需管理员运行。
+用户只打开 DeskFuse GUI。GUI 查询 SCM，后台停止时自动请求启动并等待就绪，失败有退避，不使用备用身份或另起网络运行时。安装器仅为 Users 增加现有固定服务的 START 权限，不授予 STOP、修改配置或修改安全描述符权限；GUI 无需管理员运行。

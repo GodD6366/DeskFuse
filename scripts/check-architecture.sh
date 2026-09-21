@@ -18,16 +18,16 @@ check_absent() {
   fi
 }
 
-check_absent unidesk-collaboration \
-  '(^| )(axum|image|unidesk-workflow|unidesk-content-library|unidesk-platform-macos|unidesk-lan-web)( v|$)' \
-  "unidesk-collaboration does not depend on extensions or platform implementations"
+check_absent deskfuse-collaboration \
+  '(^| )(axum|image|deskfuse-workflow|deskfuse-content-library|deskfuse-platform-macos|deskfuse-lan-web)( v|$)' \
+  "deskfuse-collaboration does not depend on extensions or platform implementations"
 
-check_absent unidesk-input-macos \
-  '(^| )(axum|unidesk-workflow|unidesk-content-library|unidesk-lan-web|unidesk-extension-update|unidesk-engine)( v|$)' \
-  "unidesk-input-macos does not depend on product extensions or the full engine"
+check_absent deskfuse-input-macos \
+  '(^| )(axum|deskfuse-workflow|deskfuse-content-library|deskfuse-lan-web|deskfuse-extension-update|deskfuse-engine)( v|$)' \
+  "deskfuse-input-macos does not depend on product extensions or the full engine"
 
-check_absent unidesk-platform \
+check_absent deskfuse-platform \
   '(^| )(core-graphics|core-graphics-rs|winapi|cocoa|objc2-app-kit)( v|$)' \
-  "unidesk-platform has no concrete OS adapter crates"
+  "deskfuse-platform has no concrete OS adapter crates"
 
 exit "$fail"

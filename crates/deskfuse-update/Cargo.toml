@@ -1,0 +1,28 @@
+[package]
+name = "deskfuse-update"
+description = "Verified release manifests and automatic LAN update policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+hex = "0.4"
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+deskfuse-core = { path = "../deskfuse-core" }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

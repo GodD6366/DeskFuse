@@ -1,0 +1,4 @@
+[bindings.swift]
+module_name = "DeskFuseEngine"
+ffi_module_name = "DeskFuseEngineFFI"
+generate_module_map = true

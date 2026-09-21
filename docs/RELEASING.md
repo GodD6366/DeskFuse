@@ -1,26 +1,26 @@
-# 发行 uniDesk
+# 发行 DeskFuse
 
 ## 发行种类
 
 | 产物 | 用途 |
 | --- | --- |
-| `dist/uniDesk-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
-| `dist/uniDesk-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
+| `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
+| `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
 | `dist/build-info.json` | 源 commit、工具链、两个 macOS 目标、签名状态和资产哈希 |
 | `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
-| `dist/uniDesk-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
+| `dist/DeskFuse-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
 
 根 `release.json` 是公开且随版本提交的输入，不含凭据。`dist/` 是输出，不提交到 Git。
 
 ## 首次启用 GitHub
 
-源码与 CI 位于私有仓库 `GodD6366/uniDesk`；公开仓库 `GodD6366/unidesk-release` 只维护下载说明、Homebrew cask 和 Release 安装包。原源码仓库直接改为私有，原提交、tag、Release 和 Apple secrets 保持不变。公开安装包仓库使用独立的说明文档历史，不复制源码对象。
+源码与 CI 位于私有仓库 `GodD6366/DeskFuse`；公开仓库 `GodD6366/deskfuse-release` 只维护下载说明、Homebrew cask 和 Release 安装包。原源码仓库直接改为私有，原提交、tag、Release 和 Apple secrets 保持不变。公开安装包仓库使用独立的说明文档历史，不复制源码对象。
 
 原仓库已有的六项 [公证凭据](NOTARIZE.md) 无需重新设置。跨仓库发布新增 `RELEASE_REPOSITORY_TOKEN`：仅授予公开仓库 Contents read/write 的 fine-grained PAT 或 GitHub App token。仓库自带的 `GITHUB_TOKEN` 无权写另一个仓库。迁移保留原仓库身份及 secrets，不导出密钥。
 
-源码 tag 仅推送到私有仓库。发布工作流在公开仓库 main 的发行说明提交上创建同名 tag，绝不向公开仓库推送私有源码或源码 tag；`build-info.json` 的 commit 仍记录真正的私有源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/unidesk.rb`。
+源码 tag 仅推送到私有仓库。发布工作流在公开仓库 main 的发行说明提交上创建同名 tag，绝不向公开仓库推送私有源码或源码 tag；`build-info.json` 的 commit 仍记录真正的私有源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/deskfuse.rb`。
 
 迁移不重新推送原有源码 tag，不重跑历史发行。首次跨仓库发布前需配置 `RELEASE_REPOSITORY_TOKEN`，且按现有流程运行全部 CI 门禁。
 
@@ -29,7 +29,7 @@
 1. 修改根 Cargo.toml 的 workspace 版本为 `X.Y.Z`；所有自有包继承版本。同步 CHANGELOG，运行检查。当前初版是 `0.1.0`。
 2. 首次准备运行 `./scripts/prepare-release.sh`。如果根目录已经有该版本的 descriptor，直接复用，不再运行分配器。
 3. 准备**下一版本**时，确认版本变更后显式移除旧 `release.json`，再运行 prepare。不要为重试删除 descriptor。
-4. 该命令调用现有 allocator，ledger 默认位于 `$HOME/Library/Application Support/uniDesk-release/build-ledger`，也可设置 `UNIDESK_RELEASE_LEDGER`。ledger 必须在仓库之外，应备份；失败编号不回收，不能重置或并用多个协调端。
+4. 该命令调用现有 allocator，ledger 默认位于 `$HOME/Library/Application Support/DeskFuse-release/build-ledger`，也可设置 `DESKFUSE_RELEASE_LEDGER`。ledger 必须在仓库之外，应备份；失败编号不回收，不能重置或并用多个协调端。
 5. 检查并提交版本、CHANGELOG、lockfile（仅在需要时）和新 `release.json`。不提交 ledger、发行私钥或运行证据。
 
 `build_number` 当前受 CFBundleVersion 限制为 1..9999；到达上限时应先改造并验证编号格式，不得回绕。只支持 `vX.Y.Z` tag；测试性质通过 GitHub prerelease 标志表示，暂不支持带 `-rc` 后缀的 tag。
@@ -41,8 +41,8 @@
 ```sh
 rustup target add aarch64-apple-darwin
 rustup component add rust-src
-CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --homebrew
-./scripts/verify-dmg.sh dist/homebrew/uniDesk-arm64.dmg
+CODESIGN_IDENTITY=- DESKFUSE_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --homebrew
+./scripts/verify-dmg.sh dist/homebrew/DeskFuse-arm64.dmg
 ```
 
 本地输出默认位于 `dist/homebrew/`，使用已提交的根 `release.json`，不分配维护者构建号、不读取 LAN 发行私钥、不投递运行中应用的自动更新。显式设置 `DIST_DIR` 可以改输出目录。Homebrew 不是 LAN 自动安装包；`manifest.json` 不生成，也不保留旧清单。所有发行包仍须记录实际签名、公证和验收边界。
@@ -59,7 +59,7 @@ CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 ./scripts/package-macos.sh --hom
 
 此模式写入 `update-channel=manual`，应用不启动 GitHub 或 LAN 更新器，仅支持手动安装更新。它不会创建 GitHub Release，也不会自动安装本机应用。签名沿用 `.codesign-identity` / `CODESIGN_IDENTITY`；需要 ad-hoc 时显式使用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --release`。本机 Apple Development 签名不等于 Developer ID 公证。
 
-可用 `RELEASE_METADATA=/绝对路径/release.json` 指定发行描述，或用失败输出目录中的描述重试；根目录 `release.json` 不会被自动读取或改写。`DIST_DIR` 可覆盖输出目录。`--release` 不与 `--lan`、`--homebrew`、`--auto`、`UNIDESK_MACOS_ARCH` 或 `DMG_PATH` 混用。单独构建一个手动安装包可使用 `UNIDESK_MACOS_ARCH=x86_64 ./scripts/package-macos.sh --manual`。
+可用 `RELEASE_METADATA=/绝对路径/release.json` 指定发行描述，或用失败输出目录中的描述重试；根目录 `release.json` 不会被自动读取或改写。`DIST_DIR` 可覆盖输出目录。`--release` 不与 `--lan`、`--homebrew`、`--auto`、`DESKFUSE_MACOS_ARCH` 或 `DMG_PATH` 混用。单独构建一个手动安装包可使用 `DESKFUSE_MACOS_ARCH=x86_64 ./scripts/package-macos.sh --manual`。
 
 ### 单架构局域网包
 
@@ -82,16 +82,16 @@ RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
 
 无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 Homebrew 的 `dist/homebrew/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
-打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、目标架构、元数据与签名；`UNIDESK_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
+打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、目标架构、元数据与签名；`DESKFUSE_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。
 
 Intel Mac 使用相同的发行描述构建 x86_64 包。Intel 包和公开 Release 不使用 LAN 更新清单：
 
 ```sh
-UNIDESK_MACOS_ARCH=x86_64 CODESIGN_IDENTITY=- UNIDESK_DMG_FINDER_LAYOUT=0 \
-  DIST_DIR="$PWD/dist/0.3.0-intel" RELEASE_METADATA="$PWD/release.json" \
+DESKFUSE_MACOS_ARCH=x86_64 CODESIGN_IDENTITY=- DESKFUSE_DMG_FINDER_LAYOUT=0 \
+  DIST_DIR="$PWD/dist/0.4.0-intel" RELEASE_METADATA="$PWD/release.json" \
   ./scripts/package-macos.sh --homebrew
-UNIDESK_MACOS_ARCH=x86_64 UNIDESK_DMG_FINDER_LAYOUT=0 \
-  ./scripts/verify-dmg.sh dist/0.3.0-intel/uniDesk-x86_64.dmg
+DESKFUSE_MACOS_ARCH=x86_64 DESKFUSE_DMG_FINDER_LAYOUT=0 \
+  ./scripts/verify-dmg.sh dist/0.4.0-intel/DeskFuse-x86_64.dmg
 ```
 
 该包包含 x86_64 主程序、输入服务和更新 helper，默认使用 GitHub 更新渠道；签名、公证和 Intel 设备行为仍需单独验收。
@@ -108,13 +108,13 @@ python3 scripts/release.py inventory --directory dist --commit "$(git rev-parse 
 准备工作完成并决定公开发布时，由维护者提交、推送源码，再创建和推送同名 tag。以下为维护者明确决定创建预发行时使用的操作（普通源码 push 不会创建 Release）：
 
 ```sh
-git tag -a v0.1.0 -m 'uniDesk 0.1.0 prerelease'
+git tag -a v0.4.0 -m 'DeskFuse 0.4.0 prerelease'
 git push origin main
-git push origin v0.1.0
+git push origin v0.4.0
 ```
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
-2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `unidesk-macos`, `xcode-27` runner，Windows 检查和构建均跳过。
+2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `deskfuse-macos`, `xcode-27` runner，Windows 检查和构建均跳过。
 3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
@@ -125,18 +125,18 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release`）。`Casks/unidesk.rb` 固定 `uniDesk-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
+公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
 
 cask job 下载刚发布的 DMG、重新渲染 cask 并提交到公开安装包仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 
 ```sh
-gh release download v0.1.0 --repo GodD6366/unidesk-release --pattern uniDesk-arm64.dmg --dir dist
-python3 scripts/update-cask.py --dmg dist/uniDesk-arm64.dmg --version 0.1.0
-git add Casks/unidesk.rb
-git commit -m 'chore(cask): pin v0.1.0 DMG checksum'
+gh release download v0.4.0 --repo GodD6366/deskfuse-release --pattern DeskFuse-arm64.dmg --dir dist
+python3 scripts/update-cask.py --dmg dist/DeskFuse-arm64.dmg --version 0.1.0
+git add Casks/deskfuse.rb
+git commit -m 'chore(cask): pin v0.4.0 DMG checksum'
 ```
 
-`update-cask.py` 拒绝与根 `Cargo.toml` 版本不一致的输入；cask 版本或校验和未刷新时 `brew install` 会报校验失败。Homebrew 7 要求用户先 `brew trust --cask godd6366/unidesk/unidesk` 才能 tap，README 已列出该步骤。
+`update-cask.py` 拒绝与根 `Cargo.toml` 版本不一致的输入；cask 版本或校验和未刷新时 `brew install` 会报校验失败。Homebrew 7 要求用户先 `brew trust --cask godd6366/deskfuse/deskfuse` 才能 tap，README 已列出该步骤。
 
 ## 失败、重试与撤回
 
@@ -150,9 +150,9 @@ GitHub CI 用 Actions secrets 持有 Developer ID 与公证凭据，不持有 LA
 
 ## 本机 LAN 自动更新
 
-本机协调端的发行私钥固定存于 `~/Library/Application Support/uniDesk-release/signing-key.hex`（0600），公钥固定编译自 `resources/unidesk-release-public-key.hex`。不要重新生成或自动轮换；密钥不随源码或 DMG 分发。`UNIDESK_RELEASE_KEY` 仅用于指定同一发行密钥的位置。
+本机协调端的发行私钥固定存于 `~/Library/Application Support/DeskFuse-release/signing-key.hex`（0600），公钥固定编译自 `resources/deskfuse-release-public-key.hex`。不要重新生成或自动轮换；密钥不随源码或 DMG 分发。`DESKFUSE_RELEASE_KEY` 仅用于指定同一发行密钥的位置。
 
-`package-macos.sh` 构建并嵌入 `unidesk-update-helper`，先保留现有 Apple Development 签名，再生成 ZIP、签署并验证发布清单。DMG 内 `.updates/` 保留原始 ZIP 和清单；包完整性验证通过后，完整资源目录原子发布到 `~/Library/Application Support/uniDesk/updates/inbox/`。运行中的正式应用自动导入并向已配对的物理局域网设备分发。开发包 build 0 不充当安装目标。
+`package-macos.sh` 构建并嵌入 `deskfuse-update-helper`，先保留现有 Apple Development 签名，再生成 ZIP、签署并验证发布清单。DMG 内 `.updates/` 保留原始 ZIP 和清单；包完整性验证通过后，完整资源目录原子发布到 `~/Library/Application Support/DeskFuse/updates/inbox/`。运行中的正式应用自动导入并向已配对的物理局域网设备分发。开发包 build 0 不充当安装目标。
 
 首次升级到支持此协议的基础包，需要每台 Mac 手动安装一次。之后没有更新开关或逐次确认：下载、验签、安全点安装和重启自动进行；在「设置 → 传输与存储 → 版本与自动更新」查看本机进度、对端版本和真实安装回执。版本列表尚未返回时显示未取得状态。
 

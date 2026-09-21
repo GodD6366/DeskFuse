@@ -17,13 +17,13 @@ REPRESENTATIONS = [
 chunks = []
 for kind, size, scale in REPRESENTATIONS:
     suffix = "@2x" if scale == 2 else ""
-    path = GENERATED / "uniDesk.iconset" / f"icon_{size}x{size}{suffix}.png"
+    path = GENERATED / "DeskFuse.iconset" / f"icon_{size}x{size}{suffix}.png"
     png = path.read_bytes()
     if png[:8] != b"\x89PNG\r\n\x1a\n" or struct.unpack(">II", png[16:24]) != (size * scale,) * 2:
         raise SystemExit(f"error: invalid icon representation: {path}")
     chunks.append(kind + struct.pack(">I", len(png) + 8) + png)
 payload = b"".join(chunks)
-output = GENERATED / "uniDesk.icns"
+output = GENERATED / "DeskFuse.icns"
 temporary = output.with_suffix(".icns.tmp")
 temporary.write_bytes(b"icns" + struct.pack(">I", len(payload) + 8) + payload)
 temporary.replace(output)

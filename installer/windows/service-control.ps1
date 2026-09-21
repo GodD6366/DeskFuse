@@ -12,13 +12,13 @@ try {
     [Environment]::CurrentDirectory = $frameworkDirectory
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Installer administrator privileges required' }
-    $install = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'uniDesk'
-    $binary = Join-Path $install 'unidesk-service.exe'
-    $firewallGroup = 'uniDesk Desktop Installer'
+    $install = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'DeskFuse'
+    $binary = Join-Path $install 'deskfuse-service.exe'
+    $firewallGroup = 'DeskFuse Desktop Installer'
     $firewallRules = @(
-        @{ Name='UniDesk.Installer.Private.QUIC.UDP42424'; Port=42424; Label='uniDesk private LAN QUIC' },
-        @{ Name='UniDesk.Installer.Private.Input.UDP42425'; Port=42425; Label='uniDesk private LAN input' },
-        @{ Name='UniDesk.Installer.Private.mDNS.UDP5353'; Port=5353; Label='uniDesk private LAN discovery' }
+        @{ Name='DeskFuse.Installer.Private.QUIC.UDP42424'; Port=42424; Label='DeskFuse private LAN QUIC' },
+        @{ Name='DeskFuse.Installer.Private.Input.UDP42425'; Port=42425; Label='DeskFuse private LAN input' },
+        @{ Name='DeskFuse.Installer.Private.mDNS.UDP5353'; Port=5353; Label='DeskFuse private LAN discovery' }
     )
     function Assert-NoAncestorLinks([string]$Path) {
         # Inspect each ancestor before descending. Never enumerate via a junction.
@@ -71,7 +71,7 @@ try {
         # In particular no CHANGE_CONFIG, STOP, WRITE_DAC or WRITE_OWNER for users.
         # Owner is also restricted: a previous ordinary-user owner could otherwise
         # rewrite even a restrictive DACL using the implicit owner WRITE_DAC right.
-        if (!('UniDeskInstaller.ServiceSecurity' -as [type])) {
+        if (!('DeskFuseInstaller.ServiceSecurity' -as [type])) {
             # Absolute references avoid C# resolving NSIS's unrelated System.dll.
             $frameworkSystem = Join-Path $frameworkDirectory 'System.dll'
             if (!(Test-Path -LiteralPath $frameworkSystem -PathType Leaf)) { throw 'Missing .NET Framework System.dll' }
@@ -79,7 +79,7 @@ try {
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-namespace UniDeskInstaller {
+namespace DeskFuseInstaller {
     public static class ServiceSecurity {
         [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
         static extern IntPtr OpenSCManagerW(string machine, string database, uint access);
@@ -98,7 +98,7 @@ namespace UniDeskInstaller {
             try {
                 manager=OpenSCManagerW(null, null, 1);
                 if (manager==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-                service=OpenServiceW(manager, "UniDeskService", 0x000e0000);
+                service=OpenServiceW(manager, "DeskFuseService", 0x000e0000);
                 if (service==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
                 uint size;
                 if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:BAG:BAD:P(A;;0xf01ff;;;SY)(A;;0xf01ff;;;BA)(A;;0x20015;;;BU)", 1, out descriptor, out size))
@@ -122,7 +122,7 @@ namespace UniDeskInstaller {
 }
 '@
         }
-        $actual = [UniDeskInstaller.ServiceSecurity]::Apply()
+        $actual = [DeskFuseInstaller.ServiceSecurity]::Apply()
         $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($actual, 0)
         if ($descriptor.Owner.Value -ne 'S-1-5-32-544') { throw 'SCM owner verification failed' }
         $expected = @{ 'S-1-5-18'=0xf01ff; 'S-1-5-32-544'=0xf01ff; 'S-1-5-32-545'=0x20015 }
@@ -143,25 +143,25 @@ namespace UniDeskInstaller {
         }
     }
     $step = 'Protect installation files'
-    Write-Output "uniDesk installer: $Action / $step"
+    Write-Output "DeskFuse installer: $Action / $step"
     Assert-NoAncestorLinks $install
     if ($Action -ne 'Remove') { Protect-InstallTree }
     # Uninstall also walks without following links, but does not create/reset absent directories.
     if ($Action -eq 'Remove' -and (Test-Path -LiteralPath $install)) { Protect-InstallTree }
-    $service = Get-CimInstance Win32_Service -Filter "Name='UniDeskService'"
+    $service = Get-CimInstance Win32_Service -Filter "Name='DeskFuseService'"
     if ($service) {
         $current = $service.PathName.Trim().Trim('"')
-        if (![string]::Equals($current, $binary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Existing UniDeskService has an unexpected binary path; refusing to modify it' }
+        if (![string]::Equals($current, $binary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Existing DeskFuseService has an unexpected binary path; refusing to modify it' }
     }
     if ($service -and $Action -ne 'Remove') { Protect-Service }
     if ($Action -eq 'Prepare' -or $Action -eq 'Remove') {
-        $desktop = @(Get-Process -Name 'UniDesk.Windows' -ErrorAction SilentlyContinue)
-        $inputHelpers = @(Get-Process -Name 'unidesk-input-helper' -ErrorAction SilentlyContinue)
-        if ($desktop.Count -gt 0 -or $inputHelpers.Count -gt 0) { throw 'Quit uniDesk from its tray menu before installing or uninstalling.' }
+        $desktop = @(Get-Process -Name 'DeskFuse.Windows' -ErrorAction SilentlyContinue)
+        $inputHelpers = @(Get-Process -Name 'deskfuse-input-helper' -ErrorAction SilentlyContinue)
+        if ($desktop.Count -gt 0 -or $inputHelpers.Count -gt 0) { throw 'Quit DeskFuse from its tray menu before installing or uninstalling.' }
         if ($service) {
-            $controller = Get-Service -Name UniDeskService
+            $controller = Get-Service -Name DeskFuseService
             if ($controller.Status -ne 'Stopped') {
-                Stop-Service -Name UniDeskService
+                Stop-Service -Name DeskFuseService
                 $controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
             }
             $controller.Dispose()
@@ -170,7 +170,7 @@ namespace UniDeskInstaller {
     if ($Action -eq 'Register') {
         if (!(Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Missing service payload' }
         $step = 'Register service with SCM'
-        Write-Output "uniDesk installer: $Action / $step"
+        Write-Output "DeskFuse installer: $Action / $step"
         if ($service) {
             $result = Invoke-CimMethod -InputObject $service -MethodName Change -Arguments @{
                 PathName=('"' + $binary + '"'); StartMode='Automatic'; StartName='LocalSystem'
@@ -178,33 +178,33 @@ namespace UniDeskInstaller {
             if ($result.ReturnValue -ne 0) { throw "SCM configuration failed: $($result.ReturnValue)" }
         } else {
             # BinaryPathName is handed directly to SCM, preserving the required quotes.
-            New-Service -Name UniDeskService -DisplayName 'uniDesk Service' -BinaryPathName ('"' + $binary + '"') -StartupType Automatic | Out-Null
+            New-Service -Name DeskFuseService -DisplayName 'DeskFuse Service' -BinaryPathName ('"' + $binary + '"') -StartupType Automatic | Out-Null
         }
         $step = 'Apply service security'
-        Write-Output "uniDesk installer: $Action / $step"
+        Write-Output "DeskFuse installer: $Action / $step"
         Protect-Service
         $step = 'Configure private LAN firewall rules'
-        Write-Output "uniDesk installer: $Action / $step"
+        Write-Output "DeskFuse installer: $Action / $step"
         Remove-InstallerFirewallRules
         foreach ($definition in $firewallRules) {
             New-NetFirewallRule -PolicyStore PersistentStore -Name $definition.Name -DisplayName $definition.Label -Group $firewallGroup -Direction Inbound -Action Allow -Enabled True -Profile Private -Program $binary -Protocol UDP -LocalPort $definition.Port -RemoteAddress LocalSubnet -EdgeTraversalPolicy Block | Out-Null
         }
         $step = 'Start service'
-        Write-Output "uniDesk installer: $Action / $step"
-        Start-Service -Name UniDeskService
-        $controller = Get-Service -Name UniDeskService
+        Write-Output "DeskFuse installer: $Action / $step"
+        Start-Service -Name DeskFuseService
+        $controller = Get-Service -Name DeskFuseService
         try { $controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30)) } finally { $controller.Dispose() }
     }
     if ($Action -eq 'Remove') { Remove-InstallerFirewallRules }
     if ($Action -eq 'Remove' -and $service) {
-        & "$env:SystemRoot\System32\sc.exe" delete UniDeskService
+        & "$env:SystemRoot\System32\sc.exe" delete DeskFuseService
         if ($LASTEXITCODE -ne 0) { throw 'SCM removal failed' }
     }
     # Deliberately never touch ProgramData, AppData, device identity, pairing or user files.
     exit 0
 } catch {
     # Short lines survive the NSIS details pane without Format-Table truncation.
-    Write-Output "uniDesk installer FAILED: $Action / $step"
+    Write-Output "DeskFuse installer FAILED: $Action / $step"
     Write-Output ("Error: " + $_.Exception.Message)
     Write-Output ("At line: " + $_.InvocationInfo.ScriptLineNumber)
     Write-Output ("Error ID: " + $_.FullyQualifiedErrorId)

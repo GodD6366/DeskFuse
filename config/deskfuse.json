@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "active_distribution": "legacy/distribution.json",
+  "active_distribution": "distribution.json",
   "target": {
     "product_name": "DeskFuse",
     "slug": "deskfuse",

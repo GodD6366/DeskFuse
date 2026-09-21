@@ -1,4 +1,4 @@
-# uniDesk Windows 全功能与局域网永久自动更新
+# DeskFuse Windows 全功能与局域网永久自动更新
 
 - 方案确认：2026-09-06。
 - 目标平台：macOS arm64、Windows 11 x64；2026-09-11 调整为 Rust 共享引擎 / 平台原生 UI。
@@ -14,7 +14,7 @@ Windows 对齐配对、文字/图片/文件同步、暂存抽屉、原生拖放�
 
 ## 2. 平台边界
 
-新增 `unidesk-platform` 公共接口层与 Windows 原生适配器；保留 macOS 实现。业务逻辑不依赖 AppKit、Quartz、Win32 或 SwiftUI 平台细节；组成入口选择适配器。迁移期间 macOS crate 可以重新导出旧名称，以保持调用及序列化格式兼容。
+新增 `deskfuse-platform` 公共接口层与 Windows 原生适配器；保留 macOS 实现。业务逻辑不依赖 AppKit、Quartz、Win32 或 SwiftUI 平台细节；组成入口选择适配器。迁移期间 macOS crate 可以重新导出旧名称，以保持调用及序列化格式兼容。
 
 | 接口 | 职责 |
 | --- | --- |
@@ -36,7 +36,7 @@ Windows 对齐配对、文字/图片/文件同步、暂存抽屉、原生拖放�
 
 服务统一持有设备身份和网络运行时，桌面进程经受限 Named Pipe 连接。必须校验客户端进程身份及会话归属，并在会话切换时丢弃旧会话内容。服务不把上一用户的剪贴板和文件内容交给下一用户。
 
-Windows 设备密钥由服务保管，使用系统保护存储及服务/管理员目录 ACL，普通桌面进程通过明确的身份接口使用，不获取私钥。macOS 使用权限为 `0600` 的本地身份文件，保持 `com.unidesk.app` 和既有签名选择，禁止通过重建身份解决错误。
+Windows 设备密钥由服务保管，使用系统保护存储及服务/管理员目录 ACL，普通桌面进程通过明确的身份接口使用，不获取私钥。macOS 使用权限为 `0600` 的本地身份文件，保持 `com.deskfuse.app` 和既有签名选择，禁止通过重建身份解决错误。
 
 登录/安全桌面只允许此前配对且获得输入授权的设备。锁屏停用剪贴板和用户文件能力；输入资格单独判断。注销、桌面切换、辅助进程异常和断线都释放按键、鼠标及租约。服务位于 Session 0，不能直接把服务当成交互桌面程序。
 
@@ -60,7 +60,7 @@ Windows 补齐托盘、摇动触发、抽屉拖入/拖出，保留 240 × 240 �
 
 ## 3. 发行与信任
 
-新增 `unidesk-update`，集中管理模型、签名、包验证、候选选择、独立缓存和更新状态机。
+新增 `deskfuse-update`，集中管理模型、签名、包验证、候选选择、独立缓存和更新状态机。
 
 - `ReleaseVersion`：SemVer、单调 `build_number`、唯一 `release_id`。
 - `ArtifactDescriptor`：系统/架构、包类型、文件名、大小、SHA-256、最低系统版本。
@@ -156,4 +156,4 @@ macOS arm64 已接入完整客户端更新流程：可信物理局域网库存�
 
 Windows 已新增原生 WPF 桌面、托盘、当前用户历史和本地暂存区，设备配对及受限业务 IPC 已接入服务；文字/图片/富文本经 clipboard-sync-v2 与原生写入回执交接，当前最多 16 MiB。普通已解锁桌面已接入独立 42425 input-only runtime 与用户态 helper，当前阶段先支持 Mac 主控到 Windows 被控，带 1.5 秒原生释放看门狗和紧急收回。首次手动安装的 NSIS 脚本已提供。**尚未全功能对齐**：远端文件/OLE、Windows 主控、高完整性/安全桌面输入、自动升级/回滚、工作流和 Windows 原生安装/两机验收仍未完成。完整进度见 [WINDOWS_CLIENT.md](WINDOWS_CLIENT.md)，当前 IPC 见 [WINDOWS_DESKTOP_IPC.md](WINDOWS_DESKTOP_IPC.md)；旧服务检查点见 [WINDOWS_SERVICE_CHECKPOINT.md](WINDOWS_SERVICE_CHECKPOINT.md)。
 
-GitHub 0.3.1 预发行提供 macOS arm64 DMG 和 macOS x86_64 DMG；Windows 构建暂跳过。版本由提交的 release.json 描述，构建机不分配编号。发行私钥与 ledger 不进入 CI；未签名的 update ZIP 不公开为 LAN 更新载荷。参见 [发行指南](RELEASING.md)。
+GitHub 0.4.0 预发行提供 macOS arm64 DMG 和 macOS x86_64 DMG；Windows 构建暂跳过。版本由提交的 release.json 描述，构建机不分配编号。发行私钥与 ledger 不进入 CI；未签名的 update ZIP 不公开为 LAN 更新载荷。参见 [发行指南](RELEASING.md)。

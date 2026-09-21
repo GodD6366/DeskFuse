@@ -22,7 +22,7 @@ concurrency:
 jobs:
   macos:
     name: macOS arm64 checks
-    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
+    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -41,7 +41,10 @@ jobs:
       - name: Workflow lint and credential scan
         run: ./scripts/check-ci.sh
       - name: Repository and release tooling checks
+        env:
+          RETIRED_BRAND: ${{ vars.RETIRED_BRAND }}
         run: |
+          python3 scripts/check-branding.py --forbidden "$RETIRED_BRAND"
           python3 scripts/check-repository.py
           python3 -m unittest discover -s scripts/tests -v
       - name: Rust checks
@@ -54,7 +57,7 @@ jobs:
   macos-build:
     name: macOS arm64 DMG
     if: github.event_name != 'workflow_call' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
+    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -74,17 +77,17 @@ jobs:
         env:
           CODESIGN_IDENTITY: '-'
           RELEASE_METADATA: ${{ github.workspace }}/release.json
-          UNIDESK_DMG_FINDER_LAYOUT: '0'
+          DESKFUSE_DMG_FINDER_LAYOUT: '0'
           MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
           ./scripts/package-macos.sh --homebrew
-          ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
+          ./scripts/verify-dmg.sh dist/DeskFuse-arm64.dmg
       - name: Upload main-branch build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: uniDesk-macos-arm64-${{ github.sha }}
+          name: DeskFuse-macos-arm64-${{ github.sha }}
           path: |
-            dist/uniDesk-arm64.dmg
+            dist/DeskFuse-arm64.dmg
             dist/release.json
           if-no-files-found: error
           retention-days: 14
@@ -111,4 +114,4 @@ jobs:
       - name: Service checks (no SCM installation)
         run: ./scripts/check-windows-service.ps1
       - name: WPF desktop compile (no launch)
-        run: dotnet build apps/unidesk-windows/UniDesk.Windows.csproj -c Release
+        run: dotnet build apps/deskfuse-windows/DeskFuse.Windows.csproj -c Release

@@ -1,0 +1,25 @@
+[package]
+name = "deskfuse-discovery"
+
+description = "Safe local mDNS and manual endpoint discovery for DeskFuse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+mdns-sd = "=0.21.1"
+thiserror = "=2.0.18"
+deskfuse-core = { path = "../deskfuse-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.189"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"

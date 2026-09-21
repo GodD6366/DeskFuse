@@ -54,18 +54,13 @@ def main() -> None:
         print(value)
         return
     if args.website_output:
-        product = json.loads((ROOT / "config/deskfuse.json").read_text())
-        legacy = json.loads((ROOT / "config/legacy/distribution.json").read_text())
         projection = {
             "schema_version": 1,
             "release_repository": active["release_repository"],
             "homebrew_tap": active["homebrew_tap"],
             "cask_token": active["cask_token"],
             "assets": active["assets"],
-            "preferred_assets": product["target"]["assets"],
-            "legacy_assets": legacy["assets"],
-            "fallback_assets": legacy["assets"],
-            "fallback_release_tag": legacy["fallback_release_tag"],
+            "fallback_release_tag": active["fallback_release_tag"],
         }
         content = json.dumps(projection, indent=2) + "\n"
         if args.check:

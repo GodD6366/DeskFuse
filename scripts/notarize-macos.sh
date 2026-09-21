@@ -20,14 +20,14 @@ for command_name in xcrun python3; do
   fi
 done
 
-DMG_PATH="${1:-${DMG_PATH:-$ROOT_DIR/dist/uniDesk-arm64.dmg}}"
+DMG_PATH="${1:-${DMG_PATH:-$ROOT_DIR/dist/DeskFuse-arm64.dmg}}"
 if [[ ! -f "$DMG_PATH" ]]; then
   echo "error: DMG not found: $DMG_PATH" >&2
   exit 1
 fi
 DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
 
-STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-notarize.XXXXXX")"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-notarize.XXXXXX")"
 cleanup() {
   rm -rf "$STAGING_DIR"
 }

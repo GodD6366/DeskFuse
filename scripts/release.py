@@ -65,11 +65,11 @@ def write_json(path: Path, data: dict) -> None:
 def prepare(out: Path) -> None:
     if out.exists():
         raise ValueError("descriptor already exists; remove it explicitly only when preparing a NEW release")
-    ledger = Path(os.environ.get("UNIDESK_RELEASE_LEDGER", str(Path.home() / "Library/Application Support/uniDesk-release/build-ledger"))).resolve()
+    ledger = Path(os.environ.get("DESKFUSE_RELEASE_LEDGER", str(Path.home() / "Library/Application Support/DeskFuse-release/build-ledger"))).resolve()
     if ledger.is_relative_to(ROOT.resolve()):
         raise ValueError("release ledger must stay outside the checkout")
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cargo", "run", "--locked", "--quiet", "-p", "unidesk-update", "--bin", "unidesk-release", "--", "next", version(), str(ledger), str(out)], cwd=ROOT, check=True)
+    subprocess.run(["cargo", "run", "--locked", "--quiet", "-p", "deskfuse-update", "--bin", "deskfuse-release", "--", "next", version(), str(ledger), str(out)], cwd=ROOT, check=True)
     validate(out, version())
 
 
@@ -82,10 +82,10 @@ def signing_status(directory: Path, sidecar: Path | None = None) -> tuple[str, b
             raise ValueError("invalid packaging signing sidecar")
         kind, notarized = lines[0], lines[1] == "true"
     else:
-        kind = os.environ.get("UNIDESK_SIGNING", "ad-hoc")
+        kind = os.environ.get("DESKFUSE_SIGNING", "ad-hoc")
         if kind not in allowed:
-            raise ValueError("UNIDESK_SIGNING must be ad-hoc, apple-development, or developer-id")
-        notarized = os.environ.get("UNIDESK_NOTARIZED", "").lower() in {"1", "true", "yes"}
+            raise ValueError("DESKFUSE_SIGNING must be ad-hoc, apple-development, or developer-id")
+        notarized = os.environ.get("DESKFUSE_NOTARIZED", "").lower() in {"1", "true", "yes"}
     if notarized and kind != "developer-id":
         raise ValueError("only Developer ID Application builds can be notarized")
     return kind, notarized
@@ -182,7 +182,7 @@ def api(path: str, *, missing_ok: bool = False) -> dict | None:
         raise ValueError("GH_TOKEN required")
     request = urllib.request.Request("https://api.github.com/" + path, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "unidesk-release",
+        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "deskfuse-release",
     })
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -206,7 +206,7 @@ def probe(repo: str, tag: str, commit: str) -> bool:
         raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
     if not remote["prerelease"] or {item["name"] for item in remote["assets"]} != set(ASSETS):
         raise ValueError("existing release type/assets conflict; refusing to overwrite")
-    with tempfile.TemporaryDirectory(prefix="unidesk-release-verify-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
         verify_inventory(Path(temporary), release, commit)
     return True
@@ -234,10 +234,10 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
     if heading not in changelog:
         raise ValueError("CHANGELOG entry required for release version")
     notes += changelog.split(heading, 1)[1].split("\n## ", 1)[0].strip()
-    with tempfile.TemporaryDirectory(prefix="unidesk-release-notes-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="deskfuse-release-notes-") as temporary:
         path = Path(temporary) / "notes.md"
         path.write_text(notes)
-        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"uniDesk {tag} (prerelease)", "--notes-file", str(path)], check=True)
+        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
         subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in ASSETS]], check=True)
         # Verify uploaded bytes while still a draft. Failure leaves an unpublished draft.
         download = Path(temporary) / "download"
@@ -254,10 +254,7 @@ def main() -> None:
     parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
     parser.add_argument("--directory", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag")
-    parser.add_argument("--repo", default=os.environ.get(
-        "DESKFUSE_RELEASE_REPOSITORY",
-        os.environ.get(DISTRIBUTION.get("release_repository_env", ""), DISTRIBUTION["release_repository"]),
-    ))
+    parser.add_argument("--repo", default=os.environ.get("DESKFUSE_RELEASE_REPOSITORY", DISTRIBUTION["release_repository"]))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
     args = parser.parse_args()
     if args.command == "version":

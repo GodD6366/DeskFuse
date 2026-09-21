@@ -28,5 +28,5 @@
   <circle cx="650" cy="438" r="5" fill="#8fcaff" fill-opacity="0.7"/>
   <circle cx="716" cy="410" r="6" fill="#bc9dff" fill-opacity="0.7"/>
   <path d="M0 508H920" stroke="#e4e6eb"/>
-  <text x="460" y="539" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" font-weight="500" fill="#4a4d54">将 uniDesk 拖入 Applications 文件夹</text>
+  <text x="460" y="539" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" font-weight="500" fill="#4a4d54">将 DeskFuse 拖入 Applications 文件夹</text>
 </svg>

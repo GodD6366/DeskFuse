@@ -51,19 +51,19 @@ identity.key
 .codesign-identity
 
 # Reproducible generated native bindings and Swift build artifacts.
-/apps/unidesk-macos/.build/
-/apps/unidesk-macos/.swiftpm/
-/apps/unidesk-macos/Generated/
-/apps/unidesk-macos/Sources/UniDeskEngine/*.swift
-/apps/unidesk-macos/Sources/UniDeskEngineFFI/*.h
-/apps/unidesk-macos/Sources/UniDeskEngineFFI/module.modulemap
-/apps/unidesk-macos/SDK/*.a
-/apps/unidesk-macos/SDK/*.h
-/apps/unidesk-macos/SDK/*.modulemap
-/apps/unidesk-macos/SDK/unidesk-input-macos
-/apps/unidesk-macos/SDK/manifest.json
-/apps/unidesk-macos/SDK/.rust-fingerprint
-/apps/unidesk-macos/SDK/.rust-fingerprint-*
+/apps/deskfuse-macos/.build/
+/apps/deskfuse-macos/.swiftpm/
+/apps/deskfuse-macos/Generated/
+/apps/deskfuse-macos/Sources/DeskFuseEngine/*.swift
+/apps/deskfuse-macos/Sources/DeskFuseEngineFFI/*.h
+/apps/deskfuse-macos/Sources/DeskFuseEngineFFI/module.modulemap
+/apps/deskfuse-macos/SDK/*.a
+/apps/deskfuse-macos/SDK/*.h
+/apps/deskfuse-macos/SDK/*.modulemap
+/apps/deskfuse-macos/SDK/deskfuse-input-macos
+/apps/deskfuse-macos/SDK/manifest.json
+/apps/deskfuse-macos/SDK/.rust-fingerprint
+/apps/deskfuse-macos/SDK/.rust-fingerprint-*
 
 # Historical development plans remain local; active contracts stay in docs/.
 /docs/INPUT_DATAGRAM_PLAN.md
@@ -72,5 +72,5 @@ identity.key
 /docs/history/
 
 # Windows native desktop build outputs.
-/apps/unidesk-windows/bin/
-/apps/unidesk-windows/obj/
+/apps/deskfuse-windows/bin/
+/apps/deskfuse-windows/obj/

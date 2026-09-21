@@ -30,7 +30,7 @@ Windows：分别运行 `scripts/check-windows-native.ps1` 和 `scripts/check-win
 - core/protocol 不依赖 SwiftUI 或具体操作系统；平台层负责原生能力与权限，不虚构可用状态。
 - workspace 成员继承公共 package 元数据，不单独维护版本／锁文件；这是应用源码仓库，不向 crates.io 发布内部包。
 - UniFFI 版本由 `Cargo.lock` 固定，Swift 绑定由同版本生成器生成；不得手改生成文件。SwiftUI/AppKit 使用 Xcode 系统 SDK，macOS 26+ 使用原生 Liquid Glass，低版本与降低透明度必须回退。
-- `scripts/` 是唯一操作脚本入口；生成资源存入被忽略的 `resources/generated/`。`resources/uniDesk-icon.svg` 和 `unidesk-status-icon.svg` 是图标源，不编辑 PNG 或派生中心图。
+- `scripts/` 是唯一操作脚本入口；生成资源存入被忽略的 `resources/generated/`。`resources/DeskFuse-icon.svg` 和 `deskfuse-status-icon.svg` 是图标源，不编辑 PNG 或派生中心图。
 
 ## 代码与验证
 

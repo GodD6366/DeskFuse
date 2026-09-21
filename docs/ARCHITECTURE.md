@@ -1,9 +1,9 @@
-# uniDesk architecture
+# DeskFuse architecture
 
 ## Target shape (collaboration core)
 
 Native UI talks to a host assembly. The host injects Host Ports, starts
-`unidesk-collaboration`, and optionally loads product extensions. The core has
+`deskfuse-collaboration`, and optionally loads product extensions. The core has
 no axum, image, zip, workflow, content-library or concrete OS adapter
 dependency. macOS and Windows share clipboard, file and input policy.
 
@@ -14,9 +14,9 @@ Host assembly (ports + extension selection)
         |
         +-- extensions/ (content-library, workflow, lan-web, update)
         |
-unidesk-collaboration (K3 session, K5 clipboard, K6 files, K7 input)
+deskfuse-collaboration (K3 session, K5 clipboard, K6 files, K7 input)
         |
-Host Ports (unidesk-platform::ports)  <-- implemented by the host
+Host Ports (deskfuse-platform::ports)  <-- implemented by the host
         |
 protocol / identity / transport / core / store-core
 ```
@@ -25,7 +25,7 @@ Input subprocesses use `CollaborationCore::new_input_only`. They must not link
 content-library, workflow, lan-web or update. Architecture gates live in
 `scripts/check-architecture.sh`.
 
-The production macOS binary still links `unidesk-ffi` → `unidesk-engine` while
+The production macOS binary still links `deskfuse-ffi` → `deskfuse-engine` while
 those workers are cut over. See [MIGRATION.md](MIGRATION.md), [API.md](API.md)
 and [HOST_PORTS.md](HOST_PORTS.md).
 
@@ -41,9 +41,9 @@ SwiftUI views / AppKit interactions
              |
      UniFFI generated Swift bindings
              |
-     unidesk-ffi (typed client API)
+     deskfuse-ffi (typed client API)
              |
-     unidesk-engine (business state and workers)
+     deskfuse-engine (business state and workers)
        /         |          \
   runtime     platform     transfer/input/update
        |         |                |
@@ -54,13 +54,13 @@ This is a responsibility diagram, not a complete Cargo dependency graph.
 
 | Layer | Responsibility |
 | --- | --- |
-| `apps/unidesk-macos` | Native navigation, selection/focus, previews, menus, settings and shelf UI |
-| `unidesk-ffi` | Typed snapshots, commands, events, content reads and export handles; serialized callbacks |
-| `unidesk-engine` | Extracted application workers, business reducer, clipboard/history/file/cache/input/update coordination |
-| `unidesk-runtime` | Authenticated device network, pairing, connection lifecycle, input network state and update distribution |
-| `unidesk-platform` | Clipboard, permission, input capture/injection contracts and shared metadata-only timing |
-| `unidesk-platform-macos` | Actual macOS permission, pasteboard, CoreGraphics, display and Wi-Fi adapters |
-| `unidesk-platform-windows` / `unidesk-service` | Native WPF desktop + session-bound service IPC; clipboard/pairing checkpoint, not full parity |
+| `apps/deskfuse-macos` | Native navigation, selection/focus, previews, menus, settings and shelf UI |
+| `deskfuse-ffi` | Typed snapshots, commands, events, content reads and export handles; serialized callbacks |
+| `deskfuse-engine` | Extracted application workers, business reducer, clipboard/history/file/cache/input/update coordination |
+| `deskfuse-runtime` | Authenticated device network, pairing, connection lifecycle, input network state and update distribution |
+| `deskfuse-platform` | Clipboard, permission, input capture/injection contracts and shared metadata-only timing |
+| `deskfuse-platform-macos` | Actual macOS permission, pasteboard, CoreGraphics, display and Wi-Fi adapters |
+| `deskfuse-platform-windows` / `deskfuse-service` | Native WPF desktop + session-bound service IPC; clipboard/pairing checkpoint, not full parity |
 | `core`, `protocol`, `identity`, `store`, `discovery`, `transport`, `transfer`, `input`, `update` | Existing independent domain, I/O and persistence modules |
 
 Concrete macOS adapter selection lives in the engine composition module.
@@ -125,7 +125,7 @@ layer or macOS background daemon is introduced by the UI replacement.
    and transfer receipts as defined by the store schema. Clipboard bodies and
    file contents are not written to diagnostics by default.
 5. **Secrets stay local.** macOS identity keys are persisted by the identity provider
-   in `~/Library/Application Support/uniDesk/identity.key` with mode `0600`, without Keychain access; logs and exported
+   in `~/Library/Application Support/DeskFuse/identity.key` with mode `0600`, without Keychain access; logs and exported
    diagnostics contain metadata and hashes only.
 6. **Cancellation is normal.** Shutdown, disconnect, permission denial, and
    peer disappearance are represented as explicit outcomes rather than
@@ -234,7 +234,7 @@ it. Legacy input messages never reach the native injector.
 
 ### macOS input process boundary
 
-The macOS bundle ships `Contents/MacOS/unidesk-input-service` as a signed,
+The macOS bundle ships `Contents/MacOS/deskfuse-input-service` as a signed,
 ordinary child process. It is not a LaunchAgent, login service or root daemon.
 The main process owns UI, pairing/trust, SQLite persistence, clipboard, files and
 updates. The child owns native capture/injection, permission/session/topology
@@ -244,7 +244,7 @@ it does not start the ordinary application actor or open the state database.
 Its identity is read from the existing `identity.key`; a missing/invalid file
 fails startup and is never regenerated by the child.
 
-Input advertises `_unidesk-input._udp` on UDP 42425, bound to eligible physical
+Input advertises `_deskfuse-input._udp` on UDP 42425, bound to eligible physical
 LAN addresses. This is separate from the ordinary control port 42424. Main-side
 trusted peer keys and membership form an authorization snapshot, not a
 connection/readiness snapshot. Existing IP hints may locate port 42425, but the
@@ -408,7 +408,7 @@ Screen layout configuration uses authenticated display metadata independently of
 input permissions. A configured controller contacts only selected participants;
 a peer may reply with its own topology on the same verified physical LAN
 connection while its input role is disabled. This does not authorize a lease or
-input injection. To verify this on two Macs, run `unidesk-input-probe --role
+input injection. To verify this on two Macs, run `deskfuse-input-probe --role
 receiver --run-id metadata-check --metadata-only` on the receiver, then run the
 same binary with `--role controller --run-id metadata-check --metadata-only
 --peer DEVICE_ID@IP:43424`, using the printed receiver identity and its LAN IP.
@@ -434,8 +434,8 @@ these native multi-Mac behaviors.
 
 ## Native macOS release gate
 
-The native Swift executable remains `unidesk-app`, packaged as `uniDesk.app`
-with `com.unidesk.app`. SwiftUI owns the main application event loop, Dock,
+The native Swift executable remains `deskfuse-app`, packaged as `DeskFuse.app`
+with `com.deskfuse.app`. SwiftUI owns the main application event loop, Dock,
 menu-bar extra, windows and Settings. Closing the main window keeps the engine
 running; application termination releases input and joins the engine before exit.
 The FFI layer prevents two engines in one process; the client activates an
@@ -485,11 +485,11 @@ from pending platform/build and user-owned physical-device validation.
 
 ### Windows native desktop checkpoint (2026-09-13)
 
-`apps/unidesk-windows` is an ordinary-user WPF desktop with tray, local history,
+`apps/deskfuse-windows` is an ordinary-user WPF desktop with tray, local history,
 clipboard previews, device pairing and a local file shelf. The service remains the
 only network/identity owner. Bounded desktop v2 IPC binds user SID/logon LUID,
 console session and generation; clipboard-sync-v2 receipts follow actual native
-clipboard writes. An isolated input-only runtime advertises `_unidesk-input._udp`
+clipboard writes. An isolated input-only runtime advertises `_deskfuse-input._udp`
 on UDP 42425, while a GUI-supervised ordinary-user helper performs only Default-
 desktop injection with native lease expiry and emergency reclaim. This checkpoint
 supports Mac controller to Windows receiver on the unlocked ordinary desktop;
@@ -500,9 +500,9 @@ Windows installation, Explorer or two-machine acceptance.
 
 ### Windows native adapter checkpoint
 
-`unidesk-platform` owns shared clipboard/geometry/permission-snapshot/session types;
-`unidesk-platform-windows` owns Win32 clipboard, display/session probes and ordinary
-desktop HID input adapters. `unidesk-identity::WindowsServiceIdentityProvider` is
+`deskfuse-platform` owns shared clipboard/geometry/permission-snapshot/session types;
+`deskfuse-platform-windows` owns Win32 clipboard, display/session probes and ordinary
+desktop HID input adapters. `deskfuse-identity::WindowsServiceIdentityProvider` is
 service-only (LocalSystem, session 0) and is deliberately not selected by the GUI.
 The app clipboard worker now uses `platform::create_worker_pasteboard`; Windows
 clipboard/pairing business IPC is connected. Windows capture/injection implement
@@ -515,7 +515,7 @@ read-only `scripts/check-windows-native.ps1` validation entry point.
 
 ### Windows service ownership checkpoint (2026-09-06)
 
-`apps/unidesk-service` owns SCM lifecycle, the machine DPAPI identity, protected
+`apps/deskfuse-service` owns SCM lifecycle, the machine DPAPI identity, protected
 SQLite state/trust, QUIC and mDNS. `WindowsServiceDataDirectory` retains directory
 handles and an exclusive runtime lease until network shutdown. The original service checkpoint only advertised `NETWORK`; the desktop extension adds acknowledged
 clipboard on the control runtime and ordinary-desktop receiver input on the isolated

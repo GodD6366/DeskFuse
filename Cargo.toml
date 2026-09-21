@@ -1,43 +1,43 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/unidesk-core",
-    "crates/unidesk-protocol",
-    "crates/unidesk-store",
-    "crates/unidesk-identity",
-    "crates/unidesk-discovery",
-    "crates/unidesk-transport",
-    "crates/unidesk-runtime",
-    "crates/unidesk-platform",
-    "crates/unidesk-update",
-    "crates/unidesk-platform-macos",
-    "crates/unidesk-platform-windows",
-    "crates/unidesk-transfer",
-    "crates/unidesk-input",
-    "crates/unidesk-engine",
-    "crates/unidesk-ffi",
-    "crates/unidesk-collaboration",
-    "crates/unidesk-store-core",
-    "crates/unidesk-store-library",
-    "extensions/unidesk-content-library",
-    "extensions/unidesk-workflow",
-    "extensions/unidesk-lan-web",
-    "extensions/unidesk-update",
-    "tools/unidesk-bindgen",
-    "tools/unidesk-sdk",
-    "apps/unidesk-service",
-    "apps/unidesk-probe",
-    "apps/unidesk-input-macos",
-    "apps/unidesk-input-windows",
+    "crates/deskfuse-core",
+    "crates/deskfuse-protocol",
+    "crates/deskfuse-store",
+    "crates/deskfuse-identity",
+    "crates/deskfuse-discovery",
+    "crates/deskfuse-transport",
+    "crates/deskfuse-runtime",
+    "crates/deskfuse-platform",
+    "crates/deskfuse-update",
+    "crates/deskfuse-platform-macos",
+    "crates/deskfuse-platform-windows",
+    "crates/deskfuse-transfer",
+    "crates/deskfuse-input",
+    "crates/deskfuse-engine",
+    "crates/deskfuse-ffi",
+    "crates/deskfuse-collaboration",
+    "crates/deskfuse-store-core",
+    "crates/deskfuse-store-library",
+    "extensions/deskfuse-content-library",
+    "extensions/deskfuse-workflow",
+    "extensions/deskfuse-lan-web",
+    "extensions/deskfuse-update",
+    "tools/deskfuse-bindgen",
+    "tools/deskfuse-sdk",
+    "apps/deskfuse-service",
+    "apps/deskfuse-probe",
+    "apps/deskfuse-input-macos",
+    "apps/deskfuse-input-windows",
 ]
-default-members = ["crates/unidesk-ffi"]
+default-members = ["crates/deskfuse-ffi"]
 
 [workspace.package]
-version = "0.3.5"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97.1"
 license = "LicenseRef-Proprietary"
-repository = "https://github.com/GodD6366/uniDesk"
+repository = "https://github.com/GodD6366/DeskFuse"
 publish = false
 
 [workspace.lints.rust]

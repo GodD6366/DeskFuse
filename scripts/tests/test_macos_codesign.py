@@ -11,11 +11,11 @@ codesign() { printf '%s\n' "$*"; }
 SIGNING_KIND=ad-hoc
 CODESIGN_IDENTITY=-
 source "$1"
-unidesk_codesign /tmp/helper
-unidesk_codesign --identifier com.example.helper /tmp/input
+deskfuse_codesign /tmp/helper
+deskfuse_codesign --identifier com.example.helper /tmp/input
 SIGNING_KIND=developer-id
 CODESIGN_IDENTITY=ABC
-unidesk_codesign /tmp/app
+deskfuse_codesign /tmp/app
 """
 
 

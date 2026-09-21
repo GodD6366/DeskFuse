@@ -1,7 +1,7 @@
 # Host Ports
 
 Host Ports are the only way collaboration talks to the operating system. The
-traits live in `unidesk-platform::ports` and have no AppKit, Win32, or GPUI
+traits live in `deskfuse-platform::ports` and have no AppKit, Win32, or GPUI
 dependency. macOS and Windows hosts inject implementations; tests inject
 memory doubles.
 

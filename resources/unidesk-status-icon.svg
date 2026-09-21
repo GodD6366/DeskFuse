@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 18 18" fill="none">
-  <title>uniDesk — Connected windows menu bar template</title>
-  <desc>Optically simplified 18 pt companion to the application mark. Black with transparent background; macOS supplies the menu bar foreground color.</desc>
-  <g stroke="#000000" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
-    <path d="M5.5 10.5H3C2.17 10.5 1.5 9.83 1.5 9V4.5C1.5 3.67 2.17 3 3 3H9C9.83 3 10.5 3.67 10.5 4.5V9C10.5 9.83 9.83 10.5 9 10.5"/>
-    <path d="M12.5 7.5H15C15.83 7.5 16.5 8.17 16.5 9V13.5C16.5 14.33 15.83 15 15 15H9C8.17 15 7.5 14.33 7.5 13.5V9C7.5 8.17 8.17 7.5 9 7.5"/>
-  </g>
-</svg>

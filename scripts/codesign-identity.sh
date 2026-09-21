@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared by development and packaging; pin local signing across rebuilds.
-unidesk_select_codesign_identity() {
+deskfuse_select_codesign_identity() {
   local config_file identities requested matches match_count
   config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.codesign-identity"
   requested="${CODESIGN_IDENTITY:-}"
@@ -40,4 +40,4 @@ unidesk_select_codesign_identity() {
     (umask 077; set -o noclobber; printf '%s\n' "$CODESIGN_IDENTITY" > "$config_file") || return 1
   fi
 }
-unidesk_select_codesign_identity
+deskfuse_select_codesign_identity

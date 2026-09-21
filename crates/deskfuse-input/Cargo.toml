@@ -1,0 +1,14 @@
+[package]
+name = "deskfuse-input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+deskfuse-core = { path = "../deskfuse-core" }
+serde = { version = "1", features = ["derive"] }
+getrandom = { version = "0.4.3", features = ["sys_rng"] }

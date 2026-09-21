@@ -2,7 +2,7 @@
 
 公开 GitHub 预发行必须用 **Developer ID Application** 签名、打开 hardened runtime，再交给 Apple `notarytool` 公证并 staple。贡献者本机和 main 分支的 Homebrew artifact 仍可显式 `CODESIGN_IDENTITY=-`，不需要这些凭据。
 
-把下面 6 个值加到私有源码仓库 `GodD6366/uniDesk` 的 **Settings → Secrets and variables → Actions**。不要提交到 Git，不要写进 issue 或 PR。本机调试可放在被忽略的 `.env`（变量名见根目录 `.env.example`）。
+把下面 6 个值加到私有源码仓库 `GodD6366/DeskFuse` 的 **Settings → Secrets and variables → Actions**。不要提交到 Git，不要写进 issue 或 PR。本机调试可放在被忽略的 `.env`（变量名见根目录 `.env.example`）。
 
 ## 先决条件
 
@@ -94,7 +94,7 @@ printf '%s' "$APPLE_DEVELOPER_ID_P12" | base64 -d | wc -c
 1. 打开 [App Store Connect API](https://appstoreconnect.apple.com/access/integrations/api)（路径：Users and Access → Integrations → App Store Connect API）。
 2. 页顶复制 **Issuer ID**（UUID）→ secret `APPLE_API_ISSUER`。
 3. **Team Keys → +**（或 Active 列表旁的生成按钮）。
-4. Name 例如 `uniDesk GitHub Notarization`；Access 选 **Developer** 即可。
+4. Name 例如 `DeskFuse GitHub Notarization`；Access 选 **Developer** 即可。
 5. 生成后立刻 **下载 .p8**。只能下载一次，丢失只能作废重建。
 6. 记下 **Key ID**（10 位）→ secret `APPLE_API_KEY_ID`。
 7. 编码密钥：
@@ -112,7 +112,7 @@ base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 没有 API Key 权限时：
 
 1. 打开 [https://appleid.apple.com](https://appleid.apple.com) → 登录与安全 → **App 专用密码**。
-2. 生成一条，标注 `uniDesk notarytool`。
+2. 生成一条，标注 `DeskFuse notarytool`。
 3. secret `APPLE_ID` = Apple ID 邮箱；`APPLE_APP_SPECIFIC_PASSWORD` = 这条专用密码（形如 `xxxx-xxxx-xxxx-xxxx`）。
 4. 仍需 `APPLE_TEAM_ID`。
 
@@ -121,15 +121,15 @@ base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 1. 六个主 secret 都在 **Settings → Secrets and variables → Actions** 里（备用两项可空）。
 2. 推送 `vX.Y.Z` tag 后，`Prerelease` 的 `package` job 会导入证书、用 Developer ID + hardened runtime 打包、`notarytool submit --wait`、staple，再写 `build-info.json` 的 `signing=developer-id`、`notarized=true`。
 3. 缺任何必需 secret 时该 job 直接失败，**不会再发 ad-hoc 公开包**。
-4. 证书轮换：重新导出 `.p12` / 新建 API Key，更新对应 secret；不要改 bundle id `com.unidesk.app`。
+4. 证书轮换：重新导出 `.p12` / 新建 API Key，更新对应 secret；不要改 bundle id `com.deskfuse.app`。
 
 本机在已导入同一 Developer ID 的 Mac 上：
 
 ```sh
 set -a && source .env && set +a
 CODESIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" \
-UNIDESK_REQUIRE_NOTARIZE=1 \
-UNIDESK_DMG_FINDER_LAYOUT=0 \
+DESKFUSE_REQUIRE_NOTARIZE=1 \
+DESKFUSE_DMG_FINDER_LAYOUT=0 \
 ./scripts/package-macos.sh --homebrew
 ```
 

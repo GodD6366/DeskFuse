@@ -22,7 +22,7 @@ Rust 的 clipboard_library 使用 canonical `state.sqlite3` 中独立 `cl_*` 表
 
 普通历史按内容摘要归并：纯文本按 NFC 和换行归一化后的文字计算摘要，因此同一段文字的富文本本地捕获、精简同步接收和接力回写复用同一行；图片与文件仍用完整格式摘要，避免按名称误合并不同内容。删除普通历史同时删除同一 global id 的手动列表归档；归档删除写入 `item:` 墓碑，后续合并不得复活。
 
-远端写回系统剪贴板使用 `CurrentHostOnly`（不进 Universal Clipboard）并写入 `com.unidesk.clipboard-origin` marker。系统接力带有 `com.apple.is-remote-clipboard` 时直接作为系统回声跳过入库和广播；系统剥掉该标记或接力先于 uniDesk 到达时，另由 10 秒、最多 512 条的等价指纹账本兜底：文本含归一化别名，图片含字节摘要和 dHash，本地捕获与远端写入共用，命中任一键即视为回声。历史取用仍写入本机剪贴板；10 秒内相同内容不再向对端重复广播。
+远端写回系统剪贴板使用 `CurrentHostOnly`（不进 Universal Clipboard）并写入 `com.deskfuse.clipboard-origin` marker。系统接力带有 `com.apple.is-remote-clipboard` 时直接作为系统回声跳过入库和广播；系统剥掉该标记或接力先于 DeskFuse 到达时，另由 10 秒、最多 512 条的等价指纹账本兜底：文本含归一化别名，图片含字节摘要和 dHash，本地捕获与远端写入共用，命中任一键即视为回声。历史取用仍写入本机剪贴板；10 秒内相同内容不再向对端重复广播。
 
 ## 文件归档
 

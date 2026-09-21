@@ -1,7 +1,7 @@
 # Collaboration API
 
-`unidesk-collaboration` is the cross-platform core. Hosts submit
-[`CollaborationCommand`](../crates/unidesk-collaboration/src/api.rs) values,
+`deskfuse-collaboration` is the cross-platform core. Hosts submit
+[`CollaborationCommand`](../crates/deskfuse-collaboration/src/api.rs) values,
 subscribe to `CollaborationEvent`, and rebuild UI from
 `CollaborationSnapshot`. Product extensions use the same surface; they are not
 compiled into the core.

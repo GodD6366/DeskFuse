@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 MODULE = runpy.run_path(str(Path(__file__).parents[1] / "check-branding.py"))
-WORD = MODULE["RETIRED_KEYWORD"].upper()
+WORD = "RETIRED-PRODUCT"
 
 
 class BrandingTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class BrandingTests(unittest.TestCase):
         subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
 
     def findings(self):
-        return list(MODULE["violations"](self.root))
+        return list(MODULE["violations"](self.root, WORD.lower()))
 
     def test_accepts_clean_source(self):
         (self.root / "DeskFuse.txt").write_text("DeskFuse")
@@ -30,14 +30,13 @@ class BrandingTests(unittest.TestCase):
         (self.root / "link").symlink_to(f"missing/{WORD}")
         self.assertEqual(len(self.findings()), 1)
 
-    def test_legacy_exemption_is_exact_not_directory_wide(self):
+    def test_no_compatibility_directory_exemptions(self):
         directory = self.root / "config/legacy"
         directory.mkdir(parents=True)
         (directory / "distribution.json").write_text(WORD)
         (directory / "unexpected.json").write_text(WORD)
         findings = self.findings()
-        self.assertEqual(len(findings), 1)
-        self.assertIn("unexpected.json", findings[0])
+        self.assertEqual(len(findings), 2)
 
 
 if __name__ == "__main__":

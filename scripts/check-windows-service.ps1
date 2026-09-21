@@ -11,13 +11,13 @@ Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-ar
 Set-Location $ProjectRoot
 & rustc -vV
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
-& cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-service -p unidesk-identity --all-targets
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets
 if ($LASTEXITCODE -ne 0) { throw 'Service tests failed' }
-& cargo clippy --locked --target x86_64-pc-windows-msvc -p unidesk-service -p unidesk-identity --all-targets --no-deps -- -D warnings
+& cargo clippy --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { throw 'Service lint failed' }
-& cargo build --locked --release --target x86_64-pc-windows-msvc -p unidesk-service --bins
+& cargo build --locked --release --target x86_64-pc-windows-msvc -p deskfuse-service --bins
 if ($LASTEXITCODE -ne 0) { throw 'Service release build failed' }
-foreach ($name in @('unidesk-service.exe', 'unidesk-service-client.exe', 'unidesk-input-helper.exe')) {
+foreach ($name in @('deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe')) {
     Get-FileHash (Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name") -Algorithm SHA256
 }
 Write-Output 'Service/client/input-helper build checks passed. No service was installed or started; GUI/installer are not included.'

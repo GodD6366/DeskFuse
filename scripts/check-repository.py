@@ -21,15 +21,15 @@ def main() -> int:
     files = source_files(worktree=args.worktree)
     errors = []
     forbidden = ("artifacts/", "target/", "dist/", ".agents/", ".codex/", "docs/archive/", "docs/history/", "design/iterations/", "design/current/archive/", ".antigravitycli/", "design/atelier/", "design/proposals/", "resources/generated/")
-    generated = ("apps/unidesk-macos/Generated/", "apps/unidesk-macos/Sources/UniDeskEngine/", "apps/unidesk-macos/Sources/UniDeskEngineFFI/")
+    generated = ("apps/deskfuse-macos/Generated/", "apps/deskfuse-macos/Sources/DeskFuseEngine/", "apps/deskfuse-macos/Sources/DeskFuseEngineFFI/")
     for name in sorted(files):
         if name.startswith(generated):
             errors.append(f"generated native binding cannot be published: {name}")
     secret_patterns = [r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----", r"\bAKIA[0-9A-Z]{16}\b", r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"]
     # Exact public TLS bootstrap fixtures; never allow arbitrary DER keys/certificates.
     bootstrap_hashes = {
-        "resources/unidesk-transport-cert.der": "e1d72b0257f1ff0f91aedbc279cd3f779b971c1a03a14c2a53b3bf473a9b437f",
-        "resources/unidesk-transport-key.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac",
+        "resources/deskfuse-transport-cert.der": "91809991af8595d68cf64520dc550607828b0ef7ec05c2295312076b635f9171",
+        "resources/deskfuse-transport-key.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac",
     }
     for name in sorted(files):
         path = ROOT / name

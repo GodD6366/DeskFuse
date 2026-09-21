@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 if (!$ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 Push-Location $ProjectRoot
 try {
-    $paths = & git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/unidesk-service apps/unidesk-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
+    $paths = & git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate source snapshot' }
     $paths = @($paths | Where-Object { $_ -notmatch '/(bin|obj|target)/' } | Sort-Object -Unique)
     if (!$paths.Count) { throw 'No source files found' }
