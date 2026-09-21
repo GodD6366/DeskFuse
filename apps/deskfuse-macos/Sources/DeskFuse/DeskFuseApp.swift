@@ -103,7 +103,21 @@ import DeskFuseEngine
         ClipboardPanelController.shared.install(store: AppStore.shared)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { AppStore.shared.terminate() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // 授权弹窗仍在时，系统设置的「退出并重新打开」已经进入退出流程。
+        // 再确认模态窗口不拦截终止，避免 AppKit 在委托返回后丢掉这次退出。
+        if AppStore.shared.permissionPrompt.presented != nil {
+            for window in NSApp.windows {
+                if let sheet = window.attachedSheet {
+                    sheet.preventsApplicationTerminationWhenModal = false
+                }
+                if window.isSheet {
+                    window.preventsApplicationTerminationWhenModal = false
+                }
+            }
+        }
+        return AppStore.shared.terminate()
+    }
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         if #available(macOS 14.2, *) {
             return RemoteApplicationDockController.shared.makeDockMenu()

@@ -229,6 +229,7 @@ struct PermissionPromptView: View {
         }
         .padding(24)
         .frame(width: 480)
+        .background(SystemRestartAllowance())
         .onReceive(didBecomeActive) { _ in
             controller.reevaluateWhilePresented()
         }
@@ -237,6 +238,47 @@ struct PermissionPromptView: View {
 
     private func dismiss() {
         if doNotRemind { controller.suppressPresented() } else { controller.presented = nil }
+    }
+}
+
+/// 系统设置在授予屏幕录制等权限后，会向本进程发送退出并重新打开。
+/// SwiftUI sheet 默认在模态期间拒绝终止，那个重启按钮就会没有效果。
+private struct SystemRestartAllowance: NSViewRepresentable {
+    func makeNSView(context: Context) -> SystemRestartAllowanceView { SystemRestartAllowanceView() }
+    func updateNSView(_ view: SystemRestartAllowanceView, context: Context) { view.allowSystemRestart() }
+}
+
+@MainActor
+private final class SystemRestartAllowanceView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        allowSystemRestart()
+    }
+
+    override func layout() {
+        super.layout()
+        allowSystemRestart()
+    }
+
+    /// 授权内容有时不在 sheet 窗口里，而在它的父窗口中。
+    /// 弹窗还在时，放开当前这张 sheet，系统设置才能把应用退出并重新打开。
+    func allowSystemRestart() {
+        if let modal = NSApp.modalWindow {
+            allowTermination(of: modal)
+        }
+        for window in NSApp.windows {
+            if let sheet = window.attachedSheet {
+                allowTermination(of: sheet)
+            }
+            if window.isSheet {
+                allowTermination(of: window)
+            }
+        }
+    }
+
+    private func allowTermination(of window: NSWindow) {
+        guard window.preventsApplicationTerminationWhenModal else { return }
+        window.preventsApplicationTerminationWhenModal = false
     }
 }
 
