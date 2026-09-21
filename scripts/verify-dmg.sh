@@ -144,9 +144,12 @@ codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 [[ -x "$CONTENTS_DIR/MacOS/deskfuse-input-service" ]] || { echo "error: input service missing" >&2; exit 1; }
 [[ "$(lipo -archs "$CONTENTS_DIR/MacOS/deskfuse-input-service")" == "$EXPECTED_ARCH" ]] || { echo "error: input service architecture" >&2; exit 1; }
 codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-input-service"
+[[ -x "$CONTENTS_DIR/MacOS/deskfuse-history-files" ]] || { echo "error: history file importer missing" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/deskfuse-history-files")" == "$EXPECTED_ARCH" ]] || { echo "error: history file importer architecture" >&2; exit 1; }
+codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-history-files"
 # Inspect all shipped Mach-O files: Info.plist alone cannot establish the
 # deployment target, and Rust must be statically linked into the native client.
-python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" <<'PYNATIVE'
+python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-history-files" <<'PYNATIVE'
 import re, subprocess, sys
 for binary in sys.argv[1:]:
     load = subprocess.check_output(["otool", "-l", binary], text=True)

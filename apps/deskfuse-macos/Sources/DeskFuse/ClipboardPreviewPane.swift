@@ -6,6 +6,7 @@ import DeskFuseEngine
 struct ClipboardPreviewPane: View {
     @Bindable var store: AppStore
     let item: HistoryItem
+    let title: String?
     let content: ClipboardContent
     let media: ClipboardMedia
     let image: NSImage?
@@ -45,10 +46,12 @@ struct ClipboardPreviewPane: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.system(size: 22, weight: .bold))
-                .lineLimit(2).truncationMode(.middle)
-                .textSelection(.enabled)
+            if let displayTitle {
+                Text(displayTitle)
+                    .font(.system(size: 22, weight: .bold))
+                    .lineLimit(2).truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) { sourceLabel; availabilityBadge }
                 VStack(alignment: .leading, spacing: 8) { sourceLabel; availabilityBadge }
@@ -118,12 +121,20 @@ struct ClipboardPreviewPane: View {
                 .aspectRatio(contentMode: fillImage ? .fill : .fit)
                 .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .accessibilityLabel(title)
+                .accessibilityLabel(displayTitle ?? item.clipboardTitle)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
     }
 
     private var textPreview: some View {
+        VStack(spacing: 0) {
+        if let document = ClipboardCodeDocument.detect(content.text) {
+            ClipboardCodePreview(document: document)
+            if content.truncated {
+                Text("预览已截断；复制会恢复完整内容。")
+                    .font(.caption).foregroundStyle(.secondary).padding(8)
+            }
+        } else {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text(content.text)
@@ -137,6 +148,8 @@ struct ClipboardPreviewPane: View {
                 }
             }
             .padding(24)
+        }
+        }
         }
     }
 
@@ -324,11 +337,14 @@ struct ClipboardPreviewPane: View {
         }
     }
 
-    private var title: String {
+    private var displayTitle: String? {
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
         if content.filePaths.count == 1, let path = content.filePaths.first {
             return URL(fileURLWithPath: path).lastPathComponent
         }
-        return item.clipboardTitle
+        return nil
     }
 
     private var canStageFiles: Bool {

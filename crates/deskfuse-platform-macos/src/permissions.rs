@@ -135,6 +135,13 @@ impl Default for MacOSPermissionService {
 
 #[cfg(target_os = "macos")]
 impl PermissionService for MacOSPermissionService {
+    fn status(&self, kind: PermissionKind) -> PermissionStatus {
+        match kind {
+            PermissionKind::Accessibility => Self::accessibility_status(),
+            _ => self.snapshot().status(kind),
+        }
+    }
+
     fn snapshot(&self) -> PermissionSnapshot {
         PermissionSnapshot::new(
             Self::accessibility_status(),

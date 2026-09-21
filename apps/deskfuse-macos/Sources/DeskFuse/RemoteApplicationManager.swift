@@ -208,6 +208,8 @@ import DeskFuseRemoteApplication
     enum LocalAction { case menu, close, minimize, zoom, release }
     var localAction: ((LocalAction) -> Void)?
     var pointerMoved: ((NSPoint) -> Void)?
+    var localMenuClick: ((NSPoint) -> Bool)?
+    private var consumedMenuMouseDown = false
     private var consumedKeys = Set<UInt16>()
     private var lastShortcutTimestamp: TimeInterval?
     override var canBecomeKey: Bool { true }
@@ -243,6 +245,19 @@ import DeskFuseRemoteApplication
         handleLocalShortcut(event) || super.performKeyEquivalent(with: event)
     }
     override func sendEvent(_ event: NSEvent) {
+        // Resolve the native button's actual bounds before the Metal canvas
+        // can claim the click. Consume the matching up/drag as one local gesture.
+        if event.type == .leftMouseDown {
+            consumedMenuMouseDown = false
+            if localMenuClick?(event.locationInWindow) == true {
+                consumedMenuMouseDown = true
+                return
+            }
+        }
+        if consumedMenuMouseDown {
+            if event.type == .leftMouseUp { consumedMenuMouseDown = false; return }
+            if event.type == .leftMouseDragged { return }
+        }
         if event.type == .mouseMoved {
             pointerMoved?(event.locationInWindow)
         }
@@ -276,6 +291,10 @@ import DeskFuseRemoteApplication
             guard let self, let window else { return }
             let size = window.contentView?.bounds.size ?? window.frame.size
             self.chrome.updatePointer(point, windowSize: size)
+        }
+        window.localMenuClick = { [weak self, weak window] point in
+            guard let self, let window else { return false }
+            return self.chrome.activateMenu(at: point, in: window)
         }
         window.localAction = { [weak self] action in
             guard let self else { return }

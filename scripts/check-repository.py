@@ -28,7 +28,7 @@ def main() -> int:
     secret_patterns = [r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----", r"\bAKIA[0-9A-Z]{16}\b", r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"]
     # Exact public TLS bootstrap fixtures; never allow arbitrary DER keys/certificates.
     bootstrap_hashes = {
-        "resources/deskfuse-transport-cert.der": "91809991af8595d68cf64520dc550607828b0ef7ec05c2295312076b635f9171",
+        "resources/deskfuse-transport-cert.der": "bebea72839ae99749d8e3e4f5dde02e830a32968091251d7e64edaa7d5659708",
         "resources/deskfuse-transport-key.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac",
     }
     for name in sorted(files):

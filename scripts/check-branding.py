@@ -22,6 +22,9 @@ def violations(root: Path, forbidden: str):
     for raw in sorted(set(output.split(b"\0")) - {b""}):
         name = raw.decode("utf-8", errors="surrogateescape")
         path = root / name
+        # The explicit first-launch import contract is the only retired-name boundary.
+        if name == "config/previous-installation.json":
+            continue
         if not os.path.lexists(path):
             continue
         if pattern.search(raw):

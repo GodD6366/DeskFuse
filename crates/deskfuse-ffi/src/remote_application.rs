@@ -1,12 +1,28 @@
 use super::{Engine, EngineError, device, failure};
 use deskfuse_engine::remote_application::service;
 use std::sync::Arc;
+#[derive(uniffi::Record)]
+pub struct RemoteApplicationNetworkStats {
+    pub sent_packets: u64,
+    pub lost_packets: u64,
+    pub rtt_milliseconds: f64,
+    pub remote_address: String,
+}
 #[derive(uniffi::Object)]
 pub struct RemoteApplicationChannel {
     session: Arc<deskfuse_transport::remote_application::RemoteSession>,
 }
 #[uniffi::export]
 impl RemoteApplicationChannel {
+    pub fn network_stats(&self) -> RemoteApplicationNetworkStats {
+        let (sent_packets, lost_packets, rtt_milliseconds) = self.session.network_stats();
+        RemoteApplicationNetworkStats {
+            sent_packets,
+            lost_packets,
+            rtt_milliseconds,
+            remote_address: self.session.remote_address(),
+        }
+    }
     pub fn peer_id(&self) -> String {
         self.session.peer.to_string()
     }

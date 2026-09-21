@@ -4,7 +4,10 @@ import Foundation
 public final class VideoDecoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "DeskFuse.remote.decode", qos: .userInteractive)
     private let lock = NSLock()
-    private var pending = EncodedFrameQueue()
+    // Larger than the sender's maximum twelve in-flight frames, including bursts.
+    private var pending = EncodedFrameQueue(capacity: 24)
+    private var recovering = false
+    private var lastKeyRequest = -Double.infinity
     private var scheduled = false
     private var stopped = false
     private var session: VTDecompressionSession?
@@ -30,19 +33,50 @@ public final class VideoDecoder: @unchecked Sendable {
             guard !stopped else { return false }
             switch pending.offer(frame) {
             case .stale: return false
-            case .needsKeyFrame: requestKey = true; return false
+            case .needsKeyFrame:
+                if !recovering {
+                    recovering = true
+                    if let cause = pending.recoveryCause {
+                        metrics.update {
+                            $0.chainResets += 1
+                            if cause == .overflow { $0.queueOverflows = ($0.queueOverflows ?? 0) + 1 }
+                            else { $0.sequenceGaps = ($0.sequenceGaps ?? 0) + 1 }
+                        }
+                    }
+                }
+                requestKey = true; return false
             case .accepted:
+                if frame.keyFrame { recovering = false }
                 guard !scheduled else { return false }
                 scheduled = true; return true
             }
         }
-        if requestKey { metrics.update { $0.chainResets += 1 }; keyFrameNeeded() }
+        if requestKey { retryRecovery() }
         if wake { queue.async { [weak self] in self?.drain() } }
     }
 
     public func invalidate() {
-        lock.withLock { pending.invalidate() }
-        metrics.update { $0.chainResets += 1 }; keyFrameNeeded()
+        lock.withLock {
+            pending.invalidate()
+            metrics.update {
+                $0.decodeErrors = ($0.decodeErrors ?? 0) + 1
+                if !recovering { $0.chainResets += 1 }
+            }
+            recovering = true
+        }
+        retryRecovery()
+    }
+
+    public func retryRecovery() {
+        let request = lock.withLock { () -> Bool in
+            let now = ProcessInfo.processInfo.systemUptime
+            guard !stopped, recovering, now - lastKeyRequest >= 0.5 else { return false }
+            lastKeyRequest = now; return true
+        }
+        if request {
+            metrics.update { $0.keyFrameRequests = ($0.keyFrameRequests ?? 0) + 1 }
+            keyFrameNeeded()
+        }
     }
 
     private func drain() {
@@ -52,8 +86,12 @@ public final class VideoDecoder: @unchecked Sendable {
         }) {
             do { try decode(frame) }
             catch {
-                output(.failure(error as? RemoteApplicationError ?? .malformedFrame))
-                invalidate()
+                let failure = error as? RemoteApplicationError ?? .malformedFrame
+                switch failure {
+                case .unsupported, .invalidGeometry:
+                    output(.failure(failure))
+                default: invalidate()
+                }
             }
         }
     }
@@ -150,7 +188,7 @@ public final class VideoDecoder: @unchecked Sendable {
         let result = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample,
             flags: [], infoFlagsOut: nil) { [weak self] status, _, image, timestamp, _ in
                 guard let self, !self.lock.withLock({ self.stopped }) else { return }
-                guard status == noErr, let image else { self.output(.failure(.codec("解码视频帧", status))); self.invalidate(); return }
+                guard status == noErr, let image else { self.invalidate(); return }
                 self.metrics.update { $0.hardwareDecoder = true }
                 self.metrics.decode(duration: ProcessInfo.processInfo.systemUptime - started)
                 self.output(.success(DecodedVideoFrame(surface: frame.surface, sequence: frame.sequence, buffer: image, timestamp: timestamp)))

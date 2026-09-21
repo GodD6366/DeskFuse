@@ -255,6 +255,7 @@ echo "building $PACKAGE_NAME for $TARGET_TRIPLE"
 export DESKFUSE_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
 "$ROOT_DIR/scripts/build-native-macos.sh" release
 "$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package deskfuse-update --bin deskfuse-update-helper --target "$TARGET_TRIPLE"
+"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package deskfuse-engine --bin deskfuse-history-files --target "$TARGET_TRIPLE"
 
 CARGO_OUTPUT_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BINARY_PATH="$CARGO_OUTPUT_DIR/native-macos/release/$BINARY_NAME"
@@ -276,7 +277,10 @@ cp "$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-input-service" "$CONTENTS_DI
 deskfuse_codesign --identifier com.deskfuse.app.input-service "$CONTENTS_DIR/MacOS/deskfuse-input-service"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
+cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files" "$CONTENTS_DIR/MacOS/deskfuse-history-files"
+deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-history-files"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
+cp "$ROOT_DIR/config/previous-installation.json" "$CONTENTS_DIR/Resources/previous-installation.json"
 if [[ "$PACKAGE_MODE" == homebrew ]]; then
   printf 'github\n' > "$CONTENTS_DIR/Resources/update-channel"
 elif [[ "$PACKAGE_MODE" == manual ]]; then

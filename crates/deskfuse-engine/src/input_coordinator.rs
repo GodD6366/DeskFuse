@@ -415,10 +415,9 @@ impl State {
             if runtime.send(report.command()).await.is_ok() {
                 self.last_report = Some(report);
             }
-            if self.available {
-                self.last_error = None;
-                let _ = self.ui.unbounded_send(UiEvent::InputStatus { error: None });
-            }
+        }
+        if self.available && self.last_error.take().is_some() {
+            let _ = self.ui.unbounded_send(UiEvent::InputStatus { error: None });
         }
     }
 
@@ -803,7 +802,7 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
                 Instant,
                 Result<deskfuse_core::DisplayTopology, String>,
             )> = None;
-            while !stopping.load(Ordering::Acquire) {
+            while !stopping.load(Ordering::Acquire) && !tx.is_closed() {
                 let started_at = Instant::now();
                 let started_wall = SystemTime::now();
                 let topology = match last_topology.as_ref() {
@@ -818,8 +817,18 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
                         next
                     }
                 };
+                // Input monitoring must not wait for unrelated protected-file
+                // probes. The main permission observer owns full disk access.
+                #[cfg(target_os = "macos")]
+                let permission = PermissionSnapshot::new(
+                    permissions.status(deskfuse_platform::PermissionKind::Accessibility),
+                    PermissionStatus::Unknown,
+                    PermissionStatus::Unknown,
+                );
+                #[cfg(not(target_os = "macos"))]
+                let permission = permissions.snapshot();
                 let observation = NativeObservation {
-                    permission: permissions.snapshot(),
+                    permission,
                     session_active: crate::platform::session_is_active(),
                     topology,
                     started_at,
@@ -886,7 +895,9 @@ async fn run(
         in_motion: MotionCadence::default(),
         cadence_at: Instant::now(),
     };
-    let (mut observations, observer, observer_thread) = native_observer(stopping.clone());
+    let (mut observations, mut observer, observer_thread) = native_observer(stopping.clone());
+    let mut observer_started = Instant::now();
+    let mut retired_observer: Option<thread::JoinHandle<()>> = None;
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1152,6 +1163,29 @@ async fn run(
             }
             _ = timer.tick() => {
                 let now = Instant::now();
+                if retired_observer.as_ref().is_some_and(|worker| worker.is_finished()) {
+                    finish_native_observer(retired_observer.take());
+                }
+                let observer_stalled = observations.borrow().as_ref()
+                    .map_or(observer_started, |sample| sample.started_at)
+                    .elapsed() >= Duration::from_secs(5);
+                let observer_exited = observer.as_ref().is_none_or(|worker| worker.is_finished());
+                // At most one retired native query may remain blocked. Dropping
+                // its receiver prevents it from publishing or starting another query.
+                if observer_exited || (observer_stalled && retired_observer.is_none()) {
+                    if observer_exited {
+                        finish_native_observer(observer.take());
+                    } else {
+                        retired_observer = observer.take();
+                    }
+                    let (receiver, worker, thread) = native_observer(stopping.clone());
+                    observations = receiver;
+                    observer = worker;
+                    observer_started = now;
+                    state.observer_thread = thread;
+                    observer_open = observer.is_some();
+                    next_refresh = now;
+                }
                 let mut snapshot = runtime.input_snapshot();
                 let effective = effective_native_settings(&snapshot, &state.paused_activations);
                 if latch_emergency(&emergency, &snapshot, &mut state.paused_activations) {
@@ -1325,6 +1359,7 @@ async fn run(
     state.reclaim(&runtime, Some(state.anchor)).await;
     let _ = state.capture.stop();
     finish_native_observer(observer);
+    finish_native_observer(retired_observer);
     let _ = runtime
         .send(RuntimeCommand::SetInputAvailability {
             available: false,

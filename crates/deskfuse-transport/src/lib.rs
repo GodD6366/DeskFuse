@@ -3065,7 +3065,8 @@ async fn serve_connection(
                             pending.insert(ordinal, None);
                             if negotiated.contains(Capabilities::REMOTE_APPLICATION) && !shared.is_revoked(peer).unwrap_or(true) {
                                 let hub = shared.remote_app.clone();
-                                tokio::spawn(async move { hub.accept(peer, send, recv).await; });
+                                let media_connection = connection.clone();
+                                tokio::spawn(async move { hub.accept(peer, media_connection, send, recv).await; });
                             }
                         }
                         Some(message @ (Message::ClipboardUpdate(_) | Message::InputEventBatch(_) | Message::DisplayInfo(_))) => {

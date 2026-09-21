@@ -26,7 +26,6 @@ struct ClipboardView: View {
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var listID: String?
     @AppStorage("deskfuse.clipboard.displayMode") private var displayMode: ClipboardDisplayMode = .list
-    @State private var previewing = false
     @State private var pageItems: [ClipboardLibraryItem] = []
     @State private var presentation = ClipboardPagePresentation()
     @State private var nextOffset: Int?
@@ -62,11 +61,9 @@ struct ClipboardView: View {
                     titles: presentation.titles,
                     metas: presentation.metas,
                     onRename: { id, title in library.rename(id, title: title) },
-                    previewing: previewing,
-                    onTogglePreview: { previewing.toggle() },
                     onDelete: { ids in
                         library.delete(ids)
-                        cancelCopy(); copyError = nil; copiedID = nil; previewing = false
+                        cancelCopy(); copyError = nil; copiedID = nil
                     },
                     listID: $listID, total: total, memberships: presentation.memberships,
                     hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, loadMore: { Task { await loadPage(append: true) } }
@@ -100,26 +97,14 @@ struct ClipboardView: View {
         .onChange(of: snapshot.history.map(\.id)) { _, _ in rebuildPresentation() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in queryRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in queryRevision += 1 }
-        .onChange(of: selected) { _, _ in cancelCopy(); copyError = nil; copiedID = nil; previewing = false }
-        // The preview lives in its own screen-sized window, so it is driven here
-        // instead of being an overlay capped by this window.
-        .onChange(of: previewing) { _, active in
-            if active {
-                ClipboardQuickLookController.shared.present(over: NSApp.keyWindow ?? NSApp.mainWindow) { previewing = false }
-                updateQuickLook()
-            } else {
-                ClipboardQuickLookController.shared.close()
-            }
-        }
-        .onChange(of: previewImage.map(ObjectIdentifier.init)) { _, _ in updateQuickLook() }
-        .onChange(of: content?.id) { _, _ in updateQuickLook() }
+        .onChange(of: selected) { _, _ in cancelCopy(); copyError = nil; copiedID = nil }
         .task(id: copiedID) {
             guard let id = copiedID else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             if copiedID == id { copiedID = nil }
         }
         .onDisappear {
-            cancelCopy(); ClipboardQuickLookController.shared.close()
+            cancelCopy()
             pageRequest = UUID(); searching = false
             content = nil; media = nil; previewImage = nil
             pageItems = []; nextOffset = nil; nextCursor = nil; presentation = ClipboardPagePresentation()
@@ -127,7 +112,6 @@ struct ClipboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
             if (notification.object as? NSWindow)?.identifier?.rawValue == "deskfuse-main" {
                 cancelCopy()
-                ClipboardQuickLookController.shared.close()
             }
         }
         .task(id: selected) {
@@ -184,10 +168,6 @@ struct ClipboardView: View {
 
     }
 
-    private func updateQuickLook() {
-        guard previewing else { return }
-        ClipboardQuickLookController.shared.update(content: content, image: previewImage)
-    }
     private func cancelCopy() {
         guard let token = copyToken else { return }
         copyToken = nil
@@ -323,7 +303,8 @@ struct ClipboardView: View {
         } else if let previewError {
             ContentUnavailableView("无法读取预览", systemImage: "exclamationmark.triangle", description: Text(previewError))
         } else if let content, content.id == selected, let media, let item = items.first(where: { $0.id == content.id }) {
-            ClipboardPreviewPane(store: store, item: item, content: content, media: media, image: previewImage,
+            ClipboardPreviewPane(store: store, item: item, title: presentation.titles[item.id],
+                                 content: content, media: media, image: previewImage,
                                  ocrText: pageItems.first(where: { $0.id == content.id })?.ocr_text,
                                  copying: copyToken != nil, copied: copiedID == item.id, copyContent: { prepareCopy(content.id) })
                 .id(content.id)
@@ -334,52 +315,6 @@ struct ClipboardView: View {
                 Text("文字、图片与文件会在可信设备之间同步。")
             }
         }
-    }
-}
-
-/// Space-bar preview: a dimmed, non-destructive enlargement of the selected
-/// record. It never writes the pasteboard or changes the selection. Shared by
-/// the main window and the menu bar panel, and drawn in its own screen-sized
-/// window so it is not capped by the surface that opened it; `content` is
-/// optional so the backdrop can appear while the record is still being read.
-struct ClipboardQuickLook: View {
-    let content: ClipboardContent?
-    let image: NSImage?
-    let dismiss: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.72).ignoresSafeArea()
-            if let image {
-                Image(nsImage: image).resizable().scaledToFit()
-                    .padding(44)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let text = content?.text, !text.isEmpty {
-                ScrollView {
-                    Text(text)
-                        .font(.system(size: 15))
-                        .lineSpacing(5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(34)
-                }
-                .frame(maxWidth: 900, maxHeight: .infinity)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-                .padding(44)
-            } else if let paths = content?.filePaths, !paths.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.on.doc").font(.system(size: 48)).foregroundStyle(.secondary)
-                    Text("\(paths.count) 个文件").font(.title3.weight(.semibold))
-                }
-                .padding(36)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-            } else {
-                ProgressView().controlSize(.large).tint(.white)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: dismiss)
-        .accessibilityAddTraits(.isModal)
     }
 }
 

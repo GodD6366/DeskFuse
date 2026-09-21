@@ -52,6 +52,8 @@ public enum FrameAdmission: Sendable, Equatable { case accepted, needsKeyFrame, 
 /// Single-consumer bounded reference chain. If any reference is lost, no later
 /// delta frame can be decoded until a fresh key frame restores the chain.
 public struct EncodedFrameQueue: Sendable {
+    public enum RecoveryCause: Sendable { case sequenceGap, overflow }
+    public private(set) var recoveryCause: RecoveryCause?
     private var frames: [EncodedVideoFrame] = []
     private let capacity: Int
     private var surface: SurfaceIdentity?
@@ -67,6 +69,7 @@ public struct EncodedFrameQueue: Sendable {
     public mutating func invalidate() { frames.removeAll(keepingCapacity: true); needsKey = true }
 
     public mutating func offer(_ frame: EncodedVideoFrame) -> FrameAdmission {
+        recoveryCause = nil
         guard frame.surface == surface, frame.sequence > lastSequence else { return .stale }
         if let codec, codec != frame.codec {
             invalidate()
@@ -74,9 +77,11 @@ public struct EncodedFrameQueue: Sendable {
         }
         if frame.keyFrame { codec = frame.codec }
         if (needsKey || (lastSequence != 0 && frame.sequence != lastSequence + 1)) && !frame.keyFrame {
+            if !needsKey { recoveryCause = .sequenceGap }
             invalidate(); return .needsKeyFrame
         }
         if frames.count >= capacity {
+            recoveryCause = .overflow
             invalidate()
             guard frame.keyFrame else { return .needsKeyFrame }
         }
@@ -142,6 +147,14 @@ public final class LatestVideoFrame: @unchecked Sendable {
 }
 
 public struct MediaStatistics: Codable, Sendable {
+    public var queueOverflows: UInt64?
+    public var sequenceGaps: UInt64?
+    public var decodeErrors: UInt64?
+    public var keyFrameRequests: UInt64?
+    public var inFlightFrames: Int?
+    public var currentBitrate: Int?
+    public var presentationRoundTripMs: Double?
+    public var bitrateUpdateFailures: UInt64?
     public var captured: UInt64 = 0
     /// Non-complete samples ScreenCaptureKit delivered, kept as buckets so a
     /// stream that never produces `.complete` frames is visible in statistics.

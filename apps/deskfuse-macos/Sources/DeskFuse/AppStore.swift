@@ -25,6 +25,7 @@ import DeskFuseEngine
     var shelf: ShelfController?
     /// Launch-time guidance for permissions used by local features.
     let permissionPrompt = PermissionPromptController()
+    let previousInstallation = PreviousInstallationController()
     var showMainWindow: (() -> Void)?
     @ObservationIgnored var showSettingsWindow: (() -> Void)?
     var pairingWindow: PairingWindowController?

@@ -5,22 +5,32 @@ public final class VideoEncoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "DeskFuse.remote.encode", qos: .userInteractive)
     private let lock = NSLock()
     private var latest: CapturedVideoFrame?
+    private var lastCaptured: CapturedVideoFrame?
+    private var lastTimestamp = CMTime.invalid
     private var scheduled = false
     private var stopped = false
     private var session: VTCompressionSession?
     private var forceKeyFrame = true
     private var sequence: UInt64 = 0
     private var inFlight = 0
+    private let flowControlled: Bool
+    private var outstanding: [UInt64: Double] = [:]
+    private var windowLimit = 6
+    private var lastKeyRequest = -Double.infinity
+    private var currentBitrate: Int
+    private var badSamples = 0
+    private var goodSamples = 0
     private let surface: SurfaceIdentity
     public let profile: VideoProfile
     private let metrics: MediaMetrics
     private let output: @Sendable (Result<EncodedVideoFrame, RemoteApplicationError>) -> Void
 
-    public init(surface: SurfaceIdentity, profile: VideoProfile, metrics: MediaMetrics,
+    public init(surface: SurfaceIdentity, profile: VideoProfile, metrics: MediaMetrics, flowControlled: Bool = false,
                 output: @escaping @Sendable (Result<EncodedVideoFrame, RemoteApplicationError>) -> Void) throws {
         guard profile.pixels.isValid, profile.framesPerSecond.isFinite, profile.framesPerSecond > 0,
               profile.framesPerSecond <= 120, profile.bitrate > 0 else { throw RemoteApplicationError.invalidGeometry }
         self.surface = surface; self.profile = profile; self.metrics = metrics; self.output = output
+        self.flowControlled = flowControlled; self.currentBitrate = profile.bitrate
         var created: VTCompressionSession?
         let specification: [CFString: Any] = [
             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
@@ -41,6 +51,7 @@ public final class VideoEncoder: @unchecked Sendable {
             try set(kVTCompressionPropertyKey_ProfileLevel, profileLevel)
             try set(kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: profile.framesPerSecond))
             try set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: profile.bitrate))
+            metrics.update { $0.currentBitrate = profile.bitrate }
             try set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NSNumber(value: 1))
             let ready = VTCompressionSessionPrepareToEncodeFrames(created)
             guard ready == noErr else { throw RemoteApplicationError.codec("准备硬件编码", ready) }
@@ -73,17 +84,81 @@ public final class VideoEncoder: @unchecked Sendable {
             guard !stopped else { return false }
             if latest != nil { metrics.update { $0.replacedBeforeEncode += 1 } }
             latest = frame
+            lastCaptured = frame
             guard !scheduled else { return false }
             scheduled = true; return true
         }
         if wake { queue.async { [weak self] in self?.drain() } }
     }
 
-    public func requestKeyFrame() { queue.async { [weak self] in self?.forceKeyFrame = true } }
+    public func requestKeyFrame() {
+        queue.async { [weak self] in
+            guard let self, !self.lock.withLock({ self.stopped }) else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastKeyRequest >= 0.5 else { return }
+            self.lastKeyRequest = now
+            self.forceKeyFrame = true
+            self.lock.withLock {
+                if self.latest == nil { self.latest = self.lastCaptured }
+            }
+            // A broken reference chain cannot produce presentation ACKs. Start
+            // a fresh bounded window for the requested key frame.
+            self.outstanding.removeAll()
+            self.drain()
+        }
+    }
+
+    public func acknowledge(surface: SurfaceIdentity, sequence: UInt64) {
+        guard surface == self.surface else { return }
+        queue.async { [weak self] in
+            guard let self, let started = self.outstanding[sequence] else { return }
+            let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            self.outstanding = self.outstanding.filter { $0.key > sequence }
+            self.metrics.update {
+                $0.presentationRoundTripMs = elapsed
+                $0.inFlightFrames = self.outstanding.count
+            }
+            self.drain()
+        }
+    }
+
+    /// Once-per-second feedback. Lower bitrate before dropping frame rate; the
+    /// capture mailbox keeps only the latest raw frame while the window is full.
+    public func updateNetwork(rttMilliseconds: Double, sendWaitMilliseconds: Double, lossPercent: Double?) {
+        queue.async { [weak self] in
+            guard let self, self.flowControlled, self.session != nil,
+                  !self.lock.withLock({ self.stopped }), rttMilliseconds.isFinite else { return }
+            let rtt = min(2, max(0.001, rttMilliseconds / 1000))
+            self.windowLimit = min(12, max(3, Int(ceil(self.profile.framesPerSecond * (rtt + 0.05))) + 2))
+            let oldest = self.outstanding.values.min().map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
+            let congested = oldest > max(0.2, rtt * 2 + 0.05) || sendWaitMilliseconds > 30 || (lossPercent ?? 0) > 2
+            self.badSamples = congested ? self.badSamples + 1 : 0
+            self.goodSamples = congested ? 0 : self.goodSamples + 1
+            var bitrate = self.currentBitrate
+            if self.badSamples >= 3 {
+                bitrate = max(min(500_000, self.profile.bitrate), Int(Double(bitrate) * 0.8))
+                self.badSamples = 0
+            } else if self.goodSamples >= 5 {
+                bitrate = min(self.profile.bitrate, Int(Double(bitrate) * 1.05))
+                self.goodSamples = 0
+            }
+            if bitrate != self.currentBitrate {
+                do {
+                    try self.set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: bitrate))
+                    self.currentBitrate = bitrate
+                    self.metrics.update { $0.currentBitrate = bitrate }
+                } catch {
+                    self.metrics.update { $0.bitrateUpdateFailures = ($0.bitrateUpdateFailures ?? 0) + 1 }
+                }
+            }
+            self.drain()
+        }
+    }
 
     private func drain() {
         guard let session else { return }
         while inFlight < 2 {
+            if flowControlled && outstanding.count >= windowLimit { return }
             guard let frame = lock.withLock({ () -> CapturedVideoFrame? in
                 guard !stopped else { latest = nil; scheduled = false; return nil }
                 guard let frame = latest else { scheduled = false; return nil }
@@ -94,12 +169,20 @@ public final class VideoEncoder: @unchecked Sendable {
                 output(.failure(.invalidGeometry)); continue
             }
             sequence += 1; let frameSequence = sequence
+            if flowControlled {
+                outstanding[frameSequence] = ProcessInfo.processInfo.systemUptime
+                metrics.update { $0.inFlightFrames = outstanding.count }
+            }
             let properties = forceKeyFrame ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
             forceKeyFrame = false; inFlight += 1
             metrics.update { $0.encoderSubmitted += 1 }
             let started = ProcessInfo.processInfo.systemUptime
+            let duration = CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000)
+            let timestamp = lastTimestamp.isValid && CMTimeCompare(frame.timestamp, lastTimestamp) <= 0
+                ? CMTimeAdd(lastTimestamp, duration) : frame.timestamp
+            lastTimestamp = timestamp
             let status = VTCompressionSessionEncodeFrame(session, imageBuffer: frame.buffer,
-                presentationTimeStamp: frame.timestamp, duration: CMTime(seconds: 1 / profile.framesPerSecond, preferredTimescale: 1_000_000),
+                presentationTimeStamp: timestamp, duration: duration,
                 frameProperties: properties, infoFlagsOut: nil) { [weak self] status, flags, sample in
                     guard let self else { return }
                     // Real-time VT encoding may successfully drop a frame. This
@@ -125,10 +208,12 @@ public final class VideoEncoder: @unchecked Sendable {
                     self.queue.async { [weak self] in
                         guard let self else { return }
                         if dropped { self.forceKeyFrame = true }
+                        if dropped || status != noErr { self.outstanding.removeValue(forKey: frameSequence) }
                         self.inFlight = max(0, self.inFlight - 1); self.drain()
                     }
                 }
             if status != noErr {
+                outstanding.removeValue(forKey: frameSequence)
                 inFlight -= 1; forceKeyFrame = true
                 output(.failure(.codec("提交编码帧", status)))
             }
@@ -136,7 +221,7 @@ public final class VideoEncoder: @unchecked Sendable {
     }
 
     public func stop() {
-        lock.withLock { stopped = true; latest = nil }
+        lock.withLock { stopped = true; latest = nil; lastCaptured = nil }
         queue.sync {
             if let session {
                 VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)

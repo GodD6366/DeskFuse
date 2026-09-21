@@ -6,6 +6,16 @@ import DeskFuseRemoteApplication
 @MainActor @Observable final class RemoteWindowChrome {
     var menuPresented = false
     var controlsRevealed = false
+    var diagnosticsPresented = false
+    @ObservationIgnored weak var menuButton: NSButton?
+
+    func activateMenu(at point: NSPoint, in window: NSWindow) -> Bool {
+        guard controlsRevealed || menuPresented, let button = menuButton,
+              button.window === window,
+              button.bounds.contains(button.convert(point, from: nil)) else { return false }
+        button.performClick(nil)
+        return true
+    }
 
     /// Keep the local chrome out of the remote app's way until the pointer is
     /// close to the top-center affordance. This is driven by the window event
@@ -68,6 +78,11 @@ struct RemoteApplicationView: View {
             }
         }
         .onChange(of: session.preferences) { _, _ in session.changePreferences() }
+        .overlay {
+            if chrome.diagnosticsPresented {
+                RemoteDiagnosticsOverlay(session: session) { chrome.diagnosticsPresented = false }
+            }
+        }
     }
     private var trafficLights: some View {
         RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
@@ -80,11 +95,13 @@ struct RemoteApplicationView: View {
     private var menuControls: some View {
         HStack(spacing: 4) {
             RemoteCanvasDragHandle().frame(width: 22, height: 22).help("拖动以移动远程窗口")
-            Button {
+            RemoteMenuButton(chrome: chrome) {
                 session.canvasFocus(false)
+                chrome.menuButton?.window?.makeFirstResponder(nil)
                 chrome.menuPresented.toggle()
-            } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
-            .buttonStyle(.plain).help("远程应用菜单（⌃⌥⌘空格）")
+            }
+            .frame(width: 30, height: 28)
+            .help("远程应用菜单（⌃⌥⌘空格）")
             .popover(isPresented: $chrome.menuPresented, arrowEdge: .top) {
                 localActions.padding(14).frame(width: 300)
             }
@@ -94,7 +111,6 @@ struct RemoteApplicationView: View {
         .modifier(NativeGlassBackdrop(cornerRadius: 14))
         .padding(.top, 6)
         .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
-        .scaleEffect(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0.9, anchor: .top)
         .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
         // The window reports pointer proximity independently, so an
         // invisible trigger is unnecessary and would steal remote input.
@@ -105,6 +121,9 @@ struct RemoteApplicationView: View {
         VStack(alignment: .leading, spacing: 10) {
             localAction("打开其他应用…", shortcut: nil, action: chooseApplication)
             localAction("释放控制", shortcut: "⌃⌥Esc") { session.canvasFocus(false) }
+            localAction(chrome.diagnosticsPresented ? "隐藏调试悬浮窗" : "显示调试悬浮窗", shortcut: nil) {
+                chrome.diagnosticsPresented.toggle()
+            }
             Divider()
             Picker("分辨率", selection: $session.preferences.resolution) {
                 ForEach(ResolutionPreference.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -136,6 +155,29 @@ struct RemoteApplicationView: View {
                 if let shortcut { Text(shortcut).foregroundStyle(.secondary) }
             }.padding(.vertical, 3).contentShape(Rectangle())
         }.buttonStyle(.plain)
+    }
+}
+
+private struct RemoteMenuButton: NSViewRepresentable {
+    let chrome: RemoteWindowChrome
+    let action: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "远程应用菜单")!,
+                              target: context.coordinator, action: #selector(Coordinator.activate))
+        button.isBordered = false
+        button.setAccessibilityLabel("远程应用菜单")
+        chrome.menuButton = button
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        chrome.menuButton = button
+    }
+    @MainActor final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func activate() { action() }
     }
 }
 

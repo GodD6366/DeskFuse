@@ -35,6 +35,9 @@ struct MenuBarClipboardView: View {
     @State private var previewing = false
     @State private var previewContent: ClipboardContent?
     @State private var previewImage: NSImage?
+    @State private var previewAnchor = ClipboardQuickLookAnchor()
+    @State private var previewID: UInt64?
+    @State private var previewTask: Task<Void, Never>?
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
     /// Every record the panel may show, deduplicated and ordered newest first.
@@ -124,6 +127,7 @@ struct MenuBarClipboardView: View {
         .onChange(of: items.map(\.id), initial: true) { _, ids in
             guard !searching else { return }
             if selectedID.map(ids.contains) != true { selectedID = ids.first }
+            if let previewID, !ids.contains(previewID) { dismissPreview() }
             fileAvailability = fileAvailability.filter { ids.contains($0.key) }
         }
         // The preview belongs to one record: navigating away closes it.
@@ -260,6 +264,12 @@ struct MenuBarClipboardView: View {
                                 onRename: { library.rename(item.id, title: $0) },
                                 onDelete: { deleteItem(item.id) }
                             )
+                            .background {
+                                if isSelected { ClipboardQuickLookAnchorView(anchor: previewAnchor) }
+                            }
+                            .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
+                                previewItem(item.id, from: anchor)
+                            })
                         }
                     }
                 } else {
@@ -292,6 +302,12 @@ struct MenuBarClipboardView: View {
                                         onCopy: { copySelected(paste: false, id: item.id) },
                                         onRename: { library.rename(item.id, title: $0) },
                                         onDelete: { deleteItem(item.id) })
+                                    .background {
+                                        if selectedID == item.id { ClipboardQuickLookAnchorView(anchor: previewAnchor) }
+                                    }
+                                    .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
+                                        previewItem(item.id, from: anchor)
+                                    })
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { copySelected(paste: true, id: item.id) })
                                     .id(item.id)
                                 }
@@ -448,26 +464,37 @@ struct MenuBarClipboardView: View {
     }
 
     /// Read-only preview of the selected record: it never prepares a paste and
-    /// never changes the selection. It is drawn in its own screen-sized window so
-    /// a 440 pt panel is not the ceiling for an image; the dimmed backdrop appears
-    /// immediately and the payload follows, so the keypress always has feedback.
+    /// never changes the selection. It opens beside the 440 pt panel immediately,
+    /// then fills in the payload when loading completes.
     private func togglePreview() {
         guard selectedID != nil else { return }
         if previewing { dismissPreview() } else { previewSelected() }
     }
     private func dismissPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewID = nil
         previewing = false
         previewContent = nil
         previewImage = nil
         ClipboardQuickLookController.shared.close()
     }
     private func previewSelected() {
-        guard let id = selectedID, items.contains(where: { $0.id == id }), store.client != nil else { return }
+        guard let id = selectedID, let anchor = previewAnchor.view else { return }
+        previewItem(id, from: anchor)
+    }
+    private func previewItem(_ id: UInt64, from anchor: NSView) {
+        guard panelActive, items.contains(where: { $0.id == id }), store.client != nil,
+              anchor.window != nil else { return }
+        guard previewID != id || !previewing else { return }
+        previewTask?.cancel()
+        ClipboardQuickLookController.shared.update(content: nil, image: nil)
+        previewID = id
         previewing = true
         previewContent = nil
         previewImage = nil
-        ClipboardQuickLookController.shared.present(over: panel.window) { dismissPreview() }
-        Task { @MainActor in
+        ClipboardQuickLookController.shared.present(from: anchor) { dismissPreview() }
+        previewTask = Task { @MainActor in
             guard let client = store.client else { return }
             var content = try? await client.content(id)
             // A remote index row has no local payload yet. Ask the source device
@@ -476,15 +503,15 @@ struct MenuBarClipboardView: View {
                 library.wantPayload(id)
                 for _ in 0..<10 {
                     try? await Task.sleep(for: .milliseconds(400))
-                    guard !Task.isCancelled, previewing, selectedID == id else { return }
+                    guard !Task.isCancelled, previewing, previewID == id else { return }
                     if let retried = try? await client.content(id) { content = retried; break }
                 }
             }
-            guard !Task.isCancelled, previewing, selectedID == id else { return }
+            guard !Task.isCancelled, previewing, previewID == id else { return }
             // Unreadable record: never leave the spinner covering the screen.
             guard let content else { dismissPreview(); return }
             let media = await ClipboardMediaLoader.shared.load(content)
-            guard !Task.isCancelled, previewing, selectedID == id else { return }
+            guard !Task.isCancelled, previewing, previewID == id else { return }
             previewContent = content
             previewImage = media.thumbnail.flatMap { NSImage(data: $0) }
             ClipboardQuickLookController.shared.update(content: content, image: previewImage)

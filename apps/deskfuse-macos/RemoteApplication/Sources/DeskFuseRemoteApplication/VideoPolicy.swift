@@ -124,8 +124,8 @@ public enum AdaptationPreference: String, CaseIterable, Codable, Sendable {
 
 public struct VideoPreferences: Codable, Equatable, Sendable {
     public var codec: VideoCodec = .automatic
-    public var resolution: ResolutionPreference = .native
-    public var refresh: RefreshPreference = .system
+    public var resolution: ResolutionPreference = .hd
+    public var refresh: RefreshPreference = .hz30
     public var adaptation: AdaptationPreference = .clarity
     public init() {}
 }

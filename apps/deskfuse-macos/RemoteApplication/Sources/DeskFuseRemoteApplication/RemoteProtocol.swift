@@ -1,5 +1,19 @@
 import Foundation
 
+public struct RemoteMediaDiagnostics: Codable, Sendable {
+    public var media: MediaStatistics
+    public var sentPackets: UInt64
+    public var lostPackets: UInt64
+    public var rttMilliseconds: Double
+    public var recentLossPercent: Double?
+    public var sendWaitMilliseconds: Double?
+    public var remoteAddress: String?
+    public init(media: MediaStatistics, sentPackets: UInt64, lostPackets: UInt64, rttMilliseconds: Double) {
+        self.media = media; self.sentPackets = sentPackets; self.lostPackets = lostPackets
+        self.rttMilliseconds = rttMilliseconds
+    }
+}
+
 public struct RemoteMessage: Codable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case hello, acquire, controlReady, applications, launch, surface, layout, frame, presented, input, heartbeat, release, keyFrame, preferences, pause, resume, stop, error
@@ -17,6 +31,7 @@ public struct RemoteMessage: Codable, Sendable {
     public var preferences: VideoPreferences?
     public var capabilities: MediaCapabilities?
     public var text: String?
+    public var diagnostics: RemoteMediaDiagnostics?
     public init(_ kind: Kind) { self.kind = kind }
 }
 

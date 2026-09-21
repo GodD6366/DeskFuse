@@ -69,13 +69,34 @@ import DeskFuseEngine
         // An advisory lock is released by the kernel when the owning process
         // exits, so it does not leave a stale PID marker after a crash.
         guard acquireInstanceLock() else {
-            activateExistingInstance()
-            NSApp.terminate(nil)
+            // System Settings may launch the replacement before the old process
+            // has released its lock. Give that handoff a bounded grace period.
+            Task { @MainActor in
+                for _ in 0..<30 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    if acquireInstanceLock() {
+                        finishLaunching()
+                        return
+                    }
+                }
+                activateExistingInstance()
+                NSApp.terminate(nil)
+            }
             return
         }
+        finishLaunching()
+    }
+
+    private func finishLaunching() {
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()
+        AppStore.shared.previousInstallation.evaluate { [weak self] in
+            self?.startEngine()
+        }
+    }
+
+    private func startEngine() {
         AppStore.shared.start()
         // 自检流程随即退出，不弹权限窗口；其余启动在缺少权限时提示一次。
         if !AppStore.shared.selfTest { AppStore.shared.permissionPrompt.evaluateAtLaunch() }

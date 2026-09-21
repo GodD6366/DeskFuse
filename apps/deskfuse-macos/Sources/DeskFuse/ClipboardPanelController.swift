@@ -85,9 +85,11 @@ import DeskFuseEngine
                 guard !ClipboardHistoryMenuSession.isTracking else { return }
                 let panel = self.pointerPanel
                 let popoverWindow = self.popover.contentViewController?.view.window
+                let previewWindow = ClipboardQuickLookController.shared.window
                 if self.isPresenting, let clicked = event.window,
                    clicked !== panel, clicked.sheetParent !== panel,
                    clicked !== popoverWindow,
+                   clicked !== previewWindow,
                    clicked !== self.item?.button?.window {
                     self.close()
                 }

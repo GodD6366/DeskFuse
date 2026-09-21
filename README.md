@@ -1,6 +1,6 @@
 # DeskFuse
 
-DeskFuse 使用独立的应用身份、协议和数据目录，不提供其他产品的数据或协议兼容。目标发行仓库为 `GodD6366/deskfuse-release`；首次公开发行前，下方下载与 Homebrew 命令仅用于发布准备，不能作为已有安装包的承诺。
+DeskFuse 使用独立的应用身份、协议和数据目录。首次启动可确认导入旧安装的剪贴板历史，导入后可选择移除旧应用；不兼容旧协议。目标发行仓库为 `GodD6366/deskfuse-release`；首次公开发行前，下方下载与 Homebrew 命令仅用于发布准备，不能作为已有安装包的承诺。
 
 [English](README.en.md) · [开发指南](CONTRIBUTING.md) · [发行指南](docs/RELEASING.md) · [计划与待办](TODO.md)
 

@@ -7,6 +7,7 @@ use tokio::sync::{Notify, mpsc, watch};
 pub const MAX_PACKET: usize = 17 * 1024 * 1024;
 pub struct RemoteSession {
     pub peer: DeviceId,
+    connection: quinn::Connection,
     outgoing: mpsc::Sender<Vec<u8>>,
     incoming: Mutex<sync::Receiver<Vec<u8>>>,
     cancel: watch::Sender<bool>,
@@ -15,9 +16,16 @@ pub struct RemoteSession {
     failure: Arc<Mutex<Option<String>>>,
 }
 impl RemoteSession {
-    fn new(peer: DeviceId, mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Arc<Self> {
-        let (outgoing, mut output) = mpsc::channel::<Vec<u8>>(3);
-        let (input, incoming) = sync::sync_channel(3);
+    fn new(
+        peer: DeviceId,
+        connection: quinn::Connection,
+        mut send: quinn::SendStream,
+        mut recv: quinn::RecvStream,
+    ) -> Arc<Self> {
+        // Backpressure reaches the media producer before multiple transport
+        // queues can accumulate obsolete video. Never discard input edges here.
+        let (outgoing, mut output) = mpsc::channel::<Vec<u8>>(1);
+        let (input, incoming) = sync::sync_channel(1);
         let (cancel, mut writer_cancel) = watch::channel(false);
         let mut reader_cancel = cancel.subscribe();
         let closed = Arc::new(AtomicBool::new(false));
@@ -114,6 +122,7 @@ impl RemoteSession {
         });
         Arc::new(Self {
             peer,
+            connection,
             outgoing,
             incoming: Mutex::new(incoming),
             cancel,
@@ -161,6 +170,17 @@ impl RemoteSession {
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
+    pub fn network_stats(&self) -> (u64, u64, f64) {
+        let path = self.connection.stats().path;
+        (
+            path.sent_packets,
+            path.lost_packets,
+            path.rtt.as_secs_f64() * 1000.0,
+        )
+    }
+    pub fn remote_address(&self) -> String {
+        self.connection.remote_address().to_string()
+    }
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
         let _ = self.cancel.send(true);
@@ -193,6 +213,7 @@ impl RemoteHub {
     pub async fn accept(
         &self,
         peer: DeviceId,
+        connection: quinn::Connection,
         mut send: quinn::SendStream,
         recv: quinn::RecvStream,
     ) {
@@ -206,7 +227,7 @@ impl RemoteHub {
         {
             return;
         }
-        let session = RemoteSession::new(peer, send, recv);
+        let session = RemoteSession::new(peer, connection, send, recv);
         if let Err(sync::TrySendError::Full(session) | sync::TrySendError::Disconnected(session)) =
             self.tx.try_send(session)
         {
@@ -248,7 +269,7 @@ impl QuinnTransport {
             if !matches!(ack.message, Some(Message::RemoteApplicationOpen(_))) {
                 return Err("对端未支持远程应用，请更新两端 DeskFuse".into());
             }
-            Ok(RemoteSession::new(peer, send, recv))
+            Ok(RemoteSession::new(peer, connection.clone(), send, recv))
         };
         time::timeout(Duration::from_secs(4), future)
             .await

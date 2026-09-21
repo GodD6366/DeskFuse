@@ -45,8 +45,9 @@ struct MenuBarPanelBridge: NSViewRepresentable {
                     let menuFocusChange = MainActor.assumeIsolated {
                         let sheetIsActive = window.attachedSheet?.isVisible == true
                             || NSApp.keyWindow?.sheetParent === window
+                        let previewIsActive = ClipboardQuickLookController.shared.window?.isVisible == true
                         let ignore = !willClose
-                            && (ClipboardHistoryMenuSession.isTracking || sheetIsActive)
+                            && (ClipboardHistoryMenuSession.isTracking || sheetIsActive || previewIsActive)
                         if closing && !ignore { self?.owner.handle.generation &+= 1 }
                         return ignore
                     }
@@ -82,8 +83,9 @@ struct MenuBarPanelBridge: NSViewRepresentable {
             if ClipboardHistoryMenuSession.isTracking, window?.isVisible == true { return }
             let sheetIsActive = window?.attachedSheet?.isVisible == true
                 || NSApp.keyWindow?.sheetParent === window
+            let previewIsActive = ClipboardQuickLookController.shared.window?.isVisible == true
             let next = !forceClosed && window?.isVisible == true
-                && (window?.isKeyWindow == true || sheetIsActive)
+                && (window?.isKeyWindow == true || sheetIsActive || previewIsActive)
             guard next != active else { return }
             active = next
             if next { owner.opened() } else { owner.closed() }

@@ -38,6 +38,13 @@ class BrandingTests(unittest.TestCase):
         findings = self.findings()
         self.assertEqual(len(findings), 2)
 
+    def test_only_explicit_import_contract_is_exempt(self):
+        directory = self.root / "config"
+        directory.mkdir()
+        (directory / "previous-installation.json").write_text(WORD)
+        (directory / "other.json").write_text(WORD)
+        self.assertEqual(len(self.findings()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

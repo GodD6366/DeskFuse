@@ -14,12 +14,13 @@ final class RemotePeer: @unchecked Sendable {
     private var scheduled = false
     private var stopped = false
     private var waitingKey = false
+    private var maximumSendWaitMs = 0.0
+    private var lastNetworkSample: (sent: UInt64, lost: UInt64, time: Double)?
     private let receive: @Sendable (RemoteMessage) -> Void
     private let state: @Sendable (String, Bool) -> Void
-    private let keyNeeded: @Sendable () -> Void
     init(channel: RemoteApplicationChannel, receive: @escaping @Sendable (RemoteMessage) -> Void,
-         state: @escaping @Sendable (String, Bool) -> Void, keyNeeded: @escaping @Sendable () -> Void) {
-        self.channel = channel; self.receive = receive; self.state = state; self.keyNeeded = keyNeeded
+         state: @escaping @Sendable (String, Bool) -> Void) {
+        self.channel = channel; self.receive = receive; self.state = state
     }
     func start() {
         state("已通过 DeskFuse 配对连接", true)
@@ -32,8 +33,27 @@ final class RemotePeer: @unchecked Sendable {
             }
         }
     }
+    func diagnostics(media: MediaStatistics) -> RemoteMediaDiagnostics? {
+        guard !lock.withLock({ stopped }) else { return nil }
+        let stats = channel.networkStats()
+        var value = RemoteMediaDiagnostics(media: media, sentPackets: stats.sentPackets,
+                                           lostPackets: stats.lostPackets, rttMilliseconds: stats.rttMilliseconds)
+        lock.withLock {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let previous = lastNetworkSample, now - previous.time <= 3,
+               stats.sentPackets > previous.sent, stats.lostPackets >= previous.lost {
+                value.recentLossPercent = min(100, Double(stats.lostPackets - previous.lost) / Double(stats.sentPackets - previous.sent) * 100)
+            }
+            lastNetworkSample = (stats.sentPackets, stats.lostPackets, now)
+            value.sendWaitMilliseconds = maximumSendWaitMs
+            maximumSendWaitMs = 0
+        }
+        value.remoteAddress = stats.remoteAddress
+        return value
+    }
     func send(_ message: RemoteMessage) {
-        var needKey = false, overflow = false
+        var message = message
+        var overflow = false
         let wake = lock.withLock { () -> Bool in
             guard !stopped else { return false }
             if message.kind == .surface {
@@ -41,9 +61,10 @@ final class RemotePeer: @unchecked Sendable {
             }
             if let frame = message.frame {
                 if waitingKey && !frame.keyFrame { return false }
-                if pending.filter({ $0.kind == .frame }).count >= 3 || queuedBytes + frame.bytes.count > 24 * 1024 * 1024 {
-                    pending.removeAll { $0.kind == .frame }; queuedBytes = 0; waitingKey = true; needKey = true
-                    if !frame.keyFrame { return false }
+                // Normal backpressure is applied before encoding. Never destroy
+                // reference frames merely because a network write is delayed.
+                if pending.filter({ $0.kind == .frame }).count >= 24 || queuedBytes + frame.bytes.count > 64 * 1024 * 1024 {
+                    overflow = true; return false
                 }
                 if frame.keyFrame { waitingKey = false }
                 queuedBytes += frame.bytes.count
@@ -53,10 +74,15 @@ final class RemotePeer: @unchecked Sendable {
                 pending[pending.count - 1] = message; return false
             }
             guard pending.count < 128 else { overflow = true; return false }
+            if message.kind == .heartbeat || message.kind == .presented {
+                if message.kind == .heartbeat && message.diagnostics == nil {
+                    message.diagnostics = pending.last(where: { $0.kind == .heartbeat && $0.identity == message.identity })?.diagnostics
+                }
+                pending.removeAll { $0.kind == message.kind && $0.identity == message.identity }
+            }
             pending.append(message)
             guard !scheduled else { return false }; scheduled = true; return true
         }
-        if needKey { keyNeeded() }
         if overflow { fail("远程应用队列已满，已释放控制"); return }
         if wake { writer.async { [weak self] in self?.drain() } }
     }
@@ -65,7 +91,14 @@ final class RemotePeer: @unchecked Sendable {
             guard !stopped, !pending.isEmpty else { scheduled = false; return nil }
             let message = pending.removeFirst(); queuedBytes -= message.frame?.bytes.count ?? 0; return message
         }) {
-            do { try channel.send(bytes: Data(RemoteWire.encode(message).dropFirst(4))) }
+            do {
+                let started = ProcessInfo.processInfo.systemUptime
+                try channel.send(bytes: Data(RemoteWire.encode(message).dropFirst(4)))
+                if message.kind == .frame {
+                    let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                    lock.withLock { maximumSendWaitMs = max(maximumSendWaitMs, elapsed) }
+                }
+            }
             catch { fail(error.localizedDescription); return }
         }
     }

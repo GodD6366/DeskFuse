@@ -27,13 +27,17 @@ struct RootView: View {
             store.showSettingsWindow = { openSettings() }
         }
         .sheet(isPresented: permissionPromptBinding) {
-            PermissionPromptView(controller: store.permissionPrompt)
+            if store.previousInstallation.isPresented {
+                PreviousInstallationPrompt(controller: store.previousInstallation)
+            } else {
+                PermissionPromptView(controller: store.permissionPrompt)
+            }
         }
     }
 
     private var permissionPromptBinding: Binding<Bool> {
         Binding(
-            get: { store.permissionPrompt.presented != nil },
+            get: { store.previousInstallation.isPresented || store.permissionPrompt.presented != nil },
             set: { show in if !show { store.permissionPrompt.presented = nil } }
         )
     }

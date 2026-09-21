@@ -55,10 +55,13 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
 final class PermissionPromptController {
     /// Permissions currently listed in the launch prompt; `nil` hides it.
     var presented: [LaunchPermission]?
+    var hasOpenedAuthorization = false
 
     static let suppressionDefaultsKey = "deskfuse.permissionPrompt.suppressed"
 
     private var evaluatedThisLaunch = false
+    private let authorizationFlow = PermissionFlowController()
+    private var authorizationTask: Task<Void, Never>?
     private let defaults: UserDefaults
     private(set) var suppressedPermissions: Set<LaunchPermission>
 
@@ -89,6 +92,50 @@ final class PermissionPromptController {
         liftSuppressionForGranted()
         let pending = pendingPermissions()
         presented = pending.isEmpty ? nil : pending
+    }
+
+    func authorize(_ permission: LaunchPermission) {
+        hasOpenedAuthorization = true
+        authorizationTask?.cancel()
+        authorizationFlow.setLocaleIdentifier("zh-Hans")
+        authorizationFlow.authorize(pane: permission.pane, suggestedAppURLs: [Bundle.main.bundleURL])
+        authorizationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self else { return }
+                guard self.isGranted(permission) else { continue }
+                self.authorizationFlow.closePanel()
+                self.reevaluateWhilePresented()
+                AppStore.shared.send(.refreshPermissions)
+                AppStore.shared.openMain()
+                return
+            }
+        }
+    }
+
+    func restartAfterAuthorization() {
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Relaunch only after this process exits and releases its instance lock.
+        // Positional arguments keep application paths out of shell source.
+        launcher.arguments = ["-c", """
+            for attempt in $(/usr/bin/seq 1 150); do
+                if ! kill -0 "$1" 2>/dev/null; then
+                    exec /usr/bin/open -n "$2"
+                fi
+                /bin/sleep 0.2
+            done
+            exit 1
+            """, "deskfuse-relaunch", String(ProcessInfo.processInfo.processIdentifier),
+            Bundle.main.bundleURL.path]
+        do {
+            try launcher.run()
+            authorizationTask?.cancel()
+            authorizationFlow.closePanel()
+            NSApp.terminate(nil)
+        } catch {
+            AppStore.shared.error = "无法重启应用：\(error.localizedDescription)"
+        }
     }
 
     /// Applies the "不再提醒" choice to the permissions listed right now.
@@ -163,7 +210,7 @@ struct PermissionPromptView: View {
             }
             VStack(spacing: 12) {
                 ForEach(controller.presented ?? []) { permission in
-                    PermissionPromptRow(permission: permission)
+                    PermissionPromptRow(permission: permission, controller: controller)
                 }
             }
             HStack(spacing: 12) {
@@ -173,6 +220,11 @@ struct PermissionPromptView: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .controlSize(.large)
+            }
+            if controller.hasOpenedAuthorization {
+                Button("重启以完成授权", systemImage: "arrow.clockwise") {
+                    controller.restartAfterAuthorization()
+                }
             }
         }
         .padding(24)
@@ -190,6 +242,7 @@ struct PermissionPromptView: View {
 
 private struct PermissionPromptRow: View {
     let permission: LaunchPermission
+    let controller: PermissionPromptController
 
     var body: some View {
         HStack(spacing: 16) {
@@ -206,12 +259,10 @@ private struct PermissionPromptRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            PermissionFlowButton(
-                pane: permission.pane,
-                suggestedAppURLs: [Bundle.main.bundleURL]
-            ) { state in
-                Label(state.isGranted ? "已授权" : "前往授权", systemImage: state.systemImage)
-                    .foregroundStyle(state.isGranted ? Color.green : Color.primary)
+            Button {
+                controller.authorize(permission)
+            } label: {
+                Label("前往授权", systemImage: "arrow.up.forward.app")
             }
             .buttonStyle(.bordered)
             .frame(width: 104)

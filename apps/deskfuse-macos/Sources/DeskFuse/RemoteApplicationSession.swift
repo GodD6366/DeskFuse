@@ -11,6 +11,15 @@ final class SessionDataPlane: @unchecked Sendable {
     private let engine: Engine
     private let peerID: String
     private var lastDiagnostic = 0.0
+    private var remoteDiagnostics: RemoteMediaDiagnostics?
+    private var remoteDiagnosticsAt = 0.0
+    private var lastTelemetrySent = 0.0
+    func diagnosticSnapshot() -> RemoteMediaDiagnostics? {
+        lock.withLock {
+            guard ProcessInfo.processInfo.systemUptime - remoteDiagnosticsAt < 3 else { return nil }
+            return remoteDiagnostics
+        }
+    }
     private var receivedInput: UInt64 = 0
     init(engine: Engine, peerID: String) {
         self.engine = engine; self.peerID = peerID
@@ -41,6 +50,9 @@ final class SessionDataPlane: @unchecked Sendable {
         lock.withLock { identity == surface && presentedSequence > 0 }
     }
     func requestKey() { lock.withLock { encoder }?.requestKeyFrame() }
+    func requestRemoteKey(_ surface: SurfaceIdentity) {
+        var message = RemoteMessage(.keyFrame); message.identity = surface; send(message)
+    }
     func sendFrame(_ frame: EncodedVideoFrame) {
         input.encoded(frame)
         var message = RemoteMessage(.frame); message.frame = frame
@@ -56,7 +68,7 @@ final class SessionDataPlane: @unchecked Sendable {
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz,
             applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects)
         let next = VideoDecoder(surface: surface.identity, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics,
-            keyFrameNeeded: { [weak self] in self?.send(RemoteMessage(.keyFrame)) }, output: { [weak self] result in
+            keyFrameNeeded: { [weak self] in self?.requestRemoteKey(surface.identity) }, output: { [weak self] result in
                 guard let self, self.lock.withLock({ self.connectionToken == token && self.identity == surface.identity }) else { return }
                 switch result {
                 case .success(let frame): self.frames.publish(frame)
@@ -73,16 +85,27 @@ final class SessionDataPlane: @unchecked Sendable {
         }
         guard accepted else { next.stop(); return }
         old?.stop()
-        send(RemoteMessage(.keyFrame))
+        requestRemoteKey(surface.identity)
     }
     func receive(_ message: RemoteMessage, host: Bool) -> Bool {
         if message.kind == .input { lock.withLock { receivedInput += 1 } }
         if message.kind == .heartbeat {
-            lock.withLock { lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime }
+            lock.withLock {
+                lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime
+                if let diagnostics = message.diagnostics {
+                    remoteDiagnostics = diagnostics; remoteDiagnosticsAt = lastPeerHeartbeat
+                }
+            }
         }
         if host {
+            if message.kind == .presented || message.kind == .heartbeat, let surface = message.identity {
+                lock.withLock { encoder }?.acknowledge(surface: surface, sequence: message.sequence)
+            }
             if [.input, .presented, .heartbeat].contains(message.kind) { input.receive(message); return true }
-            if message.kind == .keyFrame { requestKey(); return true }
+            if message.kind == .keyFrame {
+                if lock.withLock({ message.identity == identity && identity != nil }) { requestKey() }
+                return true
+            }
         } else {
             if message.kind == .frame, let frame = message.frame { lock.withLock { decoder }?.submit(frame); return true }
             if message.kind == .heartbeat { lock.withLock { lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime }; return true }
@@ -120,13 +143,27 @@ final class SessionDataPlane: @unchecked Sendable {
         timer.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(10))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let (message, peer, healthy) = self.lock.withLock { () -> (RemoteMessage, RemotePeer?, Bool) in
+            var (message, peer, healthy) = self.lock.withLock { () -> (RemoteMessage, RemotePeer?, Bool) in
                 let healthy = ProcessInfo.processInfo.systemUptime - self.lastPeerHeartbeat < 1
                 if !healthy { self.enabled = false }
                 var message = RemoteMessage(.heartbeat)
                 message.identity = self.identity; message.sequence = self.presentedSequence
                 return (message, self.peer, healthy)
             }
+            let now = ProcessInfo.processInfo.systemUptime
+            if host, now - self.lastTelemetrySent >= 1 {
+                self.lastTelemetrySent = now
+                if let metrics = self.lock.withLock({ self.metrics }) {
+                    message.diagnostics = peer?.diagnostics(media: metrics.snapshot())
+                    if let stats = message.diagnostics {
+                        self.lock.withLock { self.encoder }?.updateNetwork(
+                            rttMilliseconds: stats.rttMilliseconds,
+                            sendWaitMilliseconds: stats.sendWaitMilliseconds ?? 0,
+                            lossPercent: stats.recentLossPercent)
+                    }
+                }
+            }
+            if !host { self.lock.withLock { self.decoder }?.retryRecovery() }
             if !healthy && host { self.input.focus(false) }
             peer?.send(message)
             let detail = self.lock.withLock { () -> String? in
@@ -157,6 +194,7 @@ final class SessionDataPlane: @unchecked Sendable {
         input.stop()
         let old = lock.withLock { () -> VideoDecoder? in
             heartbeatTimer?.cancel(); heartbeatTimer = nil
+            remoteDiagnostics = nil; remoteDiagnosticsAt = 0
             let old = decoder; decoder = nil; encoder = nil; peer = nil; identity = nil; enabled = false; connectionToken = UUID(); frames.reset(nil); return old
         }
         old?.stop(); frames.reset(nil)
@@ -456,7 +494,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     self.failure = self.status
                 }
             }
-        }, keyNeeded: { plane.requestKey() })
+        })
         peer = remote; plane.setPeer(remote); plane.startHeartbeats(host: host); remote.start()
     }
     private func receive(_ message: RemoteMessage, token: UUID) async {
@@ -579,7 +617,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     guard !Task.isCancelled, self.operation == token, self.running, !self.plane.hasPresented(surface.identity),
                           !self.controlling, !self.controlPending, self.failure == nil, self.connected else { return }
                     self.status = "正在等待远端画面…"
-                    self.plane.send(RemoteMessage(.keyFrame))
+                    self.plane.requestRemoteKey(surface.identity)
                     self.engine.remoteApplicationDiagnostic(event: "first_frame_timeout",
                         detail: "peer=\(self.peerID) generation=\(surface.identity.generation)")
                 }
@@ -761,7 +799,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         let plane = plane, metrics = metrics
         let makeEncoder: (VideoProfile) async throws -> VideoEncoder = { [weak self] requestedProfile in
             try await Task.detached { [weak self] in
-                try VideoEncoder(surface: identity, profile: requestedProfile, metrics: metrics) { [weak self] result in
+                try VideoEncoder(surface: identity, profile: requestedProfile, metrics: metrics, flowControlled: true) { [weak self] result in
                     guard plane.isCurrent(token) else { return }
                     switch result {
                     case .success(let frame): plane.sendFrame(frame)

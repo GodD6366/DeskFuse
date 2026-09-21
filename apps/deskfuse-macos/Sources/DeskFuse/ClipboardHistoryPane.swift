@@ -21,8 +21,6 @@ struct ClipboardHistoryPane: View {
     let titles: [UInt64: String]
     let metas: [UInt64: ClipboardItemMeta]
     let onRename: (UInt64, String) -> Void
-    let previewing: Bool
-    let onTogglePreview: () -> Void
     let onDelete: ([UInt64]) -> Void
     @State private var selection: Set<UInt64> = []
     @State private var selectionAnchor: UInt64?
@@ -240,13 +238,7 @@ struct ClipboardHistoryPane: View {
                 setSelection(Set(items.map(\.id)))
                 return .handled
             }
-            .onKeyPress(.space) {
-                guard !items.isEmpty, selected != nil else { return .ignored }
-                onTogglePreview()
-                return .handled
-            }
             .onKeyPress(.escape) {
-                if previewing { onTogglePreview(); return .handled }
                 guard !selection.isEmpty else { return .ignored }
                 clearSelection()
                 return .handled

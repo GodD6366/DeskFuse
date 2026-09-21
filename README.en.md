@@ -1,6 +1,6 @@
 # DeskFuse
 
-DeskFuse has its own application identity, protocol and data directory, with no compatibility layer for other products. The target release repository is `GodD6366/deskfuse-release`. Until the first public release, the download and Homebrew instructions below are release preparation, not available installers.
+DeskFuse has its own application identity, protocol and data directory. First launch offers an optional clipboard history import, followed by a separate option to trash the previous app while preserving its data. Previous protocols are not supported. The target release repository is `GodD6366/deskfuse-release`. Until the first public release, the download and Homebrew instructions below are release preparation, not available installers.
 
 [中文](README.md) · [Contributing](CONTRIBUTING.md) · [Releasing](docs/RELEASING.md) · [TODO](TODO.md)
 
