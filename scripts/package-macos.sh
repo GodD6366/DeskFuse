@@ -71,6 +71,8 @@ case "$MACOS_ARCH" in
     ;;
 esac
 export UNIDESK_MACOS_ARCH="$MACOS_ARCH"
+DMG_ASSET="$(python3 scripts/distribution-config.py --value "assets.$MACOS_ARCH")"
+UPDATE_ASSET="${DMG_ASSET%.dmg}-update.zip"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 PACKAGE_NAME="unidesk-ffi"
 BINARY_NAME="${BINARY_NAME:-unidesk-app}"
@@ -162,15 +164,18 @@ PYPAIR
       "$ROOT_DIR/scripts/package-macos.sh" --manual
     cmp "$RELEASE_METADATA" "$RELEASE_STAGE/$release_arch/release.json"
   done
+  release_assets=()
   for release_arch in arm64 x86_64; do
-    mv "$RELEASE_STAGE/$release_arch/uniDesk-$release_arch.dmg" "$RELEASE_DIR/"
-    mv "$RELEASE_STAGE/$release_arch/uniDesk-$release_arch-update.zip" "$RELEASE_DIR/"
+    release_dmg="$(python3 scripts/distribution-config.py --value "assets.$release_arch")"
+    release_zip="${release_dmg%.dmg}-update.zip"
+    release_assets+=("$release_dmg" "$release_zip")
+    mv "$RELEASE_STAGE/$release_arch/$release_dmg" "$RELEASE_DIR/"
+    mv "$RELEASE_STAGE/$release_arch/$release_zip" "$RELEASE_DIR/"
     mv "$RELEASE_STAGE/$release_arch/.signing" "$RELEASE_DIR/.signing-$release_arch"
   done
   (
     cd "$RELEASE_DIR"
-    shasum -a 256 uniDesk-arm64.dmg uniDesk-arm64-update.zip \
-      uniDesk-x86_64.dmg uniDesk-x86_64-update.zip release.json > SHA256SUMS
+    shasum -a 256 "${release_assets[@]}" release.json > SHA256SUMS
     shasum -a 256 -c SHA256SUMS
   )
   printf 'release output directory: %s\n' "$RELEASE_DIR"
@@ -220,7 +225,7 @@ elif [[ "$PACKAGE_MODE" == homebrew && "${CI:-false}" == "true" ]]; then
 else
   DIST_DIR="$LOCAL_PACKAGE_ROOT/dist/${APP_VERSION}-build${BUILD_VERSION}"
 fi
-DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX.dmg}"
+DMG_PATH="${EXPLICIT_DMG_PATH:-$DIST_DIR/$DMG_ASSET}"
 mkdir -p "$DIST_DIR"
 DMG_PATH="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$DMG_PATH")"
 DIST_DIR="$(cd "$DIST_DIR" && pwd)"
@@ -304,7 +309,7 @@ unidesk_codesign \
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 # Preserve the exact signed bundle for later release signing and LAN forwarding.
-UPDATE_ZIP="$STAGING_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
+UPDATE_ZIP="$STAGING_DIR/$UPDATE_ASSET"
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 
 # Release authorization is independent of pairing and platform code signing.
@@ -405,7 +410,7 @@ hdiutil detach "$MOUNT_POINT" -quiet
 ATTACHED=0
 
 # Validate before replacing an existing deliverable.
-FINAL_DMG="$STAGING_DIR/uniDesk-$ARTIFACT_SUFFIX.dmg"
+FINAL_DMG="$STAGING_DIR/$DMG_ASSET"
 hdiutil convert "$RW_DMG" -ov -format UDZO -o "$FINAL_DMG" >/dev/null
 if [[ "$SIGNING_KIND" == "developer-id" ]]; then
   codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$FINAL_DMG"
@@ -423,7 +428,7 @@ else
 fi
 unidesk_write_signing_status "$DIST_DIR" "$NOTARIZED"
 mv "$FINAL_DMG" "$DMG_PATH"
-mv "$UPDATE_ZIP" "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
+mv "$UPDATE_ZIP" "$DIST_DIR/$UPDATE_ASSET"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then
   cp "$STAGING_DIR/manifest.json" "$DIST_DIR/manifest.json"
 else
@@ -436,12 +441,12 @@ fi
 # Refresh checksums with every successful package, including custom DMG paths.
 (
   cd "$DIST_DIR"
-  shasum -a 256 "${DMG_PATH#"$DIST_DIR/"}" "uniDesk-$ARTIFACT_SUFFIX-update.zip" release.json
+  shasum -a 256 "${DMG_PATH#"$DIST_DIR/"}" "$UPDATE_ASSET" release.json
   if [[ "$SIGNED_UPDATE" == "1" ]]; then shasum -a 256 manifest.json; fi
 ) > "$STAGING_DIR/SHA256SUMS"
 mv "$STAGING_DIR/SHA256SUMS" "$DIST_DIR/SHA256SUMS"
 printf 'release: %s build %s\n' "$APP_VERSION" "$BUILD_VERSION"
-printf 'update payload: %s\n' "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip"
+printf 'update payload: %s\n' "$DIST_DIR/$UPDATE_ASSET"
 printf 'created: %s\n' "$DMG_PATH"
 shasum -a 256 "$DMG_PATH"
 
@@ -452,7 +457,7 @@ if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
   mkdir -p "$UPDATE_ROOT"
   chmod 700 "$UPDATE_ROOT"
   SEED_STAGE="$(mktemp -d "$UPDATE_ROOT/.seed-XXXXXX")"
-  cp "$DIST_DIR/uniDesk-$ARTIFACT_SUFFIX-update.zip" "$DIST_DIR/manifest.json" "$SEED_STAGE/"
+  cp "$DIST_DIR/$UPDATE_ASSET" "$DIST_DIR/manifest.json" "$SEED_STAGE/"
   python3 - "$SEED_STAGE" "$UPDATE_ROOT/inbox" <<'PYSEED'
 import pathlib,sys,shutil
 stage,destination=map(pathlib.Path,sys.argv[1:])

@@ -13,10 +13,7 @@ use unidesk_update::{
 };
 use uuid::Uuid;
 
-const API: &str = "https://api.github.com/repos/GodD6366/unidesk-release/releases?per_page=100";
-const DOWNLOAD: &str = "https://github.com/GodD6366/unidesk-release/releases/download";
-const RELEASES: &str = "https://github.com/GodD6366/unidesk-release/releases/tag";
-const DMG_NAME: &str = "uniDesk-arm64.dmg";
+include!(concat!(env!("OUT_DIR"), "/distribution.rs"));
 const INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 const DMG_LIMIT: u64 = 512 * 1024 * 1024;
 

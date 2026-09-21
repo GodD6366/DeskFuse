@@ -63,6 +63,7 @@ struct MainSidebar: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
+                DeskFuseUpgradeNotice()
                 if let update = store.snapshot?.update, update.showsQuickUpdate {
                     SidebarUpdateButton(store: store, update: update)
                 }
@@ -78,6 +79,45 @@ struct MainSidebar: View {
             .textCase(nil)
             .padding(.top, 13)
             .padding(.bottom, 7)
+    }
+}
+
+/// Only the final product line carries this notice; the successor is a fresh install.
+private struct DeskFuseUpgradeNotice: View {
+    private let upgradeURL = URL(string: "https://github.com/GodD6366/unidesk-release#deskfuse")!
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("uniDesk 最后版本", systemImage: "arrow.up.forward.app.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("升级到 DeskFuse")
+                .font(.system(size: 17, weight: .bold))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("后续更新转至 DeskFuse。请手动安装，并重新配对和授权；旧数据不自动迁移。")
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Link(destination: upgradeURL) {
+                Label("查看升级说明", systemImage: "arrow.up.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .controlSize(.large)
+            .help("打开 DeskFuse 升级说明；不会自动替换当前应用")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.orange.opacity(0.45))
+        }
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .contain)
     }
 }
 

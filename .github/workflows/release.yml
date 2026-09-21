@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  UNIDESK_RELEASE_REPOSITORY: GodD6366/unidesk-release
-
 concurrency:
   group: prerelease-${{ github.ref }}
   cancel-in-progress: false
@@ -21,16 +18,23 @@ jobs:
     timeout-minutes: 10
     outputs:
       exists: ${{ steps.probe.outputs.exists }}
+      release_repository: ${{ steps.distribution.outputs.release_repository }}
+      arm64_asset: ${{ steps.distribution.outputs.arm64_asset }}
+      x86_64_asset: ${{ steps.distribution.outputs.x86_64_asset }}
+      cask_path: ${{ steps.distribution.outputs.cask_path }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: distribution
+        run: python3 scripts/distribution-config.py --github-output "$GITHUB_OUTPUT"
       - id: probe
         name: Validate tag and immutable release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
+          DESKFUSE_RELEASE_REPOSITORY: ${{ steps.distribution.outputs.release_repository }}
         run: |
           test -n "$GH_TOKEN" || { echo "Missing RELEASE_REPOSITORY_TOKEN (Contents write on public release repository)" >&2; exit 1; }
-          python3 scripts/release.py probe --repo "$UNIDESK_RELEASE_REPOSITORY" --tag "$RELEASE_TAG"
+          python3 scripts/release.py probe --tag "$RELEASE_TAG"
 
   checks:
     needs: preflight
@@ -41,6 +45,8 @@ jobs:
 
   macos-arm64:
     needs: [preflight, checks]
+    env:
+      ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
     if: needs.preflight.outputs.exists != 'true'
     name: macOS arm64 DMG
     runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
@@ -77,7 +83,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ./scripts/package-macos.sh --homebrew
-          ./scripts/verify-dmg.sh dist/uniDesk-arm64.dmg
+          ./scripts/verify-dmg.sh "dist/$ARM64_ASSET"
           cp dist/.signing dist/signing-arm64.txt
       - name: Remove signing material
         if: always()
@@ -86,7 +92,7 @@ jobs:
         with:
           name: release-macos-arm64
           path: |
-            dist/uniDesk-arm64.dmg
+            dist/${{ env.ARM64_ASSET }}
             dist/release.json
             dist/signing-arm64.txt
           if-no-files-found: error
@@ -94,6 +100,8 @@ jobs:
 
   macos-x86_64:
     needs: [preflight, checks]
+    env:
+      X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
     if: needs.preflight.outputs.exists != 'true'
     name: macOS Intel x86_64 DMG
     runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27] # Cross-compiles the Intel target with the same macOS 27 SDK
@@ -130,7 +138,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ./scripts/package-macos.sh --homebrew
-          ./scripts/verify-dmg.sh dist/uniDesk-x86_64.dmg
+          ./scripts/verify-dmg.sh "dist/$X86_64_ASSET"
           cp dist/.signing dist/signing-x86_64.txt
       - name: Remove signing material
         if: always()
@@ -139,14 +147,18 @@ jobs:
         with:
           name: release-macos-x86_64
           path: |
-            dist/uniDesk-x86_64.dmg
+            dist/${{ env.X86_64_ASSET }}
             dist/release.json
             dist/signing-x86_64.txt
           if-no-files-found: error
           retention-days: 14
 
   publish:
-    needs: [macos-arm64, macos-x86_64]
+    needs: [preflight, macos-arm64, macos-x86_64]
+    env:
+      DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
+      ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
+      X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
     runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 20
     permissions:
@@ -164,8 +176,8 @@ jobs:
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
-          cp dist/arm64/uniDesk-arm64.dmg dist/
-          cp dist/x86_64/uniDesk-x86_64.dmg dist/
+          cp "dist/arm64/$ARM64_ASSET" dist/
+          cp "dist/x86_64/$X86_64_ASSET" dist/
           cmp dist/arm64/release.json dist/x86_64/release.json
           cp dist/arm64/release.json dist/release.json
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64
@@ -180,17 +192,21 @@ jobs:
           set -euo pipefail
           # A public tag points only at the distribution tree. Never push source
           # tags/commits from this private repository into the public repository.
-          if ! gh api "repos/$UNIDESK_RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
-            public_sha="$(gh api "repos/$UNIDESK_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-            gh api --method POST "repos/$UNIDESK_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$public_sha" > /dev/null
+          if ! gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
+            public_sha="$(gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+            gh api --method POST "repos/$DESKFUSE_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$public_sha" > /dev/null
           fi
-          python3 scripts/release.py publish --repo "$UNIDESK_RELEASE_REPOSITORY" --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+          python3 scripts/release.py publish --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
 
   # Brew cannot install an unpublished prerelease, so the cask checksum is
   # refreshed only after @publish confirms the GitHub assets are public. The
   # cask is written only to the public distribution repository.
   cask:
-    needs: publish
+    needs: [preflight, publish]
+    env:
+      DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
+      ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
+      CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
     runs-on: [self-hosted, macOS, ARM64, unidesk-macos, xcode-27]
     timeout-minutes: 15
     permissions:
@@ -201,7 +217,7 @@ jobs:
           path: source
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: ${{ env.UNIDESK_RELEASE_REPOSITORY }}
+          repository: ${{ env.DESKFUSE_RELEASE_REPOSITORY }}
           token: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
           ref: main
           path: distribution
@@ -214,8 +230,9 @@ jobs:
           version="${RELEASE_TAG#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: unexpected release tag: $RELEASE_TAG" >&2; exit 1; }
           mkdir -p dist
-          gh release download "$RELEASE_TAG" --repo "$UNIDESK_RELEASE_REPOSITORY" --pattern uniDesk-arm64.dmg --dir dist --clobber
-          python3 source/scripts/update-cask.py --dmg dist/uniDesk-arm64.dmg --version "$version" --cask distribution/Casks/unidesk.rb
+          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --pattern "$ARM64_ASSET" --dir dist --clobber
+          python3 source/scripts/update-cask.py --dmg "dist/$ARM64_ASSET" --version "$version" --cask "distribution/$CASK_PATH"
+          python3 source/scripts/distribution-config.py --website-output distribution/web/src/config/legacy/distribution.json
       - name: Commit refreshed cask
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -223,12 +240,12 @@ jobs:
         run: |
           set -euo pipefail
           cd distribution
-          if git diff --quiet -- Casks/unidesk.rb; then
+          if git diff --quiet -- "$CASK_PATH" web/src/config/legacy/distribution.json && test -z "$(git ls-files --others --exclude-standard -- "$CASK_PATH" web/src/config/legacy/distribution.json)"; then
             echo "Homebrew cask already current"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Casks/unidesk.rb
+          git add "$CASK_PATH" web/src/config/legacy/distribution.json
           git commit -m "chore(cask): pin $RELEASE_TAG DMG checksum"
           git push origin "HEAD:$DEFAULT_BRANCH"

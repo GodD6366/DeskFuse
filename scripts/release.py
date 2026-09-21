@@ -17,18 +17,20 @@ import urllib.parse
 import urllib.request
 import uuid
 import shutil
+import runpy
 
 ROOT = Path(__file__).resolve().parent.parent
+DISTRIBUTION = runpy.run_path(str(ROOT / "scripts/distribution-config.py"))["load"]()
 ASSETS = (
-    "uniDesk-arm64.dmg",
-    "uniDesk-x86_64.dmg",
+    DISTRIBUTION["assets"]["arm64"],
+    DISTRIBUTION["assets"]["x86_64"],
     "release.json",
     "build-info.json",
     "SHA256SUMS",
 )
 TARGET_ASSETS = {
-    "uniDesk-arm64.dmg": "aarch64-apple-darwin",
-    "uniDesk-x86_64.dmg": "x86_64-apple-darwin",
+    DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
+    DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
 }
 
 
@@ -217,7 +219,7 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
         print("Existing published release verified; unchanged.")
         return
     info = json.loads((directory / "build-info.json").read_text())
-    arm64_info = next(item for item in info["targets"] if item["asset"] == "uniDesk-arm64.dmg")
+    arm64_info = next(item for item in info["targets"] if item["asset"] == DISTRIBUTION["assets"]["arm64"])
     if arm64_info.get("signing") == "developer-id" and arm64_info.get("notarized") is True:
         signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
     else:
@@ -252,7 +254,10 @@ def main() -> None:
     parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
     parser.add_argument("--directory", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag")
-    parser.add_argument("--repo", default=os.environ.get("UNIDESK_RELEASE_REPOSITORY", "GodD6366/unidesk-release"))
+    parser.add_argument("--repo", default=os.environ.get(
+        "DESKFUSE_RELEASE_REPOSITORY",
+        os.environ.get(DISTRIBUTION.get("release_repository_env", ""), DISTRIBUTION["release_repository"]),
+    ))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
     args = parser.parse_args()
     if args.command == "version":

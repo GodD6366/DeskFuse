@@ -33,7 +33,7 @@ members = [
 default-members = ["crates/unidesk-ffi"]
 
 [workspace.package]
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.97.1"
 license = "LicenseRef-Proprietary"
