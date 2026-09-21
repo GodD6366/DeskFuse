@@ -39,7 +39,11 @@ struct SettingsView: View, Equatable {
             .padding(12)
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .onAppear { store.send(.refreshCache); store.send(.refreshPermissions) }
+        .onChange(of: store.client != nil, initial: true) { _, ready in
+            guard ready else { return }
+            store.send(.refreshCache)
+            store.send(.refreshPermissions)
+        }
         .onChange(of: presentation.files, initial: true) { _, files in
             if let files, files != savedFiles, savedFiles == nil || (!filesDirty && !savingFiles) { loadFiles(files) }
         }

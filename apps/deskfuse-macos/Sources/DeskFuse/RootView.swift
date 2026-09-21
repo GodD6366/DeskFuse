@@ -20,6 +20,7 @@ struct RootView: View {
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .tint(.blue)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
         .focusedSceneValue(\.searchDevices, store.selectedPage == .devices ? { deviceSearchRequest += 1 } : nil)
         .onAppear {
