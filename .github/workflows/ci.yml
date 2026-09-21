@@ -93,7 +93,8 @@ jobs:
           retention-days: 14
 
   windows:
-    if: false # Temporarily skip Windows builds
+    # Temporarily paused: set the ENABLE_WINDOWS_CI repository variable to opt back in.
+    if: ${{ vars.ENABLE_WINDOWS_CI == 'true' && !inputs.skip_windows }}
     name: Windows experimental adapters and service
     runs-on: windows-2022
     timeout-minutes: 90

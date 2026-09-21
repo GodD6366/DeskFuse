@@ -114,7 +114,7 @@ git push origin v0.4.0
 ```
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
-2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `deskfuse-macos`, `xcode-27` runner，Windows 检查和构建均跳过。
+2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `deskfuse-macos`, `xcode-27` runner。Windows 检查与构建默认跳过：`ci.yml` 的 `windows` job 只在仓库变量 `ENABLE_WINDOWS_CI=true` 时运行，发布工作流另外传入 `skip_windows`。
 3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
