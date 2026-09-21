@@ -36,7 +36,7 @@ pub use wire::envelope::Message;
 pub use wire::{
     ClipboardUpdate, DisplayInfo, Envelope, Error, Goodbye, Hello, HelloAck, InputEndpoints,
     InputEvent, InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest,
-    PeerInfo, Ping, Pong, RemoteApplicationOpen, SessionProof, envelope, input_event,
+    PeerInfo, Ping, Pong, MicrophoneShortcutOpen, MicrophoneOpen, RemoteApplicationOpen, SessionProof, envelope, input_event,
 };
 
 /// ALPN protocol identifier.
@@ -90,6 +90,15 @@ impl Envelope {
 
 fn validate_message(message: &Message) -> Result<(), ProtocolError> {
     match message {
+        Message::MicrophoneShortcutOpen(open) => {
+            if open.version == 1 && open.key_code <= 127 && open.modifiers & !0x9E0000 == 0 {
+                Ok(())
+            } else { Err(ProtocolError::InvalidPayload("microphone shortcut")) }
+        }
+
+        Message::MicrophoneOpen(open) => {
+            if open.version == 1 && open.status <= 5 { Ok(()) } else { Err(ProtocolError::InvalidPayload("microphone version/status")) }
+        }
         Message::RemoteApplicationOpen(open) => {
             if open.version == 1 {
                 Ok(())

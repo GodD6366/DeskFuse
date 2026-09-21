@@ -13,14 +13,15 @@ let package = Package(
         .target(name: "UniDeskRemoteApplication", path: "RemoteApplication/Sources/UniDeskRemoteApplication",
             exclude: ["RemoteTransport.swift", "RemoteTLSIdentity.swift"],
             linkerSettings: [.linkedFramework("ScreenCaptureKit"), .linkedFramework("VideoToolbox"), .linkedFramework("MetalKit"), .linkedFramework("CoreImage")]),
+        .systemLibrary(name: "MicrophoneNative", path: "MicrophoneNative/include"),
         .systemLibrary(name: "UniDeskEngineFFI", path: "Sources/UniDeskEngineFFI"),
         .target(name: "UniDeskEngine", dependencies: ["UniDeskEngineFFI"],
                 linkerSettings: [.unsafeFlags([libraryDirectory + "/libunidesk_ffi.a"])]),
         .target(name: "UniDeskHost", dependencies: [], path: "Host"),
-        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine", "UniDeskHost", "UniDeskRemoteApplication",
+        .executableTarget(name: "UniDesk", dependencies: ["UniDeskEngine", "UniDeskHost", "UniDeskRemoteApplication", "MicrophoneNative",
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
                 .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow")],
-            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("OSAKit"), .linkedFramework("CoreGraphics"), .linkedFramework("CoreFoundation"),
+            linkerSettings: [.unsafeFlags(["-L" + root.appendingPathComponent("target/roc-microphone/" + (ProcessInfo.processInfo.environment["UNIDESK_MACOS_ARCH"] ?? "arm64")).path, "-lroc-microphone", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]), .linkedFramework("AVFoundation"), .linkedFramework("AudioToolbox"), .linkedFramework("CoreAudio"), .linkedFramework("AppKit"), .linkedFramework("OSAKit"), .linkedFramework("CoreGraphics"), .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"), .linkedFramework("SystemConfiguration"), .linkedFramework("CoreWLAN"), .linkedFramework("CoreLocation"),
                 .linkedLibrary("sqlite3"), .linkedLibrary("resolv"), .linkedLibrary("iconv")])
     ]

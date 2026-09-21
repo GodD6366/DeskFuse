@@ -96,6 +96,8 @@ struct SettingsView: View, Equatable {
             ShortcutSettingsPage(store: store,
                 manageWorkflows: { selectedTab = "workflows" },
                 configureInput: { inputSettings = true })
+        case .microphone:
+            MicrophoneSettingsView(store: store)
         case .updates:
             Form {
                 if let update = presentation.update {

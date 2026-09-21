@@ -1335,6 +1335,38 @@ impl TokioBridge {
         }
     }
 
+    /// Fixed startup milestones only; never accept user content into diagnostics.
+    pub fn record_startup_stage(&self, stage: &str) {
+        if !matches!(
+            stage,
+            "engine_services"
+                | "engine_host"
+                | "engine_workflows"
+                | "engine_ready"
+                | "client_subscribing"
+                | "client_subscribed"
+                | "client_ready"
+                | "client_failed"
+                | "workflows_loading"
+                | "workflows_loaded"
+                | "microphone_devices_loading"
+                | "microphone_devices_loaded"
+                | "subscription_timeout"
+        ) {
+            return;
+        }
+        self.diagnostics.record(
+            DiagnosticLevel::Info,
+            "startup",
+            stage,
+            Some(format!(
+                "build={}",
+                option_env!("UNIDESK_INPUT_BUILD_ID").unwrap_or("unknown")
+            )),
+            None,
+        );
+    }
+
     pub fn export_diagnostics(&self, path: &std::path::Path) -> Result<(), String> {
         let mut contents = serde_json::json!({
             "subsystem": "diagnostic_collection",
@@ -4543,6 +4575,7 @@ fn runtime_config() -> RuntimeConfig {
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
+            | Capabilities::MICROPHONE
             | motion_mode_capabilities(std::env::var("UNIDESK_INPUT_MOTION_MODE").ok().as_deref()),
         ..RuntimeConfig::default()
     }
@@ -4683,7 +4716,10 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     });
     let runtime = builder.build()?;
     #[cfg(not(test))]
-    crate::remote_application::install(transport, runtime.clone());
+    {
+        crate::microphone::install(transport.clone(), runtime.clone(), diagnostics.clone());
+        crate::remote_application::install(transport, runtime.clone());
+    }
     Ok(runtime)
 }
 
@@ -4993,6 +5029,7 @@ mod tests {
                 | Capabilities::DEFERRED_FILE_CLIPBOARD
                 | Capabilities::CLIPBOARD_SYNC_V2
                 | Capabilities::REMOTE_APPLICATION
+            | Capabilities::MICROPHONE
                 | motion_mode_capabilities(
                     std::env::var("UNIDESK_INPUT_MOTION_MODE").ok().as_deref()
                 )

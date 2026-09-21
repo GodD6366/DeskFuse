@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum SettingsCategory: String, CaseIterable {
-    case general, permissions, storage, clipboard, workflows, shortcuts, updates
+    case general, permissions, storage, clipboard, workflows, shortcuts, microphone, updates
 
     var title: String {
         switch self {
@@ -11,6 +11,7 @@ enum SettingsCategory: String, CaseIterable {
         case .clipboard: "剪贴板"
         case .workflows: "工作流"
         case .shortcuts: "快捷键"
+        case .microphone: "麦克风"
         case .updates: "更新"
         }
     }
@@ -23,6 +24,7 @@ enum SettingsCategory: String, CaseIterable {
         case .clipboard: "clipboard"
         case .workflows: "person.2"
         case .shortcuts: "keyboard"
+        case .microphone: "mic"
         case .updates: "arrow.clockwise"
         }
     }

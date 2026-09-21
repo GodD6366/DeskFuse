@@ -10,12 +10,18 @@ struct RootView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        HStack(spacing: 0) {
-            if visibility != .detailOnly {
-                MainSidebar(store: store, visibility: $visibility)
-                    .frame(width: 250)
+        Group {
+            if store.isEngineLoading {
+                GlobalEngineLoadingView()
+            } else {
+                HStack(spacing: 0) {
+                    if visibility != .detailOnly {
+                        MainSidebar(store: store, visibility: $visibility)
+                            .frame(width: 250)
+                    }
+                    workspace
+                }
             }
-            workspace
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .tint(.blue)
@@ -64,6 +70,22 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
     }
 
+}
+
+struct GlobalEngineLoadingView: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.large)
+            Text("正在启动 uniDesk…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("正在启动 uniDesk")
+    }
 }
 
 private struct SearchClipboardKey: FocusedValueKey {

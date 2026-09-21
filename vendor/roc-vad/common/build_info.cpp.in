@@ -1,0 +1,27 @@
+/*
+ * Copyright (c) Roc Streaming authors
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+#include "build_info.hpp"
+
+namespace rocvad {
+
+const char* BuildInfo::git_version = "${GIT_RELEASE}";
+const char* BuildInfo::git_commit = "${GIT_COMMIT}";
+
+const char* BuildInfo::driver_manufacturer = "${DRIVER_MANUFACTURER}";
+const char* BuildInfo::driver_bundle_name = "${DRIVER_BUNDLE_NAME}";
+const char* BuildInfo::driver_bundle_id = "${DRIVER_BUNDLE_ID}";
+const char* BuildInfo::driver_bundle_path =
+    "/Library/Audio/Plug-Ins/HAL/${DRIVER_BUNDLE_NAME}.driver";
+const char* BuildInfo::driver_uuid = "${DRIVER_UUID}";
+const char* BuildInfo::driver_socket = "${DRIVER_SOCKET}";
+
+const char* BuildInfo::tool_name = "${TOOL_EXE}";
+const char* BuildInfo::tool_path = "/usr/local/bin/${TOOL_EXE}";
+
+} // namespace rocvad

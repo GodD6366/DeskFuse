@@ -1,0 +1,132 @@
+{
+  "upstream": {
+    "repository": "https://github.com/roc-streaming/roc-vad.git",
+    "tag": "v0.0.4",
+    "commit": "19d621a8364b0d6f44969c340bdc59fe891981c8",
+    "archive": "https://codeload.github.com/roc-streaming/roc-vad/tar.gz/19d621a8364b0d6f44969c340bdc59fe891981c8",
+    "sha256": "9eadf489c59e70792e3d5c7d3d58e6386150479bb51d9f9fceaad0071ff2cee8"
+  },
+  "dependencies": [
+    {
+      "repository": "https://github.com/roc-streaming/roc-toolkit.git",
+      "tag": "60db91cbba666972845d190d981bc0d093298699",
+      "commit": "60db91cbba666972845d190d981bc0d093298699",
+      "archive": "https://codeload.github.com/roc-streaming/roc-toolkit/tar.gz/60db91cbba666972845d190d981bc0d093298699",
+      "sha256": "93d0778c22688d805c837f7b4d1a924697e6264fc891c3248b5244dc1578ec60"
+    },
+    {
+      "repository": "https://github.com/gavv/libASPL.git",
+      "tag": "v3.1.1",
+      "commit": "31be7bc98a91847478d929ff54c2554a49ae4afc",
+      "archive": "https://codeload.github.com/gavv/libASPL/tar.gz/31be7bc98a91847478d929ff54c2554a49ae4afc",
+      "sha256": "95ab298b2ffb7aa460cd1cb96585b8bb2926e28c6cccb5d4f07eb8e0e06b7508"
+    },
+    {
+      "repository": "https://github.com/google/boringssl.git",
+      "tag": "2db0eb3f96a5756298dcd7f9319e56a98585bd10",
+      "commit": "2db0eb3f96a5756298dcd7f9319e56a98585bd10",
+      "archive": "https://codeload.github.com/google/boringssl/tar.gz/2db0eb3f96a5756298dcd7f9319e56a98585bd10",
+      "sha256": "cd240bf27450f75cd5f41c512a06297c00646cdbac9f87b604e9312771db15a6"
+    },
+    {
+      "repository": "https://github.com/grpc/grpc.git",
+      "tag": "v1.63.0",
+      "commit": "ac1418547838ab067a02af4402046f7bc1cbc44c",
+      "archive": "https://codeload.github.com/grpc/grpc/tar.gz/ac1418547838ab067a02af4402046f7bc1cbc44c",
+      "sha256": "2e56df4a43bbb406dad3d62da36888e4057968ea126d0870e1c0560a8f6ea1d3"
+    },
+    {
+      "repository": "https://github.com/fmtlib/fmt.git",
+      "tag": "10.2.1",
+      "commit": "e69e5f977d458f2650bb346dadf2ad30c5320281",
+      "archive": "https://codeload.github.com/fmtlib/fmt/tar.gz/e69e5f977d458f2650bb346dadf2ad30c5320281",
+      "sha256": "1723f27eed50e751037f49dcdf73e33b17658f1178ea1c1f829a30bb02335745"
+    },
+    {
+      "repository": "https://github.com/gabime/spdlog.git",
+      "tag": "v1.14.1",
+      "commit": "27cb4c76708608465c413f6d0e6b8d99a4d84302",
+      "archive": "https://codeload.github.com/gabime/spdlog/tar.gz/27cb4c76708608465c413f6d0e6b8d99a4d84302",
+      "sha256": "7d512b37019b61646cd6fd1e48f52a3cf3e098f36b33ba9c059fe51301ff40b3"
+    },
+    {
+      "repository": "https://github.com/CLIUtils/CLI11.git",
+      "tag": "v2.4.1",
+      "commit": "f4d0731cebb123ff0ace712c099dffbcd2c58e5a",
+      "archive": "https://codeload.github.com/CLIUtils/CLI11/tar.gz/f4d0731cebb123ff0ace712c099dffbcd2c58e5a",
+      "sha256": "eafa0dde43b88bee2a5445d2039a5fb75f89dc0fb5e51431f9ec4c8013c13618"
+    }
+  ],
+  "roc_distfiles": [
+    {
+      "path": "3rdparty/_distfiles/tarballs/libuv-v1.35.0.tar.gz",
+      "sha256": "0e947d02543ad6e6ef11c19ad1587afc57c95ff31a18f57413490faeaaab4604"
+    },
+    {
+      "path": "3rdparty/_distfiles/tarballs/speexdsp-1.2.0.tar.gz",
+      "sha256": "682042fc6f9bee6294ec453f470dadc26c6ff29b9c9e9ad2ffc1f4312fd64771"
+    },
+    {
+      "path": "3rdparty/_distfiles/tarballs/ragel-6.10.tar.gz",
+      "sha256": "5f156edb65d20b856d638dd9ee2dfb43285914d9aa2b6ec779dac0270cd56c3f"
+    },
+    {
+      "path": "3rdparty/_distfiles/tarballs/openfec_v1.4.2.12.tar.gz",
+      "sha256": "3397f58c8fff945ece8ea19e7859040c98a5c6497e5d791397794094e15e5873",
+      "url": "https://github.com/roc-streaming/openfec/archive/v1.4.2.12.tar.gz",
+      "commit": "e549f3b8ba54a7d6e2aaefdd1cdd4c73ef32000c"
+    }
+  ],
+  "submodules": [
+    {
+      "parent": "roc",
+      "path": "3rdparty/_distfiles",
+      "commit": "014f8597684eb964d28d45f43ec2b33218ff2676",
+      "git_tree_sha256": "1cfa27c82eff0044dc04e5d9bd606eca3e82d03a7a508d6dc062b2ec63251216"
+    },
+    {
+      "parent": "grpc",
+      "path": "third_party/abseil-cpp",
+      "commit": "4a2c63365eff8823a5221db86ef490e828306f9d",
+      "git_tree_sha256": "cbf991f72987ec1c39cdd88ae34d0dee5cc8c7fb1793ca9605ff7738683a4db5"
+    },
+    {
+      "parent": "grpc",
+      "path": "third_party/cares/cares",
+      "commit": "6360e96b5cf8e5980c887ce58ef727e53d77243a",
+      "git_tree_sha256": "daad356d543e21ea7bee743953e587e3af5cb81190d40b64b4de8af75e5ffe28"
+    },
+    {
+      "parent": "grpc",
+      "path": "third_party/protobuf",
+      "commit": "2434ef2adf0c74149b9d547ac5fb545a1ff8b6b5",
+      "git_tree_sha256": "865ff72ff93bb69400e2fd6658d3ec5a72be0edf8bf9f1363a087d1109f66090"
+    },
+    {
+      "parent": "grpc",
+      "path": "third_party/re2",
+      "commit": "0c5616df9c0aaa44c9440d87422012423d91c7d1",
+      "git_tree_sha256": "9ffc1648e8f1ac7f6e8c7954f0e94a8566d4e1f6c8a55eb1cbb348a822eb5e9a"
+    },
+    {
+      "parent": "grpc",
+      "path": "third_party/zlib",
+      "commit": "09155eaa2f9270dc4ed1fa13e2b4b2613e6e4851",
+      "git_tree_sha256": "fe2abcd3329da2d200fd49344254c0d3f07f8e21faeb60ec17e1066f8d49f367"
+    }
+  ],
+  "dependency_patches": [
+    {
+      "parent": "grpc",
+      "path": "third_party/abseil-cpp/absl/copts/AbseilConfigureCopts.cmake",
+      "sha256": "77ec29c542484278db5ed27540388e148f1fdaa540d363d8fe3acc83c85ff09f",
+      "reason": "Preserve paired Apple architecture flags in CMake compile option deduplication"
+    },
+    {
+      "parent": "grpc",
+      "path": "src/core/lib/promise/detail/basic_seq.h",
+      "sha256": "850f14a4432e54b51d87c3816f13e2190bc1092f44870b9903b58723c3b34ee8",
+      "reason": "Remove invalid template disambiguator rejected by Apple clang21"
+    }
+  ]
+}

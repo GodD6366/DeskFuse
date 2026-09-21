@@ -9,6 +9,9 @@ import UniDeskEngine
     var error: String?
     var starting = true
     var selfTest = false
+    var isEngineLoading: Bool {
+        !selfTest && (starting || (snapshot == nil && error == nil))
+    }
     var selectedPage: Page = .clipboard
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
@@ -51,9 +54,7 @@ import UniDeskEngine
             do {
                 let engine = try await Task.detached { try Engine() }.value
                 self.engine = engine
-                if #available(macOS 14.2, *) { RemoteApplicationManager.shared.start(engine: engine) }
-                await WorkflowStore.shared.reload(engine: engine)
-                UniDeskImageAppShortcuts.updateAppShortcutParameters()
+                engine.recordStartupStage(stage: "client_subscribing")
                 let client = EngineClient(engine: engine)
                 self.client = client
                 let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -69,13 +70,26 @@ import UniDeskEngine
                     }
                 }
                 try await client.listen(relay)
+                engine.recordStartupStage(stage: "client_subscribed")
                 transferWindow = TransferProgressWindowController(store: self)
                 transferWindow?.reconcile(snapshot?.transfers ?? [])
                 shelf = ShelfController(store: self)
                 pairingWindow = PairingWindowController(store: self)
                 pairingWindow?.reconcile(snapshot?.pairing ?? [])
                 starting = false
-            } catch { self.error = error.userFacingMessage; starting = false }
+                engine.recordStartupStage(stage: "client_ready")
+                // Optional integrations must not delay the first subscribed UI snapshot.
+                MicrophoneSharing.shared.start(engine: engine)
+                if #available(macOS 14.2, *) { RemoteApplicationManager.shared.start(engine: engine) }
+                Task {
+                    engine.recordStartupStage(stage: "workflows_loading")
+                    await WorkflowStore.shared.reload(engine: engine)
+                    engine.recordStartupStage(stage: "workflows_loaded")
+                }
+            } catch {
+                engine?.recordStartupStage(stage: "client_failed")
+                self.error = error.userFacingMessage; starting = false
+            }
         }
     }
     func consume(_ event: EngineEvent) {
@@ -132,7 +146,9 @@ import UniDeskEngine
               completion: ((CommandReceipt) -> Void)? = nil, failure: (() -> Void)? = nil,
               applied: (() -> Void)? = nil, failed: ((String) -> Void)? = nil) {
         guard let client else {
-            error = "引擎尚未就绪"; failure?(); failed?("引擎尚未就绪"); return
+            failure?()
+            failed?("引擎尚未就绪")
+            return
         }
         if let pairing { pairingDecisions.insert(pairing) }
         Task {
@@ -196,6 +212,7 @@ import UniDeskEngine
         }
     }
     func terminate() -> NSApplication.TerminateReply {
+        MicrophoneSharing.shared.stop()
         if #available(macOS 14.2, *) { RemoteApplicationManager.shared.stop() }
         if quitting || client == nil { return .terminateNow }
         quitting = true; reclaim(); shelf?.stop(); transferWindow?.stop()

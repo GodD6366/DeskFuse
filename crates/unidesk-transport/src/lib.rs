@@ -19,6 +19,8 @@ pub mod input_executor;
 pub mod motion_diag;
 mod network;
 pub mod remote_application;
+pub mod microphone_shortcut;
+pub mod microphone;
 mod session_auth;
 pub use network::{NetworkTransportRequest, NetworkTransportStream};
 pub mod lan;
@@ -1438,6 +1440,8 @@ struct QuinnShared {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
+    microphone_shortcut: microphone_shortcut::ShortcutHub,
+    microphone: microphone::MicrophoneHub,
     stopping: Arc<AtomicBool>,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
@@ -1500,6 +1504,8 @@ pub struct QuinnTransport {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
+    microphone_shortcut: microphone_shortcut::ShortcutHub,
+    microphone: microphone::MicrophoneHub,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
     bound_interface: Option<String>,
@@ -1554,6 +1560,8 @@ impl QuinnTransport {
             identity: self.identity.clone(),
             network: self.network.clone(),
             remote_app: self.remote_app.clone(),
+            microphone_shortcut: self.microphone_shortcut.clone(),
+            microphone: self.microphone.clone(),
             lan_tasks: self.lan_tasks.clone(),
             stopping: self.shutdown_started.clone(),
             lan_endpoints: self.lan_endpoints.clone(),
@@ -1583,6 +1591,8 @@ impl QuinnTransport {
             identity: Arc::default(),
             network: network::NetworkHub::new(),
             remote_app: remote_application::RemoteHub::new(),
+            microphone_shortcut: microphone_shortcut::ShortcutHub::new(),
+            microphone: microphone::MicrophoneHub::new(),
             lan_tasks: Arc::default(),
             lan_endpoints: Arc::default(),
             bound_interface: None,
@@ -1745,6 +1755,8 @@ impl QuinnTransport {
         }
         let network = network::NetworkHub::new();
         let remote_app = remote_application::RemoteHub::new();
+        let microphone_shortcut = microphone_shortcut::ShortcutHub::new();
+        let microphone = microphone::MicrophoneHub::new();
         let identity = Arc::default();
         let bound_addr = endpoint
             .local_addr()
@@ -1782,6 +1794,8 @@ impl QuinnTransport {
             identity: Arc::clone(&identity),
             network: network.clone(),
             remote_app: remote_app.clone(),
+            microphone_shortcut: microphone_shortcut.clone(),
+            microphone: microphone.clone(),
             lan_tasks: lan_tasks.clone(),
             stopping: stopping.clone(),
             lan_endpoints: lan_endpoints.clone(),
@@ -1842,6 +1856,8 @@ impl QuinnTransport {
             identity,
             network,
             remote_app,
+            microphone_shortcut,
+            microphone,
             lan_tasks,
             lan_endpoints,
             bound_interface: None,
@@ -3035,6 +3051,7 @@ async fn serve_connection(
     shared: QuinnShared,
     negotiated: Capabilities,
 ) {
+    shared.microphone.register(&connection, negotiated);
     // Read independently so a large clipboard body cannot hold up Ping/Pong.
     // Application frames are still published in stream creation order.
     let mut readers = tokio::task::JoinSet::new();
@@ -3061,6 +3078,34 @@ async fn serve_connection(
                 if let Ok(request) = request {
                     let request_id = request_id_or_zero(&request);
                     match request.message {
+                        Some(Message::MicrophoneOpen(open)) => {
+                            pending.insert(ordinal, None);
+                            if shared.is_revoked(peer).unwrap_or(true) {
+                                let _ = send.reset(1u32.into());
+                            } else if open.status == 0 && negotiated.contains(Capabilities::MICROPHONE) {
+                                shared.microphone.accept(peer, send, recv);
+                            } else {
+                                // Never silently drop an audio request: an empty
+                                // FIN appears to users as "0 bytes read".
+                                tokio::spawn(async move {
+                                    let reply = Envelope::new(request_id, Message::Error(protocol::Error {
+                                        code: 426,
+                                        message: "microphone capability not negotiated".into(),
+                                        retryable: false,
+                                    }));
+                                    if time::timeout(Duration::from_millis(500), write_frame(&mut send, &reply)).await.is_ok_and(|r| r.is_ok()) {
+                                        let _ = send.finish();
+                                    }
+                                });
+                            }
+                        }
+                        Some(Message::MicrophoneShortcutOpen(open)) => {
+                            pending.insert(ordinal, None);
+                            if negotiated.contains(Capabilities::MICROPHONE_SHORTCUT) && !shared.is_revoked(peer).unwrap_or(true) {
+                                let hub = shared.microphone_shortcut.clone();
+                                tokio::spawn(async move { hub.accept(peer, open, send, recv).await; });
+                            }
+                        }
                         Some(Message::RemoteApplicationOpen(_)) => {
                             pending.insert(ordinal, None);
                             if negotiated.contains(Capabilities::REMOTE_APPLICATION) && !shared.is_revoked(peer).unwrap_or(true) {
@@ -3137,6 +3182,7 @@ async fn serve_connection(
             }
         }
     }
+    shared.microphone.unregister(&connection);
     readers.abort_all();
     while readers.join_next().await.is_some() {}
 }
@@ -3186,7 +3232,7 @@ async fn read_control_frame(
     timeout: Duration,
 ) -> Result<Envelope, TransportError> {
     let envelope = read_frame(recv, timeout).await?;
-    if matches!(envelope.message, Some(Message::RemoteApplicationOpen(_))) {
+    if matches!(envelope.message, Some(Message::RemoteApplicationOpen(_) | Message::MicrophoneOpen(_) | Message::MicrophoneShortcutOpen(_))) {
         return Ok(envelope);
     }
     let mut trailing = [0_u8; 1];

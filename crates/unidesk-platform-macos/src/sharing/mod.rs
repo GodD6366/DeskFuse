@@ -4,6 +4,7 @@
 mod background_cursor;
 mod capture;
 mod injector;
+pub mod microphone_shortcut;
 pub mod timing;
 use crate::{PlatformError, PlatformResult};
 pub use capture::{

@@ -388,6 +388,12 @@ impl Capabilities {
     /// Native remote applications over an admitted, paired control connection.
     pub const REMOTE_APPLICATION: Self = Self(1 << 12);
 
+    /// On-demand microphone audio on its own authenticated QUIC stream.
+    pub const MICROPHONE: Self = Self(1 << 13);
+
+    /// Hold-to-talk shortcut control independent of audio readers.
+    pub const MICROPHONE_SHORTCUT: Self = Self(1 << 14);
+
     /// No capabilities.
     pub const NONE: Self = Self(0);
 

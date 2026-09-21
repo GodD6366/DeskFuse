@@ -50,6 +50,47 @@ for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENS
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
+# Verify native microphone payload without loading/installing the HAL plugin.
+MICROPHONE="$CONTENTS_DIR/Resources/Microphone"
+for payload in '安装麦克风驱动.command' '卸载麦克风驱动.command' manage-driver.sh '双机测试说明.txt' THIRD_PARTY_MICROPHONE.txt source-archive.json; do
+  [[ -s "$MICROPHONE/$payload" ]] || { echo "error: missing microphone payload: $payload" >&2; exit 1; }
+  cmp "$MICROPHONE/$payload" "$MOUNT_POINT/麦克风驱动/$payload"
+done
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MICROPHONE/uniDeskMicrophone.driver/Contents/Info.plist")" == com.unidesk.microphone.driver ]]
+codesign --verify --deep --strict "$MICROPHONE/uniDeskMicrophone.driver"
+[[ -L "$MOUNT_POINT/麦克风驱动" && "$(readlink "$MOUNT_POINT/麦克风驱动")" == 'uniDesk.app/Contents/Resources/Microphone' ]]
+codesign --verify --strict "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
+[[ "$(lipo -archs "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib")" == "$EXPECTED_ARCH" ]]
+[[ "$(lipo -archs "$MICROPHONE/uniDeskMicrophone.driver/Contents/MacOS/uniDeskMicrophone")" == "$EXPECTED_ARCH" ]]
+python3 - "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib" "$MICROPHONE/uniDeskMicrophone.driver/Contents/MacOS/uniDeskMicrophone" <<'PYMIC'
+import re,subprocess,sys
+for binary in sys.argv[1:]:
+    load=subprocess.check_output(['otool','-l',binary],text=True)
+    versions=re.findall(r"\bminos\s+(\d+\.\d+)",load)
+    if not versions or any(tuple(map(int,v.split('.'))) > (14,0) for v in versions):
+        raise SystemExit('error: unsupported microphone deployment target: '+binary)
+    for line in subprocess.check_output(['otool','-L',binary],text=True).splitlines()[1:]:
+        name=line.strip().split(' (',1)[0]
+        if not name.startswith(('/System/Library/', '/usr/lib/', '@rpath/libroc-microphone.dylib')):
+            raise SystemExit('error: unpackaged microphone dependency: '+name)
+print('Microphone driver and shim: signed, architecture and dependencies verified; not installed')
+PYMIC
+[[ ! -e "$MICROPHONE/roc-microphone-sources.tar.gz" ]] || { echo 'error: sources duplicated inside app' >&2; exit 1; }
+python3 - "$MICROPHONE/source-archive.json" "$MOUNT_POINT" <<'PYSOURCES'
+import json, pathlib, re, sys
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert manifest['file'] == 'roc-microphone-sources.tar.gz'
+assert manifest['bundled'] is False
+assert manifest['obtain']
+assert re.fullmatch('[0-9a-f]{64}', manifest['sha256'])
+assert type(manifest['size']) is int and manifest['size'] > 0
+mount = pathlib.Path(sys.argv[2])
+visible = {path.name for path in mount.iterdir() if not path.name.startswith('.')}
+assert visible == {'uniDesk.app', 'Applications', '麦克风驱动'}, f'unexpected DMG contents: {visible}'
+assert not list(mount.rglob('roc-microphone-sources.tar.gz')), 'source archive inside DMG'
+print('DMG layout: existing app, Applications and driver entry retained; no source archive')
+PYSOURCES
+
 # The signed distribution marker selects the updater, independent of install path.
 [[ -f "$CONTENTS_DIR/Resources/update-channel" ]] || { echo "error: update channel missing" >&2; exit 1; }
 UPDATE_CHANNEL="$(cat "$CONTENTS_DIR/Resources/update-channel")"
@@ -134,6 +175,11 @@ python3 - "$APP_BUNDLE" <<'PYAUTOMATION'
 import plistlib, subprocess, sys
 result = subprocess.run(["codesign", "-d", "--entitlements", ":-", sys.argv[1]], capture_output=True, check=True)
 entitlements = plistlib.loads(result.stdout)
+if entitlements.get("com.apple.security.device.audio-input") is not True:
+    raise SystemExit("error: microphone entitlement missing from signed app")
+with open(sys.argv[1]+"/Contents/Info.plist", "rb") as source:
+    if not plistlib.load(source).get("NSMicrophoneUsageDescription"):
+        raise SystemExit("error: microphone usage description missing")
 if entitlements.get("com.apple.security.automation.apple-events") is not True:
     raise SystemExit("error: Finder automation entitlement missing from signed app")
 print("Finder automation: signed Apple Events entitlement present")
@@ -177,6 +223,8 @@ if manifest["release"] != release:
 with zipfile.ZipFile(sys.argv[3]) as payload:
     if json.loads(payload.read("uniDesk.app/Contents/Resources/release.json")) != release:
         raise SystemExit("error: update payload release differs from installed app")
+    if any(name.endswith("roc-microphone-sources.tar.gz") for name in payload.namelist()):
+        raise SystemExit("error: full microphone sources duplicated inside update payload")
     if any(name.startswith("uniDesk.app/Contents/Resources/LanUpdate/") for name in payload.namelist()):
         raise SystemExit("error: recursive embedded update payload")
 print("LAN distribution: installed app carries the exact verified release payload")

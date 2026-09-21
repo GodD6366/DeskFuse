@@ -4,6 +4,7 @@
 #![allow(clippy::needless_pass_by_value)]
 mod clipboard_paste;
 mod remote_application;
+mod microphone;
 mod workflow;
 pub use clipboard_paste::*;
 mod clipboard_library;
@@ -110,12 +111,14 @@ impl Engine {
                 return Err(failure(e));
             }
         };
+        bridge.record_startup_stage("engine_services");
         #[cfg(target_os = "macos")]
         let lan_web = unidesk_engine::lan_web::LanWebService::new(&bridge).map_err(|e| {
             bridge.shutdown();
             RUNNING.store(false, Ordering::Release);
             failure(e)
         })?;
+        bridge.record_startup_stage("engine_host");
         let host = match unidesk_engine::host::EngineHost::assemble() {
             Ok(host) => host,
             Err(e) => {
@@ -124,6 +127,7 @@ impl Engine {
                 return Err(failure(e));
             }
         };
+        bridge.record_startup_stage("engine_workflows");
         let workflows =
             unidesk_engine::workflow::WorkflowService::new(bridge.clone()).map_err(|e| {
                 bridge.shutdown();
@@ -222,6 +226,7 @@ impl Engine {
     }
    });
   }).map_err(|e|{bridge.shutdown();RUNNING.store(false,Ordering::Release);failure(e)})?;
+        bridge.record_startup_stage("engine_ready");
         Ok(Arc::new(Self {
             #[cfg(target_os = "macos")]
             lan_web,
@@ -253,7 +258,11 @@ impl Engine {
         self.control
             .unbounded_send(Control::Subscribe(listener, tx))
             .map_err(failure)?;
-        rx.recv().map_err(failure)
+        rx.recv_timeout(std::time::Duration::from_secs(15))
+            .map_err(|error| {
+                self.bridge.record_startup_stage("subscription_timeout");
+                failure(format!("界面状态订阅未完成，请退出后重新打开 uniDesk，并导出诊断日志：{error}"))
+            })
     }
     /// # Errors
     /// Returns an error if the callback dispatcher cannot acknowledge removal.
@@ -535,6 +544,10 @@ impl Engine {
     pub fn emergency_reclaim(&self) {
         self.bridge.pause_current_managed_activation();
     }
+    pub fn record_startup_stage(&self, stage: String) {
+        self.bridge.record_startup_stage(&stage);
+    }
+
     pub fn set_recording(&self, enabled: bool) {
         if let Ok(mut keys) = self.workflow_hotkeys.lock() {
             keys.recording = enabled;

@@ -742,7 +742,9 @@ impl NativeInjector {
         })
     }
     fn post(&self, event: CGEvent) {
-        event.set_flags(CGEventFlags::from_bits_retain(self.modifiers));
+        event.set_flags(CGEventFlags::from_bits_retain(
+            self.modifiers | super::microphone_shortcut::protected_modifiers(),
+        ));
         // Inject at the HID level, like real pointing hardware and like Deskflow.
         // `input_native.rs` already posts its synthetic MouseMoved at HID; session
         // level posting sits downstream of the window server's HID handling.
@@ -946,8 +948,18 @@ impl NativeInjector {
             .copied()
             .collect::<Vec<_>>();
         self.modifiers = flags;
+        let protected = modifier_keycodes(super::microphone_shortcut::protected_modifiers());
         for code in changes {
             let down = target.contains(&code);
+            if protected.contains(&code) {
+                // The dedicated hold retains this modifier across LeaveInputControl.
+                if down {
+                    self.modifier_keys.insert(code);
+                } else {
+                    self.modifier_keys.remove(&code);
+                }
+                continue;
+            }
             let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
                 .map_err(|()| PlatformError::InputInjectionFailed)?;
             event.set_type(CGEventType::FlagsChanged);

@@ -266,6 +266,39 @@ fi
 
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_SOURCE_DIR/.background"
 cp "$BINARY_PATH" "$CONTENTS_DIR/MacOS/$BINARY_NAME"
+
+# The driver is shipped, never installed on the build machine. The native shim
+# is signed before the containing application, with the existing identity.
+ROC_OUTPUT="$ROOT_DIR/target/roc-microphone/$MACOS_ARCH"
+mkdir -p "$CONTENTS_DIR/Frameworks" "$CONTENTS_DIR/Resources/Microphone"
+cp "$ROC_OUTPUT/libroc-microphone.dylib" "$CONTENTS_DIR/Frameworks/"
+unidesk_codesign "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
+ditto "$ROC_OUTPUT/uniDeskMicrophone.driver" "$CONTENTS_DIR/Resources/Microphone/uniDeskMicrophone.driver"
+unidesk_codesign --deep "$CONTENTS_DIR/Resources/Microphone/uniDeskMicrophone.driver"
+cp "$ROOT_DIR/resources/microphone/"* "$CONTENTS_DIR/Resources/Microphone/"
+cp "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$CONTENTS_DIR/Resources/Microphone/"
+# Preserve exact corresponding sources per build without adding them to the
+# installer or app/update payload. The app keeps attribution and a hash reference.
+SOURCE_CACHE="$ROOT_DIR/target/package-macos/${APP_VERSION}-build${BUILD_VERSION}/$MACOS_ARCH"
+mkdir -p "$SOURCE_CACHE"
+cp "$ROC_OUTPUT/roc-microphone-sources.tar.gz" "$ROC_OUTPUT/source-archive.json" "$SOURCE_CACHE/"
+python3 - "$SOURCE_CACHE" <<'PYSOURCES'
+import hashlib, json, pathlib, sys, tarfile
+cache = pathlib.Path(sys.argv[1])
+manifest = json.loads((cache / 'source-archive.json').read_text())
+assert manifest['bundled'] is False
+assert manifest['file'] == 'roc-microphone-sources.tar.gz'
+archive = cache / manifest['file']
+assert archive.stat().st_size == manifest['size']
+with archive.open('rb') as stream:
+    assert hashlib.file_digest(stream, 'sha256').hexdigest() == manifest['sha256']
+with tarfile.open(archive) as source:
+    assert source.getmember('uniDeskMicrophone-Sources/vendor/roc-vad/LICENSE').isfile()
+print('Corresponding microphone sources: cached per build, hash and license verified')
+PYSOURCES
+# Preserve the existing standalone driver entry as well as in-app management.
+ln -s "uniDesk.app/Contents/Resources/Microphone" "$DMG_SOURCE_DIR/麦克风驱动"
+
 ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/Metadata.appintents"
 cp "$CARGO_OUTPUT_DIR/native-macos/release/unidesk-input-service" "$CONTENTS_DIR/MacOS/unidesk-input-service"
 unidesk_codesign --identifier com.unidesk.app.input-service "$CONTENTS_DIR/MacOS/unidesk-input-service"

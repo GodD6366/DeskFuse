@@ -38,3 +38,9 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 ## 参考项目
 
 BlueSync 用于交互行为参考；uniDesk 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。
+
+## Roc 麦克风驱动与音频编码
+
+跨设备麦克风使用 Roc VAD v0.0.4（MPL-2.0），以及固定提交的 Roc Toolkit（MPL-2.0）、libASPL（MIT）和 gRPC 等依赖。固定提交、源归档 SHA-256 和传递依赖记录位于 `vendor/roc-vad/sources.lock.json`。私有驱动标识、回环端点限制、读取状态、会话清理与构建适配保留在 vendored 源码及修改说明中，不改变上游文件的 MPL-2.0 许可。
+
+完整覆盖源码、uniDesk 修改、重建脚本及实际使用的依赖源码/许可证保存在维护者按构建号归档的构建缓存中，不放入 DMG 或应用/更新包。应用的 `Contents/Resources/Microphone/THIRD_PARTY_MICROPHONE.txt` 保留许可证及署名，`source-archive.json` 标识对应源码归档的文件名、大小、SHA-256 和获取方式。需要源码时，向提供测试版的维护者索取，并提供应用版本、构建号及该 SHA-256。驱动不自动安装，安装/卸载入口仅操作 `com.unidesk.microphone.driver`。Apple Core Audio 和系统 zlib 通过系统链接，不重新分发系统框架。

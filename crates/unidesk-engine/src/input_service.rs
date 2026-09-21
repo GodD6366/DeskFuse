@@ -17,6 +17,9 @@ use unidesk_runtime::{
 };
 use unidesk_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
 
+#[path = "input_service_microphone_shortcut.rs"]
+mod microphone_shortcut;
+
 pub fn main() -> std::result::Result<(), String> {
     if std::env::args().nth(1).as_deref() != Some("--input-service") {
         return Err("input service requires inherited parent channels".into());
@@ -70,7 +73,8 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
         | Capabilities::DEVICE_NETWORK
         | Capabilities::INPUT_ACTIVATION
         | Capabilities::INPUT_ENVIRONMENT
-        | Capabilities::INPUT_MOTION_DATAGRAM_V1;
+        | Capabilities::INPUT_MOTION_DATAGRAM_V1
+        | Capabilities::MICROPHONE_SHORTCUT;
     let nonce = identity.device_id().into_bytes();
     let hello = PeerHello::signed(&identity, child.bootstrap.display_name.clone(), caps, nonce)
         .map_err(|e| e.to_string())?;
@@ -170,6 +174,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
+    let mut microphone_shortcut = microphone_shortcut::Owner::new(authority.local, transport.clone());
     let mut remote_input = crate::remote_application_input::Owner::new(child.pause.clone());
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
@@ -184,6 +189,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                 let remote_active = matches!(child.pause.load(Ordering::Acquire), 4 | 5);
                 let emergency = remote_active && child.emergency.swap(false, Ordering::AcqRel);
                 remote_input.tick(&authority, emergency);
+                microphone_shortcut.tick(&authority, &runtime.handle);
                 let mut changed = false;
                 // Bound discovery processing so a discovery burst cannot starve lifetime checks.
                 for _ in 0..32 {
@@ -233,7 +239,10 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
                     }
                 });
             }
-            Some(packet) = child.remote.recv() => { remote_input.receive(packet, &authority); },
+            Some(packet) = child.remote.recv() => {
+                if packet.kind == "microphone_shortcut_config" { microphone_shortcut.configure(&packet); }
+                else { remote_input.receive(packet, &authority); }
+            },
             Some((id,command)) = child.commands.recv() => {
                 if let Err(error) = runtime.handle.try_send(command) { status.native.error = Some(error.to_string()); }
                 status.last_command = id;

@@ -6,6 +6,8 @@
 	     Keep capabilities minimal; review any addition before a notarized build. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
 </dict>

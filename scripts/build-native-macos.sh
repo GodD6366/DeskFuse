@@ -12,6 +12,7 @@ fi
 CONFIGURATION="${1:-debug}"
 [[ "$CONFIGURATION" == debug || "$CONFIGURATION" == release ]] || { echo "expected debug or release" >&2; exit 2; }
 export MACOSX_DEPLOYMENT_TARGET=14.0
+"$ROOT_DIR/scripts/build-roc-microphone.sh"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 [[ "${SDK_VERSION%%.*}" -ge 27 ]] || { echo "error: full Xcode 27+ with macOS 27+ SDK is required by the current native source (runtime minimum remains macOS 14)" >&2; exit 1; }

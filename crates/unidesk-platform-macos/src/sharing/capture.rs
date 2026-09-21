@@ -78,6 +78,7 @@ impl Shared {
         }
     }
     fn fail_open(&self, fault: u8) {
+        super::microphone_shortcut::cancel();
         self.deadline.clear();
         self.exclusive.store(false, Ordering::Release);
         self.fault.store(fault, Ordering::Release);
@@ -546,7 +547,9 @@ impl Context {
         self.consumed.clear();
     }
     fn post_keyboard(&self, event: CGEvent, flags: u64) {
-        event.set_flags(CGEventFlags::from_bits_retain(flags));
+        event.set_flags(CGEventFlags::from_bits_retain(
+            flags | super::microphone_shortcut::protected_modifiers(),
+        ));
         event.set_integer_value_field(
             EventField::EVENT_SOURCE_USER_DATA,
             SYNTHETIC_SHARING_EVENT_MARKER,
@@ -561,7 +564,13 @@ impl Context {
                 .map_err(|()| PlatformError::InputInjectionFailed)?;
             self.post_keyboard(event, self.last_modifiers.unwrap_or(0));
         }
+        let protected = super::injector::modifier_keycodes(
+            super::microphone_shortcut::protected_modifiers(),
+        );
         for code in super::injector::modifier_keycodes(self.last_modifiers.unwrap_or(0)) {
+            if protected.contains(&code) {
+                continue;
+            }
             let event = CGEvent::new_keyboard_event(self.keyboard_source.clone(), code, false)
                 .map_err(|()| PlatformError::InputInjectionFailed)?;
             event.set_type(CGEventType::FlagsChanged);
@@ -850,6 +859,7 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         CFMachPortInvalidate(raw);
     }
     let _ = context.exit_remote(None);
+    super::microphone_shortcut::capture_stopped();
 }
 unsafe extern "C" fn tap_callback(
     _proxy: *const c_void,
@@ -896,6 +906,24 @@ unsafe extern "C" fn tap_callback(
         let Some(mut sample) = sample else {
             return event;
         };
+        let emergency = matches!(sample.event, SharedInputEvent::Key {code, pressed: true, modifiers, ..}
+            if HotkeyBindings::is_emergency(code, modifiers));
+        if emergency {
+            super::microphone_shortcut::cancel();
+        } else {
+            use super::microphone_shortcut::CaptureDisposition;
+            // Aggregate flags alone cannot distinguish left/right modifiers,
+            // or a physical edge from another modifier carrying an injected hold.
+            let changed_modifier = if kind == CGEventType::FlagsChanged as u32 {
+                // SAFETY: the callback event was checked non-null above.
+                Some(unsafe { CGEventGetIntegerValueField(event, EventField::KEYBOARD_EVENT_KEYCODE) }.clamp(0, 255) as u16)
+            } else { None };
+            match super::microphone_shortcut::capture(&mut sample.event, changed_modifier) {
+                CaptureDisposition::Suppress => return ptr::null_mut(),
+                CaptureDisposition::Passthrough => return event,
+                CaptureDisposition::Ordinary => {}
+            }
+        }
         if matches!(sample.event, SharedInputEvent::Motion { .. })
             && context.shared.restore_pending.load(Ordering::Acquire)
         {
@@ -943,7 +971,12 @@ unsafe extern "C" fn tap_callback(
             );
         }
         // SAFETY: event was checked non-null above and is callback-retained.
-        let modifiers = unsafe { CGEventGetFlags(event) };
+        let modifiers = match sample.event {
+            SharedInputEvent::Modifiers { modifiers } | SharedInputEvent::Key { modifiers, .. } => {
+                modifiers
+            }
+            _ => super::microphone_shortcut::filter_modifiers(unsafe { CGEventGetFlags(event) }),
+        };
         if context.last_modifiers != Some(modifiers) {
             context.last_modifiers = Some(modifiers);
             if !context.shared.push(CaptureSample {
@@ -989,6 +1022,7 @@ unsafe extern "C" fn tap_callback(
                 }
             }
             if pressed && HotkeyBindings::is_emergency(code, modifiers) {
+                super::microphone_shortcut::cancel();
                 context.shared.exclusive.store(false, Ordering::Release);
                 let _ = context.exit_remote(None);
             }

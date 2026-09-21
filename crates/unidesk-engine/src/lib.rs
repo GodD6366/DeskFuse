@@ -32,6 +32,7 @@ pub mod input_service;
 pub mod lan_web;
 
 pub mod remote_application;
+pub mod microphone;
 
 #[cfg(target_os = "macos")]
 mod remote_application_input;

@@ -1,0 +1,516 @@
+/*
+ * Copyright (c) Roc Streaming authors
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+syntax = "proto3";
+
+package rvpb;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// RPC interface for Roc Virtual Audio Device driver.
+service RvDriver
+{
+    // uniDesk: clear network sessions without removing the HAL device.
+    rpc reset_receiver(RvNone) returns (RvNone) {}
+    rpc receiver_readers(RvNone) returns (RvReaderState) {}
+
+    // Check driver presence.
+    // This command does nothing and just returns success.
+    rpc ping(RvNone) returns (RvNone) {}
+
+    // Get driver info.
+    rpc driver_info(RvNone) returns (RvDriverInfo) {}
+
+    // Stream driver logs to client.
+    // Logs are duplicated to all clients that want to stream them.
+    // Logs are also duplicated to syslog.
+    rpc stream_logs(RvNone) returns (stream RvLogEntry) {}
+
+    // Get info for all virtual devices.
+    rpc get_all_devices(RvNone) returns (RvDeviceList) {}
+
+    // Get info for one virtual device.
+    // Device can be selected by index or UID.
+    rpc get_device(RvDeviceSelector) returns (RvDeviceInfo) {}
+
+    // Create new virtual device.
+    // Returns updated device info with all fields set.
+    rpc add_device(RvDeviceInfo) returns (RvDeviceInfo) {}
+
+    // Delete virtual device.
+    // Device can be selected by index or UID.
+    rpc delete_device(RvDeviceSelector) returns (RvNone) {}
+
+    // Enable or disable device.
+    // Device can be selected by index or UID.
+    rpc toggle_device(RvToggleRequest) returns (RvNone) {}
+
+    // Bind device to local endpoint.
+    rpc bind(RvEndpointRequest) returns (RvEndpointInfo) {}
+
+    // Connect device to remote endpoint.
+    rpc connect(RvEndpointRequest) returns (RvEndpointInfo) {}
+}
+
+// No data.
+message RvNone
+{
+}
+
+// Info about driver.
+message RvDriverInfo
+{
+    // Driver version (comes from git tag).
+    string version = 1;
+
+    // Driver commit hash (comes from git commit).
+    string commit = 2;
+}
+
+// Driver log message.
+message RvLogEntry
+{
+    enum Level
+    {
+        CRIT = 0;
+        ERROR = 1;
+        WARN = 2;
+        INFO = 3;
+        DEBUG = 4;
+        TRACE = 5;
+    }
+
+    // Absolute time when message was generated.
+    google.protobuf.Timestamp time = 1;
+
+    // Message level.
+    Level level = 2;
+
+    // Formatted message text (without time and level).
+    string text = 3;
+}
+
+// Virtual device selector.
+message RvDeviceSelector
+{
+    oneof Selector
+    {
+        // Select device by index.
+        uint32 index = 1;
+
+        // Select device by UID.
+        string uid = 2;
+    }
+}
+
+// Virtual device info.
+message RvDeviceInfo
+{
+    // Device type.
+    // Each virtual device can be either sender (output device) or
+    // receiver (input device).
+    // Required field.
+    RvDeviceType type = 1;
+
+    // Device index identifier.
+    // Index is a small numeric value that is reused for new devices
+    // after device deletion.
+    // When retrieving device info, always present and non-zero.
+    // When creating device, keep unset to automatically select free index.
+    // When set, should not be zero.
+    optional uint32 index = 2;
+
+    // Device UID identifier.
+    // UID is a long string identifier, unique across all audio devices,
+    // and very unlikely to be ever reused.
+    // When retrieving device info, always present and non-empty.
+    // When creating device, keep unset to generate random UID.
+    // When set, should not be empty.
+    optional string uid = 3;
+
+    // Human-readable device name.
+    // Device name is shown to the user in UI.
+    // When retrieving device info, always present and non-empty.
+    // When creating device, keep unset to generate name automatically.
+    // When set, should not be empty.
+    optional string name = 4;
+
+    // Whether device is active and visible to the user.
+    // Device can be disabled to remove it from system without losing configuration,
+    // and then re-enabled later.
+    // When retrieving device info, always present and non-empty.
+    // When creating device, if this field is unset or set to true, devices is
+    // enabled immediately, and if it's set to false, it's created disabled.
+    optional bool enabled = 5;
+
+    // Local encoding of device.
+    // Parameters of virtual device, as it's shown to the apps.
+    RvDeviceEncoding device_encoding = 6;
+
+    // Network configuration of device.
+    // Parameters of network sender or receiver.
+    oneof NetworkConfig
+    {
+        // Configuration for sender device.
+        // Should be used if device type is RV_DEVICE_TYPE_SENDER.
+        RvSenderConfig sender_config = 7;
+
+        // Configuration for receiver device.
+        // Should be used if device type is RV_DEVICE_TYPE_RECEIVER.
+        RvReceiverConfig receiver_config = 8;
+    }
+
+    // List of local endpoints on which device is receiving traffic or control requests.
+    // Local endpoints can be added initially via add_device() or on fly via bind().
+    repeated RvEndpointInfo local_endpoints = 9;
+
+    // List of remote endpoints to which device is sending traffic or control requests.
+    // Remote endpoints can be added initially via add_device() or on fly via connect().
+    repeated RvEndpointInfo remote_endpoints = 10;
+}
+
+// Virtual device list.
+message RvDeviceList
+{
+    repeated RvDeviceInfo devices = 1;
+}
+
+// Device enable/disable request.
+message RvToggleRequest
+{
+    // Virtual device to which request is send.
+    RvDeviceSelector device = 1;
+
+    // Should device be enabled or disabled.
+    bool enabled = 2;
+}
+
+// Endpoint bind or connect request.
+message RvEndpointRequest
+{
+    // Virtual device to which request is send.
+    RvDeviceSelector device = 1;
+
+    // New local or remote endpoint to be bound or connected.
+    RvEndpointInfo endpoint = 2;
+}
+
+// Endpoint description.
+message RvEndpointInfo
+{
+    // Slot to which this endpoint belongs.
+    // Slot is a group of related endpoints, like complementary transport and control
+    // stream pair connecting two peers. Multiple slots can be used to connect a
+    // sender to a few remote addresses, or to bind a receiver to a few different
+    // local addresses. When an endpoint is bound or connected, specified slot is
+    // created automatically if it does not exist yet.
+    // When retrieving endpoint info, always present.
+    // When sending endpoint info, keep unset to use default slot (0).
+    optional uint32 slot = 1;
+
+    // Interface to which this endpoint attached.
+    // Interface defines type of data transferred via endpoint, and list of allowed
+    // endpoint protocols (URI schemas). Each slot can have up to one endpoint of
+    // every interface type, e.g. one source endpoint and one control endpoint.
+    RvInterface interface = 2;
+
+    // URI is address associated with endpoint.
+    // For local endpoint, URI defines address to which endpoint is bound.
+    // For remote endpoint, URI defines address to which endpoint is connected.
+    // Allowed URI schemas are defined by endpoint interface.
+    string uri = 3;
+}
+
+// Parameters of sender device.
+message RvSenderConfig
+{
+    // Non-standard encoding for network packets.
+    // If you use non-default device encoding (e.g. change sample rate), you
+    // should also explicitly provide packet encoding on both sender and
+    // receiver, using the same encoding id.
+    optional RvPacketEncoding packet_encoding = 1;
+
+    // Duration of a single packet.
+    // Keep unset to use default.
+    optional google.protobuf.Duration packet_length = 2;
+
+    // Enable packet interleaving.
+    // Keep unset to use default.
+    optional bool packet_interleaving = 3;
+
+    // Forward Error Correction encoding.
+    // Keep unset to use default.
+    optional RvFecEncoding fec_encoding = 4;
+
+    // Number of source packets per FEC block.
+    // Keep unset to use default.
+    optional uint32 fec_block_source_packets = 5;
+
+    // Number of repair packets per FEC block.
+    // Keep unset to use default.
+    optional uint32 fec_block_repair_packets = 6;
+
+    // Latency tuning algorithm.
+    // Use only if you need sender-side latency tuning.
+    // Keep unset to disable.
+    optional RvLatencyTunerBackend latency_tuner_backend = 7;
+
+    // Latency tuning profile.
+    // Use only if you need sender-side latency tuning.
+    // Keep unset to disable.
+    optional RvLatencyTunerProfile latency_tuner_profile = 8;
+
+    // Resampling algorithm.
+    // Keep unset to use default.
+    optional RvResamplerBackend resampler_backend = 9;
+
+    // Resampling quality.
+    // Keep unset to use default.
+    optional RvResamplerProfile resampler_profile = 10;
+
+    // Target latency.
+    // Use only if you need sender-side latency tuning.
+    // Keep unset to disable.
+    optional google.protobuf.Duration target_latency = 11;
+
+    // Maximum deviation of latency from target.
+    // Use only if you need sender-side latency tuning.
+    // Keep unset to disable.
+    optional google.protobuf.Duration latency_tolerance = 13;
+}
+
+// Parameters of receiver device.
+message RvReceiverConfig
+{
+    // Non-standard encodings for network packets.
+    // If your senders use non-standard packet encodings, you should also
+    // list them on receiver using the same encoding identifiers.
+    // Multiple encodings can be specified for the case when different
+    // senders use different custom encodings.
+    repeated RvPacketEncoding packet_encodings = 1;
+
+    // Latency tuning algorithm.
+    // Keep unset to use default.
+    optional RvLatencyTunerBackend latency_tuner_backend = 2;
+
+    // Latency tuning profile.
+    // Keep unset to use default.
+    optional RvLatencyTunerProfile latency_tuner_profile = 3;
+
+    // Resampling algorithm.
+    // Keep unset to use default.
+    optional RvResamplerBackend resampler_backend = 4;
+
+    // Resampling quality.
+    // Keep unset to use default.
+    optional RvResamplerProfile resampler_profile = 5;
+
+    // Target latency.
+    // Keep unset to use default.
+    optional google.protobuf.Duration target_latency = 6;
+
+    // Maximum deviation of latency from target.
+    // Keep unset to disable.
+    optional google.protobuf.Duration latency_tolerance = 11;
+
+    // Timeout for the lack of playback.
+    // Keep unset to use default.
+    optional google.protobuf.Duration no_playback_timeout = 9;
+
+    // Timeout for choppy playback.
+    // Keep unset to use default.
+    optional google.protobuf.Duration choppy_playback_timeout = 10;
+}
+
+// Local encoding of virtual device.
+// Defines how it is presented to apps.
+message RvDeviceEncoding
+{
+    // Virtual device sample rate, in Hertz (e.g. 44100).
+    // Keep unset to use default.
+    optional uint32 sample_rate = 1;
+
+    // Virtual device channel layout (e.g. stereo).
+    // Keep unset to use default.
+    optional RvChannelLayout channel_layout = 2;
+
+    // Number of tracks when RV_CHANNEL_LAYOUT_MULTITRACK is
+    // specified in RvChannelLayout.
+    // Should be in range 1 - 1024.
+    optional uint32 track_count = 4;
+
+    // Virtual device buffer size.
+    // Keep unset to use default.
+    optional google.protobuf.Duration buffer_length = 3;
+}
+
+// Network packet encoding.
+// Defines how samples are encoded when sent over network.
+message RvPacketEncoding
+{
+    // Encoding identifier (arbitrary 8-bit number).
+    // You should use the same numbers on sender and receiver
+    // to identify encodings.
+    uint32 encoding_id = 1;
+
+    // Sample rate, in Hertz (e.g. 44100).
+    uint32 sample_rate = 2;
+
+    // Sample format (e.g. 16-bit PCM).
+    RvSampleFormat sample_format = 3;
+
+    // Channel layout (e.g. stereo).
+    RvChannelLayout channel_layout = 4;
+
+    // Number of tracks when RV_CHANNEL_LAYOUT_MULTITRACK is
+    // specified in RvChannelLayout.
+    // Should be in range 1 - 1024.
+    optional uint32 track_count = 5;
+}
+
+// Device type.
+// Defines whether device will be input (receiver) or output (sender).
+enum RvDeviceType
+{
+    // Output device that sends sound to remote receiver.
+    RV_DEVICE_TYPE_SENDER = 0;
+
+    // Input device that receives sound from remote sender.
+    RV_DEVICE_TYPE_RECEIVER = 1;
+}
+
+// Endpoint interface type.
+enum RvInterface
+{
+    // Interface that consolidates all types of streams.
+    RV_INTERFACE_CONSOLIDATED = 0;
+
+    // Interface for audio stream source data.
+    RV_INTERFACE_AUDIO_SOURCE = 1;
+
+    // Interface for audio stream repair data.
+    RV_INTERFACE_AUDIO_REPAIR = 2;
+
+    // Interface for audio control messages.
+    RV_INTERFACE_AUDIO_CONTROL = 3;
+}
+
+// Sample format.
+// Defines how audio samples are encoded.
+enum RvSampleFormat
+{
+    // Uncompressed PCM, 16-bit signed integers, network endian.
+    ROC_FORMAT_PCM_SINT16 = 0;
+}
+
+// Channel layout.
+// Defines what channel count and their meaning.
+enum RvChannelLayout
+{
+    // One monochromatic channel.
+    RV_CHANNEL_LAYOUT_MONO = 0;
+
+    // Two channels: left and right.
+    RV_CHANNEL_LAYOUT_STEREO = 1;
+
+    // Multi-track audio.
+    RV_CHANNEL_LAYOUT_MULTITRACK = 2;
+}
+
+// Forward Error Correction encoding.
+// Defines method for repairing lost packets to improve quality on
+// unreliable networks.
+enum RvFecEncoding
+{
+    // No FEC encoding.
+    RV_FEC_ENCODING_DISABLE = 0;
+
+    // Default FEC encoding.
+    RV_FEC_ENCODING_DEFAULT = 1;
+
+    // Reed-Solomon FEC encoding (RFC 6865) with m=8.
+    // Good for small block sizes (below 256 packets).
+    RV_FEC_ENCODING_RS8M = 2;
+
+    // LDPC-Staircase FEC encoding (RFC 6816).
+    // Good for large block sizes (above 1024 packets).
+    RV_FEC_ENCODING_LDPC_STAIRCASE = 3;
+}
+
+// Latency tuner backend.
+// Defines which latency is monitored and adjusted.
+enum RvLatencyTunerBackend
+{
+    // Select best backend automatically.
+    RV_LATENCY_TUNER_BACKEND_DEFAULT = 0;
+
+    // Latency tuning based on network incoming queue length.
+    RV_LATENCY_TUNER_BACKEND_NIQ = 2;
+}
+
+// Latency tuner profile.
+// Defines whether latency tuning is enabled and which algorithm is used.
+enum RvLatencyTunerProfile
+{
+    // Select best profile automatically.
+    RV_LATENCY_TUNER_PROFILE_DEFAULT = 0;
+
+    // No latency tuning.
+    // Expect regular underruns or overruns.
+    RV_LATENCY_TUNER_PROFILE_INTACT = 1;
+
+    // Responsive latency tuning.
+    // Clock speed is adjusted quickly and accurately.
+    RV_LATENCY_TUNER_PROFILE_RESPONSIVE = 2;
+
+    // Gradual latency tuning.
+    // Clock speed is adjusted slowly and smoothly.
+    RV_LATENCY_TUNER_PROFILE_GRADUAL = 3;
+}
+
+// Resampler backend.
+// Affects speed and quality.
+enum RvResamplerBackend
+{
+    // Select best backend automatically.
+    RV_RESAMPLER_BACKEND_DEFAULT = 0;
+
+    // CPU-demanding good-quality built-in resampler.
+    // Works fine with any latency.
+    RV_RESAMPLER_BACKEND_BUILTIN = 1;
+
+    // Fast good-quality resampler from SpeexDSP.
+    // Works fine with higher latency.
+    RV_RESAMPLER_BACKEND_SPEEX = 2;
+
+    // Lower quality fast resampler combining SpeexDSP and decimation.
+    // Works fine with any latency.
+    RV_RESAMPLER_BACKEND_SPEEXDEC = 3;
+}
+
+// Resampler profile.
+// Affects speed and quality.
+// Each resampler backend treats profile in its own way.
+enum RvResamplerProfile
+{
+    // Select default profile.
+    RV_RESAMPLER_PROFILE_DEFAULT = 0;
+
+    // High quality, low speed.
+    RV_RESAMPLER_PROFILE_HIGH = 1;
+
+    // Medium quality, medium speed.
+    RV_RESAMPLER_PROFILE_MEDIUM = 2;
+
+    // Low quality, high speed.
+    RV_RESAMPLER_PROFILE_LOW = 3;
+}
+
+// uniDesk: true exactly between first StartIO and last StopIO.
+message RvReaderState { bool reading = 1; }
