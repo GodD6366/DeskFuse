@@ -12,7 +12,7 @@ publish.workspace = true
 
 [dependencies]
 mdns-sd = "=0.21.1"
-thiserror = "=2.0.18"
+thiserror = "=2.0.20"
 deskfuse-core = { path = "../deskfuse-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
