@@ -134,12 +134,11 @@ fn rewrite(
     }
     for item in &mut value.snapshot.items {
         for rep in &mut item.representations {
-            if rep.type_name == "public.file-url" {
-                if let Ok(text) = std::str::from_utf8(&rep.data) {
-                    if let Some(new) = mapped(text, source, target)? {
-                        rep.data = new.into_bytes();
-                    }
-                }
+            if rep.type_name == "public.file-url"
+                && let Ok(text) = std::str::from_utf8(&rep.data)
+                && let Some(new) = mapped(text, source, target)?
+            {
+                rep.data = new.into_bytes();
             }
         }
     }

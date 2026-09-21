@@ -411,10 +411,10 @@ impl State {
             }
         };
         self.available = status == InputActivationStatus::Ready;
-        if self.last_report.as_ref() != Some(&report) {
-            if runtime.send(report.command()).await.is_ok() {
-                self.last_report = Some(report);
-            }
+        if self.last_report.as_ref() != Some(&report)
+            && runtime.send(report.command()).await.is_ok()
+        {
+            self.last_report = Some(report);
         }
         if self.available && self.last_error.take().is_some() {
             let _ = self.ui.unbounded_send(UiEvent::InputStatus { error: None });
