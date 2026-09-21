@@ -9,6 +9,11 @@ import DeskFuseEngine
     var error: String?
     var starting = true
     var selfTest = false
+    /// A connected client may precede its first snapshot. Do not flash a
+    /// failure page during that gap, or mask a real startup failure.
+    var isEngineLoading: Bool {
+        !selfTest && error == nil && (starting || (client != nil && snapshot == nil))
+    }
     var selectedPage: Page = .clipboard
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
@@ -133,7 +138,13 @@ import DeskFuseEngine
               completion: ((CommandReceipt) -> Void)? = nil, failure: (() -> Void)? = nil,
               applied: (() -> Void)? = nil, failed: ((String) -> Void)? = nil) {
         guard let client else {
-            error = "引擎尚未就绪"; failure?(); failed?("引擎尚未就绪"); return
+            let message = "引擎尚未就绪"
+            // A menu command can arrive before the window is ready. Keep
+            // normal initialization in loading state and preserve real errors.
+            if !starting && error == nil { error = message }
+            failure?()
+            failed?(message)
+            return
         }
         if let pairing { pairingDecisions.insert(pairing) }
         Task {

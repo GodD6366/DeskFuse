@@ -9,17 +9,14 @@ struct SettingsWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let error = store.error ?? store.snapshot?.error {
-                HStack(alignment: .top, spacing: 12) {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .textSelection(.enabled)
-                    Spacer(minLength: 8)
-                    if store.error != nil { Button("关闭") { store.error = nil } }
-                }
-                .font(.callout).padding(12)
-                .background(.orange.opacity(0.1))
+                WorkspaceErrorNotice(
+                    message: error,
+                    dismiss: store.error != nil ? { store.error = nil } : nil
+                )
             }
             SettingsView(store: store, presentation: SettingsPresentation(store.snapshot)).equatable()
         }
+        .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .tint(.blue)
         .onAppear { store.showSettingsWindow = { openSettings() } }
     }
