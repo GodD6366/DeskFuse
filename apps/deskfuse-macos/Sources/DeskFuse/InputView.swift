@@ -9,6 +9,7 @@ struct InputView: View {
     @State private var showAddDevice = false
     @State private var updatingSettings = false
     @State private var retryingInput = false
+    @State private var reconnectingDevices: Set<String> = []
 
     var body: some View {
         GeometryReader { geometry in
@@ -53,6 +54,9 @@ struct InputView: View {
         }
         .onChange(of: snapshot.input.canConfigure) { _, allowed in
             if !allowed { showSettings = false; showAddDevice = false }
+        }
+        .onChange(of: snapshot.input.displays.filter(\.ready).map(\.deviceId)) { _, ready in
+            reconnectingDevices.subtract(Set(ready))
         }
     }
 
@@ -162,6 +166,19 @@ struct InputView: View {
                    failed: { _ in updatingSettings = false })
     }
 
+    /// Dial the peer again and start a new input activation so the receiver can prepare.
+    private func reconnectDevice(_ id: String) {
+        guard !reconnectingDevices.contains(id) else { return }
+        reconnectingDevices.insert(id)
+        store.error = nil
+        store.send(.connect(peerId: id))
+        store.send(.restartInputActivation(peerId: id))
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(12))
+            reconnectingDevices.remove(id)
+        }
+    }
+
     private func applySettings(_ settings: InputSettings) {
         guard !updatingSettings else { return }
         updatingSettings = true
@@ -190,7 +207,8 @@ struct InputView: View {
             Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
             DisplayLayout(store: store, snapshot: snapshot, onRemoveDevice: { id in
                 setParticipant(id, included: false)
-            }, editingDisabled: updatingSettings).frame(height: height)
+            }, onReconnectDevice: reconnectDevice, reconnecting: reconnectingDevices,
+               editingDisabled: updatingSettings).frame(height: height)
             Text("拖动屏幕调整位置，松手自动贴合。添加或移除按整台设备生效，不解除配对。")
                 .font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity)
@@ -218,6 +236,9 @@ struct InputView: View {
         let screens = snapshot.input.displays.sorted { $0.layoutID < $1.layoutID }
         let deviceScreens = screens.enumerated().filter { $0.element.deviceId == id }
         let name = local ? snapshot.localName : device?.name ?? "设备 \(id.prefix(8))"
+        let screensUnready = !deviceScreens.isEmpty && !deviceScreens.allSatisfy { $0.element.ready }
+        let canReconnect = screensUnready && (snapshot.input.settings.enabled || device?.connected != true)
+        let reconnecting = reconnectingDevices.contains(id)
         return HStack(alignment: .center, spacing: 14) {
             Image(systemName: local ? "laptopcomputer" : "display")
                 .font(.title3)
@@ -251,6 +272,11 @@ struct InputView: View {
                         .font(.caption)
                         .disabled(updatingSettings)
                         .help("对端已在本机收回输入；重新启用会为这台设备开始一次新的共享周期。")
+                } else if canReconnect {
+                    Button(reconnecting ? "正在连接" : "重连", systemImage: "arrow.clockwise") { reconnectDevice(id) }
+                        .font(.caption)
+                        .disabled(updatingSettings || reconnecting)
+                        .help("重新连接此设备，并通知对端准备键鼠共享。")
                 }
                 Button("移除", systemImage: "minus.circle") { setParticipant(id, included: false) }
                     .disabled(updatingSettings)
