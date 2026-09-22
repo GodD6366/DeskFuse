@@ -76,6 +76,7 @@ struct MainSidebar: View {
             .font(.system(size: 12, weight: .regular))
             .foregroundStyle(.secondary)
             .textCase(nil)
+            .padding(.leading, 16)
             .padding(.top, 13)
             .padding(.bottom, 7)
     }
@@ -126,6 +127,42 @@ private struct SidebarUpdateButton: View {
     }
 }
 
+private struct SidebarCheckUpdateButton: View {
+    let store: AppStore
+
+    private var update: UpdateState? { store.snapshot?.update }
+    private var checking: Bool { update?.checking == true }
+
+    /// 与设置页「检查更新」相同：没有已安装版本、正在检查、已就绪或正在安装时不可再查。
+    private var blocked: Bool {
+        if UpdateInstallationChannel.isManual { return true }
+        guard let update else { return true }
+        return !update.available || update.checking || update.ready || update.manualRequested
+    }
+
+    private var helpText: String {
+        if UpdateInstallationChannel.isManual { return "此版本仅支持手动安装更新" }
+        guard let update else { return "正在启动" }
+        if update.checking { return "正在检查…" }
+        if update.ready { return "更新已就绪" }
+        if update.manualRequested { return "正在下载安装…" }
+        if !update.available { return "更新服务不可用" }
+        return "检查更新"
+    }
+
+    var body: some View {
+        Button { store.send(.checkUpdates) } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 24, height: 28)
+        }
+        .buttonStyle(.plain)
+        .disabled(blocked)
+        .accessibilityLabel(checking ? "正在检查更新" : "检查更新")
+        .help(helpText)
+    }
+}
+
 private struct SidebarDeviceStatus: View {
     let store: AppStore
     var body: some View {
@@ -154,13 +191,16 @@ private struct SidebarDeviceStatus: View {
             }
             .buttonStyle(.plain)
             .help("在设备页查看本机：\(store.snapshot?.localName ?? "这台 Mac")")
-            Button { store.openSettings() } label: {
-                Image(systemName: "gearshape").font(.system(size: 15, weight: .medium))
-                    .frame(width: 24, height: 28)
+            HStack(spacing: 4) {
+                SidebarCheckUpdateButton(store: store)
+                Button { store.openSettings() } label: {
+                    Image(systemName: "gearshape").font(.system(size: 15, weight: .medium))
+                        .frame(width: 24, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("设置")
+                .help("设置（⌘,）")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("设置")
-            .help("设置（⌘,）")
         }
         .padding(.horizontal, 14).padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
