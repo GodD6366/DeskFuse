@@ -5,8 +5,13 @@ import DeskFuseEngine
 
 @MainActor @Observable final class AppStore {
     static let shared = AppStore()
-    var snapshot: EngineSnapshot?
-    var error: String?
+    let errorNotice = ErrorNotice()
+    var snapshot: EngineSnapshot? {
+        didSet { errorNotice.updateRuntimeError(snapshot?.error) }
+    }
+    var error: String? {
+        didSet { errorNotice.updateLocalError(error) }
+    }
     var starting = true
     var selfTest = false
     var selectedPage: Page = .clipboard

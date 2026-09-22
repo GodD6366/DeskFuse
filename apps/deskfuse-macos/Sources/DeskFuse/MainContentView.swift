@@ -10,18 +10,7 @@ struct MainContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = store.error ?? store.snapshot?.error {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text(error).font(.callout).textSelection(.enabled)
-                    Spacer(minLength: 8)
-                    if store.error != nil {
-                        Button("关闭") { store.error = nil }
-                    }
-                }
-                .padding(12)
-                .background(.yellow.opacity(0.12))
-            }
+            ErrorNoticeView(notice: store.errorNotice)
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
