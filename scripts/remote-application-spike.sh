@@ -43,14 +43,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>NSScreenCaptureUsageDescription</key><string>验证应用画面采集、原生分辨率与硬件视频编解码。</string>
 </dict></plist>
 PLIST
-# Keep the designated requirement stable across rebuilds so TCC grants survive.
-# In a linked worktree reuse the main checkout's pinned certificate, then use
-# the same selector as the production build. Never silently fall back to ad-hoc.
-if [[ -z "${CODESIGN_IDENTITY:-}" && ! -f "$ROOT_DIR/.codesign-identity" ]]; then
-  COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir)"
-  MAIN_SIGNING_PIN="$(dirname "$COMMON_GIT_DIR")/.codesign-identity"
-  if [[ -f "$MAIN_SIGNING_PIN" ]]; then export CODESIGN_IDENTITY="$(cat "$MAIN_SIGNING_PIN")"; fi
-fi
+# 指定需求需跨次构建保持稳定，TCC 授权才不会失效。
+# 签名身份与正式打包相同：worktree 无本目录指纹时沿用主检出，禁止退回 ad-hoc。
 source "$ROOT_DIR/scripts/codesign-identity.sh"
 codesign --force --sign "$CODESIGN_IDENTITY" "$BUNDLE" >&2
 codesign --verify --strict "$BUNDLE"
