@@ -153,6 +153,7 @@ pub enum UiEvent {
     InputStatus {
         error: Option<String>,
     },
+    InputObserverRecoveryRequired,
     PasteReady {
         target_pid: i32,
         expected_change_count: i64,
@@ -1915,6 +1916,10 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::RefreshPermissions) => {
+                        // Refresh the actual input owner, not only the GUI's cached permissions.
+                        if let Err(error) = runtime.send(RuntimeCommand::RefreshNativeObserver).await {
+                            command_error = Some(error.to_string());
+                        }
                         last_permission = None;
                         emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
                     }

@@ -100,6 +100,39 @@ mod build_identity_tests {
     }
 
     #[test]
+    fn retry_is_routed_to_input_service_and_allowed_across_ipc() {
+        use super::*;
+        let command = RuntimeCommand::RefreshNativeObserver;
+        assert!(command.is_input());
+        assert!(host_command_allowed(&command));
+        let encoded = serde_json::to_vec(&HostMessage::Command {
+            id: 1,
+            value: command,
+        })
+        .unwrap();
+        let decoded: HostMessage = serde_json::from_slice(&encoded).unwrap();
+        assert!(matches!(
+            decoded,
+            HostMessage::Command {
+                value: RuntimeCommand::RefreshNativeObserver,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn observer_exhaustion_requests_process_recovery_but_ordinary_errors_do_not() {
+        use super::*;
+        let control = ServiceControl::default();
+        control.status.lock().unwrap().error = Some("permission denied".into());
+        assert!(!process_recovery_required(&control));
+        control.status.lock().unwrap().observer_recovery_required = true;
+        assert!(process_recovery_required(&control));
+        *control.status.lock().unwrap() = NativeStatus::default();
+        assert!(!process_recovery_required(&control));
+    }
+
+    #[test]
     fn release_json_formats_version_and_build() {
         let dir = scratch();
         let path = dir.join("release.json");
@@ -273,11 +306,19 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::DeleteInputSharingScene { .. }
             | RuntimeCommand::SetInputSharingSettings(_)
             | RuntimeCommand::RestartInputActivation { .. }
+            | RuntimeCommand::RefreshNativeObserver
             | RuntimeCommand::MoveInputDevice { .. }
             | RuntimeCommand::PauseManagedActivation { .. }
             | RuntimeCommand::PauseCurrentManagedActivation
     )
 }
+fn process_recovery_required(control: &ServiceControl) -> bool {
+    control
+        .status
+        .lock()
+        .is_ok_and(|status| status.observer_recovery_required)
+}
+
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -305,6 +346,7 @@ pub(super) async fn run_host(
             *value
         };
         let authority = Authority::from_view(&network.borrow());
+        let launched_at = std::time::Instant::now();
         let result = run_process(
             &options,
             &display_name,
@@ -322,7 +364,17 @@ pub(super) async fn run_host(
         *control.sequence.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         *control.urgent.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *control.remote.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let error = result.err();
+        let mut error = result.err();
+        // Count consecutive failures, not every incident over the app's lifetime.
+        if launched_at.elapsed() >= Duration::from_secs(60) {
+            attempts = 0;
+        }
+        if error.is_some() {
+            attempts += 1;
+            if attempts > 3 {
+                error = Some("输入服务自动恢复未成功，请点击重试；若仍失败，请检查系统权限".into());
+            }
+        }
         let status = NativeStatus {
             error: error.clone(),
             ..Default::default()
@@ -346,13 +398,13 @@ pub(super) async fn run_host(
         if error.is_none() {
             break;
         }
-        attempts += 1;
         if attempts > 3 {
             // No hidden fallback into the application's process. Explicit enable retries.
             loop {
                 match commands.recv().await {
                     Some(RuntimeCommand::Shutdown) | None => return,
-                    Some(value @ RuntimeCommand::RestartInputActivation { .. })
+                    Some(value @ RuntimeCommand::RefreshNativeObserver)
+                    | Some(value @ RuntimeCommand::RestartInputActivation { .. })
                     | Some(value @ RuntimeCommand::SetInputSharingSettings(_)) => {
                         pending.push_back(value);
                         attempts = 0;
@@ -360,7 +412,7 @@ pub(super) async fn run_host(
                     }
                     Some(_) => {
                         let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand(
-                            "输入进程不可用，请重新开启共享后重试".into(),
+                            "输入服务暂不可用，请在屏幕与键鼠页面点击重试".into(),
                         )));
                     }
                 }
@@ -529,6 +581,18 @@ async fn run_process(
             },
             _ = tick.tick() => {
                 if let Some(exit) = process.0.try_wait().map_err(|e|e.to_string())? { return Err(format!("独立输入进程已退出：{exit}")); }
+                if process_recovery_required(control) {
+                    // Retire native sessions first. A stuck query must not prevent the
+                    // supervisor from replacing only the helper process after the grace.
+                    control.signal(b'E');
+                    control.signal(b'Q');
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if process.0.try_wait().map_err(|e|e.to_string())?.is_some() { break; }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    return Err("原生输入检查持续无响应，正在重启输入服务".into());
+                }
                 control.signal(if deskfuse_core::debug_logging::enabled() { b'D' } else { b'd' });
             },
             _ = closed.recv() => return Err("独立输入进程通信已中断".into()),

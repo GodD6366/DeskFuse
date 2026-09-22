@@ -298,12 +298,7 @@ impl MotionCadence {
 }
 impl State {
     fn error(&mut self, ui: &UnboundedSender<UiEvent>, message: String) {
-        if self.last_error.as_ref() != Some(&message) {
-            self.last_error = Some(message.clone());
-            let _ = ui.unbounded_send(UiEvent::InputStatus {
-                error: Some(message),
-            });
-        }
+        publish_native_error(&mut self.last_error, Some(message), ui);
     }
     async fn reclaim(&mut self, runtime: &RuntimeHandle, restore: Option<(f64, f64)>) {
         self.crossing_started = None;
@@ -758,6 +753,57 @@ fn native_available(
 }
 
 const NATIVE_OBSERVATION_MAX_AGE: Duration = Duration::from_secs(1);
+const NATIVE_OBSERVER_RESTART_AFTER: Duration = Duration::from_secs(5);
+
+fn publish_native_error(
+    previous: &mut Option<String>,
+    error: Option<String>,
+    ui: &UnboundedSender<UiEvent>,
+) {
+    if *previous != error {
+        *previous = error.clone();
+        let _ = ui.unbounded_send(UiEvent::InputStatus { error });
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ObserverRecovery {
+    Wait,
+    Replace,
+    RestartService,
+}
+
+fn observer_recovery(
+    age: Duration,
+    exited: bool,
+    retired_blocked: bool,
+    manual: bool,
+) -> ObserverRecovery {
+    // Bound spawn failures and repeated clicks as well as blocked native queries.
+    let deadline = if exited || manual {
+        NATIVE_OBSERVATION_MAX_AGE
+    } else {
+        NATIVE_OBSERVER_RESTART_AFTER
+    };
+    if age < deadline {
+        ObserverRecovery::Wait
+    } else if exited || !retired_blocked {
+        ObserverRecovery::Replace
+    } else {
+        ObserverRecovery::RestartService
+    }
+}
+
+fn native_check_error(
+    observation: Option<&NativeObservation>,
+    startup_age: Duration,
+) -> Option<String> {
+    match observation.filter(|sample| sample.fresh()) {
+        Some(sample) => sample.topology.as_ref().err().cloned(),
+        None if startup_age < NATIVE_OBSERVATION_MAX_AGE => None,
+        None => Some("原生输入状态检查超时，正在自动重试；也可点击重试".into()),
+    }
+}
 
 #[derive(Clone)]
 struct NativeObservation {
@@ -898,6 +944,8 @@ async fn run(
     let (mut observations, mut observer, observer_thread) = native_observer(stopping.clone());
     let mut observer_started = Instant::now();
     let mut retired_observer: Option<thread::JoinHandle<()>> = None;
+    let mut observer_retry_requested = false;
+    let mut observer_recovery_requested = false;
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1014,7 +1062,9 @@ async fn run(
                         if let Some(thread) = &state.observer_thread {
                             thread.unpark();
                         }
+                        observer_retry_requested = true;
                         next_refresh=Instant::now();
+                        timer.reset_immediately();
                     }
                     RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
                         let receive_arrived = Instant::now();
@@ -1166,26 +1216,39 @@ async fn run(
                 if retired_observer.as_ref().is_some_and(|worker| worker.is_finished()) {
                     finish_native_observer(retired_observer.take());
                 }
-                let observer_stalled = observations.borrow().as_ref()
-                    .map_or(observer_started, |sample| sample.started_at)
-                    .elapsed() >= Duration::from_secs(5);
+                let observer_age = observations.borrow().as_ref().map_or_else(
+                    || observer_started.elapsed(),
+                    |sample| sample.started_at.elapsed().max(sample.started_wall.elapsed().unwrap_or(NATIVE_OBSERVER_RESTART_AFTER)),
+                );
                 let observer_exited = observer.as_ref().is_none_or(|worker| worker.is_finished());
-                // At most one retired native query may remain blocked. Dropping
-                // its receiver prevents it from publishing or starting another query.
-                if observer_exited || (observer_stalled && retired_observer.is_none()) {
-                    if observer_exited {
-                        finish_native_observer(observer.take());
-                    } else {
-                        retired_observer = observer.take();
+                match observer_recovery(observer_age, observer_exited, retired_observer.is_some(), observer_retry_requested) {
+                    ObserverRecovery::Wait => {},
+                    ObserverRecovery::Replace => {
+                        // Closing the old receiver fences late results. Never accumulate
+                        // more than one retired blocked query in this process.
+                        if observer_exited {
+                            finish_native_observer(observer.take());
+                        } else {
+                            retired_observer = observer.take();
+                        }
+                        let (receiver, worker, thread) = native_observer(stopping.clone());
+                        observations = receiver;
+                        observer = worker;
+                        observer_started = now;
+                        state.observer_thread = thread;
+                        observer_open = observer.is_some();
+                        next_refresh = now;
+                        timing::record("native_observer_retry", observer_age, "replaced observer".into());
                     }
-                    let (receiver, worker, thread) = native_observer(stopping.clone());
-                    observations = receiver;
-                    observer = worker;
-                    observer_started = now;
-                    state.observer_thread = thread;
-                    observer_open = observer.is_some();
-                    next_refresh = now;
+                    ObserverRecovery::RestartService if !observer_recovery_requested => {
+                        observer_recovery_requested = true;
+                        state.native_failed(&runtime, "原生输入检查持续无响应，正在恢复输入服务".into()).await;
+                        let _ = ui.unbounded_send(UiEvent::InputObserverRecoveryRequired);
+                        timing::record("native_observer_recovery", observer_age, "observer budget exhausted".into());
+                    }
+                    ObserverRecovery::RestartService => {},
                 }
+                observer_retry_requested = false;
                 let mut snapshot = runtime.input_snapshot();
                 let effective = effective_native_settings(&snapshot, &state.paused_activations);
                 if latch_emergency(&emergency, &snapshot, &mut state.paused_activations) {
@@ -1224,9 +1287,10 @@ async fn run(
                     let session_active = observation.as_ref().is_some_and(|sample| sample.session_active);
                     let (initial_phase, _) = native_phase(permission,session_active,recording_active,false,None);
                     let permitted = initial_phase == InputActivationStatus::Preparing;
-                    let mut adapter_error = None;
-                    match observation.map(|sample| sample.topology)
-                        .unwrap_or_else(|| Err("原生输入状态检查未完成或已超时".into())) {
+                    let observation_pending = observation.is_none();
+                    let mut adapter_error = native_check_error(observation.as_ref(), started.elapsed());
+                    if let Some(sample) = observation {
+                        match sample.topology {
                         Ok(topology) => {
                             if snapshot.local_topology.as_ref() != Some(&topology) {
                                 state.reclaim(&runtime, Some(state.anchor)).await;
@@ -1238,6 +1302,7 @@ async fn run(
                             }
                         }
                         Err(error) => adapter_error=Some(error.to_string()),
+                        }
                     }
                     if effective.enabled && permitted && adapter_error.is_none() {
                         if !state.capture_started {
@@ -1257,9 +1322,16 @@ async fn run(
                             match crate::platform::create_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
                         }
                     }
-                    if let Some(error)=&adapter_error {state.error(&ui,error.clone());}
+                    // A successful check clears its error even when sharing is off or
+                    // locally paused. Native Ready is not a prerequisite for recovery.
+                    publish_native_error(&mut state.last_error, adapter_error.clone(), &ui);
                     let adapters_ready=native_available(&effective,permitted,state.capture_started,state.injector.is_some());
-                    let (status, reason) = if effective.enabled {
+                    let (status, reason) = if observation_pending {
+                        match adapter_error {
+                            Some(error) => (InputActivationStatus::Unavailable, Some(error)),
+                            None => (InputActivationStatus::Preparing, Some("正在检查原生输入状态".into())),
+                        }
+                    } else if effective.enabled {
                         native_phase(permission,session_active,recording_active,adapters_ready,adapter_error)
                     } else {
                         (InputActivationStatus::Unavailable,Some("本机主控未启用，等待设备网络中的主控".into()))
@@ -1390,6 +1462,135 @@ pub(crate) fn helper_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn healthy_observation() -> NativeObservation {
+        NativeObservation {
+            permission: PermissionSnapshot::new(
+                PermissionStatus::Granted,
+                PermissionStatus::Unknown,
+                PermissionStatus::Unknown,
+            ),
+            session_active: true,
+            topology: Ok(deskfuse_core::DisplayTopology {
+                generation: 1,
+                displays: vec![],
+            }),
+            started_at: Instant::now(),
+            started_wall: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn initial_check_is_pending_not_an_error_but_missing_samples_time_out() {
+        assert_eq!(native_check_error(None, Duration::ZERO), None);
+        assert!(native_check_error(None, NATIVE_OBSERVATION_MAX_AGE).is_some());
+        let sample = healthy_observation();
+        assert_eq!(
+            native_check_error(Some(&sample), Duration::from_secs(30)),
+            None
+        );
+        let mut stale = sample;
+        stale.started_at -= Duration::from_secs(2);
+        assert!(native_check_error(Some(&stale), Duration::from_secs(30)).is_some());
+        assert!(!stale.permits_input());
+    }
+
+    #[test]
+    fn successful_recheck_clears_error_without_enabling_sharing() {
+        let settings = InputSharingSettings::default();
+        let (ui, mut events) = futures::channel::mpsc::unbounded();
+        let mut error = None;
+        publish_native_error(
+            &mut error,
+            native_check_error(None, Duration::from_secs(2)),
+            &ui,
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(UiEvent::InputStatus { error: Some(_) })
+        ));
+        let sample = healthy_observation();
+        publish_native_error(
+            &mut error,
+            native_check_error(Some(&sample), Duration::from_secs(2)),
+            &ui,
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(UiEvent::InputStatus { error: None })
+        ));
+        assert!(error.is_none());
+        assert!(!native_available(&settings, true, false, false));
+        publish_native_error(&mut error, None, &ui);
+        assert!(
+            events.try_recv().is_err(),
+            "unchanged health must not flood the UI"
+        );
+    }
+
+    #[test]
+    fn fresh_failed_check_remains_visible_and_permission_denial_still_fails_closed() {
+        let mut sample = healthy_observation();
+        sample.topology = Err("display query failed".into());
+        assert_eq!(
+            native_check_error(Some(&sample), Duration::from_secs(2)).as_deref(),
+            Some("display query failed")
+        );
+        assert!(!sample.permits_input());
+        let mut denied = healthy_observation();
+        denied.permission.accessibility = PermissionStatus::Denied;
+        assert_eq!(
+            native_check_error(Some(&denied), Duration::from_secs(2)),
+            None
+        );
+        assert!(!denied.permits_input());
+    }
+
+    #[test]
+    fn blocked_observers_escalate_without_unbounded_threads_or_click_restarts() {
+        use ObserverRecovery::*;
+        assert_eq!(observer_recovery(Duration::ZERO, false, false, true), Wait);
+        assert_eq!(observer_recovery(Duration::ZERO, true, false, false), Wait);
+        assert_eq!(
+            observer_recovery(Duration::from_secs(1), true, true, false),
+            Replace
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(2), false, false, false),
+            Wait
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(2), false, false, true),
+            Replace
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(5), false, false, false),
+            Replace
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(5), false, true, false),
+            RestartService
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(2), false, true, true),
+            RestartService
+        );
+        // A retired worker that finally exits frees the one replacement slot.
+        assert_eq!(
+            observer_recovery(Duration::from_secs(5), false, false, false),
+            Replace
+        );
+    }
+
+    #[test]
+    fn retired_observer_cannot_publish_a_late_success_to_its_replacement() {
+        let (old_sender, receiver) = tokio::sync::watch::channel(None);
+        drop(receiver);
+        let (_new_sender, replacement) = tokio::sync::watch::channel(None::<NativeObservation>);
+        assert!(old_sender.send(Some(healthy_observation())).is_err());
+        assert!(replacement.borrow().is_none());
+    }
+
     #[test]
     fn shutdown_does_not_join_a_blocked_native_observer() {
         let (release, query) = std::sync::mpsc::channel();

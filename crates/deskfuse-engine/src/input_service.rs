@@ -241,6 +241,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             Some(deskfuse_runtime::RuntimeEvent::Error(error)) = runtime_events.next() => { status.native.error = Some(error.to_string()); },
             Some(event) = ui_events.next() => match event {
                 UiEvent::InputStatus {error} => status.native.error = error,
+                UiEvent::InputObserverRecoveryRequired => status.native.observer_recovery_required = true,
                 UiEvent::InputLockStatus(value) => status.native.locked = value,
                 UiEvent::InputRecordingReady(value) => status.native.recording_ready = value,
                 UiEvent::PermissionSnapshot(value) => {

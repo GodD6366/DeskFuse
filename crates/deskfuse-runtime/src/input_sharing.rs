@@ -574,6 +574,9 @@ impl InputActor {
                     .iter()
                     .all(|event| matches!(event, SharedInputEvent::Motion { .. })));
         match command {
+            RuntimeCommand::RefreshNativeObserver => {
+                self.emit(RuntimeEvent::RefreshNativeObserver);
+            }
             RuntimeCommand::MoveInputDevice {
                 device_id,
                 display_id,
@@ -1733,6 +1736,19 @@ mod tests {
             receiver,
         )
     }
+    #[tokio::test]
+    async fn refresh_reaches_native_delivery_without_changing_settings() {
+        let (mut actor, _, _, _, delivery) = setup(false);
+        let settings = actor.snapshot.settings.clone();
+        actor.command(RuntimeCommand::RefreshNativeObserver).await;
+        assert!(matches!(
+            delivery.try_recv(),
+            Ok(RuntimeEvent::RefreshNativeObserver)
+        ));
+        assert_eq!(actor.snapshot.settings, settings);
+        assert!(!actor.snapshot.settings.enabled);
+    }
+
     pub(super) fn receive(
         actor: &mut InputActor,
         peer: DeviceId,

@@ -1197,6 +1197,7 @@ impl RuntimeCommand {
                 | Self::DeleteInputSharingScene { .. }
                 | Self::SetInputSharingSettings(_)
                 | Self::RestartInputActivation { .. }
+                | Self::RefreshNativeObserver
                 | Self::MoveInputDevice { .. }
                 | Self::SetManagedInputAvailability { .. }
                 | Self::PauseManagedActivation { .. }
@@ -2573,10 +2574,6 @@ impl Actor {
     async fn handle_command(&mut self, command: RuntimeCommand) {
         match command {
             RuntimeCommand::SystemWoke => self.system_woke().await,
-            RuntimeCommand::RefreshNativeObserver => {
-                // Request immediate permission check by notifying input_coordinator
-                let _ = self.event_tx.send(RuntimeEvent::RefreshNativeObserver);
-            }
             RuntimeCommand::RefreshPeers => {
                 for hint in self.hints.values_mut() {
                     for route in hint.routes.values_mut() {

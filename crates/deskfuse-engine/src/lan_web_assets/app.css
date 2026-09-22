@@ -29,7 +29,8 @@ h1{font-size:28px;letter-spacing:-.8px;font-weight:650;line-height:1.3}
 .local-badge{font-size:11px;color:#557596;white-space:nowrap;background:#f3f7fc;border-radius:5px;padding:6px 8px;margin-top:5px}
 .composer{border:1px solid #d8e3ee;border-radius:12px;overflow:hidden;background:#fcfdff}
 .composer:focus-within{border-color:#8bbced;box-shadow:0 0 0 2px #eaf3fd}
-.composer textarea{display:block;border:0;background:transparent;resize:vertical;width:100%;min-height:128px;max-height:400px;padding:17px 18px 8px;line-height:1.65;font-size:16px;color:inherit}
+.composer textarea{display:block;border:0;background:transparent;resize:vertical;width:100%;min-height:128px;max-height:400px;padding:17px 18px 8px;line-height:1.65;font-size:16px;color:inherit;scrollbar-width:none}
+.composer textarea::-webkit-scrollbar{display:none}
 .composer textarea:focus{outline:none}
 .composer textarea::placeholder{color:#93a1af}
 .composer-bar{padding:12px;display:flex;align-items:center;justify-content:space-between;gap:16px}
@@ -50,7 +51,8 @@ h1{font-size:28px;letter-spacing:-.8px;font-weight:650;line-height:1.3}
 .queue-heading{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .queue-heading h2{font-size:13px;font-weight:600}
 .text-button{color:var(--blue);background:none;border:0;font-size:12px;padding:8px 0;min-height:36px}
-.upload-queue{list-style:none;padding:0;margin:6px 0 0;max-height:290px;overflow:auto}
+.upload-queue{list-style:none;padding:0;margin:6px 0 0;max-height:290px;overflow:auto;scrollbar-width:none}
+.upload-queue::-webkit-scrollbar{display:none}
 .upload-task{display:flex;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid #f0f3f6}
 .upload-task:last-child{border-bottom:0}
 .task-info{flex:1;min-width:0}
@@ -150,7 +152,8 @@ footer{font-size:11px;color:#8a97a5;text-align:center;padding:36px 0 max(28px,en
 .item-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
 .item-actions:empty{display:none}
 .item-actions .button{white-space:normal;min-height:44px}
-.item-text{display:block;width:100%;height:180px;resize:vertical;padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:inherit;line-height:1.6;font-size:16px;margin-top:12px}
+.item-text{display:block;width:100%;height:180px;resize:vertical;padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;color:inherit;line-height:1.6;font-size:16px;margin-top:12px;scrollbar-width:none}
+.item-text::-webkit-scrollbar{display:none}
 .save-hint{font-size:11px;line-height:1.6;color:var(--muted);margin-top:12px;overflow-wrap:anywhere}
 
 /* Separate preview targets from the quiet, always-visible action row. */
@@ -170,7 +173,8 @@ footer{font-size:11px;color:#8a97a5;text-align:center;padding:36px 0 max(28px,en
 .preview-header h2{font-size:17px;line-height:1.5;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
 .preview-header p{font-size:11px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #preview-close{width:44px;height:44px;flex-shrink:0;border:0;border-radius:50%;background:#f3f5f7;color:var(--muted);font-size:25px}
-.preview-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#f8fafc;position:relative}
+.preview-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#f8fafc;position:relative;scrollbar-width:none}
+.preview-content::-webkit-scrollbar{display:none}
 .preview-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:15px;line-height:1.8;margin:0;padding:24px;user-select:text;-webkit-user-select:text}
 .preview-image{display:block;width:100%;height:100%;object-fit:contain}
 .preview-status{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;font-size:13px;color:var(--muted)}

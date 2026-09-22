@@ -9,6 +9,8 @@ pub struct NativeStatus {
     pub pid: u32,
     pub locked: bool,
     pub recording_ready: bool,
+    #[serde(default)]
+    pub observer_recovery_required: bool,
     pub update_paused: bool,
     pub remote_application_viewer_paused: bool,
     pub remote_application_lease: Option<String>,

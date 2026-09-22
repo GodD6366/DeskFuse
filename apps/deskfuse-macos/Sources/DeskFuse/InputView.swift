@@ -8,6 +8,7 @@ struct InputView: View {
     @State private var showSettings = false
     @State private var showAddDevice = false
     @State private var updatingSettings = false
+    @State private var retryingInput = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -25,7 +26,7 @@ struct InputView: View {
                                 HStack { Spacer(minLength: 0); headerActions }
                             }
                         }
-                        if let error = snapshot.input.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                        inputError
                         if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
                         layout(height: max(300, geometry.size.height - 220))
                         participantList
@@ -64,10 +65,7 @@ struct InputView: View {
                 .font(.system(size: 26, weight: .bold))
             Text(snapshot.input.summary).font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            if let error = snapshot.input.error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
-            }
+            inputError
             if snapshot.input.managed {
                 Button("停止被控") { store.reclaim() }
                     .modifier(NativeGlassAction())
@@ -77,6 +75,30 @@ struct InputView: View {
                     .modifier(NativeGlassAction())
             }
         }.frame(maxWidth: 520)
+    }
+
+    @ViewBuilder
+    private var inputError: some View {
+        if let error = snapshot.input.error {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(retryingInput ? "正在重试…" : "重试输入检查", systemImage: "arrow.clockwise") {
+                    retryingInput = true
+                }
+                .disabled(retryingInput)
+                .help("重新检查原生输入状态，必要时恢复输入服务；不会自动开启键鼠共享。")
+            }
+            .task(id: retryingInput) {
+                guard retryingInput else { return }
+                store.send(.refreshPermissions)
+                // Command acceptance is not native readiness; retain the real error
+                // until a fresh engine snapshot clears it. Only debounce the button.
+                try? await Task.sleep(for: .seconds(2))
+                retryingInput = false
+            }
+        }
     }
 
     private var heading: some View {
