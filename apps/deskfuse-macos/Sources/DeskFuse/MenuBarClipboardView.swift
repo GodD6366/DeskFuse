@@ -16,6 +16,7 @@ struct MenuBarClipboardView: View {
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var listID: String?
     @AppStorage("deskfuse.clipboard.displayMode") private var displayMode: ClipboardDisplayMode = .list
+    @AppStorage("deskfuse.clipboard.previewTrigger") private var previewTrigger: ClipboardPreviewTrigger = .hover
     @State private var pageItems: [ClipboardLibraryItem] = []
     @State private var commandHeld = false
     @State private var nextOffset: Int?
@@ -39,6 +40,7 @@ struct MenuBarClipboardView: View {
     @State private var previewID: UInt64?
     @State private var previewTask: Task<Void, Never>?
     @State private var followTask: Task<Void, Never>?
+    @State private var followID: UInt64?
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
     /// Every record the panel may show, deduplicated and ordered newest first.
@@ -96,11 +98,6 @@ struct MenuBarClipboardView: View {
         }, uniquingKeysWith: { _, latest in latest })
     }
     private var selectedItem: HistoryItem? { items.first { $0.id == selectedID } }
-    private var canCopy: Bool {
-        selectedItem != nil && store.client != nil && !copying &&
-        selectedID.map { id in pageItems.first(where: { $0.id == id })?.available != false } == true &&
-        selectedID.map { fileAvailability[$0] != false } == true
-    }
     private var searchKey: String {
         "\(listID ?? "")|\(query)|\(source ?? "")|\(library.revision)|\(panelActive)|\(history.map(\.id))|\(calendarRevision)"
     }
@@ -113,6 +110,7 @@ struct MenuBarClipboardView: View {
             Divider()
             footer
         }
+        .scrollIndicators(.hidden)
         .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -143,6 +141,9 @@ struct MenuBarClipboardView: View {
         .onChange(of: query) { _, _ in presentationOrder = [] }
         .onChange(of: source) { _, _ in presentationOrder = [] }
         .onChange(of: listID) { _, _ in presentationOrder = [] }
+        .onChange(of: previewTrigger) { _, _ in
+            if previewing { dismissPreview() } else { ClipboardPreviewHoverGate.suppressCurrentPointer() }
+        }
         .onDisappear { endSession() }
     }
 
@@ -207,12 +208,14 @@ struct MenuBarClipboardView: View {
 
     private var moreMenu: some View {
         Menu {
-            Text(store.snapshot?.runtimeStatus ?? (store.starting ? "正在启动" : "引擎不可用"))
+            Picker("预览触发", selection: $previewTrigger) {
+                ForEach(ClipboardPreviewTrigger.allCases) { trigger in
+                    Text(trigger.label).tag(trigger)
+                }
+            }
+            Divider()
             Button("打开 DeskFuse") { closePanel(); openMainWindow() }
             Button("文件暂存区") { closePanel(); store.shelf?.show() }
-            Button("立即收回键鼠") { store.reclaim() }
-            Divider()
-            Button("仅复制选中内容") { copySelected(paste: false) }.disabled(!canCopy)
             Divider()
             Button("设置…") { closePanel(); store.openSettings() }
             Button("退出 DeskFuse") { NSApp.terminate(nil) }
@@ -273,7 +276,7 @@ struct MenuBarClipboardView: View {
                             .background {
                                 if isSelected { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                             }
-                            .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
+                            .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: panelActive && previewTrigger == .hover) { anchor in
                                 previewItem(item.id, from: anchor, trackedByPointer: true)
                             })
                         }
@@ -311,7 +314,7 @@ struct MenuBarClipboardView: View {
                                     .background {
                                         if selectedID == item.id { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                                     }
-                                    .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
+                                    .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: panelActive && previewTrigger == .hover) { anchor in
                                         previewItem(item.id, from: anchor, trackedByPointer: true)
                                     })
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { copySelected(paste: true, id: item.id) })
@@ -328,7 +331,7 @@ struct MenuBarClipboardView: View {
                         .padding(.horizontal, 12).padding(.vertical, 10)
 
                     }
-                    .scrollIndicators(.automatic)
+                    .scrollIndicators(.hidden)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -473,13 +476,18 @@ struct MenuBarClipboardView: View {
     /// never changes the selection. The bubble appears only once there is
     /// something to show, so it never sits on screen as a spinner.
     private func togglePreview() {
-        guard selectedID != nil else { return }
-        if previewing { dismissPreview() } else { previewSelected() }
+        guard selectedID != nil || previewID != nil else { return }
+        if previewing {
+            dismissPreview()
+        } else {
+            previewSelected()
+        }
     }
     private func dismissPreview() {
-        ClipboardPreviewHoverGate.suppressCurrentPointer()
+        ClipboardPreviewHoverGate.unlockAfterClosingPreview()
         followTask?.cancel()
         followTask = nil
+        followID = nil
         previewTask?.cancel()
         previewTask = nil
         previewID = nil
@@ -490,6 +498,7 @@ struct MenuBarClipboardView: View {
     }
     private func previewSelected() {
         guard let id = selectedID else { return }
+        ClipboardPreviewHoverGate.lockForKeyboardPreview()
         followSelection(id)
     }
     /// Point the preview at `id` through the selected row's anchor view.
@@ -498,39 +507,56 @@ struct MenuBarClipboardView: View {
     /// bubble is up this is what makes up/down switch records in place;
     /// re-calling `present` repositions it without closing.
     private func followSelection(_ id: UInt64) {
+        guard followID != id else { return }
+        if followID == nil, previewing, previewID == id { return }
         // 静止的光标下面会换行，那不是用户把指针移过去，不能把键盘预览抢回去。
         ClipboardPreviewHoverGate.suppressCurrentPointer()
         followTask?.cancel()
+        previewTask?.cancel()
+        followID = id
         followTask = Task { @MainActor in
             for _ in 0..<15 {
-                guard !Task.isCancelled, items.contains(where: { $0.id == id }),
-                      !previewing || previewID != id else { return }
+                guard !Task.isCancelled, followID == id,
+                      items.contains(where: { $0.id == id }) else { return }
                 if let view = previewAnchor.view as? ClipboardQuickLookAnchorNSView,
-                   view.itemID == id, view.window != nil {
+                   view.itemID == id, view.window != nil, !view.clipboardPreviewVisibleRect.isEmpty {
+                    followID = nil
+                    followTask = nil
                     previewItem(id, from: view)
                     return
                 }
                 do { try await Task.sleep(for: .milliseconds(30)) } catch { return }
             }
+            guard !Task.isCancelled, followID == id else { return }
+            followID = nil
+            followTask = nil
             // The target row never rendered; never leave a stale bubble behind.
-            if previewing, previewID != id { dismissPreview() }
+            if previewID != id { dismissPreview() }
         }
     }
     private struct PreviewPayload {
         var content: ClipboardContent?
         var image: NSImage?
+        var isPlaceholder = false
     }
     /// `trackedByPointer` 为真时，指针已经离开该行且气泡还没出现，就不再补弹。
     private func previewItem(_ id: UInt64, from anchor: NSView, trackedByPointer: Bool = false) {
         guard panelActive, items.contains(where: { $0.id == id }), store.client != nil,
               anchor.window != nil else { return }
-        guard previewID != id || !previewing else { return }
+        if trackedByPointer {
+            guard !ClipboardPreviewHoverGate.keyboardLocked else { return }
+            ClipboardPreviewHoverGate.beginHoverPreview()
+            followTask?.cancel()
+            followTask = nil
+            followID = nil
+        }
+        guard previewID != id || !previewing || !ClipboardQuickLookController.shared.isAnchored(to: anchor) else { return }
         previewTask?.cancel()
         previewID = id
         previewing = true
-        if let immediate = immediatePayload(for: id) {
-            showPreview(immediate, from: anchor)
-        }
+        // Never show the previous record's image/text under a new target.
+        let immediate = immediatePayload(for: id) ?? previewStatus("正在加载预览…", id: id)
+        showPreview(immediate, id: id, from: anchor)
         previewTask = Task { @MainActor in
             let loaded = await loadPreviewPayload(id)
             guard !Task.isCancelled, previewing, previewID == id else { return }
@@ -540,7 +566,7 @@ struct MenuBarClipboardView: View {
                 return
             }
             guard let loaded else {
-                if !ClipboardQuickLookController.shared.isShown { abandonUnshownPreview(id) }
+                showPreview(previewStatus("暂时无法预览此内容", id: id), id: id, from: anchor)
                 return
             }
             if trackedByPointer, !ClipboardQuickLookController.shared.isShown,
@@ -548,7 +574,7 @@ struct MenuBarClipboardView: View {
                 abandonUnshownPreview(id)
                 return
             }
-            showPreview(loaded, from: anchor)
+            showPreview(loaded, id: id, from: anchor)
         }
     }
     /// 列表里已经有的文字或缩略图先上屏。完整内容到达后只替换内容，不再经过空白转圈。
@@ -595,20 +621,29 @@ struct MenuBarClipboardView: View {
         guard image != nil || !content.text.isEmpty || !content.filePaths.isEmpty else { return nil }
         return PreviewPayload(content: content, image: image)
     }
-    private func showPreview(_ payload: PreviewPayload, from anchor: NSView) {
+    private func previewStatus(_ text: String, id: UInt64) -> PreviewPayload {
+        PreviewPayload(content: ClipboardContent(canRequestFiles: false, id: id, text: text,
+                                                truncated: false, imagePng: Data(), filePaths: []), image: nil, isPlaceholder: true)
+    }
+    private func showPreview(_ payload: PreviewPayload, id: UInt64, from anchor: NSView) {
         let controller = ClipboardQuickLookController.shared
-        let placing = !controller.isAnchored(to: anchor)
-        if placing { ClipboardPreviewHoverGate.suppressCurrentPointer() }
         previewContent = payload.content
         previewImage = payload.image
         controller.update(content: payload.content, image: payload.image)
-        controller.present(from: anchor, navigate: { delta in
-            moveSelection(delta > 0 ? .down : .up)
+        controller.present(itemID: id, from: anchor, lockSize: !payload.isPlaceholder,
+                           keyboardControlled: previewTrigger == .space, navigate: { keyCode in
+            switch keyCode {
+            case 123: moveSelection(.left)
+            case 124: moveSelection(.right)
+            case 125: moveSelection(.down)
+            default: moveSelection(.up)
+            }
         }) { dismissPreview() }
     }
     /// 这次请求没能显示出来。不要关上一张还在的气泡，也不要留着“正在预览”的空状态。
     private func abandonUnshownPreview(_ id: UInt64) {
         guard previewID == id, !ClipboardQuickLookController.shared.isShown else { return }
+        ClipboardPreviewHoverGate.unlockAfterClosingPreview()
         previewTask = nil
         previewID = nil
         previewing = false
@@ -704,6 +739,7 @@ struct MenuBarClipboardView: View {
         // search field has focus the space belongs to the field editor, so it is
         // only claimed once nothing is being typed into.
         if event.keyCode == 49 {
+            guard previewTrigger == .space else { return false }
             guard !editingText else { return false }
             togglePreview()
             return true
@@ -743,8 +779,14 @@ struct MenuBarClipboardView: View {
     /// the selection the popover was opened from.
     private func moveSelection(_ direction: ClipboardMasonryNavigation.Direction) {
         guard !items.isEmpty else { return }
-        if previewing { ClipboardPreviewHoverGate.suppressCurrentPointer() }
-        let base = previewID ?? selectedID
+        let base = followID ?? previewID ?? selectedID
+        if previewing {
+            if previewTrigger == .space {
+                ClipboardPreviewHoverGate.lockForKeyboardPreview()
+            } else {
+                dismissPreview()
+            }
+        }
         if displayMode == .grid {
             if let id = ClipboardMasonryNavigation.target(items: items, selected: base, columnCount: 2, direction: direction) {
                 selectedID = id
@@ -758,6 +800,6 @@ struct MenuBarClipboardView: View {
         searchFocused = false; copyError = nil
         // The selection may already be the target (a grid jump landing on the
         // selected row), so `onChange(of: selectedID)` alone would miss it.
-        if previewing, let id = selectedID, previewID != id { followSelection(id) }
+        if previewing, let id = selectedID { followSelection(id) }
     }
 }

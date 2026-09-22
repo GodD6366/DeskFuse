@@ -252,12 +252,24 @@ fi
 # missing target should fail visibly rather than downloading toolchains during
 # a release operation.
 echo "building $PACKAGE_NAME for $TARGET_TRIPLE"
+# 诊断构建号写在 release.json 和 target 旁的 build-id，不编译进 Rust。
 export DESKFUSE_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
 "$ROOT_DIR/scripts/build-native-macos.sh" release
-"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package deskfuse-update --bin deskfuse-update-helper --target "$TARGET_TRIPLE"
-"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package deskfuse-engine --bin deskfuse-history-files --target "$TARGET_TRIPLE"
-
 CARGO_OUTPUT_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+HELPER_FINGERPRINT_FILE="$ROOT_DIR/apps/deskfuse-macos/SDK/.helpers-fingerprint-$TARGET_TRIPLE-release"
+RUST_FINGERPRINT_FILE="$ROOT_DIR/apps/deskfuse-macos/SDK/.rust-fingerprint-$TARGET_TRIPLE-release"
+UPDATE_HELPER="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper"
+HISTORY_FILES="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files"
+if [[ -f "$HELPER_FINGERPRINT_FILE" && -f "$RUST_FINGERPRINT_FILE" \
+  && "$(cat "$HELPER_FINGERPRINT_FILE")" == "$(cat "$RUST_FINGERPRINT_FILE")" \
+  && -x "$UPDATE_HELPER" && -x "$HISTORY_FILES" ]]; then
+  echo "Rust helper cache hit ($TARGET_TRIPLE)"
+else
+  "$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --target "$TARGET_TRIPLE" \
+    --package deskfuse-update --bin deskfuse-update-helper \
+    --package deskfuse-engine --bin deskfuse-history-files
+  cp "$RUST_FINGERPRINT_FILE" "$HELPER_FINGERPRINT_FILE"
+fi
 BINARY_PATH="$CARGO_OUTPUT_DIR/native-macos/release/$BINARY_NAME"
 if [[ ! -x "$BINARY_PATH" ]]; then
   echo "error: expected binary not found or not executable: $BINARY_PATH" >&2

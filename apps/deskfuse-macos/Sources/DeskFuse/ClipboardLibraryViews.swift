@@ -48,7 +48,7 @@ struct ClipboardLibraryTabs: View {
                                     }
                             }
                         }
-                    }.scrollIndicators(.automatic)
+                    }.scrollIndicators(.hidden)
                     newListButton(label: nil, vertical: false)
                 }
             }

@@ -47,6 +47,7 @@ import DeskFuseEngine
     let previousInstallation = PreviousInstallationController()
     var showMainWindow: (() -> Void)?
     @ObservationIgnored var showSettingsWindow: (() -> Void)?
+    var pendingSettingsTab: String?
     var pairingWindow: PairingWindowController?
     private var transferWindow: TransferProgressWindowController?
     private var eventsTask: Task<Void, Never>?
@@ -202,7 +203,8 @@ import DeskFuseEngine
         UserDefaults.standard.set(hidden, forKey: AppStore.hideDockIconDefaultsKey)
         applyDockIconPolicy()
     }
-    func openSettings() {
+    func openSettings(tab: String? = nil) {
+        pendingSettingsTab = tab
         NSApp.activate(ignoringOtherApps: true)
         showSettingsWindow?()
     }

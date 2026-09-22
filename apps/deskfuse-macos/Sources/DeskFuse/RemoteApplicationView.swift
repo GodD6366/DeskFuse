@@ -13,9 +13,27 @@ import DeskFuseRemoteApplication
         }
     }
     @ObservationIgnored var navigationChanged: (() -> Void)?
-    var menuPresented = false
+    @ObservationIgnored var metricsChanged: (() -> Void)?
+    @ObservationIgnored var titlebarColorChanged: (() -> Void)?
+    var titlebarColor: RemoteTitlebarColor? {
+        didSet { if titlebarColor != oldValue { titlebarColorChanged?() } }
+    }
+    var titlebarBackground: NSColor {
+        guard let color = titlebarColor else { return .windowBackgroundColor }
+        return NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+    }
+    var menuPresented = false {
+        didSet { if !menuPresented { diagnosticsPresented = false } }
+    }
     var controlsRevealed = false
     var diagnosticsPresented = false
+    var metricsPresented = UserDefaults.standard.object(forKey: "remoteApplication.metricsPresented") as? Bool ?? true {
+        didSet {
+            guard metricsPresented != oldValue else { return }
+            UserDefaults.standard.set(metricsPresented, forKey: "remoteApplication.metricsPresented")
+            metricsChanged?()
+        }
+    }
     @ObservationIgnored weak var menuButton: NSButton?
 
     func activateMenu(at point: NSPoint, in window: NSWindow) -> Bool {
@@ -27,12 +45,12 @@ import DeskFuseRemoteApplication
     }
 
     /// Keep the local chrome out of the remote app's way until the pointer is
-    /// close to the top-center affordance. This is driven by the window event
+    /// close to the top-right affordance. This is driven by the window event
     /// stream so the hidden trigger never becomes a transparent input shield.
     func updatePointer(_ point: NSPoint, windowSize: CGSize) {
         let distanceFromTop = windowSize.height - point.y
-        let distanceFromCenter = abs(point.x - windowSize.width / 2)
-        controlsRevealed = distanceFromTop <= 68 && distanceFromCenter <= 148
+        let distanceFromRight = windowSize.width - point.x
+        controlsRevealed = distanceFromTop <= 68 && distanceFromRight <= 160
     }
 }
 
@@ -74,24 +92,28 @@ struct RemoteApplicationView: View {
             if session.running && !session.controlling {
                 Text(session.status).font(.caption)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+                    .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
                     .padding(12).allowsHitTesting(false)
             }
         }
         .overlay(alignment: .top) {
             if !chrome.normalNavigation {
-                NativeGlassGroup {
-                    ZStack(alignment: .top) {
-                        trafficLights.frame(maxWidth: .infinity, alignment: .leading)
-                        menuControls.frame(maxWidth: .infinity, alignment: .center)
-                    }
+                ZStack(alignment: .top) {
+                    trafficLights.frame(maxWidth: .infinity, alignment: .leading)
+                    menuControls.frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
         .onChange(of: session.preferences) { _, _ in session.changePreferences() }
-        .overlay {
-            if chrome.diagnosticsPresented {
-                RemoteDiagnosticsOverlay(session: session) { chrome.diagnosticsPresented = false }
+        .task {
+            while !Task.isCancelled {
+                if session.running, let presentation = session.plane.frames.presentation(),
+                   let color = RemoteTitlebarColor.sample(buffer: presentation.frame.buffer, layout: presentation.layout) {
+                    chrome.titlebarColor = color
+                }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
         }
     }
@@ -99,7 +121,7 @@ struct RemoteApplicationView: View {
         RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
             .frame(width: 56, height: 20)
             .padding(.horizontal, 7).padding(.vertical, 4)
-            .modifier(NativeGlassBackdrop(cornerRadius: 14))
+            .modifier(RemoteChromeSurface(cornerRadius: 14, color: chrome.titlebarBackground))
             .padding(.leading, 7).padding(.top, 6)
     }
 
@@ -112,8 +134,8 @@ struct RemoteApplicationView: View {
         }
         .font(.system(size: 11, weight: .medium))
         .padding(.horizontal, 5).padding(.vertical, 3)
-        .modifier(NativeGlassBackdrop(cornerRadius: 14))
-        .padding(.top, 6)
+        .modifier(RemoteChromeSurface(cornerRadius: 14, color: chrome.titlebarBackground))
+        .padding(.trailing, 7).padding(.top, 6)
         .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
         .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
         // The window reports pointer proximity independently, so an
@@ -121,6 +143,66 @@ struct RemoteApplicationView: View {
         .allowsHitTesting(chrome.controlsRevealed || chrome.menuPresented)
     }
 
+}
+
+/// Local chrome reads as a solid bar over the captured video. The remote
+/// status/control bar is intentionally opaque rather than glass.
+struct RemoteChromeSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    var color: NSColor = .windowBackgroundColor
+    func body(content: Content) -> some View {
+        content
+            .background(Color(nsColor: color), in: RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.primary.opacity(0.12)))
+    }
+}
+
+/// Inline toolbar readout; it never participates in the remote canvas layout.
+@available(macOS 14.2, *)
+struct RemoteMetricsReadout: View {
+    let session: RemoteApplicationSession
+    @State private var remote: RemoteMediaDiagnostics?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            value("FPS", fpsText)
+            Divider().frame(height: 9)
+            value("码率", bitrateText)
+            Divider().frame(height: 9)
+            value("延迟", latencyText)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 4)
+        .help("显示帧率 / 当前目标码率 / QUIC 往返延迟")
+        .task {
+            while !Task.isCancelled {
+                remote = session.connected ? session.plane.diagnosticSnapshot() : nil
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
+
+    private var fpsText: String {
+        guard session.running, session.effectiveFPS > 0 else { return "—" }
+        return String(format: "%.0f", session.effectiveFPS)
+    }
+    private var bitrateText: String {
+        guard let bitrate = remote?.media.currentBitrate, bitrate > 0 else { return "—" }
+        return String(format: "%.1f Mbps", Double(bitrate) / 1_000_000)
+    }
+    private var latencyText: String {
+        guard let rtt = remote?.rttMilliseconds, rtt.isFinite else { return "—" }
+        return String(format: "%.0f ms", rtt)
+    }
+    private func value(_ label: String, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label).foregroundStyle(.secondary)
+            Text(text)
+        }
+    }
 }
 
 /// Shared menu for native navigation and the optional floating chrome.
@@ -140,13 +222,26 @@ struct RemoteApplicationMenu: View {
             chrome.menuButton?.window?.makeFirstResponder(nil)
             chrome.menuPresented.toggle()
         }
-        .frame(width: 30, height: 28)
+        .frame(width: inNavigation ? 32 : 30, height: inNavigation ? 32 : 28)
+        .background {
+            if inNavigation {
+                Circle()
+                    .fill(.primary.opacity(chrome.menuPresented ? 0.10 : 0.04))
+                    .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+            }
+        }
+        .fixedSize()
         .help("远程应用菜单（⌃⌥⌘空格）")
         .popover(isPresented: Binding(
             get: { chrome.normalNavigation == inNavigation && chrome.menuPresented },
             set: { if chrome.normalNavigation == inNavigation { chrome.menuPresented = $0 } }
         ), arrowEdge: .top) {
-            localActions.padding(14).frame(width: 300)
+            if chrome.diagnosticsPresented {
+                RemoteDiagnosticsView(session: session) { chrome.diagnosticsPresented = false }
+                    .frame(width: 320, height: 360)
+            } else {
+                localActions.padding(14).frame(width: 300)
+            }
         }
     }
 
@@ -154,9 +249,16 @@ struct RemoteApplicationMenu: View {
         VStack(alignment: .leading, spacing: 10) {
             localAction("打开其他应用…", shortcut: nil, action: chooseApplication)
             localAction("释放控制", shortcut: "⌃⌥Esc") { session.canvasFocus(false) }
-            localAction(chrome.diagnosticsPresented ? "隐藏调试悬浮窗" : "显示调试悬浮窗", shortcut: nil) {
-                chrome.diagnosticsPresented.toggle()
+            localAction(chrome.metricsPresented && chrome.normalNavigation ? "隐藏性能信息" : "显示性能信息", shortcut: nil) {
+                if chrome.normalNavigation {
+                    chrome.metricsPresented.toggle()
+                } else {
+                    chrome.metricsPresented = true
+                    chrome.normalNavigation = true
+                }
             }
+            Button("查看详细诊断…") { chrome.diagnosticsPresented = true }
+                .buttonStyle(.plain).padding(.vertical, 3)
             Divider()
             Toggle("正常顶部导航栏", isOn: $chrome.normalNavigation)
                 .help("关闭后使用悬浮红绿灯与靠近显示的菜单；新窗口沿用此选择")

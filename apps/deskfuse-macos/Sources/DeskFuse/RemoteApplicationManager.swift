@@ -435,6 +435,8 @@ import DeskFuseRemoteApplication
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "远程应用菜单"
         item.visibilityPriority = .high
+        // The hosted view draws its own circle; avoid an extra toolbar bezel.
+        item.isBordered = false
         item.view = NSHostingView(rootView: RemoteApplicationMenu(session: session, chrome: chrome,
             chooseApplication: { [weak self] in
                 guard let self else { return }

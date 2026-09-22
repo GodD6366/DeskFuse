@@ -61,7 +61,8 @@ jobs:
           rustup component add rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: macos-release-arm64
+          shared-key: deskfuse-macos
+          key: release-arm64
           save-if: false
       - name: Import Developer ID
         env:
@@ -116,7 +117,8 @@ jobs:
           rustup component add rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: macos-release-x86_64
+          shared-key: deskfuse-macos
+          key: release-x86_64
           save-if: false
       - name: Import Developer ID
         env:

@@ -97,8 +97,14 @@ import AppKit
         } else if let originalIcon {
             NSApp.applicationIconImage = originalIcon
         }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.dockTile.badgeLabel = "远程"
+        // 远程应用窗口打开时，遵循全局 Dock 图标设置
+        // 如果用户选择隐藏 Dock 图标，保持 .accessory 策略
+        if NSApp.activationPolicy() != .regular {
+            // 当前是隐藏状态，不强制显示
+            NSApp.dockTile.badgeLabel = nil
+        } else {
+            NSApp.dockTile.badgeLabel = "远程"
+        }
         NSApp.dockTile.display()
     }
 

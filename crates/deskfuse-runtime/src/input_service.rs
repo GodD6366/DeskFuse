@@ -15,10 +15,116 @@ mod child;
 pub use child::{ChildConnection, InputOnlyRuntime};
 const VERSION: u32 = 1;
 const MAX_FRAME: usize = 1024 * 1024;
-pub const BUILD: &str = match option_env!("DESKFUSE_INPUT_BUILD_ID") {
-    Some(value) => value,
-    None => env!("CARGO_PKG_VERSION"),
-};
+
+/// 主进程和输入进程共用的构建号。安装包从 `release.json` 读取，
+/// 不编译进 Rust，因此只改构建号不会重编 FFI 和 Swift。
+pub fn build_identity() -> &'static str {
+    static CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHED.get_or_init(resolve_build_identity).as_str()
+}
+
+fn resolve_build_identity() -> String {
+    if let Some(identity) = std::env::var("DESKFUSE_INPUT_BUILD_ID")
+        .ok()
+        .and_then(|value| accept_identity(&value))
+    {
+        return identity;
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        let resources = directory.join("../Resources");
+        if let Some(identity) = read_release_identity(&resources.join("release.json")) {
+            return identity;
+        }
+        if let Some(identity) = read_sidecar(&directory.join("build-id")) {
+            return identity;
+        }
+        if let Some(identity) = read_sidecar(&resources.join("build-id")) {
+            return identity;
+        }
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn accept_identity(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn read_sidecar(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(256).read_to_end(&mut bytes).ok()?;
+    accept_identity(&String::from_utf8(bytes).ok()?)
+}
+
+fn read_release_identity(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(65_536).read_to_end(&mut bytes).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let version = value.get("version")?.as_str()?;
+    let build = value.get("build_number")?.as_u64()?;
+    accept_identity(&format!("{version}-{build}"))
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::{accept_identity, read_release_identity, read_sidecar};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "deskfuse-build-id-{}-{nanos}-{n}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("scratch");
+        path
+    }
+
+    #[test]
+    fn release_json_formats_version_and_build() {
+        let dir = scratch();
+        let path = dir.join("release.json");
+        fs::write(
+            &path,
+            r#"{"version":"0.4.2","build_number":20,"release_id":"0d7ed72f-e679-4d79-a8fc-2a77020338f6"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_release_identity(&path).as_deref(), Some("0.4.2-20"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sidecar_trims_one_line_and_rejects_empty() {
+        let dir = scratch();
+        let path = dir.join("build-id");
+        fs::write(&path, "dev-abc123\n").unwrap();
+        assert_eq!(read_sidecar(&path).as_deref(), Some("dev-abc123"));
+        fs::write(&path, " \n").unwrap();
+        assert_eq!(read_sidecar(&path), None);
+        assert_eq!(accept_identity("0.4.2-20"), Some("0.4.2-20".to_string()));
+        assert_eq!(accept_identity("has space"), None);
+        let _ = fs::remove_dir_all(dir);
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ServiceOptions {
     pub executable: PathBuf,
@@ -310,7 +416,7 @@ async fn run_process(
     *control.urgent.lock().unwrap_or_else(|e| e.into_inner()) = Some(urgent);
     let bootstrap = Bootstrap {
         version: VERSION,
-        build: BUILD.into(),
+        build: build_identity().to_string(),
         generation,
         identity_path: options.identity_path.clone(),
         display_name: display_name.into(),

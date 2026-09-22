@@ -36,7 +36,8 @@ jobs:
           rustup component add rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: macos-check
+          shared-key: deskfuse-macos
+          key: check
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Workflow lint and credential scan
         run: ./scripts/check-ci.sh
@@ -69,7 +70,8 @@ jobs:
           rustup component add rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: macos-release
+          shared-key: deskfuse-macos
+          key: build
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Validate public source boundary
         run: python3 scripts/check-repository.py
@@ -108,7 +110,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Target installation failed' }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: windows-check
+          shared-key: deskfuse-windows
+          key: check
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Native adapter checks (no real input or clipboard)
         run: ./scripts/check-windows-native.ps1

@@ -137,7 +137,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
     std::thread::Builder::new().name("deskfuse-input-diagnostics".into()).spawn(move || {
         while !stop.load(Ordering::Acquire) {
             if deskfuse_core::debug_logging::enabled() {
-                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":std::process::id(), "build":deskfuse_runtime::input_service::BUILD}).to_string(); lines.push('\n');
+                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":std::process::id(), "build":deskfuse_runtime::input_service::build_identity()}).to_string(); lines.push('\n');
                 for record in deskfuse_platform::timing::snapshot().records.into_iter().rev().take(256) {
                     if let Ok(line) = serde_json::to_string(&record) { lines.push_str(&line); lines.push('\n'); }
                 }

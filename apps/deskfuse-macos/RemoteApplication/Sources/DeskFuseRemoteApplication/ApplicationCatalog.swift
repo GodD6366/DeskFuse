@@ -40,15 +40,33 @@ public struct RemoteApplicationInfo: Codable, Identifiable, Equatable, Sendable 
             let active = running.first { $0.bundleURL?.standardizedFileURL == url }
             let icon = iconBudget > 0 ? iconData(url) : nil
             iconBudget -= icon?.count ?? 0
-            return RemoteApplicationInfo(id: id,
-                name: (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
-                    ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? url.deletingPathExtension().lastPathComponent,
+            return RemoteApplicationInfo(id: id, name: displayName(for: url, bundle: bundle, running: active),
                 bundleIdentifier: bundle.bundleIdentifier, processID: active?.processIdentifier,
                 category: bundle.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String,
                 iconPNG: icon)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         urls = next
         return result
+    }
+
+    /// The catalog is built on the host, so names must follow the host's system
+    /// language. Raw Info.plist keys return the development-region name
+    /// (`System Settings` on a Chinese Mac); the running app's localized name and
+    /// Launch Services' metadata display name both follow the user's language.
+    private func displayName(for url: URL, bundle: Bundle, running: NSRunningApplication?) -> String {
+        if let name = running?.localizedName, !name.isEmpty { return name }
+        if let item = NSMetadataItem(url: url),
+           let name = item.value(forAttribute: "kMDItemDisplayName") as? String, !name.isEmpty {
+            return Self.withoutAppExtension(name)
+        }
+        if let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String { return name }
+        if let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String { return name }
+        return url.deletingPathExtension().lastPathComponent
+    }
+
+    private static func withoutAppExtension(_ name: String) -> String {
+        guard name.lowercased().hasSuffix(".app") else { return name }
+        return String(name.dropLast(4))
     }
 
     private func iconData(_ url: URL) -> Data? {

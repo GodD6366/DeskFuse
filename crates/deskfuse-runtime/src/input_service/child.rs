@@ -33,7 +33,8 @@ impl ChildConnection {
         else {
             return Err("input service bootstrap required".into());
         };
-        if bootstrap.version != VERSION || bootstrap.build != BUILD {
+        // 两边都按同一安装包解析构建号，已编译的主程序和输入进程可以一起复用。
+        if bootstrap.version != VERSION || bootstrap.build != build_identity() {
             return Err("输入进程与主应用版本不匹配".into());
         }
         let stopping = Arc::new(AtomicBool::new(false));

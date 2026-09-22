@@ -170,6 +170,7 @@ struct ClipboardHistoryPane: View {
                 }
             }
             .listStyle(.inset)
+            .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 68),
             proxy: proxy

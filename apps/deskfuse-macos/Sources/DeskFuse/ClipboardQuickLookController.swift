@@ -3,6 +3,12 @@ import Observation
 import SwiftUI
 import DeskFuseEngine
 
+extension NSView {
+    /// On macOS with unclipped views, visibleRect can extend beyond bounds.
+    /// Anchoring/hit testing must use only the visible part of this row.
+    var clipboardPreviewVisibleRect: NSRect { visibleRect.intersection(bounds) }
+}
+
 /// A stable AppKit anchor for the selected SwiftUI row. The native popover uses
 /// this view's bounds so its arrow points at the record being previewed.
 @MainActor final class ClipboardQuickLookAnchor {
@@ -55,13 +61,15 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     @ObservationIgnored private var dismissHandler: (() -> Void)?
     /// Arrow keys land in the popover's window, not the panel's, so the open
     /// bubble routes them back to the list for record-to-record switching.
-    @ObservationIgnored private var navigateHandler: ((Int) -> Void)?
+    @ObservationIgnored private var navigateHandler: ((UInt16) -> Void)?
     @ObservationIgnored private var keyMonitor: Any?
+    @ObservationIgnored private var keyboardControlled = false
     /// 同一条记录的后续内容更新不再改气泡尺寸，避免加载完成后撑开并盖住光标。
     @ObservationIgnored private var lockedSize = false
     @ObservationIgnored private var closeRequested = false
     @ObservationIgnored private weak var positioningView: NSView?
     private var presented = false
+    private var presentedItemID: UInt64?
 
     var window: NSWindow? {
         guard presented else { return nil }
@@ -74,10 +82,13 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
 
     /// Re-calling `show` on a visible popover repositions it onto the new
     /// anchor without closing, so switching records never blinks the bubble.
-    func present(from anchor: NSView, navigate: ((Int) -> Void)? = nil, dismiss: @escaping () -> Void) {
-        guard anchor.window != nil else { return }
+    func present(itemID: UInt64, from anchor: NSView, lockSize: Bool = true,
+                 keyboardControlled: Bool = true, navigate: ((UInt16) -> Void)? = nil,
+                 dismiss: @escaping () -> Void) {
+        guard let parent = anchor.window, let container = parent.contentView else { return }
         dismissHandler = dismiss
         navigateHandler = navigate
+        self.keyboardControlled = keyboardControlled
 
         let popover: NSPopover
         if let existing = self.popover {
@@ -98,22 +109,34 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
         }
 
         guard Self.displayable(content: model.content, image: model.image) else { return }
-        let switchingAnchor = positioningView !== anchor || popover.isShown == false
+        let switchingAnchor = presentedItemID != itemID || positioningView !== anchor || !popover.isShown
         if switchingAnchor { lockedSize = false }
         if !lockedSize {
             applyContentSize(preferredContentSize(content: model.content, image: model.image), to: popover)
-            lockedSize = true
+            lockedSize = lockSize
         }
         positioningView = anchor
+        presentedItemID = itemID
         presented = true
-        if switchingAnchor {
-            let parent = anchor.window
-            let parentWasKey = parent?.isKeyWindow == true
-            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minX)
+        // SwiftUI can reuse the same NSView for a different selected record.
+        // Position must update even when the view identity has not changed.
+        if !popover.isShown {
+            let parentWasKey = parent.isKeyWindow
+            // 行锚点会在选择变化 / LazyVStack 回收时销毁，不能作为原生气泡的
+            // positioningView。用稳定的面板根视图承载，仅把箭头矩形换到当前行。
+            let rect = anchor.convert(anchor.clipboardPreviewVisibleRect, to: container)
+            popover.show(relativeTo: rect, of: container, preferredEdge: .minX)
             // 气泡不要抢走面板的键焦点，否则悬停跟踪和方向键都会跳到另一个窗口。
-            if parentWasKey { parent?.makeKey() }
+            if parentWasKey { parent.makeKey() }
         }
+        refreshPosition()
         installKeyMonitor()
+    }
+
+    func refreshPosition() {
+        guard let popover, popover.isShown, let anchor = positioningView,
+              let container = anchor.window?.contentView, !anchor.clipboardPreviewVisibleRect.isEmpty else { return }
+        popover.positioningRect = anchor.convert(anchor.clipboardPreviewVisibleRect, to: container)
     }
 
     func update(content: ClipboardContent?, image: NSImage?) {
@@ -157,9 +180,12 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     }
 
     private func relinquish() {
+        ClipboardPreviewHoverGate.unlockAfterClosingPreview()
         presented = false
         lockedSize = false
+        keyboardControlled = false
         positioningView = nil
+        presentedItemID = nil
         dismissHandler = nil
         navigateHandler = nil
         removeKeyMonitor()
@@ -192,15 +218,28 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
             let handled: Bool = MainActor.assumeIsolated {
                 guard let self, self.presented, event.window === self.window else { return false }
                 switch event.keyCode {
-                case 49, 53:
+                case 49:
+                    guard self.keyboardControlled else { return false }
+                    // Space mode owns the key: when the popover is already
+                    // keyboard-controlled, Space closes it.
+                    if ClipboardPreviewHoverGate.keyboardLocked {
+                        self.dismissAndNotify()
+                    } else {
+                        ClipboardPreviewHoverGate.lockForKeyboardPreview()
+                        self.navigateHandler?(49)
+                    }
+                    return true
+                case 53:
                     self.dismissAndNotify()
                     return true
-                case 125, 126:
-                    // Up/down switch the previewed record while the bubble is up.
+                case 123, 124, 125, 126:
+                    guard self.keyboardControlled else { return false }
+                    // Route all four arrows through the same keyboard-only preview mode.
                     // Modified arrows still belong to the preview's own content.
                     guard let navigate = self.navigateHandler,
                           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
-                    navigate(event.keyCode == 125 ? 1 : -1)
+                    ClipboardPreviewHoverGate.lockForKeyboardPreview()
+                    navigate(event.keyCode)
                     return true
                 default:
                     return false

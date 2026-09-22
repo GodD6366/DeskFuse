@@ -6,15 +6,49 @@ RESOURCE_DIR="$ROOT_DIR/resources"
 GENERATED_DIR="$RESOURCE_DIR/generated"
 ICONSET_DIR="$GENERATED_DIR/DeskFuse.iconset"
 
-for command_name in sips python3; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "error: required command not found: $command_name" >&2
-    exit 127
-  fi
-done
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: required command not found: python3" >&2
+  exit 127
+fi
+
+mkdir -p "$GENERATED_DIR"
+ASSET_FINGERPRINT_FILE="$GENERATED_DIR/.assets-fingerprint"
+ASSET_FINGERPRINT="$(python3 - "$ROOT_DIR" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+hasher = hashlib.sha256()
+for relative in (
+    "resources/DeskFuse-icon.svg",
+    "resources/deskfuse-status-icon.svg",
+    "resources/dmg-background.svg",
+    "scripts/export-center-icon.py",
+    "scripts/pack-icon.py",
+    "scripts/generate-assets.sh",
+):
+    hasher.update(relative.encode())
+    hasher.update((root / relative).read_bytes())
+print(hasher.hexdigest())
+PY
+)"
+if [[ "${DESKFUSE_FORCE_ASSETS:-0}" != 1 \
+  && -f "$ASSET_FINGERPRINT_FILE" \
+  && "$(cat "$ASSET_FINGERPRINT_FILE")" == "$ASSET_FINGERPRINT" \
+  && -s "$GENERATED_DIR/DeskFuse.icns" \
+  && -s "$GENERATED_DIR/DeskFuse-icon-1024.png" \
+  && -s "$GENERATED_DIR/deskfuse-status-icon.png" \
+  && -s "$GENERATED_DIR/dmg-background.png" \
+  && -s "$RESOURCE_DIR/macos_center_icon.svg" ]]; then
+  echo "asset cache hit"
+  exit 0
+fi
+
+if ! command -v sips >/dev/null 2>&1; then
+  echo "error: required command not found: sips" >&2
+  exit 127
+fi
 
 rm -rf "$ICONSET_DIR"
-mkdir -p "$GENERATED_DIR" "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
 
 python3 "$ROOT_DIR/scripts/export-center-icon.py"
 sips -s format png "$RESOURCE_DIR/DeskFuse-icon.svg" --out "$GENERATED_DIR/DeskFuse-icon-1024.png" >/dev/null
@@ -31,4 +65,5 @@ done
 
 # Keep PNG alpha intact even for 16/32 pt representations.
 python3 "$ROOT_DIR/scripts/pack-icon.py"
+printf '%s\n' "$ASSET_FINGERPRINT" > "$ASSET_FINGERPRINT_FILE"
 printf 'generated assets in %s\n' "$GENERATED_DIR"

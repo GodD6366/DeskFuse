@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsWindowView: View {
     let store: AppStore
     @Environment(\.openSettings) private var openSettings
+    @SceneStorage("settings.selectedTab") private var selectedTab = "general"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,6 +14,12 @@ struct SettingsWindowView: View {
         }
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .tint(.blue)
-        .onAppear { store.showSettingsWindow = { openSettings() } }
+        .onAppear {
+            store.showSettingsWindow = { openSettings() }
+            if let tab = store.pendingSettingsTab {
+                selectedTab = tab
+                store.pendingSettingsTab = nil
+            }
+        }
     }
 }
