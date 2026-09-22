@@ -22,7 +22,7 @@ CODESIGN_IDENTITY=- ./scripts/build_and_run.sh --build
 
 Windows：分别运行 `scripts/check-windows-native.ps1` 和 `scripts/check-windows-service.ps1`。这些检查不安装服务、不创建机器身份、不向桌面发送输入。
 
-本地开发与 DMG 打包共同使用 `scripts/codesign-identity.sh`，证书指纹保存在 Git 忽略的 `.codesign-identity`。首次构建只有一张可用 Apple Development 证书时自动固定；多张证书时显式设置 `CODESIGN_IDENTITY=<SHA-1>`。已有配置的证书不可用时构建失败，不自动换证书或退回 ad-hoc。证书轮换时更新本地配置；显式环境变量覆盖只影响当前调用。`./scripts/build_and_run.sh --build` 只构建并验证签名，不启动或停止应用。公开 tag 预发行由 CI 使用 Developer ID 并公证，见 [公证凭据](docs/NOTARIZE.md)。没有证书的贡献者可显式 `CODESIGN_IDENTITY=-`；无需取得维护者证书、LAN 发行私钥或 NAS。独立 DMG 使用 `./scripts/package-macos.sh --bootstrap`，与默认维护者 LAN 交付流程隔离。
+本地开发与 DMG 打包共同使用 `scripts/codesign-identity.sh`，证书指纹保存在 Git 忽略的 `.codesign-identity`。首次构建只有一张可用 Apple Development 证书时自动固定；多张证书时显式设置 `CODESIGN_IDENTITY=<SHA-1>`。关联 worktree 在本目录没有指纹时沿用主检出的 `.codesign-identity`。已有配置的证书不可用时构建失败，不自动换证书或退回 ad-hoc。证书轮换时更新本地配置；显式环境变量覆盖只影响当前调用。`./scripts/build_and_run.sh --build` 只构建并验证签名，不启动或停止应用。公开 tag 预发行由 CI 使用 Developer ID 并公证，见 [公证凭据](docs/NOTARIZE.md)。没有证书的贡献者可显式 `CODESIGN_IDENTITY=-`；无需取得维护者证书、LAN 发行私钥或 NAS。独立 DMG 使用 `./scripts/package-macos.sh --bootstrap`，与默认维护者 LAN 交付流程隔离。
 
 ## 结构和变更边界
 

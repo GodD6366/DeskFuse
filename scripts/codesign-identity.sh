@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Shared by development and packaging; pin local signing across rebuilds.
+# 开发构建与打包共用。本目录指纹跨次构建保持不变，禁止静默退回 ad-hoc。
 deskfuse_select_codesign_identity() {
-  local config_file identities requested matches match_count
+  local config_file identities requested matches match_count common_git_dir main_root main_pin
   config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.codesign-identity"
   requested="${CODESIGN_IDENTITY:-}"
-  # Public prereleases may explicitly request ad-hoc signing. Never fall back to it.
+  # 只有调用方显式传入 CODESIGN_IDENTITY=- 才使用 ad-hoc。
   if [[ "$requested" == "-" ]]; then
     return 0
   fi
@@ -12,6 +12,20 @@ deskfuse_select_codesign_identity() {
     requested="$(cat "$config_file")"
     if [[ -z "$requested" ]]; then
       echo "error: empty local signing configuration: $config_file" >&2
+      return 1
+    fi
+  fi
+  # 关联 worktree 没有本目录指纹时，沿用主检出已固定的证书，不在多张证书里猜测。
+  if [[ -z "$requested" ]] \
+    && common_git_dir="$(git -C "$(dirname "$config_file")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    && [[ -n "$common_git_dir" ]] \
+    && main_root="$(cd "$(dirname "$common_git_dir")" 2>/dev/null && pwd)" \
+    && [[ "$main_root/.codesign-identity" != "$config_file" ]] \
+    && [[ -f "$main_root/.codesign-identity" ]]; then
+    main_pin="$main_root/.codesign-identity"
+    requested="$(cat "$main_pin")"
+    if [[ -z "$requested" ]]; then
+      echo "error: empty local signing configuration: $main_pin" >&2
       return 1
     fi
   fi
@@ -34,8 +48,7 @@ deskfuse_select_codesign_identity() {
     return 1
   fi
   CODESIGN_IDENTITY="$matches"
-  # First successful selection becomes the persistent local default. Explicit
-  # overrides of an existing pin apply only to that invocation.
+  # 本目录第一次成功选定后写入指纹。已有指纹时，环境变量只覆盖本次调用。
   if [[ ! -e "$config_file" ]]; then
     (umask 077; set -o noclobber; printf '%s\n' "$CODESIGN_IDENTITY" > "$config_file") || return 1
   fi
