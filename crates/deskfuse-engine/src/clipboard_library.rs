@@ -554,6 +554,20 @@ END;").map_err(err)?;
         }
         Ok(id)
     }
+    /// Blocking capture paths compute the image digest once in their single
+    /// decode pass and reuse it here instead of decoding the snapshot again.
+    pub(crate) fn ingest_with_image_digest(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+        image_digest: Option<String>,
+    ) -> Result<Option<u64>> {
+        let id = self.ingest_record_with_image_digest(snapshot, source, image_digest)?;
+        if let Some(id) = id {
+            self.publish_index_for(id)?;
+        }
+        Ok(id)
+    }
     /// HTTP uploads must distinguish a committed local record from an optional
     /// cross-device index publication failure before releasing source-file ownership.
     pub(crate) fn ingest_preserving_commit(
@@ -571,6 +585,28 @@ END;").map_err(err)?;
             return Ok(None);
         }
         let fingerprint = content_digest(snapshot)?;
+        self.ingest_record_resolved(snapshot, source, origin, fingerprint)
+    }
+    fn ingest_record_with_image_digest(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+        image_digest: Option<String>,
+    ) -> Result<Option<u64>> {
+        let origin = self.origin(snapshot, source);
+        if origin.no_history || self.excluded(origin.app_id.as_deref()) {
+            return Ok(None);
+        }
+        let fingerprint = content_digest_with(snapshot, image_digest)?;
+        self.ingest_record_resolved(snapshot, source, origin, fingerprint)
+    }
+    fn ingest_record_resolved(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+        origin: Origin,
+        fingerprint: String,
+    ) -> Result<Option<u64>> {
         let bytes = encode(snapshot, source)?;
         let mut db = self.db.lock().map_err(err)?;
         let tx = db.transaction().map_err(err)?;
@@ -2237,7 +2273,7 @@ fn project_image_file(summary: &mut Summary) {
 /// create two rows. Plain text is therefore keyed by its bytes even when a
 /// TIFF preview is attached (Handoff often adds one). Images use exact decoded
 /// pixels, including a single image file alias. Other files keep the full digest.
-fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
+fn text_content_digest(snapshot: &PasteboardSnapshot) -> Option<String> {
     if snapshot.file_urls.is_empty()
         && let Some(text) = crate::clipboard_echo::snapshot_plain_texts(snapshot)
             .into_iter()
@@ -2248,9 +2284,29 @@ fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
         let mut buf = Vec::with_capacity(normalized.len() + 5);
         buf.extend_from_slice(b"text\0");
         buf.extend_from_slice(normalized.as_bytes());
-        return Ok(hex::encode(Sha256::digest(&buf)));
+        return Some(hex::encode(Sha256::digest(&buf)));
+    }
+    None
+}
+fn content_digest(snapshot: &PasteboardSnapshot) -> Result<String> {
+    if let Some(digest) = text_content_digest(snapshot) {
+        return Ok(digest);
     }
     if let Some(image_digest) = crate::clipboard_image::snapshot_digest(snapshot) {
+        return Ok(image_digest);
+    }
+    digest(snapshot)
+}
+/// Like [`content_digest`], but reuses an image digest from the caller's
+/// single decode pass instead of decoding the snapshot again.
+fn content_digest_with(
+    snapshot: &PasteboardSnapshot,
+    image_digest: Option<String>,
+) -> Result<String> {
+    if let Some(digest) = text_content_digest(snapshot) {
+        return Ok(digest);
+    }
+    if let Some(image_digest) = image_digest {
         return Ok(image_digest);
     }
     digest(snapshot)

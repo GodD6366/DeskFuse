@@ -82,64 +82,11 @@ pub fn decode(data: &[u8]) -> Result<Vec<PasteboardItem>, String> {
     Ok(items)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use deskfuse_platform::PasteboardRepresentation;
-
-    #[test]
-    fn all_native_formats_and_multiple_items_round_trip_losslessly() {
-        let items = vec![
-            PasteboardItem {
-                representations: [
-                    ("public.tiff", b"II\x2a\0image".as_slice()),
-                    ("public.rtf", b"{\\rtf1\\b bold}"),
-                    ("public.html", b"<b>bold</b>"),
-                    ("com.example.editor.private-format", &[0, 1, 255, 0]),
-                    ("public.pdf", b"%PDF-1.7"),
-                ]
-                .into_iter()
-                .map(|(name, data)| PasteboardRepresentation {
-                    type_name: name.into(),
-                    data: data.into(),
-                })
-                .collect(),
-            },
-            PasteboardItem {
-                representations: vec![PasteboardRepresentation {
-                    type_name: "public.utf8-plain-text".into(),
-                    data: b"second item".to_vec(),
-                }],
-            },
-        ];
-        assert_eq!(decode(&encode(&items).unwrap()).unwrap(), items);
-    }
-
-    #[test]
-    fn invalid_bundle_does_not_become_a_pasteboard_write() {
-        assert!(decode(b"not a compressed bundle").is_err());
-        let items = vec![PasteboardItem {
-            representations: vec![PasteboardRepresentation {
-                type_name: "public.file-url".into(),
-                data: b"file:///private/local-file".to_vec(),
-            }],
-        }];
-        assert!(encode(&items).is_err());
-    }
-}
-
 /// Kept in an opaque native representation so SnapshotV1's bincode layout is unchanged.
 pub const SOURCE_METADATA_TYPE: &str = "com.deskfuse.clipboard-source-v1";
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct SourceMetadata {
-    pub app_bundle_id: Option<String>,
-    pub device_id: Option<String>,
-    pub created_at_ms: Option<u64>,
-    pub no_history: bool,
-    /// Exact decoded image hash, including single-image file representations.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_digest: Option<String>,
-}
+// Single source of truth lives in deskfuse-protocol so the Windows service
+// and this engine cannot drift on field names or serde defaults.
+pub use deskfuse_protocol::clipboard_sync::SourceMetadata;
 pub fn source_metadata(snapshot: &deskfuse_platform::PasteboardSnapshot) -> SourceMetadata {
     snapshot
         .items
@@ -191,3 +138,49 @@ pub fn attach_source_metadata(
 
 /// Photo metadata only; the original bytes live in the managed transfer cache.
 pub const LAN_PHOTO_TYPE: &str = "com.deskfuse.lan-photo-v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskfuse_platform::PasteboardRepresentation;
+
+    #[test]
+    fn all_native_formats_and_multiple_items_round_trip_losslessly() {
+        let items = vec![
+            PasteboardItem {
+                representations: [
+                    ("public.tiff", b"II\x2a\0image".as_slice()),
+                    ("public.rtf", b"{\\rtf1\\b bold}"),
+                    ("public.html", b"<b>bold</b>"),
+                    ("com.example.editor.private-format", &[0, 1, 255, 0]),
+                    ("public.pdf", b"%PDF-1.7"),
+                ]
+                .into_iter()
+                .map(|(name, data)| PasteboardRepresentation {
+                    type_name: name.into(),
+                    data: data.into(),
+                })
+                .collect(),
+            },
+            PasteboardItem {
+                representations: vec![PasteboardRepresentation {
+                    type_name: "public.utf8-plain-text".into(),
+                    data: b"second item".to_vec(),
+                }],
+            },
+        ];
+        assert_eq!(decode(&encode(&items).unwrap()).unwrap(), items);
+    }
+
+    #[test]
+    fn invalid_bundle_does_not_become_a_pasteboard_write() {
+        assert!(decode(b"not a compressed bundle").is_err());
+        let items = vec![PasteboardItem {
+            representations: vec![PasteboardRepresentation {
+                type_name: "public.file-url".into(),
+                data: b"file:///private/local-file".to_vec(),
+            }],
+        }];
+        assert!(encode(&items).is_err());
+    }
+}

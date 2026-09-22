@@ -506,10 +506,26 @@ impl ClipboardHistoryStore {
         source: impl Into<String>,
         ui_sender: &UnboundedSender<UiEvent>,
     ) {
+        self.record_with_image_digest(snapshot, source, None, ui_sender);
+    }
+
+    /// 带解码分析的捕获路径把单次解码得到的图像摘要直接交给历史入库，
+    /// 避免库内再次解码快照；`None` 表示未分析，回退到库内自算摘要。
+    fn record_with_image_digest(
+        &mut self,
+        snapshot: PasteboardSnapshot,
+        source: impl Into<String>,
+        image_digest: Option<String>,
+        ui_sender: &UnboundedSender<UiEvent>,
+    ) {
         let source = source.into();
-        match crate::clipboard_library::global()
-            .and_then(|library| library.ingest(&snapshot, &source))
-        {
+        let outcome = crate::clipboard_library::global().and_then(|library| match &image_digest {
+            Some(image_digest) => {
+                library.ingest_with_image_digest(&snapshot, &source, Some(image_digest.clone()))
+            }
+            None => library.ingest(&snapshot, &source),
+        });
+        match outcome {
             Ok(Some(id)) => {
                 if self.insert(snapshot, source) {
                     self.adopt_front_id(id);
@@ -2980,11 +2996,16 @@ impl ClipboardLoopGuard {
         );
         let mut equivalent_ids = crate::clipboard_echo::payload_equivalent_ids(payload);
         if let Some(snapshot) = snapshot {
-            equivalent_ids.extend(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
+            let images = crate::clipboard_image::analyze_snapshot(snapshot);
+            equivalent_ids.extend(crate::clipboard_echo::snapshot_equivalent_ids(
+                snapshot, &images,
+            ));
         }
         equivalent_ids.sort();
         equivalent_ids.dedup();
-        self.ledger.observe(equivalent_ids)
+        // 对端写入必须把指纹组标记为远端：接力随后剥掉标记的回写才能命中抑制，
+        // 而纯本地组保持未标记，窗口内的等价再复制仍可重新发布。
+        self.ledger.observe(equivalent_ids, true)
     }
 
     fn remember(&mut self, fingerprint: String, change_count: i64) {
@@ -3001,6 +3022,7 @@ impl ClipboardLoopGuard {
         &mut self,
         pasteboard: &impl Pasteboard,
         snapshot: &PasteboardSnapshot,
+        images: &crate::clipboard_image::ClipboardImageFacts,
     ) -> bool {
         // Universal Clipboard is Apple's own cross-device copy. DeskFuse's
         // trusted session will deliver the same content (or has already done
@@ -3010,10 +3032,12 @@ impl ClipboardLoopGuard {
             .contains_type(UNIVERSAL_CLIPBOARD_TYPE)
             .unwrap_or(false)
         {
-            // 仍写入账本：接力随后可能去掉标记、只改表示，后续无标记回写也要认出来。
-            let _ = self
-                .ledger
-                .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
+            // 仍写入账本并标记为远端：接力随后可能去掉标记、只改表示，
+            // 后续无标记回写也要能命中这次远端标记。
+            let _ = self.ledger.observe(
+                crate::clipboard_echo::snapshot_equivalent_ids(snapshot, images),
+                true,
+            );
             return true;
         }
         let marker = pasteboard.read_remote_origin_marker().ok().flatten();
@@ -3023,9 +3047,12 @@ impl ClipboardLoopGuard {
             }
             // Handoff often turns a native screenshot into a PNG file and
             // removes all markers. Its path differs, but exact pixels do not.
-            return self
-                .ledger
-                .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot));
+            // 本地文件复制走同一条路，因此观察标记为本地：只有此前被标记为
+            // 远端（接力/对端写入）的像素组才在这里抑制。
+            return self.ledger.observe(
+                crate::clipboard_echo::snapshot_equivalent_ids(snapshot, images),
+                false,
+            );
         }
         let Some(fingerprint) = clipboard_snapshot_fingerprint(snapshot) else {
             return false;
@@ -3043,9 +3070,13 @@ impl ClipboardLoopGuard {
         {
             return true;
         }
-        // 第 3 层：不依赖接力是否保留自定义 type。命中任一等价指纹即回声。
-        self.ledger
-            .observe(crate::clipboard_echo::snapshot_equivalent_ids(snapshot))
+        // 第 3 层：不依赖接力是否保留自定义 type。只有该组曾被标记为远端内容
+        // 才抑制；本地组的等价再复制刷新窗口后仍可重新发布（A→B→A 重复制、
+        // 发送失败后的重试依赖这一点）。
+        self.ledger.observe(
+            crate::clipboard_echo::snapshot_equivalent_ids(snapshot, images),
+            false,
+        )
     }
 }
 
@@ -3174,7 +3205,13 @@ async fn push_local_clipboard(
         }
     };
     *context.last_change_count = Some(snapshot.change_count);
-    if !context.force && context.loop_guard.should_suppress(pasteboard, &snapshot) {
+    // 单次分析解码图像一次，同时供回声抑制、源信息 image_digest 和历史入库复用。
+    let image_facts = crate::clipboard_image::analyze_snapshot(&snapshot);
+    if !context.force
+        && context
+            .loop_guard
+            .should_suppress(pasteboard, &snapshot, &image_facts)
+    {
         crate::diagnostics::record!(
             context.diagnostics,
             DiagnosticLevel::Info,
@@ -3187,7 +3224,7 @@ async fn push_local_clipboard(
     }
     if let Ok(library) = crate::clipboard_library::global() {
         let origin = library.origin(&snapshot, "本机");
-        let image_digest = crate::clipboard_image::snapshot_digest(&snapshot);
+        let image_digest = image_facts.primary.clone();
         clipboard_bundle::attach_source_metadata(
             &mut snapshot,
             &clipboard_bundle::SourceMetadata {
@@ -3209,9 +3246,12 @@ async fn push_local_clipboard(
             },
         );
     }
-    context
-        .history
-        .record(snapshot.clone(), "本机", context.ui_sender);
+    context.history.record_with_image_digest(
+        snapshot.clone(),
+        "本机",
+        image_facts.primary.clone(),
+        context.ui_sender,
+    );
     // Keep immutable file references until expiry/disconnect: an earlier paste
     // request may still be in flight when this new copy is published.
     context
@@ -4729,6 +4769,7 @@ mod file_clipboard_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clipboard_image::analyze_snapshot;
     use deskfuse_platform::MemoryPasteboard;
     use futures::{StreamExt, stream::BoxStream};
 
@@ -4801,43 +4842,52 @@ mod tests {
             pasteboard.read_remote_origin_marker().expect("read marker"),
             Some(clipboard_fingerprint("text/plain", b"from peer"))
         );
-        assert!(loop_guard.should_suppress(&pasteboard, &received));
+        assert!(loop_guard.should_suppress(&pasteboard, &received, &analyze_snapshot(&received)));
 
         pasteboard
             .write_text("new local copy")
             .expect("write local copy");
         let local = pasteboard.read().expect("read local clipboard");
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
 
-        // 10 秒账本窗口内，同一段文字的再次出现视为回声（含接力改写）。
+        // 对端写入已把指纹组标记为远端：10 秒窗口内同一段文字的再次出现
+        // （含接力改写）仍视为回声。
         pasteboard
             .write_text("from peer")
             .expect("recopy old remote text");
         let recopied = pasteboard.read().unwrap();
         assert!(recopied.change_count > received.change_count);
-        assert!(loop_guard.should_suppress(&pasteboard, &recopied));
+        assert!(loop_guard.should_suppress(&pasteboard, &recopied, &analyze_snapshot(&recopied)));
     }
 
+    /// 本地组从未被标记为远端，因此无标记的等价改写与本地再复制不可区分，
+    /// 回声窗口必须放行——发送失败后的重试、A→B→A 重新复制依赖这一点。
+    /// 远端内容的无标记回写由 `universal_…` 与 `remote_clipboard_marker_…` 覆盖。
     #[test]
-    fn handoff_echo_of_a_local_copy_is_suppressed() {
+    fn markerless_rewrite_of_a_local_copy_is_republishable() {
         let pasteboard = MemoryPasteboard::new();
         let mut loop_guard = ClipboardLoopGuard::default();
         pasteboard.write_text("帮我安装 kimi code\n").unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
 
         pasteboard.write_text("帮我安装 kimi code\r\n").unwrap();
-        let echoed = pasteboard.read().unwrap();
-        assert!(echoed.change_count > local.change_count);
-        assert!(loop_guard.should_suppress(&pasteboard, &echoed));
+        let rewritten = pasteboard.read().unwrap();
+        assert!(rewritten.change_count > local.change_count);
+        assert!(!loop_guard.should_suppress(
+            &pasteboard,
+            &rewritten,
+            &analyze_snapshot(&rewritten)
+        ));
 
-        // 接力回写常去掉或补上尾随换行，10 秒窗口内仍视为同一条。
+        // 接力回写常去掉或补上尾随换行；窗口内每次等价观察都放行。
         pasteboard.write_text("帮我安装 kimi code").unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        let trimmed = pasteboard.read().unwrap();
+        assert!(!loop_guard.should_suppress(&pasteboard, &trimmed, &analyze_snapshot(&trimmed)));
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &incoming));
+        assert!(!loop_guard.should_suppress(&pasteboard, &incoming, &analyze_snapshot(&incoming)));
     }
 
     #[test]
@@ -4847,14 +4897,16 @@ mod tests {
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         pasteboard.mark_universal_clipboard().unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &handoff));
+        assert!(loop_guard.should_suppress(&pasteboard, &handoff, &analyze_snapshot(&handoff)));
 
-        // 去掉标记后的接力改写仍是回声。不同内容的新复制不受影响。
+        // 去掉标记后的接力改写仍是回声（组已被 Universal 分支标记为远端）。
+        // 不同内容的新复制不受影响。
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        let rewritten = pasteboard.read().unwrap();
+        assert!(loop_guard.should_suppress(&pasteboard, &rewritten, &analyze_snapshot(&rewritten)));
         pasteboard.write_png(&[4, 5, 6]).unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
     }
 
     #[test]
@@ -4869,7 +4921,7 @@ mod tests {
         }];
         pasteboard.write_items(&items).unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &handoff));
+        assert!(!loop_guard.should_suppress(&pasteboard, &handoff, &analyze_snapshot(&handoff)));
 
         // Native rich images travel through the clipboard bundle MIME, so
         // payload-only matching is insufficient. The applied native snapshot
@@ -4906,19 +4958,28 @@ mod tests {
             clipboard_snapshot_fingerprint(&snapshot).unwrap(),
             snapshot.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &snapshot));
+        assert!(guard.should_suppress(&pasteboard, &snapshot, &analyze_snapshot(&snapshot)));
         pasteboard.write_text("same text").unwrap();
         let copied_again = pasteboard.read().unwrap();
-        assert!(!guard.should_suppress(&pasteboard, &copied_again));
+        assert!(!guard.should_suppress(
+            &pasteboard,
+            &copied_again,
+            &analyze_snapshot(&copied_again)
+        ));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         let png = pasteboard.read().unwrap();
         guard.remember(
             clipboard_snapshot_fingerprint(&png).unwrap(),
             png.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &png));
+        assert!(guard.should_suppress(&pasteboard, &png, &analyze_snapshot(&png)));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(!guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        let recopied_png = pasteboard.read().unwrap();
+        assert!(!guard.should_suppress(
+            &pasteboard,
+            &recopied_png,
+            &analyze_snapshot(&recopied_png)
+        ));
     }
 
     // Deleted 2026-09-15: this case expected a payload without source metadata

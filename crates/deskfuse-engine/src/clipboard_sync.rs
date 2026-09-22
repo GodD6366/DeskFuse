@@ -43,6 +43,9 @@ struct Peer {
     job: Option<Job>,
     incoming: Option<Incoming>,
     receipt: Option<(u64, Vec<u8>, u32)>,
+    /// Receive budget the remote advertised on its HELLO; older peers get
+    /// the full wire limit until they prove otherwise.
+    max_content: u64,
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -312,16 +315,15 @@ impl Sync {
                 job: None,
                 incoming: None,
                 receipt: None,
+                max_content: wire::MAX_BYTES as u64,
             });
             if !state.ready && Instant::now() >= state.hello_due {
                 state.hello_due = Instant::now() + Duration::from_secs(1);
-                let hello = SyncMessage {
-                    kind: wire::HELLO,
-                    policy_version: 1,
-                    source_epoch: state.epoch.clone(),
-                    target_epoch: state.remote.clone().unwrap_or_default(),
-                    ..Default::default()
-                };
+                let hello = SyncMessage::hello(
+                    state.epoch.clone(),
+                    state.remote.clone().unwrap_or_default(),
+                    wire::MAX_BYTES as u64,
+                );
                 self.control(runtime, peer, hello);
             }
         }
@@ -519,20 +521,38 @@ impl Sync {
             }));
         }
     }
-    fn start(&mut self, peer: DeviceId, payload: Arc<ClipboardPayload>, runtime: &RuntimeHandle) {
-        let source_metadata = serde_json::to_vec(
-            &self
-                .metadata
-                .get(&payload.sequence)
-                .cloned()
-                .unwrap_or_else(|| clipboard_bundle::SourceMetadata {
-                    no_history: true,
-                    ..Default::default()
-                }),
-        )
-        .unwrap_or_default();
+    fn start(
+        &mut self,
+        peer: DeviceId,
+        payload: Arc<ClipboardPayload>,
+        runtime: &RuntimeHandle,
+        ui: &UnboundedSender<UiEvent>,
+    ) {
+        let source_metadata = self
+            .metadata
+            .get(&payload.sequence)
+            .cloned()
+            .unwrap_or_else(|| clipboard_bundle::SourceMetadata {
+                no_history: true,
+                ..Default::default()
+            });
         let cancel = self.manual.get(&peer).map(|(_, cancel)| cancel.clone());
         if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+            return;
+        }
+        // Skip the whole send when the peer already advertised a smaller
+        // receive budget, instead of streaming chunks for a guaranteed NACK.
+        let budget = self.peers.get(&peer).map(|state| state.max_content);
+        if let Some(budget) = budget
+            && payload.data.len() as u64 > budget
+        {
+            let error = format!(
+                "内容约 {} MB，超过对端可接收上限 {} MB",
+                payload.data.len().div_ceil(1024 * 1024),
+                budget.div_ceil(1024 * 1024)
+            );
+            Self::status(ui, peer, &error);
+            self.finish_manual(peer, Err(error), ui);
             return;
         }
         let Some(state) = self.peers.get_mut(&peer) else {
@@ -576,21 +596,18 @@ impl Sync {
                         }
                         let offset = part * wire::CHUNK_BYTES;
                         let end = (offset + wire::CHUNK_BYTES).min(payload.data.len());
-                        let frame = SyncMessage {
-                            kind: wire::DATA,
-                            policy_version: 1,
-                            source_metadata: source_metadata.clone(),
-                            source_epoch: source.clone(),
-                            target_epoch: remote.clone(),
-                            sync_id: job_id.clone(),
+                        let frame = SyncMessage::data(
+                            source.clone(),
+                            remote.clone(),
+                            job_id.clone(),
                             revision,
-                            mime: payload.mime.clone(),
-                            digest: digest.clone(),
-                            total: payload.data.len() as u64,
-                            offset: offset as u64,
-                            data: payload.data[offset..end].to_vec(),
-                            ..Default::default()
-                        };
+                            payload.mime.clone(),
+                            digest.clone(),
+                            payload.data.len() as u64,
+                            offset as u64,
+                            payload.data[offset..end].to_vec(),
+                            &source_metadata,
+                        );
                         let data = frame.encode_checked().map_err(|e| e.to_string())?;
                         runtime
                             .send_clipboard_on_session(
@@ -641,14 +658,8 @@ impl Sync {
         let Ok(frame) = SyncMessage::decode_checked(bytes) else {
             return;
         };
-        if frame.kind == wire::DATA
-            && (frame.policy_version != 1
-                || serde_json::from_slice::<clipboard_bundle::SourceMetadata>(
-                    &frame.source_metadata,
-                )
-                .is_err())
-        {
-            Self::status(ui, peer, "剪贴板来源策略无效，已拒绝接收");
+        if frame.kind == wire::DATA && !frame.data_policy_ok() {
+            Self::status(ui, peer, wire::POLICY_REJECTED_CONTENT);
             return;
         }
         let reserved = self
@@ -661,12 +672,13 @@ impl Sync {
             return;
         };
         if frame.kind == wire::HELLO {
-            if frame.policy_version != 1 {
+            if !frame.hello_policy_ok() {
                 state.ready = false;
                 state.pending = None;
-                Self::status(ui, peer, "对端需升级以支持历史排除策略");
+                Self::status(ui, peer, wire::POLICY_REJECTED_HELLO);
                 return;
             }
+            state.max_content = frame.advertised_max_content();
             let matched = frame.target_epoch == state.epoch;
             let different = state.remote.as_ref() != Some(&frame.source_epoch);
             if matched || state.remote.is_none() {
@@ -697,13 +709,11 @@ impl Sync {
                     None
                 };
                 let reply = if different || !was_ready || !matched {
-                    Some(SyncMessage {
-                        kind: wire::HELLO,
-                        policy_version: 1,
-                        source_epoch: state.epoch.clone(),
-                        target_epoch: frame.source_epoch,
-                        ..Default::default()
-                    })
+                    Some(SyncMessage::hello(
+                        state.epoch.clone(),
+                        frame.source_epoch,
+                        wire::MAX_BYTES as u64,
+                    ))
                 } else {
                     None
                 };
@@ -712,16 +722,14 @@ impl Sync {
                 }
                 if let Some(payload) = pending {
                     Self::status(ui, peer, "排队中");
-                    self.start(peer, payload, runtime);
+                    self.start(peer, payload, runtime, ui);
                 }
             } else if frame.target_epoch.is_empty() {
-                let reply = SyncMessage {
-                    kind: wire::HELLO,
-                    policy_version: 1,
-                    source_epoch: state.epoch.clone(),
-                    target_epoch: frame.source_epoch,
-                    ..Default::default()
-                };
+                let reply = SyncMessage::hello(
+                    state.epoch.clone(),
+                    frame.source_epoch,
+                    wire::MAX_BYTES as u64,
+                );
                 self.control(runtime, peer, reply);
             }
             return;
@@ -852,15 +860,13 @@ impl Sync {
         self.control(
             runtime,
             peer,
-            SyncMessage {
-                kind: wire::ACK,
-                source_epoch: frame.target_epoch.clone(),
-                target_epoch: frame.source_epoch.clone(),
-                sync_id: frame.sync_id.clone(),
-                revision: frame.revision,
+            SyncMessage::ack(
+                frame.target_epoch.clone(),
+                frame.source_epoch.clone(),
+                frame.sync_id.clone(),
+                frame.revision,
                 outcome,
-                ..Default::default()
-            },
+            ),
         );
     }
     pub fn finish(&mut self, ready: Ready, outcome: u32, runtime: &RuntimeHandle) {
@@ -931,7 +937,7 @@ impl Sync {
                                         &format!("工作流失败：{warning}；正在发送原内容"),
                                     );
                                 }
-                                self.start(peer, payload.clone(), runtime);
+                                self.start(peer, payload.clone(), runtime, ui);
                             }
                         }
                         Ok(Prepared::Files(source, selected)) => {
@@ -959,6 +965,7 @@ impl Sync {
                                             sequence: revision,
                                         }),
                                         runtime,
+                                        ui,
                                     );
                                 }
                             }
@@ -1115,6 +1122,7 @@ mod tests {
             job: None,
             incoming: None,
             receipt: None,
+            max_content: wire::MAX_BYTES as u64,
         }
     }
     fn frame() -> SyncMessage {
