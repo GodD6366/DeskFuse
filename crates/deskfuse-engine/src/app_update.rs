@@ -1,7 +1,7 @@
 #[cfg(not(test))]
 use deskfuse_runtime::{
     RuntimeHandle,
-    updates::{LanUpdateConfig, LanUpdater},
+    updates::{LanUpdateConfig, LanUpdater, UpdateChannel},
 };
 #[cfg(not(test))]
 use deskfuse_update::Target;
@@ -9,10 +9,7 @@ use deskfuse_update::installer;
 use std::path::PathBuf;
 
 #[cfg(not(test))]
-pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
-    let bundle = installer::current_bundle()?;
-    let installed = installer::installed_release(&bundle)?;
-    let root = installer::update_root()?;
+fn macos_version() -> Result<semver::Version, String> {
     let version = std::process::Command::new("/usr/bin/sw_vers")
         .arg("-productVersion")
         .output()
@@ -21,7 +18,31 @@ pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
     while os.matches('.').count() < 2 {
         os.push_str(".0");
     }
-    let os = os.parse().map_err(|_| "无法识别 macOS 版本")?;
+    os.parse().map_err(|_| "无法识别 macOS 版本".into())
+}
+
+#[cfg(not(test))]
+fn lan_receipt(
+    installed: &deskfuse_update::ReleaseVersion,
+) -> Result<Option<deskfuse_protocol::update::UpdateReceipt>, String> {
+    Ok(installer::completed_status()?
+        .filter(|s| s.release == *installed)
+        .map(|status| deskfuse_protocol::update::UpdateReceipt {
+            transaction_id: status.transaction_id.as_bytes().to_vec(),
+            release_id: installed.release_id.as_bytes().to_vec(),
+            installed_version: installed.version.to_string(),
+            installed_build: installed.build_number,
+            target: 1,
+            sha256: hex::decode(&status.artifact.sha256).unwrap_or_default(),
+        }))
+}
+
+#[cfg(not(test))]
+pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
+    let bundle = installer::current_bundle()?;
+    let installed = installer::installed_release(&bundle)?;
+    let root = installer::update_root()?;
+    let os = macos_version()?;
     let mut seed_dirs = vec![
         bundle.join("Contents/Resources/LanUpdate"),
         root.join("inbox"),
@@ -37,27 +58,41 @@ pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
                 .map(|v| v.path().join(".updates")),
         );
     }
-    let receipt = installer::completed_status()?
-        .filter(|s| s.release == installed)
-        .map(|status| deskfuse_protocol::update::UpdateReceipt {
-            transaction_id: status.transaction_id.as_bytes().to_vec(),
-            release_id: installed.release_id.as_bytes().to_vec(),
-            installed_version: installed.version.to_string(),
-            installed_build: installed.build_number,
-            target: 1,
-            sha256: hex::decode(&status.artifact.sha256).unwrap_or_default(),
-        });
     LanUpdater::start(
         runtime,
         LanUpdateConfig {
-            installed,
+            installed: installed.clone(),
             target: Target::MacosArm64,
             os,
             root,
             seed_dirs,
             key: deskfuse_update::pinned_release_key().map_err(|e| e.to_string())?,
-            receipt,
+            receipt: lan_receipt(&installed)?,
             previous_failure: installer::previous_failure()?,
+            channel: UpdateChannel::Lan,
+        },
+    )
+}
+
+/// Public GitHub bundles still check GitHub, and also package the running app
+/// so a peer can install it over the LAN update transport.
+#[cfg(not(test))]
+pub fn start_github(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
+    let bundle = installer::current_bundle()?;
+    let installed = installer::installed_release(&bundle)?;
+    let root = installer::update_root()?;
+    LanUpdater::start(
+        runtime,
+        LanUpdateConfig {
+            installed: installed.clone(),
+            target: Target::MacosArm64,
+            os: macos_version()?,
+            root,
+            seed_dirs: Vec::new(),
+            key: deskfuse_update::pinned_release_key().map_err(|e| e.to_string())?,
+            receipt: lan_receipt(&installed)?,
+            previous_failure: installer::previous_failure()?,
+            channel: UpdateChannel::GitHub,
         },
     )
 }
@@ -87,4 +122,11 @@ pub fn stage(
     status: deskfuse_update::UpdateStatus,
 ) -> StageTask {
     tokio::task::spawn_blocking(move || installer::prepare(&release, &payload, &status))
+}
+pub fn stage_github_zip(
+    release: deskfuse_update::ReleaseVersion,
+    payload: PathBuf,
+    status: deskfuse_update::UpdateStatus,
+) -> StageTask {
+    tokio::task::spawn_blocking(move || installer::prepare_github_zip(&payload, &release, &status))
 }

@@ -132,6 +132,86 @@ mod build_identity_tests {
         assert!(!process_recovery_required(&control));
     }
 
+    #[tokio::test]
+    async fn exhausted_service_retries_can_be_restarted_without_changing_settings() {
+        use super::*;
+        let dir = scratch();
+        let control = ServiceControl::default();
+        let (commands, command_rx) = mpsc::channel(8);
+        let (snapshots, _) = watch::channel(InputSharingSnapshot::default());
+        let (_network, network) = watch::channel(SnapshotView {
+            snapshot: NetworkSnapshot::new(
+                0,
+                DeviceId::from_public_key([9; 32]).unwrap(),
+                vec![],
+                false,
+            )
+            .unwrap(),
+            discovered_peers: vec![],
+            device_network: Default::default(),
+        });
+        let store = Arc::new(crate::MemoryRuntimeStore::default());
+        let settings = store.get_input_sharing_settings().unwrap();
+        let (events, _) = broadcast::channel(16);
+        // A missing executable exercises real supervisor failure/backoff without
+        // launching native input, touching identity, or requesting OS permissions.
+        let supervisor = tokio::spawn(run_host(
+            ServiceOptions {
+                executable: dir.join("missing-helper"),
+                identity_path: dir.join("unused-identity"),
+            },
+            "test".into(),
+            control.clone(),
+            command_rx,
+            snapshots,
+            network,
+            store.clone(),
+            events,
+        ));
+        let exhausted = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if control
+                    .status
+                    .lock()
+                    .unwrap()
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("自动恢复未成功"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if exhausted.is_err() {
+            supervisor.abort();
+            panic!("supervisor did not expose retry exhaustion");
+        }
+        let sequence = *control.sequence.lock().unwrap();
+        commands
+            .send(RuntimeCommand::RefreshNativeObserver)
+            .await
+            .unwrap();
+        let retried = tokio::time::timeout(Duration::from_secs(2), async {
+            while *control.sequence.lock().unwrap() <= sequence {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        commands.send(RuntimeCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), supervisor)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            retried.is_ok(),
+            "manual refresh must restart an exhausted helper"
+        );
+        assert_eq!(store.get_input_sharing_settings().unwrap(), settings);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn release_json_formats_version_and_build() {
         let dir = scratch();
@@ -399,7 +479,7 @@ pub(super) async fn run_host(
             break;
         }
         if attempts > 3 {
-            // No hidden fallback into the application's process. Explicit enable retries.
+            // No hidden fallback into the application's process. Explicit retry stays available.
             loop {
                 match commands.recv().await {
                     Some(RuntimeCommand::Shutdown) | None => return,
@@ -582,9 +662,9 @@ async fn run_process(
             _ = tick.tick() => {
                 if let Some(exit) = process.0.try_wait().map_err(|e|e.to_string())? { return Err(format!("独立输入进程已退出：{exit}")); }
                 if process_recovery_required(control) {
-                    // Retire native sessions first. A stuck query must not prevent the
-                    // supervisor from replacing only the helper process after the grace.
-                    control.signal(b'E');
+                    // The coordinator already retired native sessions. Do not send
+                    // the user-emergency command: that would persist a managed pause.
+                    // Bound cleanup even if an OS query never returns.
                     control.signal(b'Q');
                     let deadline = std::time::Instant::now() + Duration::from_secs(2);
                     while std::time::Instant::now() < deadline {

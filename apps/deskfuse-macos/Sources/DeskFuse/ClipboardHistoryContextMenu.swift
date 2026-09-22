@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import DeskFuseEngine
 
 /// A native menu owns its rows for the entire tracking session. SwiftUI card
 /// refreshes (preview, polling, selection) must not replace an open submenu.
@@ -8,29 +9,32 @@ import SwiftUI
     static let didEnd = Notification.Name("DeskFuse.clipboardHistoryMenuDidEnd")
 }
 
+struct ClipboardHistoryMenuContext {
+    var item: HistoryItem
+    var title: String?
+    var memberships: [String]
+    var meta: ClipboardItemMeta?
+    var copyEnabled = true
+    var pasteTargetName: String?
+    var onCopy: (() -> Void)?
+    var onPaste: (() -> Void)?
+    var onEditTitle: () -> Void
+    var showsPreview = false
+    var onPreview: (() -> Void)?
+    var onDelete: () -> Void
+}
+
 extension View {
-    func clipboardHistoryContextMenu(
-        itemID: UInt64, memberships: [String],
-        meta: ClipboardItemMeta?,
-        onCopy: (() -> Void)? = nil, copyEnabled: Bool = true,
-        onEdit: @escaping () -> Void, onDelete: @escaping () -> Void
-    ) -> some View {
+    func clipboardHistoryContextMenu(_ context: ClipboardHistoryMenuContext) -> some View {
         overlay {
-            ClipboardHistoryContextMenu(itemID: itemID, memberships: memberships,
-                meta: meta, onCopy: onCopy, copyEnabled: copyEnabled, onEdit: onEdit, onDelete: onDelete)
+            ClipboardHistoryContextMenu(context: context)
                 .accessibilityHidden(true)
         }
     }
 }
 
 private struct ClipboardHistoryContextMenu: NSViewRepresentable {
-    let itemID: UInt64
-    let memberships: [String]
-    let meta: ClipboardItemMeta?
-    let onCopy: (() -> Void)?
-    let copyEnabled: Bool
-    let onEdit: () -> Void
-    let onDelete: () -> Void
+    let context: ClipboardHistoryMenuContext
 
     func makeNSView(context: Context) -> MenuView { MenuView(configuration: self) }
     func updateNSView(_ view: MenuView, context: Context) { view.configuration = self }
@@ -64,63 +68,157 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
         }
 
         private func showMenu(_ event: NSEvent) {
-            let value = configuration
+            let value = configuration.context
+            let item = value.item
             let menu = NSMenu()
             menu.autoenablesItems = false
             var targets: [MenuAction] = []
             func add(_ title: String, to menu: NSMenu, enabled: Bool = true,
-                     checked: Bool = false, action: @escaping () -> Void) {
+                     checked: Bool = false, key: String = "", modifiers: NSEvent.ModifierFlags = .command,
+                     image: String? = nil, action: @escaping () -> Void) {
                 let target = MenuAction(action)
                 targets.append(target)
-                let item = NSMenuItem(title: title, action: #selector(MenuAction.invoke(_:)), keyEquivalent: "")
-                item.target = target
-                item.isEnabled = enabled
-                item.state = checked ? .on : .off
-                menu.addItem(item)
+                let row = NSMenuItem(title: title, action: #selector(MenuAction.invoke(_:)), keyEquivalent: key)
+                row.target = target
+                row.isEnabled = enabled
+                row.state = checked ? .on : .off
+                if !key.isEmpty { row.keyEquivalentModifierMask = modifiers }
+                if let image {
+                    row.image = NSImage(systemSymbolName: image, accessibilityDescription: title)
+                }
+                menu.addItem(row)
             }
-            if let copy = value.onCopy {
-                add("仅复制", to: menu, enabled: value.copyEnabled, action: copy)
-                menu.addItem(.separator())
+            func addFormats(_ formats: [ClipboardTextFormat], to menu: NSMenu, enabled: Bool, action: @escaping (ClipboardTextFormat) -> Void) {
+                for format in formats {
+                    if format == .dashBullets { menu.addItem(.separator()) }
+                    add(format.menuTitle, to: menu, enabled: enabled) { action(format) }
+                }
+            }
+            func submenu(_ title: String, enabled: Bool = true, build: (NSMenu) -> Void) {
+                let child = NSMenu(title: title)
+                child.autoenablesItems = false
+                build(child)
+                let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                row.submenu = child
+                row.isEnabled = enabled && child.items.contains(where: \.isEnabled)
+                menu.addItem(row)
             }
 
-            // Show origin device and availability status for remote items
             if let meta = value.meta, meta.remote {
                 let deviceName = meta.originDevice ?? "未知设备"
-                let statusIcon: String
-                let statusText: String
-                if meta.available {
-                    statusIcon = "✓"
-                    statusText = "来自 \(deviceName)（已获取）"
-                } else {
-                    statusIcon = "↓"
-                    statusText = "来自 \(deviceName)（使用时自动获取）"
-                }
-                add("\(statusIcon) \(statusText)", to: menu, enabled: false, action: {})
+                let status = meta.available
+                    ? "来自 \(deviceName)（已获取）"
+                    : "来自 \(deviceName)（使用时自动获取）"
+                add(status, to: menu, enabled: false, action: {})
                 menu.addItem(.separator())
             }
 
-            add("编辑标题", to: menu, action: value.onEdit)
-            menu.addItem(.separator())
-            let membershipMenu = NSMenu(title: "手动列表")
-            membershipMenu.autoenablesItems = false
-            let lists = ClipboardLibraryStore.shared.lists.filter { $0.kind == "manual" }
-            if lists.isEmpty {
-                add("请先新建手动列表", to: membershipMenu, enabled: false, action: {})
-            }
-            for list in lists {
-                let present = value.memberships.contains(list.id)
-                add(list.name, to: membershipMenu, checked: present) {
-                    ClipboardLibraryStore.shared.perform([
-                        "op": "membership", "list_id": list.id,
-                        "history_id": value.itemID, "present": !present,
-                    ])
+            let canUse = value.copyEnabled
+            if let name = value.pasteTargetName, let paste = value.onPaste {
+                add("粘贴至“\(name)”", to: menu, enabled: canUse, image: "arrow.uturn.forward") {
+                    paste()
+                }
+                submenu("粘贴为", enabled: canUse) { child in
+                    addFormats(ClipboardItemActions.pasteAsFormats(for: item), to: child, enabled: canUse) { format in
+                        if format == .original {
+                            paste()
+                        } else {
+                            ClipboardItemActions.copy(item.id, format: format, paste: true)
+                        }
+                    }
                 }
             }
-            let membership = NSMenuItem(title: "手动列表", action: nil, keyEquivalent: "")
-            membership.submenu = membershipMenu
-            menu.addItem(membership)
+            add("复制", to: menu, enabled: canUse, key: "c") {
+                if let copy = value.onCopy {
+                    copy()
+                } else {
+                    ClipboardItemActions.copy(item.id, format: .original, paste: false)
+                }
+            }
+            submenu("复制为", enabled: canUse) { child in
+                addFormats(ClipboardItemActions.copyAsFormats(for: item), to: child, enabled: canUse) { format in
+                    if format == .original, let copy = value.onCopy {
+                        copy()
+                    } else {
+                        ClipboardItemActions.copy(item.id, format: format, paste: false)
+                    }
+                }
+            }
             menu.addItem(.separator())
-            add("删除", to: menu, action: value.onDelete)
+
+            let hasTitle = !(value.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            add(hasTitle ? "编辑标题" : "添加标题", to: menu, key: "t", action: value.onEditTitle)
+            add(item.hasImage ? "保存图片" : item.fileCount > 0 ? "保存文件" : "保存文本",
+                to: menu, enabled: canUse, key: "s") {
+                ClipboardPanelController.shared.close()
+                ClipboardItemActions.save(item)
+            }
+            if item.fileCount == 0 {
+                add(item.hasImage ? "编辑图片" : "编辑文本", to: menu, enabled: canUse, key: "e") {
+                    ClipboardPanelController.shared.close()
+                    ClipboardItemActions.edit(item, title: value.title)
+                }
+            }
+            if item.fileCount > 0 || item.hasImage {
+                add(item.fileCount > 0 ? "在“预览”中打开文件" : "在“预览”中打开", to: menu, enabled: canUse, key: "o") {
+                    ClipboardPanelController.shared.close()
+                    ClipboardItemActions.openInPreview(item.id)
+                }
+            }
+            if item.fileCount > 0 {
+                add("在访达中显示", to: menu, enabled: canUse) {
+                    ClipboardItemActions.revealInFinder(item.id)
+                }
+            }
+
+            submenu("添加到列表") { child in
+                let lists = ClipboardLibraryStore.shared.lists.filter { $0.kind == "manual" }
+                if lists.isEmpty {
+                    add("请先新建手动列表", to: child, enabled: false, action: {})
+                }
+                for list in lists {
+                    let present = value.memberships.contains(list.id)
+                    add(list.name, to: child, checked: present) {
+                        ClipboardLibraryStore.shared.perform([
+                            "op": "membership", "list_id": list.id,
+                            "history_id": item.id, "present": !present,
+                        ])
+                    }
+                }
+            }
+            menu.addItem(.separator())
+            add("删除", to: menu, image: "delete.left", action: value.onDelete)
+            menu.addItem(.separator())
+
+            if item.fileCount == 0, value.showsPreview, let preview = value.onPreview {
+                add("预览", to: menu, key: " ", modifiers: []) {
+                    preview()
+                }
+            }
+            submenu("分享") { child in
+                let peers = (AppStore.shared.snapshot?.devices ?? []).filter { $0.trusted && !$0.blocked }
+                if peers.isEmpty {
+                    add("请先配对一台设备", to: child, enabled: false, action: {})
+                }
+                for peer in peers {
+                    add(peer.name, to: child, enabled: peer.connected) {
+                        AppStore.shared.shareWorkflow(nil, historyID: item.id, peerID: peer.id)
+                    }
+                }
+            }
+            menu.addItem(.separator())
+            submenu("自动填充") { child in
+                let type = ClipboardItemActions.contentType(for: item)
+                let flows = AppStore.shared.workflowDefinitions.filter { $0.enabled && $0.accepts(type) }
+                if flows.isEmpty {
+                    add("没有适合此内容的已启用工作流", to: child, enabled: false, action: {})
+                }
+                for flow in flows {
+                    add(flow.name, to: child) {
+                        AppStore.shared.runWorkflow(flow.id, historyID: item.id)
+                    }
+                }
+            }
 
             ClipboardHistoryMenuSession.isTracking = true
             defer {

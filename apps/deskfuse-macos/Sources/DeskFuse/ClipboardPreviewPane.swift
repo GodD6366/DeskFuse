@@ -243,13 +243,24 @@ struct ClipboardPreviewPane: View {
         Menu {
             Button("复制原始内容", systemImage: "doc.on.doc", action: copyContent)
                 .disabled(copying || hasMissingFiles)
+            if item.fileCount == 0 {
+                Button(item.hasImage ? "编辑图片" : "编辑文本", systemImage: "pencil") {
+                    ClipboardItemActions.edit(item, title: title)
+                }
+            }
+            Button(item.hasImage ? "保存图片…" : item.fileCount > 0 ? "保存文件…" : "保存文本…", systemImage: "square.and.arrow.down") {
+                ClipboardItemActions.save(item)
+            }
             WorkflowMenu(store: store, historyID: item.id,
                          contentType: item.fileCount > 0 ? .files : (item.hasImage ? .image : .text))
             WorkflowShareMenu(store: store, historyID: item.id,
                               contentType: item.fileCount > 0 ? .files : (item.hasImage ? .image : .text))
             if !content.filePaths.isEmpty {
-                Button("在 Finder 中显示", systemImage: "folder", action: revealFiles)
+                Button("在访达中显示", systemImage: "folder", action: revealFiles)
                     .disabled(!canStageFiles)
+                Button("在“预览”中打开", systemImage: "eye") {
+                    ClipboardItemActions.openInPreview(item.id)
+                }
             }
             Divider()
             Button("打开文件暂存区", systemImage: "tray") { store.shelf?.show() }
@@ -329,7 +340,7 @@ struct ClipboardPreviewPane: View {
     @ViewBuilder private var finderButton: some View {
         if !content.filePaths.isEmpty {
             Button(action: revealFiles) {
-                Label("在 Finder 中显示", systemImage: "arrow.up.right.square")
+                Label("在访达中显示", systemImage: "arrow.up.right.square")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.plain)

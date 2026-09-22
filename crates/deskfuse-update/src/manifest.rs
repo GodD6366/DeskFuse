@@ -188,6 +188,51 @@ impl SignedReleaseManifest {
     }
 }
 
+/// A GitHub-channel device's self-packaged app. Not Ed25519-signed; installers
+/// re-check Developer ID on the contained bundle before replacing anything.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubPeerArtifact {
+    pub channel: String,
+    pub release: ReleaseVersion,
+    pub artifact: ArtifactDescriptor,
+}
+impl GitHubPeerArtifact {
+    pub const FILE_NAME: &'static str = "DeskFuse-arm64-update.zip";
+
+    ///
+    /// # Errors
+    /// Rejects a non-github channel, LAN package kinds, or malformed metadata.
+    pub fn validate(&self) -> Result<(), UpdateError> {
+        if self.channel != "github" {
+            return Err(UpdateError::Invalid("github peer channel"));
+        }
+        if self.release.build_number == 0 || self.release.release_id.is_nil() {
+            return Err(UpdateError::Invalid("github peer release"));
+        }
+        self.artifact.validate()?;
+        if self.artifact.target != Target::MacosArm64
+            || self.artifact.kind != PackageKind::MacosAppZip
+            || self.artifact.file_name != Self::FILE_NAME
+        {
+            return Err(UpdateError::Invalid("github peer artifact"));
+        }
+        Ok(())
+    }
+
+    ///
+    /// # Errors
+    /// Rejects oversized or structurally invalid GitHub peer descriptors.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, UpdateError> {
+        if bytes.is_empty() || bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(UpdateError::Invalid("github peer bounds"));
+        }
+        let offer: Self = serde_json::from_slice(bytes)?;
+        offer.validate()?;
+        Ok(offer)
+    }
+}
+
 /// Construction requires the locally pinned release key, not a peer identity key.
 #[derive(Clone, Debug)]
 pub struct VerifiedRelease(SignedReleaseManifest);

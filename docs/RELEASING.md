@@ -125,7 +125,7 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行，不改变 LAN 自动更新。
+公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行。公开发行版运行时可以把本机应用打包传给局域网中的其他 GitHub 渠道设备，不依赖 LAN 发行私钥。
 
 cask job 下载刚发布的 DMG、重新渲染 cask 并提交到公开安装包仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 

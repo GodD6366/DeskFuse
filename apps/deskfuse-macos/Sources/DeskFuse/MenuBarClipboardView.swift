@@ -157,7 +157,10 @@ struct MenuBarClipboardView: View {
                     ClipboardDisplayModePicker(mode: $displayMode)
                     sourceMenu
                     Button { closePanel(); store.shelf?.show() } label: {
-                        Image(systemName: "tray").frame(width: 22, height: 22)
+                        Image(systemName: "tray")
+                            .font(.system(size: 15))
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(ClipboardHeaderButtonStyle())
                     .help("打开文件暂存区")
@@ -199,7 +202,8 @@ struct MenuBarClipboardView: View {
         } label: {
             Text(library.devices.first(where: { $0.id == source })?.name ?? source ?? "全部设备")
                 .font(.system(size: 11)).lineLimit(1).truncationMode(.tail)
-                .frame(maxWidth: 100, alignment: .trailing)
+                .frame(minWidth: 72, maxWidth: 100, minHeight: 32, alignment: .trailing)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .accessibilityLabel("来源设备")
@@ -208,10 +212,14 @@ struct MenuBarClipboardView: View {
 
     private var moreMenu: some View {
         Menu {
-            Picker("预览触发", selection: $previewTrigger) {
-                ForEach(ClipboardPreviewTrigger.allCases) { trigger in
-                    Text(trigger.label).tag(trigger)
+            Section("预览触发") {
+                Picker("预览触发", selection: $previewTrigger) {
+                    ForEach(ClipboardPreviewTrigger.allCases) { trigger in
+                        Text(trigger.label).tag(trigger)
+                    }
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
             }
             Divider()
             Button("打开 DeskFuse") { closePanel(); openMainWindow() }
@@ -219,9 +227,15 @@ struct MenuBarClipboardView: View {
             Divider()
             Button("设置…") { closePanel(); store.openSettings() }
             Button("退出 DeskFuse") { NSApp.terminate(nil) }
-        } label: { Image(systemName: "ellipsis.circle").font(.system(size: 18)).frame(width: 24, height: 24) }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 18))
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("更多操作")
+        .help("更多操作")
     }
 
     private var historyList: some View {
@@ -270,13 +284,15 @@ struct MenuBarClipboardView: View {
                                 onSelect: { selectedID = item.id; searchFocused = false; copyError = nil; requestPayloadIfNeeded(item.id) },
                                 onPaste: { copySelected(paste: true, id: item.id) },
                                 onCopy: { copySelected(paste: false, id: item.id) },
+                                showsPreview: ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode),
+                                onPreview: { previewFromMenu(item) },
                                 onRename: { library.rename(item.id, title: $0) },
                                 onDelete: { deleteItem(item.id) }
                             )
                             .background {
                                 if isSelected { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                             }
-                            .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: panelActive && previewTrigger == .hover) { anchor in
+                            .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: allowsHoverPreview(item)) { anchor in
                                 previewItem(item.id, from: anchor, trackedByPointer: true)
                             })
                         }
@@ -309,12 +325,15 @@ struct MenuBarClipboardView: View {
                                             fileAvailability[item.id] = available
                                         }, select: { selectedID = item.id; searchFocused = false; copyError = nil; requestPayloadIfNeeded(item.id) },
                                         onCopy: { copySelected(paste: false, id: item.id) },
+                                        onPaste: { copySelected(paste: true, id: item.id) },
+                                        showsPreview: ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode),
+                                        onPreview: { previewFromMenu(item) },
                                         onRename: { library.rename(item.id, title: $0) },
                                         onDelete: { deleteItem(item.id) })
                                     .background {
                                         if selectedID == item.id { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                                     }
-                                    .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: panelActive && previewTrigger == .hover) { anchor in
+                                    .modifier(ClipboardHoverPreview(itemID: item.id, session: session, active: allowsHoverPreview(item)) { anchor in
                                         previewItem(item.id, from: anchor, trackedByPointer: true)
                                     })
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { copySelected(paste: true, id: item.id) })
@@ -476,12 +495,31 @@ struct MenuBarClipboardView: View {
     /// never changes the selection. The bubble appears only once there is
     /// something to show, so it never sits on screen as a spinner.
     private func togglePreview() {
-        guard selectedID != nil || previewID != nil else { return }
+        guard previewTrigger != .off else { return }
         if previewing {
             dismissPreview()
-        } else {
-            previewSelected()
+            return
         }
+        guard let item = selectedItem else { return }
+        if item.fileCount > 0 {
+            ClipboardItemActions.revealInFinder(item.id)
+            return
+        }
+        guard ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode) else { return }
+        previewSelected()
+    }
+    private func allowsHoverPreview(_ item: HistoryItem) -> Bool {
+        panelActive && previewTrigger == .hover && ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode)
+    }
+    private func previewFromMenu(_ item: HistoryItem) {
+        selectedID = item.id
+        searchFocused = false
+        if item.fileCount > 0 {
+            ClipboardItemActions.revealInFinder(item.id)
+            return
+        }
+        guard ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode) else { return }
+        previewSelected()
     }
     private func dismissPreview() {
         ClipboardPreviewHoverGate.unlockAfterClosingPreview()
@@ -497,9 +535,9 @@ struct MenuBarClipboardView: View {
         ClipboardQuickLookController.shared.close()
     }
     private func previewSelected() {
-        guard let id = selectedID else { return }
+        guard let item = selectedItem, ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode) else { return }
         ClipboardPreviewHoverGate.lockForKeyboardPreview()
-        followSelection(id)
+        followSelection(item.id)
     }
     /// Point the preview at `id` through the selected row's anchor view.
     /// SwiftUI installs the incoming row's anchor only after the swap, and a
@@ -541,8 +579,9 @@ struct MenuBarClipboardView: View {
     }
     /// `trackedByPointer` 为真时，指针已经离开该行且气泡还没出现，就不再补弹。
     private func previewItem(_ id: UInt64, from anchor: NSView, trackedByPointer: Bool = false) {
-        guard panelActive, items.contains(where: { $0.id == id }), store.client != nil,
-              anchor.window != nil else { return }
+        guard panelActive, let item = items.first(where: { $0.id == id }),
+              ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode),
+              store.client != nil, anchor.window != nil else { return }
         if trackedByPointer {
             guard !ClipboardPreviewHoverGate.keyboardLocked else { return }
             ClipboardPreviewHoverGate.beginHoverPreview()
@@ -729,9 +768,29 @@ struct MenuBarClipboardView: View {
         if modifiers == .command {
             let character = event.charactersIgnoringModifiers?.lowercased() ?? ""
             if character == "f" { searchFocused = true; return true }
+            if character == "c" {
+                if editingText, (fieldEditor?.selectedRange.length ?? 0) > 0 { return false }
+                copySelected(paste: false); return true
+            }
+            if !editingText, character == "s", let item = selectedItem {
+                closePanel(); ClipboardItemActions.save(item); return true
+            }
+            if !editingText, character == "e", let item = selectedItem {
+                closePanel(); ClipboardItemActions.edit(item, title: titles[item.id]); return true
+            }
+            if !editingText, character == "o", let item = selectedItem, item.fileCount > 0 || item.hasImage {
+                closePanel(); ClipboardItemActions.openInPreview(item.id); return true
+            }
             if let digit = Int(character), (1...9).contains(digit), items.indices.contains(digit - 1) {
                 guard !copying else { return true }
                 selectedID = items[digit - 1].id; copySelected(paste: true); return true
+            }
+        }
+        if modifiers == [.command, .shift] {
+            let character = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if character == "r" {
+                guard let item = selectedItem, item.fileCount > 0 else { return true }
+                ClipboardItemActions.revealInFinder(item.id); return true
             }
         }
         guard modifiers.isEmpty else { return false }

@@ -19,6 +19,9 @@ struct MenuBarClipboardRow: View {
     let availability: (Bool) -> Void
     let select: () -> Void
     let onCopy: () -> Void
+    var onPaste: (() -> Void)? = nil
+    var showsPreview = false
+    var onPreview: (() -> Void)? = nil
     let onRename: (String) -> Void
     let onDelete: () -> Void
     @State private var image: NSImage?
@@ -74,9 +77,13 @@ struct MenuBarClipboardRow: View {
         .buttonStyle(.plain)
         .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            meta: meta, onCopy: onCopy, copyEnabled: client != nil,
-            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .clipboardHistoryContextMenu(ClipboardHistoryMenuContext(
+            item: item, title: title, memberships: memberships, meta: meta,
+            copyEnabled: client != nil,
+            pasteTargetName: ClipboardPanelController.shared.pasteTargetName,
+            onCopy: onCopy, onPaste: onPaste,
+            onEditTitle: { editingTitle = true },
+            showsPreview: showsPreview, onPreview: onPreview, onDelete: onDelete))
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }
@@ -193,6 +200,8 @@ struct MenuBarClipboardCard: View {
     let onSelect: () -> Void
     let onPaste: () -> Void
     let onCopy: () -> Void
+    var showsPreview = false
+    var onPreview: (() -> Void)? = nil
     let onRename: (String) -> Void
     let onDelete: () -> Void
     @State private var image: NSImage?
@@ -246,9 +255,13 @@ struct MenuBarClipboardCard: View {
         // rows, so the first click selects immediately.
         .onTapGesture(perform: onSelect)
         .simultaneousGesture(TapGesture(count: 2).onEnded { onSelect(); onPaste() })
-        .clipboardHistoryContextMenu(itemID: item.id, memberships: memberships,
-            meta: meta, onCopy: onCopy, copyEnabled: client != nil,
-            onEdit: { editingTitle = true }, onDelete: onDelete)
+        .clipboardHistoryContextMenu(ClipboardHistoryMenuContext(
+            item: item, title: title, memberships: memberships, meta: meta,
+            copyEnabled: client != nil,
+            pasteTargetName: ClipboardPanelController.shared.pasteTargetName,
+            onCopy: onCopy, onPaste: onPaste,
+            onEditTitle: { editingTitle = true },
+            showsPreview: showsPreview, onPreview: onPreview, onDelete: onDelete))
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }

@@ -12,6 +12,7 @@ fn all_update_messages_roundtrip_independently_of_clipboard() {
             installed_release_id: vec![2; 16],
             target: 1,
             signed_manifests: vec![b"signed-manifest".to_vec()],
+            github_artifacts: vec![b"github-artifact".to_vec()],
         }),
         Message::UpdateRequest(UpdateRequest {
             offset: 0,
@@ -76,6 +77,7 @@ fn reject_unsupported_targets_and_unbounded_inventory() {
         installed_release_id: vec![],
         target: 3,
         signed_manifests: vec![],
+        github_artifacts: vec![],
     };
     assert!(
         wrap(Message::ReleaseInventory(v.clone()))
@@ -84,5 +86,12 @@ fn reject_unsupported_targets_and_unbounded_inventory() {
     );
     v.target = 1;
     v.signed_manifests = vec![vec![1]; MAX_RELEASE_INVENTORY + 1];
+    assert!(
+        wrap(Message::ReleaseInventory(v.clone()))
+            .validate()
+            .is_err()
+    );
+    v.signed_manifests = vec![];
+    v.github_artifacts = vec![vec![1]; MAX_RELEASE_INVENTORY + 1];
     assert!(wrap(Message::ReleaseInventory(v)).validate().is_err());
 }

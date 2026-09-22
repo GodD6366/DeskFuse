@@ -38,6 +38,20 @@ pub fn verify_artifact(
     path: &Path,
 ) -> Result<VerifiedArtifact, UpdateError> {
     let descriptor = release.artifact(target).ok_or(UpdateError::Incompatible)?;
+    verify_payload(&release.manifest().release, descriptor, path)
+}
+
+/// Hash the file against a caller-validated descriptor. GitHub LAN packages use
+/// this after structural checks; the installer still verifies Developer ID.
+///
+/// # Errors
+/// Rejects missing, non-regular, size-mismatched or corrupt artifacts.
+pub fn verify_payload(
+    release: &ReleaseVersion,
+    descriptor: &ArtifactDescriptor,
+    path: &Path,
+) -> Result<VerifiedArtifact, UpdateError> {
+    descriptor.validate()?;
     // Do not follow a caller-selected symlink to a different source artifact.
     let metadata = path.symlink_metadata()?;
     if !metadata.is_file() || metadata.len() != descriptor.size {
@@ -63,7 +77,7 @@ pub fn verify_artifact(
         return Err(UpdateError::ArtifactMismatch);
     }
     Ok(VerifiedArtifact {
-        release: release.manifest().release.clone(),
+        release: release.clone(),
         descriptor: descriptor.clone(),
         path: path.to_path_buf(),
     })

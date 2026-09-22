@@ -4,9 +4,16 @@ import AppKit
 enum ClipboardPreviewTrigger: String, CaseIterable, Identifiable {
     case hover
     case space
+    case off
 
     var id: Self { self }
-    var label: String { self == .hover ? "鼠标悬停" : "空格" }
+    var label: String {
+        switch self {
+        case .hover: "鼠标悬停"
+        case .space: "空格"
+        case .off: "关闭"
+        }
+    }
 }
 
 @MainActor enum ClipboardPreviewHoverGate {

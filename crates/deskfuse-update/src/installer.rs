@@ -1,8 +1,8 @@
 //! macOS replacement runs outside the application. Only authenticated release
 //! bytes enter staging; a durable journal precedes every destructive step.
 use crate::{
-    PackageKind, ReleaseVersion, SignedReleaseManifest, Target, UpdateStatus, VerifiedRelease,
-    pinned_release_key, verify_artifact, write_json_atomic,
+    ArtifactDescriptor, GitHubPeerArtifact, PackageKind, ReleaseVersion, SignedReleaseManifest,
+    Target, UpdateStatus, VerifiedRelease, pinned_release_key, verify_artifact, write_json_atomic,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -90,6 +90,86 @@ pub fn current_bundle() -> Result<PathBuf> {
 /// Returns a verification, storage, or platform operation failure.
 pub fn installed_release(bundle: &Path) -> Result<ReleaseVersion> {
     read_json(&bundle.join("Contents/Resources/release.json"))
+}
+fn bundle_update_channel(bundle: &Path) -> Result<String> {
+    let channel = fs::read_to_string(bundle.join("Contents/Resources/update-channel"))
+        .map_err(|e| e.to_string())?;
+    Ok(channel.trim().to_owned())
+}
+
+/// Zip the running GitHub-channel app so a peer can install the exact bytes.
+/// Reuses a previous archive when the installed release and SHA-256 still match.
+///
+/// # Errors
+/// Returns a packaging, signature, or filesystem failure.
+pub fn package_running_app(dest: &Path) -> Result<GitHubPeerArtifact> {
+    let bundle = current_bundle()?;
+    if bundle_update_channel(&bundle)? != "github" {
+        return Err("只有公开发行版会把本机应用打包给局域网设备".into());
+    }
+    let release = installed_release(&bundle)?;
+    let _ = signature_requirement(&bundle)?;
+    private_dir(dest)?;
+    let zip = dest.join(GitHubPeerArtifact::FILE_NAME);
+    let meta = dest.join("artifact.json");
+    if meta.is_file()
+        && zip.is_file()
+        && let Ok(existing) = read_json::<GitHubPeerArtifact>(&meta)
+        && existing.validate().is_ok()
+        && existing.release == release
+        && digest_file(&zip, existing.artifact.size, &existing.artifact.sha256).is_ok()
+    {
+        return Ok(existing);
+    }
+    let tmp = dest.join(format!("{}.part", GitHubPeerArtifact::FILE_NAME));
+    let _ = fs::remove_file(&tmp);
+    command(
+        Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+            .arg(&bundle)
+            .arg(&tmp),
+    )?;
+    let size = tmp.symlink_metadata().map_err(|e| e.to_string())?.len();
+    if size == 0 || size > crate::UPDATE_CACHE_LIMIT {
+        let _ = fs::remove_file(&tmp);
+        return Err("本机更新包大小无效".into());
+    }
+    let sha256 = {
+        let file = File::open(&tmp).map_err(|e| e.to_string())?;
+        let mut file = file.take(size + 1);
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0; 64 * 1024];
+        let mut bytes = 0u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+            bytes += read as u64;
+        }
+        if bytes != size {
+            let _ = fs::remove_file(&tmp);
+            return Err("本机更新包大小不匹配".into());
+        }
+        hex::encode(digest.finalize())
+    };
+    let offer = GitHubPeerArtifact {
+        channel: "github".into(),
+        release,
+        artifact: ArtifactDescriptor {
+            target: Target::MacosArm64,
+            kind: PackageKind::MacosAppZip,
+            file_name: GitHubPeerArtifact::FILE_NAME.into(),
+            size,
+            sha256,
+            minimum_os: semver::Version::new(14, 0, 0),
+        },
+    };
+    offer.validate().map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &zip).map_err(|e| e.to_string())?;
+    write_json_atomic(&meta, &offer).map_err(|e| e.to_string())?;
+    Ok(offer)
 }
 fn signature_requirement(bundle: &Path) -> Result<String> {
     command(
@@ -301,10 +381,14 @@ fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
     match (github.is_file(), lan.is_file()) {
         (true, false) => {
             let source: GitHubInstallSource = read_json(&github)?;
-            if source.file_name != "DeskFuse-arm64.dmg"
-                || source.file_name != journal.status.artifact.file_name
+            let expected_kind = match source.file_name.as_str() {
+                "DeskFuse-arm64.dmg" => PackageKind::MacosDmg,
+                GitHubPeerArtifact::FILE_NAME => PackageKind::MacosAppZip,
+                _ => return Err("GitHub 安装证明不匹配".into()),
+            };
+            if source.file_name != journal.status.artifact.file_name
                 || source.sha256 != journal.status.artifact.sha256
-                || journal.status.artifact.kind != PackageKind::MacosDmg
+                || journal.status.artifact.kind != expected_kind
                 || journal.status.artifact.target != Target::MacosArm64
             {
                 return Err("GitHub 安装证明不匹配".into());
@@ -406,6 +490,109 @@ pub fn prepare_github(
             .is_symlink()
         {
             return Err("磁盘映像中的应用不是普通目录".into());
+        }
+        verify_bundle(&app, &status.release, &requirement)?;
+        command(Command::new("/usr/bin/ditto").arg(&app).arg(&candidate))?;
+        verify_bundle(&candidate, &status.release, &requirement)?;
+        let _ = Command::new("/usr/bin/xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(&candidate)
+            .status();
+        fs::write(stage.join("requirement.txt"), requirement).map_err(|e| e.to_string())?;
+        fs::copy(
+            journal.target.join("Contents/MacOS/deskfuse-update-helper"),
+            stage.join("deskfuse-update-helper"),
+        )
+        .map_err(|e| e.to_string())?;
+        persist(&root, &journal)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&candidate);
+        let _ = fs::remove_dir_all(&stage);
+    }
+    result
+}
+
+/// GitHub LAN packages are the running app, zipped. Trust is SHA-256 plus the
+/// already-running app's designated requirement, never a LAN Ed25519 manifest.
+/// # Errors
+/// Returns a verification, storage, or platform operation failure.
+pub fn prepare_github_zip(
+    payload: &Path,
+    release: &ReleaseVersion,
+    status: &UpdateStatus,
+) -> Result<()> {
+    if status.release != *release
+        || status.artifact.kind != PackageKind::MacosAppZip
+        || status.artifact.target != Target::MacosArm64
+        || status.artifact.file_name != GitHubPeerArtifact::FILE_NAME
+    {
+        return Err("安装任务不匹配".into());
+    }
+    digest_file(payload, status.artifact.size, &status.artifact.sha256)?;
+    let target = current_bundle()?;
+    if target.starts_with("/Volumes") {
+        return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
+    }
+    if bundle_update_channel(&target)? != "github" {
+        return Err("只有公开发行版会从局域网安装本机打包的 GitHub 更新".into());
+    }
+    let installed = installed_release(&target)?;
+    if !release.precedence(&installed).is_gt() {
+        return Err("更新版本不高于已安装版本".into());
+    }
+    let requirement = signature_requirement(&target)?;
+    let root = update_root()?;
+    private_dir(&root)?;
+    let mut journal = InstallJournal {
+        status: status.clone(),
+        target,
+        phase: Phase::Prepared,
+        parent_pid: std::process::id(),
+        failure: None,
+    };
+    journal.status.phase = crate::UpdatePhase::Staged;
+    let (stage, _, candidate) = paths(&root, &journal)?;
+    if stage.exists() || candidate.exists() {
+        return Err("更新暂存目录已存在".into());
+    }
+    private_dir(&stage)?;
+    persist(&root, &journal)?;
+    let result = (|| {
+        let zip = stage.join(&status.artifact.file_name);
+        fs::copy(payload, &zip).map_err(|e| e.to_string())?;
+        digest_file(&zip, status.artifact.size, &status.artifact.sha256)?;
+        write_json_atomic(
+            &stage.join("github-source.json"),
+            &GitHubInstallSource {
+                sha256: status.artifact.sha256.clone(),
+                file_name: status.artifact.file_name.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let entries = Command::new("/usr/bin/unzip")
+            .args(["-Z", "-1"])
+            .arg(&zip)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !entries.status.success()
+            || !String::from_utf8_lossy(&entries.stdout).lines().all(|p| {
+                !p.starts_with('/')
+                    && !p.split('/').any(|c| c == "..")
+                    && (p.starts_with("DeskFuse.app/") || p.starts_with("__MACOSX/"))
+            })
+        {
+            return Err("更新压缩包包含无效路径".into());
+        }
+        command(
+            Command::new("/usr/bin/ditto")
+                .args(["-x", "-k"])
+                .arg(&zip)
+                .arg(&stage),
+        )?;
+        let app = stage.join("DeskFuse.app");
+        if bundle_update_channel(&app)? != "github" {
+            return Err("局域网更新包不是公开发行版".into());
         }
         verify_bundle(&app, &status.release, &requirement)?;
         command(Command::new("/usr/bin/ditto").arg(&app).arg(&candidate))?;
@@ -852,6 +1039,26 @@ mod tests {
             build_number: build,
             release_id: Uuid::new_v4(),
         }
+    }
+    #[test]
+    fn github_zip_source_is_accepted_without_a_lan_manifest() {
+        let (_dir, root, mut journal) = fixture(Phase::Prepared);
+        journal.status.artifact.file_name = GitHubPeerArtifact::FILE_NAME.into();
+        journal.status.artifact.kind = crate::PackageKind::MacosAppZip;
+        journal.status.artifact.size = 4;
+        journal.status.artifact.sha256 = hex::encode(Sha256::digest(b"test"));
+        let (stage, _, _) = paths(&root, &journal).unwrap();
+        fs::write(stage.join(GitHubPeerArtifact::FILE_NAME), b"test").unwrap();
+        fs::write(
+            stage.join("github-source.json"),
+            format!(
+                r#"{{"sha256":"{}","file_name":"{}"}}"#,
+                journal.status.artifact.sha256,
+                GitHubPeerArtifact::FILE_NAME
+            ),
+        )
+        .unwrap();
+        verify_staged_payload(&stage, &journal).unwrap();
     }
     #[test]
     fn staged_payload_requires_exactly_one_source() {

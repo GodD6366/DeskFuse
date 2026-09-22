@@ -172,6 +172,15 @@ import DeskFuseEngine
     /// True only while a presentation is really on screen. A popover can still
     /// report `isShown` after its window is gone; treating that as open would
     /// spend the next click on closing an invisible panel.
+    var isShown: Bool { isPresenting }
+
+    var pasteTargetName: String? { pasteTarget?.localizedName }
+
+    private var pasteTarget: NSRunningApplication? {
+        (target?.isTerminated == false ? target : nil)
+            ?? (lastExternalTarget?.isTerminated == false ? lastExternalTarget : nil)
+    }
+
     private var isPresenting: Bool {
         if pointerPanel?.isVisible == true { return true }
         guard popover.isShown else { return false }

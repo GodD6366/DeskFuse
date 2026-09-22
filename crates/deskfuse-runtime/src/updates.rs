@@ -1,5 +1,8 @@
 //! Permanent LAN update discovery and exact-byte distribution. Installation is
 //! coordinated by the application at its native-work admission boundary.
+//!
+//! GitHub-channel devices reuse this transport to send a self-packaged copy of
+//! the running app. Those bytes never enter the LAN Ed25519 installer.
 use crate::RuntimeHandle;
 use deskfuse_core::{Capabilities, ConnectionContext, ConnectionState, DeviceId, TrustState};
 use deskfuse_protocol::Message;
@@ -7,8 +10,9 @@ use deskfuse_protocol::update::{
     MAX_UPDATE_CHUNK, ReleaseInventory, UpdateChunk, UpdateReceipt, UpdateRequest,
 };
 use deskfuse_update::{
-    Installation, ReleaseCache, ReleaseVersion, SignedReleaseManifest, Target, UPDATE_CACHE_LIMIT,
-    UpdatePhase, UpdateStatus, UpdateTransaction, VerifiedRelease, select_release, verify_artifact,
+    GitHubPeerArtifact, Installation, ReleaseCache, ReleaseVersion, SignedReleaseManifest, Target,
+    UPDATE_CACHE_LIMIT, UpdatePhase, UpdateStatus, UpdateTransaction, VerifiedRelease,
+    select_release, verify_artifact, verify_payload,
 };
 use futures::StreamExt;
 use std::{
@@ -63,6 +67,13 @@ pub struct LanUpdateConfig {
     pub key: ed25519_dalek::VerifyingKey,
     pub receipt: Option<UpdateReceipt>,
     pub previous_failure: Option<String>,
+    pub channel: UpdateChannel,
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UpdateChannel {
+    #[default]
+    Lan,
+    GitHub,
 }
 struct Shared {
     /// Last complete, locally verified advertisement.
@@ -71,6 +82,8 @@ struct Shared {
     inventory_refreshed_at: Option<Instant>,
     view: LanUpdateView,
     ready: Option<(VerifiedRelease, PathBuf)>,
+    github_packages: BTreeMap<uuid::Uuid, (GitHubPeerArtifact, PathBuf)>,
+    github_ready: Option<(GitHubPeerArtifact, PathBuf)>,
     /// Set by the second install request to bypass the normal file-idle wait.
     force_install: bool,
     quarantined: BTreeSet<uuid::Uuid>,
@@ -160,10 +173,17 @@ impl LanUpdater {
             view: LanUpdateView {
                 installed: Some(config.installed.clone()),
                 error: config.previous_failure.clone(),
-                message: "可手动检查更新；后台每 12 小时检查一次".into(),
+                github: (config.channel == UpdateChannel::GitHub).then(GitHubUpdateView::default),
+                message: if config.channel == UpdateChannel::GitHub {
+                    "可手动检查更新；公开发行版也会打包本机应用传给局域网设备".into()
+                } else {
+                    "可手动检查更新；后台每 12 小时检查一次".into()
+                },
                 ..Default::default()
             },
             ready: None,
+            github_packages: BTreeMap::new(),
+            github_ready: None,
             force_install: false,
             quarantined,
             serving: BTreeMap::new(),
@@ -314,7 +334,7 @@ impl LanUpdater {
     }
     pub fn force_install(&self) -> bool {
         let state = self.shared.lock().unwrap();
-        state.force_install && state.ready.is_some()
+        state.force_install && (state.ready.is_some() || state.github_ready.is_some())
     }
     pub fn installation_waiting(&self, message: &str) {
         let mut state = self.shared.lock().unwrap();
@@ -327,6 +347,9 @@ impl LanUpdater {
     }
     pub fn ready(&self) -> Option<(VerifiedRelease, PathBuf)> {
         self.shared.lock().unwrap().ready.clone()
+    }
+    pub fn github_ready(&self) -> Option<(GitHubPeerArtifact, PathBuf)> {
+        self.shared.lock().unwrap().github_ready.clone()
     }
     pub fn installing(&self) {
         let mut state = self.shared.lock().unwrap();
@@ -343,6 +366,9 @@ impl LanUpdater {
             state
                 .quarantined
                 .insert(release.manifest().release.release_id);
+        }
+        if let Some((offer, _)) = state.github_ready.take() {
+            state.quarantined.insert(offer.release.release_id);
         }
         if let Some(status) = &mut state.view.status {
             status.phase = UpdatePhase::Quarantined;
@@ -443,6 +469,24 @@ fn inventory(config: &LanUpdateConfig, cache: &ReleaseCache) -> Result<ReleaseIn
         installed_release_id: config.installed.release_id.as_bytes().to_vec(),
         target: target_id(config.target),
         signed_manifests: manifests,
+        github_artifacts: Vec::new(),
+    })
+}
+fn github_inventory(config: &LanUpdateConfig, state: &Shared) -> Result<ReleaseInventory, String> {
+    let mut artifacts = Vec::new();
+    for (offer, _) in state.github_packages.values() {
+        artifacts.push(serde_json::to_vec(offer).map_err(|e| e.to_string())?);
+        if artifacts.len() == 16 {
+            break;
+        }
+    }
+    Ok(ReleaseInventory {
+        installed_version: config.installed.version.to_string(),
+        installed_build: config.installed.build_number,
+        installed_release_id: config.installed.release_id.as_bytes().to_vec(),
+        target: target_id(config.target),
+        signed_manifests: Vec::new(),
+        github_artifacts: artifacts,
     })
 }
 fn observe_peer(state: &Arc<Mutex<Shared>>, peer: DeviceId, inventory: &ReleaseInventory) {
@@ -479,7 +523,9 @@ async fn serve(
                 .unwrap()
                 .inventory
                 .as_ref()
-                .is_none_or(|inventory| inventory.signed_manifests.is_empty());
+                .is_none_or(|inventory| {
+                    inventory.signed_manifests.is_empty() && inventory.github_artifacts.is_empty()
+                });
         if needs_inventory && let Err(error) = refresh_inventory(&config, &cache, &state).await {
             state.lock().unwrap().view.error =
                 Some(format!("无法准备供其他设备下载的更新包：{error}"));
@@ -522,6 +568,7 @@ fn respond(
                         installed_release_id: config.installed.release_id.as_bytes().to_vec(),
                         target: target_id(config.target),
                         signed_manifests: Vec::new(),
+                        github_artifacts: Vec::new(),
                     });
             Ok(Message::ReleaseInventory(inventory))
         }
@@ -530,20 +577,39 @@ fn respond(
             // Validate original bytes once per transfer, then retain the open
             // file and pin its release. Rehashing every 64 KiB stalls input I/O.
             if query.offset == 0 {
-                let entries = cache
+                let from_cache = cache
                     .lock()
                     .unwrap()
                     .inventory()
                     .map_err(|e| e.to_string())?;
-                let item = entries
-                    .into_iter()
-                    .find(|item| {
-                        item.artifact.release().release_id.as_bytes() == query.release_id.as_slice()
-                            && target_id(item.artifact.descriptor().target) == query.target
-                            && hex::decode(&item.artifact.descriptor().sha256)
-                                .is_ok_and(|h| h == query.sha256)
+                let cached = from_cache.into_iter().find(|item| {
+                    item.artifact.release().release_id.as_bytes() == query.release_id.as_slice()
+                        && target_id(item.artifact.descriptor().target) == query.target
+                        && hex::decode(&item.artifact.descriptor().sha256)
+                            .is_ok_and(|h| h == query.sha256)
+                });
+                let github = state
+                    .lock()
+                    .unwrap()
+                    .github_packages
+                    .values()
+                    .find(|(offer, _)| {
+                        offer.release.release_id.as_bytes() == query.release_id.as_slice()
+                            && target_id(offer.artifact.target) == query.target
+                            && hex::decode(&offer.artifact.sha256).is_ok_and(|h| h == query.sha256)
                     })
-                    .ok_or("更新包不可用")?;
+                    .cloned();
+                let (release, artifact, path) = if let Some(item) = cached {
+                    (
+                        item.artifact.release().clone(),
+                        item.artifact.descriptor().clone(),
+                        item.artifact.path().to_path_buf(),
+                    )
+                } else if let Some((offer, path)) = github {
+                    (offer.release, offer.artifact, path)
+                } else {
+                    return Err("更新包不可用".into());
+                };
                 let mut shared = state.lock().unwrap();
                 shared
                     .serving
@@ -555,9 +621,9 @@ fn respond(
                     id,
                     Serving {
                         peer,
-                        release: item.artifact.release().clone(),
-                        artifact: item.artifact.descriptor().clone(),
-                        file: File::open(item.artifact.path()).map_err(|e| e.to_string())?,
+                        release,
+                        artifact,
+                        file: File::open(path).map_err(|e| e.to_string())?,
                         next: 0,
                         touched: Instant::now(),
                     },
@@ -635,24 +701,36 @@ fn respond(
                             && row.build == receipt.installed_build
                             && row.release_id == receipt.release_id
                     });
-                if !reported
-                    || !cache
-                        .lock()
-                        .unwrap()
-                        .inventory()
-                        .map_err(|e| e.to_string())?
-                        .iter()
-                        .any(|entry| {
-                            entry.artifact.release().release_id.as_bytes()
-                                == receipt.release_id.as_slice()
-                                && entry.artifact.release().version.to_string()
-                                    == receipt.installed_version
-                                && entry.artifact.release().build_number == receipt.installed_build
-                                && target_id(entry.artifact.descriptor().target) == receipt.target
-                                && hex::decode(&entry.artifact.descriptor().sha256)
-                                    .is_ok_and(|hash| hash == receipt.sha256)
-                        })
-                {
+                let cached = cache
+                    .lock()
+                    .unwrap()
+                    .inventory()
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .any(|entry| {
+                        entry.artifact.release().release_id.as_bytes()
+                            == receipt.release_id.as_slice()
+                            && entry.artifact.release().version.to_string()
+                                == receipt.installed_version
+                            && entry.artifact.release().build_number == receipt.installed_build
+                            && target_id(entry.artifact.descriptor().target) == receipt.target
+                            && hex::decode(&entry.artifact.descriptor().sha256)
+                                .is_ok_and(|hash| hash == receipt.sha256)
+                    });
+                let github = state
+                    .lock()
+                    .unwrap()
+                    .github_packages
+                    .values()
+                    .any(|(offer, _)| {
+                        offer.release.release_id.as_bytes() == receipt.release_id.as_slice()
+                            && offer.release.version.to_string() == receipt.installed_version
+                            && offer.release.build_number == receipt.installed_build
+                            && target_id(offer.artifact.target) == receipt.target
+                            && hex::decode(&offer.artifact.sha256)
+                                .is_ok_and(|hash| hash == receipt.sha256)
+                    });
+                if !reported || !(cached || github) {
                     return Err("更新回执不匹配".into());
                 }
             }
@@ -668,6 +746,55 @@ fn respond(
         }
         _ => Err("更新请求类型无效".into()),
     }
+}
+
+fn load_github_packages(
+    config: &LanUpdateConfig,
+    state: &Arc<Mutex<Shared>>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let dest = config.root.join("github-self");
+        match deskfuse_update::installer::package_running_app(&dest) {
+            Ok(offer) => {
+                let path = dest.join(&offer.artifact.file_name);
+                state
+                    .lock()
+                    .unwrap()
+                    .github_packages
+                    .insert(offer.release.release_id, (offer, path));
+            }
+            Err(error) => {
+                state.lock().unwrap().view.error =
+                    Some(format!("无法把本机应用打包给其他设备：{error}"));
+            }
+        }
+    }
+    let root = config.root.join("github-peer");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let meta = entry.path().join("artifact.json");
+        let Ok(bytes) = fs::read(&meta) else {
+            continue;
+        };
+        let Ok(offer) = GitHubPeerArtifact::from_slice(&bytes) else {
+            continue;
+        };
+        let path = entry.path().join(&offer.artifact.file_name);
+        if verify_payload(&offer.release, &offer.artifact, &path).is_ok() {
+            state
+                .lock()
+                .unwrap()
+                .github_packages
+                .insert(offer.release.release_id, (offer, path));
+        }
+    }
+    Ok(())
 }
 
 /// Import complete seeds before advertising, including an empty peer inventory.
@@ -695,6 +822,9 @@ async fn refresh_inventory(
     let seed_cache = cache.clone();
     let seed_state = state.clone();
     tokio::task::spawn_blocking(move || {
+        if seed_config.channel == UpdateChannel::GitHub {
+            return load_github_packages(&seed_config, &seed_state);
+        }
         for root in &seed_config.seed_dirs {
             let manifest = root.join("manifest.json");
             if !manifest.is_file() {
@@ -748,7 +878,9 @@ async fn refresh_inventory(
     })
     .await
     .map_err(|e| e.to_string())??;
-    let local_inventory = {
+    let local_inventory = if config.channel == UpdateChannel::GitHub {
+        github_inventory(config, &state.lock().unwrap())?
+    } else {
         let cache = cache.clone();
         let config = config.clone();
         tokio::task::spawn_blocking(move || inventory(&config, &cache.lock().unwrap()))
@@ -793,13 +925,25 @@ async fn cycle(
     let mut checked_peers = 0;
     let mut newer_peer: Option<(semver::Version, u64)> = None;
     let mut offers = Vec::new();
+    let mut github_offers = Vec::new();
     let mut sources: BTreeMap<uuid::Uuid, Vec<(DeviceId, ConnectionContext)>> = BTreeMap::new();
     // Local seeds can upgrade this host as well as its neighbours.
-    for bytes in &local_inventory.signed_manifests {
-        if let Ok(release) =
-            SignedReleaseManifest::from_slice(bytes).and_then(|s| s.verify(&config.key))
-        {
-            offers.push(release);
+    if config.channel == UpdateChannel::GitHub {
+        github_offers.extend(
+            state
+                .lock()
+                .unwrap()
+                .github_packages
+                .values()
+                .map(|(offer, _)| offer.clone()),
+        );
+    } else {
+        for bytes in &local_inventory.signed_manifests {
+            if let Ok(release) =
+                SignedReleaseManifest::from_slice(bytes).and_then(|s| s.verify(&config.key))
+            {
+                offers.push(release);
+            }
         }
     }
     for peer in peers {
@@ -847,15 +991,27 @@ async fn cycle(
                 }
             }
             observe_peer(state, peer, &remote);
-            for bytes in remote.signed_manifests {
-                if let Ok(release) =
-                    SignedReleaseManifest::from_slice(&bytes).and_then(|s| s.verify(&config.key))
-                {
-                    sources
-                        .entry(release.manifest().release.release_id)
-                        .or_default()
-                        .push((peer, context.clone()));
-                    offers.push(release);
+            if config.channel == UpdateChannel::GitHub {
+                for bytes in remote.github_artifacts {
+                    if let Ok(offer) = GitHubPeerArtifact::from_slice(&bytes) {
+                        sources
+                            .entry(offer.release.release_id)
+                            .or_default()
+                            .push((peer, context.clone()));
+                        github_offers.push(offer);
+                    }
+                }
+            } else {
+                for bytes in remote.signed_manifests {
+                    if let Ok(release) = SignedReleaseManifest::from_slice(&bytes)
+                        .and_then(|s| s.verify(&config.key))
+                    {
+                        sources
+                            .entry(release.manifest().release.release_id)
+                            .or_default()
+                            .push((peer, context.clone()));
+                        offers.push(release);
+                    }
                 }
             }
             let receipt_confirmed = state.lock().unwrap().reconnect_confirmed;
@@ -870,8 +1026,24 @@ async fn cycle(
             }
         }
     }
-    if state.lock().unwrap().ready.is_some() {
+    if state.lock().unwrap().ready.is_some() || state.lock().unwrap().github_ready.is_some() {
         return Ok(());
+    }
+    if config.channel == UpdateChannel::GitHub {
+        return finish_github_cycle(
+            runtime,
+            config,
+            state,
+            stop,
+            GithubScan {
+                offers: github_offers,
+                sources,
+                connected_peers,
+                checked_peers,
+                newer_peer,
+            },
+        )
+        .await;
     }
     let quarantined = state.lock().unwrap().quarantined.clone();
     let installation = Installation {
@@ -989,15 +1161,18 @@ async fn cycle(
         let result = download(
             runtime,
             (*peer, context),
-            &release,
+            release.manifest().release.release_id.as_bytes(),
             &mut transaction,
             &path,
             state,
             stop,
         )
-        .await;
+        .await
+        .and_then(|()| {
+            verify_artifact(&release, artifact.target, &path).map_err(|e| e.to_string())
+        });
         let imported = match result {
-            Ok(()) => {
+            Ok(_) => {
                 let cache = cache.clone();
                 let release = release.clone();
                 let path = path.clone();
@@ -1037,10 +1212,167 @@ async fn cycle(
     state.view.message = "新版已下载，等待传输、粘贴和远端控制结束后自动安装".into();
     Ok(())
 }
+struct GithubScan {
+    offers: Vec<GitHubPeerArtifact>,
+    sources: BTreeMap<uuid::Uuid, Vec<(DeviceId, ConnectionContext)>>,
+    connected_peers: usize,
+    checked_peers: usize,
+    newer_peer: Option<(semver::Version, u64)>,
+}
+async fn finish_github_cycle(
+    runtime: &RuntimeHandle,
+    config: &LanUpdateConfig,
+    state: &Arc<Mutex<Shared>>,
+    stop: &AtomicBool,
+    scan: GithubScan,
+) -> Result<(), String> {
+    let GithubScan {
+        mut offers,
+        sources,
+        connected_peers,
+        checked_peers,
+        newer_peer,
+    } = scan;
+    offers.retain(|offer| {
+        offer.artifact.target == config.target && offer.artifact.minimum_os <= config.os
+    });
+    for (i, left) in offers.iter().enumerate() {
+        for right in offers.iter().skip(i + 1) {
+            if left.release.precedence(&right.release) == std::cmp::Ordering::Equal && left != right
+            {
+                return Err("设备网络中的公开发行版互相冲突".into());
+            }
+        }
+    }
+    let quarantined = state.lock().unwrap().quarantined.clone();
+    let selected = offers
+        .into_iter()
+        .filter(|offer| offer.release.precedence(&config.installed).is_gt())
+        .filter(|offer| !quarantined.contains(&offer.release.release_id))
+        .max_by(|a, b| a.release.precedence(&b.release));
+    let Some(offer) = selected else {
+        let mut state = state.lock().unwrap();
+        state.view.manual_requested = false;
+        let quarantined_failure = state
+            .view
+            .status
+            .as_ref()
+            .is_some_and(|s| s.phase == UpdatePhase::Quarantined);
+        state.view.message = if quarantined_failure {
+            "更新失败版本已隔离，当前版本保持可用；继续等待新版".to_owned()
+        } else if config.previous_failure.is_some() {
+            "上次更新未完成，当前版本保持可用；将继续寻找设备网络中的新版".to_owned()
+        } else if let Some((version, build)) = newer_peer {
+            format!(
+                "设备网络中有 {version} · build {build}，但未找到可安装的公开发行版更新包；本次未安装，当前仍为 {} · build {}",
+                config.installed.version, config.installed.build_number
+            )
+        } else if connected_peers == 0 {
+            "当前没有已连接的可信局域网设备，也没有可安装的本地新版；本次未安装，请连接提供新版的设备后重试".to_owned()
+        } else if checked_peers < connected_peers {
+            "未能完成所有已连接设备的更新检查，也未找到可安装的新版；本次未安装，请稍后重试"
+                .to_owned()
+        } else {
+            format!(
+                "已检查 {checked_peers} 台设备：未找到高于 {} · build {} 的可安装兼容新版；本次未安装",
+                config.installed.version, config.installed.build_number
+            )
+        };
+        if !quarantined_failure {
+            state.view.error = config.previous_failure.clone();
+        }
+        return Ok(());
+    };
+    let cached_path = state
+        .lock()
+        .unwrap()
+        .github_packages
+        .get(&offer.release.release_id)
+        .map(|(_, path)| path.clone());
+    if let Some(path) = cached_path {
+        let mut transaction =
+            UpdateTransaction::for_artifact(&offer.release, offer.artifact.clone())
+                .map_err(|e| e.to_string())?;
+        transaction
+            .received(0, offer.artifact.size)
+            .map_err(|e| e.to_string())?;
+        let verified =
+            verify_payload(&offer.release, &offer.artifact, &path).map_err(|e| e.to_string())?;
+        transaction.verified(&verified).map_err(|e| e.to_string())?;
+        let mut state = state.lock().unwrap();
+        state.github_ready = Some((offer, path));
+        state.view.status = Some(transaction.status().clone());
+        state.view.error = None;
+        state.view.message = "新版已就绪，等待传输、粘贴和远端控制结束后自动安装".into();
+        return Ok(());
+    }
+    let candidates = sources
+        .get(&offer.release.release_id)
+        .ok_or("更新源已离线")?;
+    let index = {
+        let mut state = state.lock().unwrap();
+        let attempt = state.attempts.entry(offer.release.release_id).or_default();
+        let index = *attempt % candidates.len();
+        *attempt = attempt.wrapping_add(1);
+        index
+    };
+    let (peer, context) = &candidates[index];
+    let mut transaction = UpdateTransaction::for_artifact(&offer.release, offer.artifact.clone())
+        .map_err(|e| e.to_string())?;
+    {
+        let mut state = state.lock().unwrap();
+        state.view.status = Some(transaction.status().clone());
+        state.view.error = None;
+    }
+    let path = config.root.join(format!(
+        "download-{}.part",
+        transaction.status().transaction_id
+    ));
+    let dest_dir = config
+        .root
+        .join("github-peer")
+        .join(offer.release.release_id.to_string());
+    let result = async {
+        download(
+            runtime,
+            (*peer, context),
+            offer.release.release_id.as_bytes(),
+            &mut transaction,
+            &path,
+            state,
+            stop,
+        )
+        .await?;
+        verify_payload(&offer.release, &offer.artifact, &path).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+        let final_path = dest_dir.join(&offer.artifact.file_name);
+        fs::rename(&path, &final_path).map_err(|e| e.to_string())?;
+        deskfuse_update::write_json_atomic(&dest_dir.join("artifact.json"), &offer)
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(final_path)
+    }
+    .await;
+    let _ = fs::remove_file(&path);
+    let final_path = result?;
+    let verified =
+        verify_payload(&offer.release, &offer.artifact, &final_path).map_err(|e| e.to_string())?;
+    transaction.verified(&verified).map_err(|e| e.to_string())?;
+    let mut state = state.lock().unwrap();
+    state.github_packages.insert(
+        offer.release.release_id,
+        (offer.clone(), final_path.clone()),
+    );
+    state.inventory = Some(github_inventory(config, &state)?);
+    state.github_ready = Some((offer, final_path));
+    state.view.status = Some(transaction.status().clone());
+    state.view.error = None;
+    state.view.message = "新版已下载，等待传输、粘贴和远端控制结束后自动安装".into();
+    Ok(())
+}
 async fn download(
     runtime: &RuntimeHandle,
     source: (DeviceId, &ConnectionContext),
-    release: &VerifiedRelease,
+    release_id: &[u8],
     transaction: &mut UpdateTransaction,
     path: &std::path::Path,
     state: &Arc<Mutex<Shared>>,
@@ -1068,7 +1400,7 @@ async fn download(
         let offset = transaction.status().received_bytes;
         let request = UpdateRequest {
             transaction_id: transaction.status().transaction_id.as_bytes().to_vec(),
-            release_id: release.manifest().release.release_id.as_bytes().to_vec(),
+            release_id: release_id.to_vec(),
             target: target_id(artifact.target),
             sha256: hex::decode(&artifact.sha256).map_err(|e| e.to_string())?,
             offset,
@@ -1095,7 +1427,6 @@ async fn download(
         state.view.error = None;
     }
     file.sync_all().map_err(|e| e.to_string())?;
-    verify_artifact(release, artifact.target, path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1158,6 +1489,7 @@ mod tests {
             key: key.verifying_key(),
             receipt: None,
             previous_failure: None,
+            channel: UpdateChannel::Lan,
         };
         let state = Arc::new(Mutex::new(Shared {
             inventory: None,
@@ -1165,6 +1497,8 @@ mod tests {
             inventory_refreshed_at: None,
             view: Default::default(),
             ready: None,
+            github_packages: BTreeMap::new(),
+            github_ready: None,
             quarantined: BTreeSet::new(),
             serving: BTreeMap::new(),
             receipts: vec![],
@@ -1287,6 +1621,7 @@ mod tests {
             installed_release_id: release.release_id.as_bytes().to_vec(),
             target: 1,
             signed_manifests: vec![],
+            github_artifacts: vec![],
         };
         respond(
             &config,
@@ -1317,5 +1652,95 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn github_self_packages_are_served_without_a_lan_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let payload = vec![9; MAX_UPDATE_CHUNK + 3];
+        let path = dir.path().join(GitHubPeerArtifact::FILE_NAME);
+        fs::write(&path, &payload).unwrap();
+        let release = ReleaseVersion {
+            version: semver::Version::new(0, 4, 3),
+            build_number: 9,
+            release_id: uuid::Uuid::new_v4(),
+        };
+        let offer = GitHubPeerArtifact {
+            channel: "github".into(),
+            release: release.clone(),
+            artifact: deskfuse_update::ArtifactDescriptor {
+                target: Target::MacosArm64,
+                kind: deskfuse_update::PackageKind::MacosAppZip,
+                file_name: GitHubPeerArtifact::FILE_NAME.into(),
+                size: payload.len() as u64,
+                sha256: hex::encode(Sha256::digest(&payload)),
+                minimum_os: semver::Version::new(14, 0, 0),
+            },
+        };
+        offer.validate().unwrap();
+        let cache = Mutex::new(
+            ReleaseCache::open(
+                &dir.path().join("cache"),
+                key.verifying_key(),
+                UPDATE_CACHE_LIMIT,
+            )
+            .unwrap(),
+        );
+        let config = LanUpdateConfig {
+            installed: release.clone(),
+            target: Target::MacosArm64,
+            os: semver::Version::new(15, 0, 0),
+            root: dir.path().to_path_buf(),
+            seed_dirs: vec![],
+            key: key.verifying_key(),
+            receipt: None,
+            previous_failure: None,
+            channel: UpdateChannel::GitHub,
+        };
+        let state = Arc::new(Mutex::new(Shared {
+            inventory: None,
+            inventory_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            inventory_refreshed_at: None,
+            view: Default::default(),
+            ready: None,
+            github_packages: BTreeMap::from([(release.release_id, (offer.clone(), path))]),
+            github_ready: None,
+            quarantined: BTreeSet::new(),
+            serving: BTreeMap::new(),
+            receipts: vec![],
+            attempts: BTreeMap::new(),
+            reconnect_confirmed: false,
+            install_abandoned: false,
+            force_install: false,
+        }));
+        let advertised = github_inventory(&config, &state.lock().unwrap()).unwrap();
+        assert!(advertised.signed_manifests.is_empty());
+        assert_eq!(advertised.github_artifacts.len(), 1);
+        let peer = DeviceId::from_bytes([3; 32]);
+        let mut query = UpdateRequest {
+            transaction_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+            release_id: release.release_id.as_bytes().to_vec(),
+            target: 1,
+            sha256: hex::decode(&offer.artifact.sha256).unwrap(),
+            offset: 0,
+        };
+        let Message::UpdateChunk(first) = respond(
+            &config,
+            &cache,
+            &state,
+            peer,
+            Message::UpdateRequest(query.clone()),
+        )
+        .unwrap() else {
+            panic!("chunk")
+        };
+        assert_eq!(first.data, payload[..MAX_UPDATE_CHUNK]);
+        query.offset = MAX_UPDATE_CHUNK as u64;
+        let Message::UpdateChunk(last) =
+            respond(&config, &cache, &state, peer, Message::UpdateRequest(query)).unwrap()
+        else {
+            panic!("chunk")
+        };
+        assert_eq!(last.data, payload[MAX_UPDATE_CHUNK..]);
     }
 }

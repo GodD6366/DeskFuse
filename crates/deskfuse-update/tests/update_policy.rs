@@ -75,6 +75,31 @@ fn starting() -> (tempfile::TempDir, UpdateTransaction) {
 }
 
 #[test]
+fn github_peer_artifact_rejects_lan_channel_and_dmg() {
+    let release = release(3);
+    let mut offer = GitHubPeerArtifact {
+        channel: "github".into(),
+        release: release.clone(),
+        artifact: ArtifactDescriptor {
+            target: Target::MacosArm64,
+            kind: PackageKind::MacosAppZip,
+            file_name: GitHubPeerArtifact::FILE_NAME.into(),
+            size: 4,
+            sha256: hex::encode(Sha256::digest(b"test")),
+            minimum_os: Version::new(14, 0, 0),
+        },
+    };
+    offer.validate().unwrap();
+    let bytes = serde_json::to_vec(&offer).unwrap();
+    assert_eq!(GitHubPeerArtifact::from_slice(&bytes).unwrap(), offer);
+    offer.channel = "lan".into();
+    assert!(offer.validate().is_err());
+    offer.channel = "github".into();
+    offer.artifact.kind = PackageKind::MacosDmg;
+    offer.artifact.file_name = "DeskFuse-arm64.dmg".into();
+    assert!(offer.validate().is_err());
+}
+#[test]
 fn signed_manifest_roundtrip_and_pinned_key() {
     let signed = SignedReleaseManifest::sign(manifest(2), &key()).unwrap();
     let bytes = serde_json::to_vec(&signed).unwrap();

@@ -86,6 +86,27 @@ impl UpdateTransaction {
             self_test_started_ms: None,
         })
     }
+    /// GitHub LAN transfers have a SHA-256 descriptor, not a LAN-signed manifest.
+    ///
+    /// # Errors
+    /// Rejects an invalid artifact descriptor.
+    pub fn for_artifact(
+        release: &ReleaseVersion,
+        artifact: ArtifactDescriptor,
+    ) -> Result<Self, UpdateError> {
+        artifact.validate()?;
+        Ok(Self {
+            status: UpdateStatus {
+                transaction_id: Uuid::new_v4(),
+                release: release.clone(),
+                artifact,
+                phase: UpdatePhase::Downloading,
+                received_bytes: 0,
+                failure: None,
+            },
+            self_test_started_ms: None,
+        })
+    }
     #[must_use]
     pub fn status(&self) -> &UpdateStatus {
         &self.status

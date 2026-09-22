@@ -21,6 +21,10 @@ pub struct ReleaseInventory {
     /// Each entry is a bounded signed manifest; the receiver verifies its pinned key.
     #[prost(bytes = "vec", repeated, tag = "5")]
     pub signed_manifests: Vec<Vec<u8>>,
+    /// GitHub-channel self-packages. JSON `GitHubPeerArtifact` values.
+    /// Trust is Developer ID of the contained app, never LAN Ed25519.
+    #[prost(bytes = "vec", repeated, tag = "6")]
+    pub github_artifacts: Vec<Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct UpdateRequest {
@@ -112,6 +116,10 @@ pub(crate) fn validate(message: &crate::Message) -> Result<(), ProtocolError> {
                 && (v.installed_release_id.is_empty() || id(&v.installed_release_id))
                 && v.signed_manifests.len() <= MAX_RELEASE_INVENTORY
                 && v.signed_manifests
+                    .iter()
+                    .all(|m| !m.is_empty() && m.len() <= MAX_RELEASE_MANIFEST)
+                && v.github_artifacts.len() <= MAX_RELEASE_INVENTORY
+                && v.github_artifacts
                     .iter()
                     .all(|m| !m.is_empty() && m.len() <= MAX_RELEASE_MANIFEST)
         }

@@ -4,7 +4,9 @@
 //! The release list and the small per-release metadata files are read from the
 //! site mirror first and fall back to GitHub, so a blocked or throttled GitHub
 //! never blocks an update check. The DMG itself always comes from GitHub, and
-//! GitHub bytes never enter the signed LAN installer.
+//! GitHub bytes never enter the signed LAN installer. Public bundles also zip
+//! the running app and serve it to other GitHub-channel devices over the LAN
+//! update transport; those ZIP bytes use Developer ID + SHA-256, not Ed25519.
 use deskfuse_runtime::updates::{GitHubUpdateView, LanUpdateView};
 use deskfuse_update::{
     ArtifactDescriptor, PackageKind, ReleaseVersion, Target, UpdatePhase, UpdateStatus, installer,

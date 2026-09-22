@@ -11,7 +11,7 @@ mod manifest;
 mod selection;
 mod transaction;
 
-pub use artifact::{VerifiedArtifact, verify_artifact};
+pub use artifact::{VerifiedArtifact, verify_artifact, verify_payload};
 pub use cache::{CachedArtifact, ReleaseCache};
 pub use coordinator::allocate_release;
 pub use manifest::*;

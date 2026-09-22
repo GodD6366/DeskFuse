@@ -70,12 +70,13 @@ struct ClipboardLibraryTabs: View {
                 Text(name).lineLimit(1).font(.callout)
                 if let count { Text("\(count)").font(.caption).monospacedDigit() }
             }
-                .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 7)
-                .frame(height: spacious ? WorkspaceControlMetrics.height : nil)
+                .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 9)
+                .frame(minHeight: spacious ? WorkspaceControlMetrics.height : 34)
                 .foregroundStyle(selectedListID == id ? Color.accentColor : .secondary)
                 .background(selectedListID == id ? Color.accentColor.opacity(0.14)
                             : spacious ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
                             in: RoundedRectangle(cornerRadius: spacious ? 9 : 100))
+                .contentShape(RoundedRectangle(cornerRadius: spacious ? 9 : 100))
         }.buttonStyle(.plain).accessibilityAddTraits(selectedListID == id ? .isSelected : [])
     }
 
@@ -129,8 +130,9 @@ struct ClipboardLibraryTabs: View {
             }
             .font(.callout)
             .frame(maxWidth: vertical ? .infinity : nil, alignment: .leading)
-            .padding(.horizontal, vertical ? 10 : 0)
-            .frame(height: vertical ? 34 : (spacious ? WorkspaceControlMetrics.height : 30))
+            .padding(.horizontal, vertical ? 10 : 6)
+            .frame(minWidth: vertical ? nil : 32, minHeight: vertical ? 34 : (spacious ? WorkspaceControlMetrics.height : 32))
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .fixedSize(horizontal: !vertical, vertical: false)

@@ -53,14 +53,25 @@ struct UpdateControls: View {
                 Text("下载新版安装包后手动安装。此版本不会自动检查、下载或安装更新。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if update.github {
-                HStack {
-                    if canInstallImmediately { immediateInstallButton }
-                    if let address = update.releaseUrl, let url = URL(string: address) {
-                        Link("打开 GitHub 发布页", destination: url).buttonStyle(.borderedProminent)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        installButton
+                        if canInstallImmediately { immediateInstallButton }
+                        if let address = update.releaseUrl, let url = URL(string: address) {
+                            Link("打开 GitHub 发布页", destination: url).buttonStyle(.borderedProminent)
+                        }
+                        checkButton
                     }
-                    checkButton
+                    VStack(alignment: .leading) {
+                        installButton
+                        if canInstallImmediately { immediateInstallButton }
+                        if let address = update.releaseUrl, let url = URL(string: address) {
+                            Link("打开 GitHub 发布页", destination: url).buttonStyle(.borderedProminent)
+                        }
+                        checkButton
+                    }
                 }
-                Text("GitHub 发布的 Developer ID 签名包会自动下载并安装；ad-hoc 包请从发布页下载 DMG 手动安装。安装完成后重新启动 DeskFuse。")
+                Text("GitHub 发布的 Developer ID 签名包会自动下载并安装。已安装的公开发行版也会把本机应用打包，通过可信局域网传给其他 DeskFuse。ad-hoc 包请从发布页下载 DMG 手动安装。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 ViewThatFits(in: .horizontal) {

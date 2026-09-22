@@ -777,6 +777,7 @@ fn observer_recovery(
     age: Duration,
     exited: bool,
     retired_blocked: bool,
+    replacements: u8,
     manual: bool,
 ) -> ObserverRecovery {
     // Bound spawn failures and repeated clicks as well as blocked native queries.
@@ -787,6 +788,8 @@ fn observer_recovery(
     };
     if age < deadline {
         ObserverRecovery::Wait
+    } else if replacements >= 2 {
+        ObserverRecovery::RestartService
     } else if exited || !retired_blocked {
         ObserverRecovery::Replace
     } else {
@@ -946,6 +949,7 @@ async fn run(
     let mut retired_observer: Option<thread::JoinHandle<()>> = None;
     let mut observer_retry_requested = false;
     let mut observer_recovery_requested = false;
+    let mut observer_replacements = 0;
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1128,6 +1132,10 @@ async fn run(
             }
             changed = observations.changed(), if observer_open => {
                 observer_open = changed.is_ok();
+                if observations.borrow().as_ref().is_some_and(NativeObservation::fresh) {
+                    observer_started = Instant::now();
+                    observer_replacements = 0;
+                }
                 next_refresh = Instant::now();
                 timer.reset_immediately();
             }
@@ -1218,10 +1226,10 @@ async fn run(
                 }
                 let observer_age = observations.borrow().as_ref().map_or_else(
                     || observer_started.elapsed(),
-                    |sample| sample.started_at.elapsed().max(sample.started_wall.elapsed().unwrap_or(NATIVE_OBSERVER_RESTART_AFTER)),
+                    |sample| observer_started.elapsed().max(sample.started_at.elapsed()).max(sample.started_wall.elapsed().unwrap_or(NATIVE_OBSERVER_RESTART_AFTER)),
                 );
                 let observer_exited = observer.as_ref().is_none_or(|worker| worker.is_finished());
-                match observer_recovery(observer_age, observer_exited, retired_observer.is_some(), observer_retry_requested) {
+                match observer_recovery(observer_age, observer_exited, retired_observer.is_some(), observer_replacements, observer_retry_requested) {
                     ObserverRecovery::Wait => {},
                     ObserverRecovery::Replace => {
                         // Closing the old receiver fences late results. Never accumulate
@@ -1235,6 +1243,7 @@ async fn run(
                         observations = receiver;
                         observer = worker;
                         observer_started = now;
+                        observer_replacements += 1;
                         state.observer_thread = thread;
                         observer_open = observer.is_some();
                         next_refresh = now;
@@ -1291,17 +1300,17 @@ async fn run(
                     let mut adapter_error = native_check_error(observation.as_ref(), started.elapsed());
                     if let Some(sample) = observation {
                         match sample.topology {
-                        Ok(topology) => {
-                            if snapshot.local_topology.as_ref() != Some(&topology) {
-                                state.reclaim(&runtime, Some(state.anchor)).await;
-                                if let Err(error) = runtime.send(RuntimeCommand::PublishDisplayTopology(topology)).await { adapter_error=Some(error.to_string()); }
-                                let refreshed = runtime.input_snapshot();
-                                if !native_report_is_current(&snapshot, &refreshed) { next_refresh=now; continue; }
-                                snapshot=refreshed;
-                                // The same activation was verified above; retain any local emergency pause overlay.
+                            Ok(topology) => {
+                                if snapshot.local_topology.as_ref() != Some(&topology) {
+                                    state.reclaim(&runtime, Some(state.anchor)).await;
+                                    if let Err(error) = runtime.send(RuntimeCommand::PublishDisplayTopology(topology)).await { adapter_error=Some(error.to_string()); }
+                                    let refreshed = runtime.input_snapshot();
+                                    if !native_report_is_current(&snapshot, &refreshed) { next_refresh=now; continue; }
+                                    snapshot=refreshed;
+                                    // The same activation was verified above; retain any local emergency pause overlay.
+                                }
                             }
-                        }
-                        Err(error) => adapter_error=Some(error.to_string()),
+                            Err(error) => adapter_error=Some(error.to_string()),
                         }
                     }
                     if effective.enabled && permitted && adapter_error.is_none() {
@@ -1549,36 +1558,51 @@ mod tests {
     #[test]
     fn blocked_observers_escalate_without_unbounded_threads_or_click_restarts() {
         use ObserverRecovery::*;
-        assert_eq!(observer_recovery(Duration::ZERO, false, false, true), Wait);
-        assert_eq!(observer_recovery(Duration::ZERO, true, false, false), Wait);
         assert_eq!(
-            observer_recovery(Duration::from_secs(1), true, true, false),
-            Replace
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, false, false),
+            observer_recovery(Duration::ZERO, false, false, 0, true),
             Wait
         );
         assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, false, true),
+            observer_recovery(Duration::ZERO, true, false, 0, false),
+            Wait
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(1), true, true, 1, false),
             Replace
         );
         assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, false, false),
+            observer_recovery(Duration::from_secs(2), false, false, 0, false),
+            Wait
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(2), false, false, 0, true),
             Replace
         );
         assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, true, false),
+            observer_recovery(Duration::from_secs(5), false, false, 0, false),
+            Replace
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(5), false, true, 1, false),
             RestartService
         );
         assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, true, true),
+            observer_recovery(Duration::from_secs(2), false, true, 1, true),
             RestartService
         );
         // A retired worker that finally exits frees the one replacement slot.
         assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, false, false),
+            observer_recovery(Duration::from_secs(5), false, false, 1, false),
             Replace
+        );
+        // Queries that keep completing with expired samples must not retry forever.
+        assert_eq!(
+            observer_recovery(Duration::from_secs(5), false, false, 2, false),
+            RestartService
+        );
+        assert_eq!(
+            observer_recovery(Duration::from_secs(1), true, false, 2, false),
+            RestartService
         );
     }
 
