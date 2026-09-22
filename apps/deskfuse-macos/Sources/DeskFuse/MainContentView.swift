@@ -35,6 +35,14 @@ struct MainContentView: View {
                     searchRequest: deviceSearchRequest,
                     localSelectionRequest: localDeviceRequest
                 )
+            case .remoteApplications:
+                DevicesView(
+                    store: store,
+                    snapshot: snapshot,
+                    searchRequest: deviceSearchRequest,
+                    localSelectionRequest: 0,
+                    showsApplications: true
+                )
             case .transfers: TransfersView(store: store, transfers: snapshot.transfers)
             case .lanTransfer: ShareAndTransferView(store: store, snapshot: snapshot)
             }

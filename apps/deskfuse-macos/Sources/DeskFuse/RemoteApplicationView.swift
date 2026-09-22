@@ -4,13 +4,22 @@ import Observation
 import DeskFuseRemoteApplication
 
 @MainActor @Observable final class RemoteWindowChrome {
+    var normalNavigation = UserDefaults.standard.object(forKey: "remoteApplication.normalNavigation") as? Bool ?? true {
+        didSet {
+            guard normalNavigation != oldValue else { return }
+            UserDefaults.standard.set(normalNavigation, forKey: "remoteApplication.normalNavigation")
+            menuPresented = false
+            navigationChanged?()
+        }
+    }
+    @ObservationIgnored var navigationChanged: (() -> Void)?
     var menuPresented = false
     var controlsRevealed = false
     var diagnosticsPresented = false
     @ObservationIgnored weak var menuButton: NSButton?
 
     func activateMenu(at point: NSPoint, in window: NSWindow) -> Bool {
-        guard controlsRevealed || menuPresented, let button = menuButton,
+        guard normalNavigation || controlsRevealed || menuPresented, let button = menuButton,
               button.window === window,
               button.bounds.contains(button.convert(point, from: nil)) else { return false }
         button.performClick(nil)
@@ -27,7 +36,7 @@ import DeskFuseRemoteApplication
     }
 }
 
-/// Borderless remote canvas with local traffic lights and a centered menu.
+/// Remote canvas; normal navigation lives in the native window toolbar.
 @available(macOS 14.2, *)
 struct RemoteApplicationView: View {
     @Bindable var session: RemoteApplicationSession
@@ -70,10 +79,12 @@ struct RemoteApplicationView: View {
             }
         }
         .overlay(alignment: .top) {
-            NativeGlassGroup {
-                ZStack(alignment: .top) {
-                    trafficLights.frame(maxWidth: .infinity, alignment: .leading)
-                    menuControls.frame(maxWidth: .infinity, alignment: .center)
+            if !chrome.normalNavigation {
+                NativeGlassGroup {
+                    ZStack(alignment: .top) {
+                        trafficLights.frame(maxWidth: .infinity, alignment: .leading)
+                        menuControls.frame(maxWidth: .infinity, alignment: .center)
+                    }
                 }
             }
         }
@@ -95,16 +106,9 @@ struct RemoteApplicationView: View {
     private var menuControls: some View {
         HStack(spacing: 4) {
             RemoteCanvasDragHandle().frame(width: 22, height: 22).help("拖动以移动远程窗口")
-            RemoteMenuButton(chrome: chrome) {
-                session.canvasFocus(false)
-                chrome.menuButton?.window?.makeFirstResponder(nil)
-                chrome.menuPresented.toggle()
-            }
-            .frame(width: 30, height: 28)
-            .help("远程应用菜单（⌃⌥⌘空格）")
-            .popover(isPresented: $chrome.menuPresented, arrowEdge: .top) {
-                localActions.padding(14).frame(width: 300)
-            }
+            RemoteApplicationMenu(session: session, chrome: chrome,
+                chooseApplication: chooseApplication, closeWindow: closeWindow,
+                minimizeWindow: minimizeWindow, zoomWindow: zoomWindow)
         }
         .font(.system(size: 11, weight: .medium))
         .padding(.horizontal, 5).padding(.vertical, 3)
@@ -117,6 +121,35 @@ struct RemoteApplicationView: View {
         .allowsHitTesting(chrome.controlsRevealed || chrome.menuPresented)
     }
 
+}
+
+/// Shared menu for native navigation and the optional floating chrome.
+@available(macOS 14.2, *)
+struct RemoteApplicationMenu: View {
+    @Bindable var session: RemoteApplicationSession
+    @Bindable var chrome: RemoteWindowChrome
+    var chooseApplication: () -> Void
+    var closeWindow: () -> Void
+    var minimizeWindow: () -> Void
+    var zoomWindow: () -> Void
+    var inNavigation = false
+
+    var body: some View {
+        RemoteMenuButton(chrome: chrome, inNavigation: inNavigation) {
+            session.canvasFocus(false)
+            chrome.menuButton?.window?.makeFirstResponder(nil)
+            chrome.menuPresented.toggle()
+        }
+        .frame(width: 30, height: 28)
+        .help("远程应用菜单（⌃⌥⌘空格）")
+        .popover(isPresented: Binding(
+            get: { chrome.normalNavigation == inNavigation && chrome.menuPresented },
+            set: { if chrome.normalNavigation == inNavigation { chrome.menuPresented = $0 } }
+        ), arrowEdge: .top) {
+            localActions.padding(14).frame(width: 300)
+        }
+    }
+
     private var localActions: some View {
         VStack(alignment: .leading, spacing: 10) {
             localAction("打开其他应用…", shortcut: nil, action: chooseApplication)
@@ -124,6 +157,9 @@ struct RemoteApplicationView: View {
             localAction(chrome.diagnosticsPresented ? "隐藏调试悬浮窗" : "显示调试悬浮窗", shortcut: nil) {
                 chrome.diagnosticsPresented.toggle()
             }
+            Divider()
+            Toggle("正常顶部导航栏", isOn: $chrome.normalNavigation)
+                .help("关闭后使用悬浮红绿灯与靠近显示的菜单；新窗口沿用此选择")
             Divider()
             Picker("分辨率", selection: $session.preferences.resolution) {
                 ForEach(ResolutionPreference.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -160,6 +196,7 @@ struct RemoteApplicationView: View {
 
 private struct RemoteMenuButton: NSViewRepresentable {
     let chrome: RemoteWindowChrome
+    let inNavigation: Bool
     let action: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(action: action) }
     func makeNSView(context: Context) -> NSButton {
@@ -167,12 +204,12 @@ private struct RemoteMenuButton: NSViewRepresentable {
                               target: context.coordinator, action: #selector(Coordinator.activate))
         button.isBordered = false
         button.setAccessibilityLabel("远程应用菜单")
-        chrome.menuButton = button
+        if chrome.normalNavigation == inNavigation { chrome.menuButton = button }
         return button
     }
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.action = action
-        chrome.menuButton = button
+        if chrome.normalNavigation == inNavigation { chrome.menuButton = button }
     }
     @MainActor final class Coordinator: NSObject {
         var action: () -> Void
