@@ -8,12 +8,7 @@ struct SettingsWindowView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = store.error ?? store.snapshot?.error {
-                WorkspaceErrorNotice(
-                    message: error,
-                    dismiss: store.error != nil ? { store.error = nil } : nil
-                )
-            }
+            ErrorNoticeView(notice: store.errorNotice)
             SettingsView(store: store, presentation: SettingsPresentation(store.snapshot)).equatable()
         }
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))

@@ -349,6 +349,87 @@ async fn real_quic_three_nodes_recipient_approval_mesh_clipboard_and_revoke() {
         node.runtime.shutdown_and_wait().await.unwrap();
     }
 }
+// Both directions must reach recipient approval even if discovery lists a dead
+// interface before the reachable one. Keep the dead UDP socket bound so this
+// exercises handshake timeout, not an immediate connection-refused response.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_quic_pairing_falls_back_to_live_route_in_both_directions() {
+    let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = cert.key_pair.serialize_der();
+    for (sender_seed, recipient_seed) in [(84, 85), (85, 84)] {
+        let sender = Node::new(sender_seed, "sender", &der, &key).await;
+        let mut recipient = Node::new(recipient_seed, "recipient", &der, &key).await;
+        let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let caps = Capabilities::NETWORK | Capabilities::DEVICE_NETWORK;
+        let routes = [
+            (1, blackhole.local_addr().unwrap().port()),
+            (2, recipient.transport.local_addr().unwrap().port()),
+        ]
+        .into_iter()
+        .map(|(id, port)| {
+            RouteCandidate::with_id(
+                RouteId::from_uuid(uuid::Uuid::from_u128(id)),
+                Endpoint::new("127.0.0.1", port).unwrap(),
+                RouteSource::Manual,
+                RouteHealth::Healthy,
+                None,
+                0,
+                caps,
+            )
+        })
+        .collect();
+        sender.discovery.push(DiscoveryEvent::PeerHint {
+            peer_id: recipient.id,
+            display_name: "recipient with two interfaces".into(),
+            capabilities: caps,
+            routes,
+        });
+        wait(|| !sender.runtime.snapshot_view().discovered_peers.is_empty()).await;
+        sender
+            .runtime
+            .send(RuntimeCommand::RequestPairing {
+                peer_id: recipient.id,
+            })
+            .await
+            .unwrap();
+        let request = recipient.next_pairing().await;
+        assert_eq!(request.device_id(), sender.id);
+        assert!(
+            recipient
+                .runtime
+                .snapshot()
+                .peers
+                .iter()
+                .all(|p| p.trust != TrustState::Trusted)
+        );
+        recipient
+            .runtime
+            .send(RuntimeCommand::ApprovePairing {
+                request_id: request.request_id(),
+            })
+            .await
+            .unwrap();
+        wait(|| {
+            let sender_view = sender.runtime.snapshot_view();
+            let recipient_view = recipient.runtime.snapshot_view();
+            sender_view
+                .device_network
+                .member_ids
+                .contains(&recipient.id)
+                && recipient_view
+                    .device_network
+                    .member_ids
+                    .contains(&sender.id)
+                && sender_view.device_network.network_id == recipient_view.device_network.network_id
+        })
+        .await;
+        wait(|| connected(&sender, 1) && connected(&recipient, 1)).await;
+        sender.runtime.shutdown_and_wait().await.unwrap();
+        recipient.runtime.shutdown_and_wait().await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_quic_rejection_does_not_trust_or_create_application_session() {
     let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();

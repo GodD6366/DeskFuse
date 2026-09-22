@@ -10,12 +10,7 @@ struct MainContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = store.error ?? store.snapshot?.error {
-                WorkspaceErrorNotice(
-                    message: error,
-                    dismiss: store.error != nil ? { store.error = nil } : nil
-                )
-            }
+            ErrorNoticeView(notice: store.errorNotice)
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

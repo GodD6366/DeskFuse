@@ -419,48 +419,85 @@ impl Actor {
                 return Err(invalid("device network supports at most 32 devices"));
             }
         }
-        let endpoint = if let Some(endpoint) = direct_endpoint {
-            endpoint
+        let routes = if let Some(endpoint) = direct_endpoint {
+            vec![RouteCandidate::new(
+                endpoint,
+                RouteSource::Manual,
+                RouteHealth::Unknown,
+                Capabilities::NETWORK,
+            )]
         } else {
-            let routes = self
+            let candidates = self
                 .peers
                 .get(&peer)
-                .map(|p| p.routes.values().cloned().collect::<Vec<_>>())
-                .or_else(|| {
+                .into_iter()
+                .flat_map(|p| p.routes.values())
+                .chain(
                     self.hints
                         .get(&peer)
-                        .map(|h| h.routes.values().cloned().collect())
-                })
-                .ok_or(RuntimeError::UnknownPeer(peer))?;
-            routes
-                .iter()
-                .find(|r| self.policy.select(&[(*r).clone()]).is_some())
-                .map(|r| r.endpoint.clone())
-                .ok_or(RuntimeError::UnknownPeer(peer))?
+                        .into_iter()
+                        .flat_map(|h| h.routes.values()),
+                )
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut seen = BTreeSet::new();
+            self.policy
+                .eligible_routes(&candidates)
+                .into_iter()
+                .filter(|route| seen.insert((route.endpoint.host.clone(), route.endpoint.port)))
+                .collect()
         };
+        if routes.is_empty() {
+            return Err(RuntimeError::UnknownPeer(peer));
+        }
         if self.blocked.remove(&peer) {
             self.transport.restore_peer(peer).await?;
             self.registered_identities.remove(&peer);
         }
-        let remote = self
-            .transport
-            .bootstrap_connect(
-                self.local_hello.clone(),
-                peer,
-                RouteCandidate::new(
-                    endpoint.clone(),
-                    RouteSource::Manual,
-                    RouteHealth::Unknown,
-                    Capabilities::NETWORK,
-                ),
+        // Discovery order is not reachability: Wi-Fi, VPN and Thunderbolt
+        // advertisements may include addresses this sender cannot reach. Try
+        // every eligible route with a bounded handshake before failing pairing.
+        let mut selected = None;
+        let mut last_error = RuntimeError::UnknownPeer(peer);
+        for route in routes {
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                self.transport
+                    .bootstrap_connect(self.local_hello.clone(), peer, route.clone()),
             )
-            .await?
-            .remote_hello
-            .ok_or_else(|| invalid("missing signed peer hello"))?;
-        verify_hello(&remote).map_err(invalid)?;
-        if !Capabilities::from_bits(remote.capabilities).contains(Capabilities::DEVICE_NETWORK) {
-            return Err(invalid("对方版本需要升级，尚不支持接收方批准的设备网络"));
+            .await
+            .unwrap_or_else(|_| {
+                Err(RuntimeError::Transport(
+                    "pairing handshake timed out".into(),
+                ))
+            })
+            .and_then(|connection| {
+                if connection.peer_id != peer || connection.route_id != route.id {
+                    return Err(invalid("bootstrap returned a mismatched peer or route"));
+                }
+                let remote = connection
+                    .remote_hello
+                    .ok_or_else(|| invalid("missing signed peer hello"))?;
+                verify_hello(&remote).map_err(invalid)?;
+                if core_device_id_from_bytes(&remote.device_id) != peer {
+                    return Err(invalid("bootstrap hello does not match requested peer"));
+                }
+                if !Capabilities::from_bits(remote.capabilities)
+                    .contains(Capabilities::DEVICE_NETWORK)
+                {
+                    return Err(invalid("对方版本需要升级，尚不支持接收方批准的设备网络"));
+                }
+                Ok(remote)
+            });
+            match result {
+                Ok(remote) => {
+                    selected = Some((route.endpoint, remote));
+                    break;
+                }
+                Err(error) => last_error = error,
+            }
         }
+        let (endpoint, remote) = selected.ok_or(last_error)?;
         if let Some(roster) = self.device_network.roster.clone()
             && roster.roster.owner.device_id != self.identity.device_id()
         {
