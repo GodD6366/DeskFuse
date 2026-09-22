@@ -25,6 +25,7 @@ private enum RemoteApplicationCategory: String, CaseIterable, Identifiable {
 @available(macOS 14.2, *)
 struct RemoteApplicationPicker: View {
     @Bindable var session: RemoteApplicationSession
+    var embedded = false
     var select: (RemoteApplicationInfo) -> Void
     @Bindable private var remote = RemoteApplicationManager.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -61,8 +62,8 @@ struct RemoteApplicationPicker: View {
                 ContentUnavailableView.search(text: session.applicationQuery)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                GeometryReader { _ in
-                    let columns = 7
+                GeometryReader { geometry in
+                    let columns = max(1, min(7, Int((geometry.size.width - 40) / 104)))
                     ScrollViewReader { scroll in
                         ScrollView {
                             let running = applications.filter { $0.processID != nil }
@@ -125,13 +126,19 @@ struct RemoteApplicationPicker: View {
         }
     }
     private var categories: some View {
-        // At the minimum width all categories fit in one row. A horizontal
-        // ScrollView here both hid trailing categories and competed for height
-        // with the applications' vertical scroll area.
-        Group {
-            if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: 5) { categoryButtons }
-            } else { categoryButtons }
+        ViewThatFits(in: .horizontal) {
+            Group {
+                if #available(macOS 26.0, *) {
+                    GlassEffectContainer(spacing: 5) { categoryButtons }
+                } else { categoryButtons }
+            }
+            Picker("分类", selection: $category) {
+                ForEach(RemoteApplicationCategory.allCases) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -156,7 +163,9 @@ struct RemoteApplicationPicker: View {
             .accessibilityAddTraits(category == item ? .isSelected : [])
     }
     @ViewBuilder private var panelBackground: some View {
-        if reduceTransparency {
+        if embedded {
+            Color(nsColor: .textBackgroundColor)
+        } else if reduceTransparency {
             Color(nsColor: .windowBackgroundColor)
         } else if #available(macOS 26.0, *) {
             Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))

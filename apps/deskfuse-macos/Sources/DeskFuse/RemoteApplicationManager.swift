@@ -14,6 +14,7 @@ import DeskFuseRemoteApplication
     @ObservationIgnored private var incoming: Task<Void, Never>?
     @ObservationIgnored private var windows: [UUID: RemoteApplicationWindow] = [:]
     @ObservationIgnored private var pickers: [String: RemoteApplicationPickerWindow] = [:]
+    @ObservationIgnored private var catalogs: [UUID: RemoteApplicationSession] = [:]
     @ObservationIgnored private var viewerOwner: UUID?
     @ObservationIgnored private var hostOwner: UUID?
     @ObservationIgnored private var focusedViewerID: UUID?
@@ -69,6 +70,17 @@ import DeskFuseRemoteApplication
         pickers[peerID] = picker
         picker.showWindow(nil); picker.window?.makeKeyAndOrderFront(nil)
         Task { await session.start() }
+    }
+    /// Workspace catalogs own only a browsing connection, never viewer windows.
+    func makeCatalog(for device: Device) -> RemoteApplicationSession? {
+        guard let engine, device.trusted, device.connected, !device.blocked else { return nil }
+        let session = RemoteApplicationSession(engine: engine, peerID: device.id, peerName: device.name, role: .viewer)
+        catalogs[session.id] = session
+        return session
+    }
+    func closeCatalog(_ session: RemoteApplicationSession) async {
+        catalogs.removeValue(forKey: session.id)
+        await session.stop()
     }
     func openedApplications(peerID: String) -> Set<String> {
         Set(viewers.values.filter { $0.peerID == peerID }.compactMap(\.applicationKey))
@@ -154,7 +166,7 @@ import DeskFuseRemoteApplication
     func stop() {
         incoming?.cancel(); incoming = nil
         try? engine?.setRemoteApplicationHosting(enabled: false)
-        let sessions = Array(hosts.values) + Array(viewers.values) + pickers.values.map(\.session)
+        let sessions = Array(hosts.values) + Array(viewers.values) + pickers.values.map(\.session) + Array(catalogs.values)
         for session in sessions { session.releaseControl(resumeSharing: true); session.yieldHostControl() }
         focusedViewerID = nil
         RemoteApplicationDockController.shared.reset()
@@ -268,13 +280,14 @@ import DeskFuseRemoteApplication
 }
 
 @available(macOS 14.2, *)
-@MainActor final class RemoteApplicationWindow: NSWindowController, NSWindowDelegate {
+@MainActor final class RemoteApplicationWindow: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     let session: RemoteApplicationSession
     private var canvasAspect: CGFloat?
     private var lastContentSize: CGSize?
     private var fittedInitially = false
     private let chrome = RemoteWindowChrome()
     private var frameBeforeZoom: NSRect?
+    private static let menuItem = NSToolbarItem.Identifier("deskfuse-remote-application-menu")
     init(session: RemoteApplicationSession) {
         self.session = session
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main
@@ -316,9 +329,65 @@ import DeskFuseRemoteApplication
         content.sizingOptions = []
         window.contentViewController = content
         window.setFrame(initial, display: false)
+        chrome.navigationChanged = { [weak self] in
+            // Let the popover finish dismissing before replacing its anchor.
+            Task { @MainActor [weak self] in self?.configureNavigation() }
+        }
+        configureNavigation()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    private func toggleZoom() {
+    private func configureNavigation() {
+        guard let window else { return }
+        session.canvasFocus(false)
+        let oldFrame = window.frame
+        let canvasSize = window.contentLayoutRect.size
+        window.toolbar = nil
+        if chrome.normalNavigation {
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = false
+            let toolbar = NSToolbar(identifier: "deskfuse-remote-application-navigation")
+            toolbar.delegate = self
+            toolbar.displayMode = .iconOnly
+            toolbar.allowsUserCustomization = false
+            toolbar.centeredItemIdentifiers = [Self.menuItem]
+            window.toolbarStyle = .unified
+            window.toolbar = toolbar
+            window.standardWindowButton(.zoomButton)?.target = self
+            window.standardWindowButton(.zoomButton)?.action = #selector(toggleZoom)
+        } else {
+            window.styleMask = [.borderless, .closable, .resizable, .miniaturizable]
+        }
+        window.title = "\(session.applicationName) — \(session.peerName)"
+        window.contentView?.layoutSubtreeIfNeeded()
+        let chromeHeight = window.frame.height - window.contentLayoutRect.height
+        let frame = NSRect(x: oldFrame.minX, y: oldFrame.maxY - canvasSize.height - chromeHeight,
+                           width: canvasSize.width, height: canvasSize.height + chromeHeight)
+        window.setFrame(frame, display: true)
+        frameBeforeZoom = nil
+        if let lastContentSize { fitPresentation(lastContentSize) }
+    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.menuItem, .flexibleSpace]
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.menuItem, .flexibleSpace]
+    }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier == Self.menuItem else { return nil }
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = "远程应用菜单"
+        item.view = NSHostingView(rootView: RemoteApplicationMenu(session: session, chrome: chrome,
+            chooseApplication: { [weak self] in
+                guard let self else { return }
+                RemoteApplicationManager.shared.openPicker(peerID: session.peerID, peerName: session.peerName)
+            }, closeWindow: { [weak self] in self?.window?.close() },
+            minimizeWindow: { [weak self] in self?.window?.miniaturize(nil) },
+            zoomWindow: { [weak self] in self?.toggleZoom() }, inNavigation: true))
+        return item
+    }
+    @objc private func toggleZoom() {
         guard let window else { return }
         session.canvasFocus(false)
         if let previous = frameBeforeZoom {
@@ -329,9 +398,11 @@ import DeskFuseRemoteApplication
         }
         frameBeforeZoom = window.frame
         let available = (window.screen?.visibleFrame ?? window.frame).insetBy(dx: 16, dy: 16)
-        let aspect = canvasAspect ?? window.frame.width / max(1, window.frame.height)
-        let width = min(available.width, available.height * aspect)
-        let size = NSSize(width: width, height: width / aspect)
+        let layout = window.contentLayoutRect
+        let chromeSize = NSSize(width: window.frame.width - layout.width, height: window.frame.height - layout.height)
+        let aspect = canvasAspect ?? layout.width / max(1, layout.height)
+        let width = min(available.width - chromeSize.width, (available.height - chromeSize.height) * aspect)
+        let size = NSSize(width: width + chromeSize.width, height: width / aspect + chromeSize.height)
         window.setFrame(NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                width: size.width, height: size.height), display: true)
     }

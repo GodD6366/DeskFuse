@@ -12,7 +12,7 @@ struct MainSidebar: View {
             sidebarSectionHeader("工作区")
                 .listRowSeparator(.hidden, edges: .all)
                 .listRowBackground(Color.clear)
-            ForEach([Page.clipboard, .input]) { page in
+            ForEach([Page.clipboard, .input, .remoteApplications]) { page in
                 SidebarNavRow(title: page.rawValue, symbol: page.symbol, selected: store.selectedPage == page)
                     .tag(page)
                     .listRowSeparator(.hidden, edges: .all)

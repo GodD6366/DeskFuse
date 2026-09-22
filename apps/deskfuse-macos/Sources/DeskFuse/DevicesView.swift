@@ -10,6 +10,7 @@ struct DevicesView: View {
     let snapshot: EngineSnapshot
     let searchRequest: Int
     let localSelectionRequest: Int
+    var showsApplications = false
     @State private var selected: String?
     @State private var search = ""
     @State private var ip = ""
@@ -48,8 +49,14 @@ struct DevicesView: View {
             deviceListPane
                 .frame(minWidth: 300, idealWidth: 340, maxWidth: 380, maxHeight: .infinity)
 
-            detailPane
-                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if showsApplications {
+                    applicationPane
+                } else {
+                    detailPane
+                }
+            }
+            .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: searchRequest) { _, _ in searchFocused = true }
@@ -75,9 +82,9 @@ struct DevicesView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("设备")
+                        Text(showsApplications ? "远程应用" : "设备")
                             .font(.system(size: 27, weight: .bold))
-                        Text("发现并管理附近设备")
+                        Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -185,7 +192,7 @@ struct DevicesView: View {
                       let device = snapshot.devices.first(where: { $0.id == id }),
                       device.trusted, device.connected, !device.blocked else { return }
                 selected = id
-                if #available(macOS 14.2, *) {
+                if !showsApplications, #available(macOS 14.2, *) {
                     RemoteApplicationManager.shared.open(device)
                 }
             }
@@ -286,7 +293,7 @@ struct DevicesView: View {
             if device.trusted && !device.blocked, #available(macOS 14.2, *) {
                 Button {
                     selected = device.id
-                    RemoteApplicationManager.shared.open(device)
+                    if !showsApplications { RemoteApplicationManager.shared.open(device) }
                 } label: {
                     Image(systemName: "square.grid.2x2")
                         .font(.system(size: 15, weight: .medium))
@@ -340,6 +347,31 @@ struct DevicesView: View {
         .tag(snapshot.localId)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+    }
+
+    @ViewBuilder private var applicationPane: some View {
+        if #available(macOS 14.2, *) {
+            if let device = snapshot.devices.first(where: { $0.id == selected }) {
+                if device.blocked {
+                    ContentUnavailableView("设备已阻止", systemImage: "hand.raised",
+                        description: Text("在设备页解除阻止并配对后，即可查看应用列表。"))
+                } else if !device.trusted {
+                    ContentUnavailableView("请先配对设备", systemImage: "lock",
+                        description: Text("在设备页与 \(device.name) 完成配对后，即可打开远程应用。"))
+                } else if !device.connected {
+                    ContentUnavailableView("设备未连接", systemImage: "network.slash",
+                        description: Text("等待 \(device.name) 连接后，将自动加载应用列表。"))
+                } else {
+                    RemoteApplicationCatalog(device: device).id(device.id)
+                }
+            } else {
+                ContentUnavailableView("选择远端设备", systemImage: "square.grid.2x2",
+                    description: Text("从左侧选择已连接的配对设备，在这里浏览并打开它的应用。"))
+            }
+        } else {
+            ContentUnavailableView("需要更新 macOS", systemImage: "square.grid.2x2",
+                description: Text("远程应用需要 macOS 14.2 或更新版本。"))
+        }
     }
 
     private var detailPane: some View {
