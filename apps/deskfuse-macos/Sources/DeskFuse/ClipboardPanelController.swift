@@ -255,6 +255,8 @@ import DeskFuseEngine
         closingForPaste = false
         session = UUID()
         pasteTask?.cancel()
+        // 嵌套的预览气泡会让外层面板的 performClose 失败，必须先卸掉。
+        ClipboardQuickLookController.shared.close()
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)
         restoreActivationPolicyIfNeeded()
@@ -282,6 +284,7 @@ import DeskFuseEngine
             throw ClipboardPanelFailure.message("原目标应用不可用；内容已复制，可手动粘贴。")
         }
         closingForPaste = true
+        ClipboardQuickLookController.shared.close()
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)
         guard target.activate(options: []) else { throw ClipboardPanelFailure.message("无法激活原目标应用；内容已复制。") }

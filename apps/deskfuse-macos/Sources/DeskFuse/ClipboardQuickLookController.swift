@@ -11,16 +11,21 @@ import DeskFuseEngine
 
 struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     let anchor: ClipboardQuickLookAnchor
+    /// The record this row renders. Re-anchoring must wait until the incoming
+    /// row's view exists, never present onto the outgoing row's leftover view.
+    var itemID: UInt64? = nil
 
     func makeNSView(context: Context) -> ClipboardQuickLookAnchorNSView {
         let view = ClipboardQuickLookAnchorNSView()
         view.anchor = anchor
+        view.itemID = itemID
         anchor.view = view
         return view
     }
 
     func updateNSView(_ view: ClipboardQuickLookAnchorNSView, context: Context) {
         view.anchor = anchor
+        view.itemID = itemID
         anchor.view = view
     }
 
@@ -31,6 +36,7 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
 
 @MainActor final class ClipboardQuickLookAnchorNSView: NSView {
     weak var anchor: ClipboardQuickLookAnchor?
+    var itemID: UInt64?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -47,7 +53,14 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     @ObservationIgnored private var popover: NSPopover?
     @ObservationIgnored private var hosting: NSHostingController<QuickLookHost>?
     @ObservationIgnored private var dismissHandler: (() -> Void)?
+    /// Arrow keys land in the popover's window, not the panel's, so the open
+    /// bubble routes them back to the list for record-to-record switching.
+    @ObservationIgnored private var navigateHandler: ((Int) -> Void)?
     @ObservationIgnored private var keyMonitor: Any?
+    /// 同一条记录的后续内容更新不再改气泡尺寸，避免加载完成后撑开并盖住光标。
+    @ObservationIgnored private var lockedSize = false
+    @ObservationIgnored private var closeRequested = false
+    @ObservationIgnored private weak var positioningView: NSView?
     private var presented = false
 
     var window: NSWindow? {
@@ -55,18 +68,28 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
         return popover?.contentViewController?.view.window
     }
 
-    func present(from anchor: NSView, dismiss: @escaping () -> Void) {
+    var isShown: Bool { presented && popover?.isShown == true }
+
+    func isAnchored(to view: NSView) -> Bool { isShown && positioningView === view }
+
+    /// Re-calling `show` on a visible popover repositions it onto the new
+    /// anchor without closing, so switching records never blinks the bubble.
+    func present(from anchor: NSView, navigate: ((Int) -> Void)? = nil, dismiss: @escaping () -> Void) {
         guard anchor.window != nil else { return }
         dismissHandler = dismiss
+        navigateHandler = navigate
 
         let popover: NSPopover
         if let existing = self.popover {
             popover = existing
         } else {
             let hosting = NSHostingController(rootView: QuickLookHost(model: model))
+            // 尺寸只由 preferredContentSize 决定。SwiftUI 的无限 frame 不能把气泡撑成空白大卡。
+            hosting.sizingOptions = []
             let created = NSPopover()
-            created.behavior = .transient
-            created.animates = true
+            // 面板本身已是 popover。再用 transient 会在悬停移动时被系统关掉并立刻重开。
+            created.behavior = .applicationDefined
+            created.animates = false
             created.delegate = self
             created.contentViewController = hosting
             self.hosting = hosting
@@ -74,49 +97,92 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
             popover = created
         }
 
-        popover.contentSize = preferredContentSize(content: model.content, image: model.image)
+        guard Self.displayable(content: model.content, image: model.image) else { return }
+        let switchingAnchor = positioningView !== anchor || popover.isShown == false
+        if switchingAnchor { lockedSize = false }
+        if !lockedSize {
+            applyContentSize(preferredContentSize(content: model.content, image: model.image), to: popover)
+            lockedSize = true
+        }
+        positioningView = anchor
         presented = true
-        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minX)
+        if switchingAnchor {
+            let parent = anchor.window
+            let parentWasKey = parent?.isKeyWindow == true
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minX)
+            // 气泡不要抢走面板的键焦点，否则悬停跟踪和方向键都会跳到另一个窗口。
+            if parentWasKey { parent?.makeKey() }
+        }
         installKeyMonitor()
     }
 
     func update(content: ClipboardContent?, image: NSImage?) {
+        guard Self.displayable(content: content, image: image) else { return }
         model.content = content
         model.image = image
-        guard let popover, presented else { return }
-        popover.contentSize = preferredContentSize(content: content, image: image)
+        guard let popover, presented, !lockedSize else { return }
+        applyContentSize(preferredContentSize(content: content, image: image), to: popover)
+        lockedSize = true
+    }
+
+    /// 气泡尺寸以这里为准。Hosting 视图若按 SwiftUI 理想尺寸自己长，会盖住正在悬停的行。
+    private func applyContentSize(_ size: NSSize, to popover: NSPopover) {
+        popover.contentSize = size
+        hosting?.view.frame.size = size
     }
 
     func close() {
         guard presented || popover?.isShown == true else { return }
-        presented = false
-        dismissHandler = nil
-        removeKeyMonitor()
-        model.content = nil
-        model.image = nil
-        popover?.performClose(nil)
+        relinquish()
+        hidePopover()
+        clearModel()
+    }
+
+    /// `close()` 仍会询问代理。悬停和点按列表不能把气泡关掉，只有这里放行。
+    func popoverShouldClose(_ popover: NSPopover) -> Bool { closeRequested }
+
+    private func hidePopover() {
+        guard let popover else { return }
+        closeRequested = true
+        popover.close()
+        closeRequested = false
     }
 
     func popoverDidClose(_ notification: Notification) {
         guard presented else { return }
-        presented = false
         let dismiss = dismissHandler
+        relinquish()
+        clearModel()
+        dismiss?()
+    }
+
+    private func relinquish() {
+        presented = false
+        lockedSize = false
+        positioningView = nil
         dismissHandler = nil
+        navigateHandler = nil
         removeKeyMonitor()
+    }
+
+    private func clearModel() {
         model.content = nil
         model.image = nil
-        dismiss?()
+    }
+
+    private static func displayable(content: ClipboardContent?, image: NSImage?) -> Bool {
+        if image != nil { return true }
+        if let text = content?.text, !text.isEmpty { return true }
+        if let paths = content?.filePaths, !paths.isEmpty { return true }
+        return false
     }
 
     private func dismissAndNotify() {
         guard presented else { return }
-        presented = false
         let dismiss = dismissHandler
-        dismissHandler = nil
-        removeKeyMonitor()
-        model.content = nil
-        model.image = nil
-        popover?.performClose(nil)
+        relinquish()
+        hidePopover()
+        clearModel()
         dismiss?()
     }
 
@@ -124,10 +190,21 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled: Bool = MainActor.assumeIsolated {
-                guard let self, self.presented, event.window === self.window,
-                      event.keyCode == 49 || event.keyCode == 53 else { return false }
-                self.dismissAndNotify()
-                return true
+                guard let self, self.presented, event.window === self.window else { return false }
+                switch event.keyCode {
+                case 49, 53:
+                    self.dismissAndNotify()
+                    return true
+                case 125, 126:
+                    // Up/down switch the previewed record while the bubble is up.
+                    // Modified arrows still belong to the preview's own content.
+                    guard let navigate = self.navigateHandler,
+                          event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
+                    navigate(event.keyCode == 125 ? 1 : -1)
+                    return true
+                default:
+                    return false
+                }
             }
             return handled ? nil : event
         }
@@ -225,9 +302,7 @@ private struct ClipboardQuickLook: View {
                 }
                 .padding(18)
             } else {
-                ProgressView()
-                    .controlSize(.regular)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

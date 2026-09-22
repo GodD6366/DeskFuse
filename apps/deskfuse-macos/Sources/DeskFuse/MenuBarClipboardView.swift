@@ -38,6 +38,7 @@ struct MenuBarClipboardView: View {
     @State private var previewAnchor = ClipboardQuickLookAnchor()
     @State private var previewID: UInt64?
     @State private var previewTask: Task<Void, Never>?
+    @State private var followTask: Task<Void, Never>?
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
     /// Every record the panel may show, deduplicated and ordered newest first.
@@ -130,8 +131,13 @@ struct MenuBarClipboardView: View {
             if let previewID, !ids.contains(previewID) { dismissPreview() }
             fileAvailability = fileAvailability.filter { ids.contains($0.key) }
         }
-        // The preview belongs to one record: navigating away closes it.
-        .onChange(of: selectedID) { _, _ in dismissPreview() }
+        // The open preview follows the selection instead of closing, so the
+        // arrow keys can switch records while the popover stays up. A record
+        // that vanished still dismisses it.
+        .onChange(of: selectedID) { _, id in
+            guard previewing else { return }
+            if let id { followSelection(id) } else { dismissPreview() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in calendarRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in calendarRevision += 1 }
         .onChange(of: query) { _, _ in presentationOrder = [] }
@@ -265,10 +271,10 @@ struct MenuBarClipboardView: View {
                                 onDelete: { deleteItem(item.id) }
                             )
                             .background {
-                                if isSelected { ClipboardQuickLookAnchorView(anchor: previewAnchor) }
+                                if isSelected { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                             }
                             .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
-                                previewItem(item.id, from: anchor)
+                                previewItem(item.id, from: anchor, trackedByPointer: true)
                             })
                         }
                     }
@@ -303,10 +309,10 @@ struct MenuBarClipboardView: View {
                                         onRename: { library.rename(item.id, title: $0) },
                                         onDelete: { deleteItem(item.id) })
                                     .background {
-                                        if selectedID == item.id { ClipboardQuickLookAnchorView(anchor: previewAnchor) }
+                                        if selectedID == item.id { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
                                     }
                                     .modifier(ClipboardHoverPreview(session: session, active: panelActive) { anchor in
-                                        previewItem(item.id, from: anchor)
+                                        previewItem(item.id, from: anchor, trackedByPointer: true)
                                     })
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { copySelected(paste: true, id: item.id) })
                                     .id(item.id)
@@ -464,13 +470,16 @@ struct MenuBarClipboardView: View {
     }
 
     /// Read-only preview of the selected record: it never prepares a paste and
-    /// never changes the selection. It opens beside the 440 pt panel immediately,
-    /// then fills in the payload when loading completes.
+    /// never changes the selection. The bubble appears only once there is
+    /// something to show, so it never sits on screen as a spinner.
     private func togglePreview() {
         guard selectedID != nil else { return }
         if previewing { dismissPreview() } else { previewSelected() }
     }
     private func dismissPreview() {
+        ClipboardPreviewHoverGate.suppressCurrentPointer()
+        followTask?.cancel()
+        followTask = nil
         previewTask?.cancel()
         previewTask = nil
         previewID = nil
@@ -480,42 +489,131 @@ struct MenuBarClipboardView: View {
         ClipboardQuickLookController.shared.close()
     }
     private func previewSelected() {
-        guard let id = selectedID, let anchor = previewAnchor.view else { return }
-        previewItem(id, from: anchor)
+        guard let id = selectedID else { return }
+        followSelection(id)
     }
-    private func previewItem(_ id: UInt64, from anchor: NSView) {
+    /// Point the preview at `id` through the selected row's anchor view.
+    /// SwiftUI installs the incoming row's anchor only after the swap, and a
+    /// lazy row may still be scrolling into place, so retry briefly. While the
+    /// bubble is up this is what makes up/down switch records in place;
+    /// re-calling `present` repositions it without closing.
+    private func followSelection(_ id: UInt64) {
+        // 静止的光标下面会换行，那不是用户把指针移过去，不能把键盘预览抢回去。
+        ClipboardPreviewHoverGate.suppressCurrentPointer()
+        followTask?.cancel()
+        followTask = Task { @MainActor in
+            for _ in 0..<15 {
+                guard !Task.isCancelled, items.contains(where: { $0.id == id }),
+                      !previewing || previewID != id else { return }
+                if let view = previewAnchor.view as? ClipboardQuickLookAnchorNSView,
+                   view.itemID == id, view.window != nil {
+                    previewItem(id, from: view)
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(30)) } catch { return }
+            }
+            // The target row never rendered; never leave a stale bubble behind.
+            if previewing, previewID != id { dismissPreview() }
+        }
+    }
+    private struct PreviewPayload {
+        var content: ClipboardContent?
+        var image: NSImage?
+    }
+    /// `trackedByPointer` 为真时，指针已经离开该行且气泡还没出现，就不再补弹。
+    private func previewItem(_ id: UInt64, from anchor: NSView, trackedByPointer: Bool = false) {
         guard panelActive, items.contains(where: { $0.id == id }), store.client != nil,
               anchor.window != nil else { return }
         guard previewID != id || !previewing else { return }
         previewTask?.cancel()
-        ClipboardQuickLookController.shared.update(content: nil, image: nil)
         previewID = id
         previewing = true
+        if let immediate = immediatePayload(for: id) {
+            showPreview(immediate, from: anchor)
+        }
+        previewTask = Task { @MainActor in
+            let loaded = await loadPreviewPayload(id)
+            guard !Task.isCancelled, previewing, previewID == id else { return }
+            guard anchor.window != nil else {
+                if ClipboardQuickLookController.shared.isShown { dismissPreview() }
+                else { abandonUnshownPreview(id) }
+                return
+            }
+            guard let loaded else {
+                if !ClipboardQuickLookController.shared.isShown { abandonUnshownPreview(id) }
+                return
+            }
+            if trackedByPointer, !ClipboardQuickLookController.shared.isShown,
+               !ClipboardPreviewHoverGate.pointerIsInside(anchor) {
+                abandonUnshownPreview(id)
+                return
+            }
+            showPreview(loaded, from: anchor)
+        }
+    }
+    /// 列表里已经有的文字或缩略图先上屏。完整内容到达后只替换内容，不再经过空白转圈。
+    private func immediatePayload(for id: UInt64) -> PreviewPayload? {
+        guard let item = items.first(where: { $0.id == id }) else { return nil }
+        if item.hasImage {
+            guard let image = cachedPreviewImage(id) else { return nil }
+            return PreviewPayload(content: nil, image: image)
+        }
+        if item.fileCount > 0 { return nil }
+        let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return PreviewPayload(
+            content: ClipboardContent(canRequestFiles: false, id: id, text: item.preview, truncated: true, imagePng: Data(), filePaths: []),
+            image: nil
+        )
+    }
+    private func cachedPreviewImage(_ id: UInt64) -> NSImage? {
+        for size in [320, 480, 160] {
+            if case let image?? = ClipboardThumbnailCache.shared.cached(id, maxPixelSize: size) {
+                return image
+            }
+        }
+        return nil
+    }
+    private func loadPreviewPayload(_ id: UInt64) async -> PreviewPayload? {
+        guard let client = store.client else { return nil }
+        var content = try? await client.content(id)
+        // A remote index row has no local payload yet. Ask the source device
+        // and retry briefly, the same way the main window's preview does.
+        if content == nil, pageItems.first(where: { $0.id == id })?.available == false {
+            library.wantPayload(id)
+            for _ in 0..<10 {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, previewing, previewID == id else { return nil }
+                if let retried = try? await client.content(id) { content = retried; break }
+            }
+        }
+        guard !Task.isCancelled, previewing, previewID == id else { return nil }
+        guard let content else { return nil }
+        let media = await ClipboardMediaLoader.shared.load(content)
+        guard !Task.isCancelled, previewing, previewID == id else { return nil }
+        let image = media.thumbnail.flatMap { NSImage(data: $0) } ?? cachedPreviewImage(id)
+        guard image != nil || !content.text.isEmpty || !content.filePaths.isEmpty else { return nil }
+        return PreviewPayload(content: content, image: image)
+    }
+    private func showPreview(_ payload: PreviewPayload, from anchor: NSView) {
+        let controller = ClipboardQuickLookController.shared
+        let placing = !controller.isAnchored(to: anchor)
+        if placing { ClipboardPreviewHoverGate.suppressCurrentPointer() }
+        previewContent = payload.content
+        previewImage = payload.image
+        controller.update(content: payload.content, image: payload.image)
+        controller.present(from: anchor, navigate: { delta in
+            moveSelection(delta > 0 ? .down : .up)
+        }) { dismissPreview() }
+    }
+    /// 这次请求没能显示出来。不要关上一张还在的气泡，也不要留着“正在预览”的空状态。
+    private func abandonUnshownPreview(_ id: UInt64) {
+        guard previewID == id, !ClipboardQuickLookController.shared.isShown else { return }
+        previewTask = nil
+        previewID = nil
+        previewing = false
         previewContent = nil
         previewImage = nil
-        ClipboardQuickLookController.shared.present(from: anchor) { dismissPreview() }
-        previewTask = Task { @MainActor in
-            guard let client = store.client else { return }
-            var content = try? await client.content(id)
-            // A remote index row has no local payload yet. Ask the source device
-            // and retry briefly, the same way the main window's preview does.
-            if content == nil, pageItems.first(where: { $0.id == id })?.available == false {
-                library.wantPayload(id)
-                for _ in 0..<10 {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    guard !Task.isCancelled, previewing, previewID == id else { return }
-                    if let retried = try? await client.content(id) { content = retried; break }
-                }
-            }
-            guard !Task.isCancelled, previewing, previewID == id else { return }
-            // Unreadable record: never leave the spinner covering the screen.
-            guard let content else { dismissPreview(); return }
-            let media = await ClipboardMediaLoader.shared.load(content)
-            guard !Task.isCancelled, previewing, previewID == id else { return }
-            previewContent = content
-            previewImage = media.thumbnail.flatMap { NSImage(data: $0) }
-            ClipboardQuickLookController.shared.update(content: content, image: previewImage)
-        }
     }
     private func cancelPreparation() {
         guard let token = preparationToken else { return }
@@ -626,26 +724,40 @@ struct MenuBarClipboardView: View {
             guard let id = selectedID else { return true }
             deleteItem(id); return true
         case 123, 124, 125, 126:
-            guard !items.isEmpty else { return true }
-            if displayMode == .grid {
-                let direction: ClipboardMasonryNavigation.Direction
-                switch event.keyCode {
-                case 123: direction = .left
-                case 124: direction = .right
-                case 125: direction = .down
-                default: direction = .up
-                }
-                if let id = ClipboardMasonryNavigation.target(items: items, selected: selectedID, columnCount: 2, direction: direction) {
-                    selectedID = id
-                }
-            } else if event.keyCode == 125 || event.keyCode == 126 {
-                let old = items.firstIndex { $0.id == selectedID } ?? 0
-                let next = min(items.count - 1, max(0, old + (event.keyCode == 125 ? 1 : -1)))
-                selectedID = items[next].id
+            let direction: ClipboardMasonryNavigation.Direction
+            switch event.keyCode {
+            case 123: direction = .left
+            case 124: direction = .right
+            case 125: direction = .down
+            default: direction = .up
             }
-            keyboardScrollID = selectedID
-            searchFocused = false; copyError = nil; return true
+            moveSelection(direction)
+            return true
         default: return false
         }
+    }
+
+    /// Arrow navigation shared by the panel keys and the open preview popover.
+    /// With the preview up, the previewed record is the base, so up/down keep
+    /// switching from what is currently on screen instead of snapping back to
+    /// the selection the popover was opened from.
+    private func moveSelection(_ direction: ClipboardMasonryNavigation.Direction) {
+        guard !items.isEmpty else { return }
+        if previewing { ClipboardPreviewHoverGate.suppressCurrentPointer() }
+        let base = previewID ?? selectedID
+        if displayMode == .grid {
+            if let id = ClipboardMasonryNavigation.target(items: items, selected: base, columnCount: 2, direction: direction) {
+                selectedID = id
+            }
+        } else if direction == .down || direction == .up {
+            let old = items.firstIndex { $0.id == base } ?? 0
+            let next = min(items.count - 1, max(0, old + (direction == .down ? 1 : -1)))
+            selectedID = items[next].id
+        }
+        keyboardScrollID = selectedID
+        searchFocused = false; copyError = nil
+        // The selection may already be the target (a grid jump landing on the
+        // selected row), so `onChange(of: selectedID)` alone would miss it.
+        if previewing, let id = selectedID, previewID != id { followSelection(id) }
     }
 }
