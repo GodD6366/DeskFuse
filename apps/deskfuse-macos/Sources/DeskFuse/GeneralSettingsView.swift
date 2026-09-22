@@ -4,6 +4,7 @@ struct GeneralSettingsView: View {
     @Binding var clipboardEnabled: Bool
     @Binding var debugLoggingEnabled: Bool
     @Binding var hideDockIcon: Bool
+    @Binding var keepAwake: Bool
     let ready: Bool
     let exportingDiagnostics: Bool
     let exportDiagnostics: () -> Void
@@ -23,7 +24,9 @@ struct GeneralSettingsView: View {
                     Divider()
                     settingsToggle("隐藏 Dock 图标", isOn: $hideDockIcon)
                     Divider()
-                    Text("隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。")
+                    settingsToggle("保持电脑唤醒", isOn: $keepAwake)
+                    Divider()
+                    Text("隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。\n保持唤醒将阻止系统自动休眠和显示器休眠，关闭应用时自动恢复。")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

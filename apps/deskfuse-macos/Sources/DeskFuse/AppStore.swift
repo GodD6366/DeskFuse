@@ -23,6 +23,15 @@ import DeskFuseEngine
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
     static let hideDockIconDefaultsKey = "deskfuse.hideDockIcon"
+    var keepAwake = UserDefaults.standard.bool(forKey: AppStore.keepAwakeDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(keepAwake, forKey: AppStore.keepAwakeDefaultsKey)
+            if keepAwake { caffeineController.enable() }
+            else { caffeineController.disable() }
+        }
+    }
+    static let keepAwakeDefaultsKey = "deskfuse.keepAwake"
+    private let caffeineController = CaffeineController()
     var clipboardNavigation: ClipboardNavigationRequest?
     /// One-shot request from the sidebar footer to show the local device in the
     /// devices inspector without duplicating selection state in the store.
@@ -51,6 +60,8 @@ import DeskFuseEngine
 
     func start() {
         guard starting, engine == nil else { return }
+        // 根据保存的设置恢复常亮状态
+        if keepAwake { caffeineController.enable() }
         do {
             let args = ProcessInfo.processInfo.arguments
             let transaction = args.firstIndex(of: "--update-self-test").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
@@ -214,6 +225,7 @@ import DeskFuseEngine
     }
     func terminate() -> NSApplication.TerminateReply {
         if #available(macOS 14.2, *) { RemoteApplicationManager.shared.stop() }
+        caffeineController.disable()
         if quitting || client == nil { return .terminateNow }
         quitting = true; reclaim(); shelf?.stop(); transferWindow?.stop()
         // AppKit already holds the main run loop inside applicationShouldTerminate,

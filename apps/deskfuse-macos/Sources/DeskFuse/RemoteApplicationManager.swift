@@ -112,6 +112,10 @@ import DeskFuseRemoteApplication
         if focusedViewerID == session.id { focusedViewerID = viewers.keys.first }
         RemoteApplicationDockController.shared.close(id: session.id)
         if let focusedViewerID { RemoteApplicationDockController.shared.focus(id: focusedViewerID) }
+        else {
+            // 所有远程应用窗口都已关闭，恢复鼠标穿梭
+            restoreMouseShuttleIfNeeded()
+        }
         Task { await session.stop() }
     }
 
@@ -151,6 +155,24 @@ import DeskFuseRemoteApplication
         guard viewerOwner == session.id else { return }
         viewerOwner = nil
         try? session.engine.remoteApplicationViewerControl(active: false)
+        
+        // 如果还有其他 viewer 窗口，不需要恢复鼠标穿梭
+        // 只有当所有远程应用窗口都失去焦点时，才延迟恢复鼠标穿梭
+        if viewers.isEmpty {
+            restoreMouseShuttleIfNeeded()
+        }
+    }
+    
+    private func restoreMouseShuttleIfNeeded() {
+        // 延迟恢复鼠标穿梭，避免在快速切换窗口时误触发
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            // 再次确认没有活跃的 viewer 控制
+            if self.viewerOwner == nil, !self.viewers.isEmpty {
+                // 尝试恢复鼠标穿梭状态
+                try? self.engine?.remoteApplicationViewerControl(active: false)
+            }
+        }
     }
     func claimHostControl(_ session: RemoteApplicationSession) -> Bool {
         if let owner = hostOwner, owner != session.id, let previous = hosts[owner] {
@@ -288,6 +310,7 @@ import DeskFuseRemoteApplication
     private let chrome = RemoteWindowChrome()
     private var frameBeforeZoom: NSRect?
     private static let menuItem = NSToolbarItem.Identifier("deskfuse-remote-application-menu")
+    private static let metricsItem = NSToolbarItem.Identifier("deskfuse-remote-application-metrics")
     init(session: RemoteApplicationSession) {
         self.session = session
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main
@@ -333,6 +356,10 @@ import DeskFuseRemoteApplication
             // Let the popover finish dismissing before replacing its anchor.
             Task { @MainActor [weak self] in self?.configureNavigation() }
         }
+        chrome.metricsChanged = { [weak self] in
+            Task { @MainActor [weak self] in self?.configureMetrics() }
+        }
+        chrome.titlebarColorChanged = { [weak self] in self?.configureTitlebarColor() }
         configureNavigation()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -345,19 +372,25 @@ import DeskFuseRemoteApplication
         if chrome.normalNavigation {
             window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = false
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            window.isOpaque = true
+            window.backgroundColor = chrome.titlebarBackground
             let toolbar = NSToolbar(identifier: "deskfuse-remote-application-navigation")
             toolbar.delegate = self
             toolbar.displayMode = .iconOnly
             toolbar.allowsUserCustomization = false
-            toolbar.centeredItemIdentifiers = [Self.menuItem]
+            toolbar.showsBaselineSeparator = false
             window.toolbarStyle = .unified
             window.toolbar = toolbar
             window.standardWindowButton(.zoomButton)?.target = self
             window.standardWindowButton(.zoomButton)?.action = #selector(toggleZoom)
         } else {
             window.styleMask = [.borderless, .closable, .resizable, .miniaturizable]
+            window.isOpaque = false
+            window.backgroundColor = .clear
         }
+        configureTitlebarColor()
         window.title = "\(session.applicationName) — \(session.peerName)"
         window.contentView?.layoutSubtreeIfNeeded()
         let chromeHeight = window.frame.height - window.contentLayoutRect.height
@@ -367,17 +400,41 @@ import DeskFuseRemoteApplication
         frameBeforeZoom = nil
         if let lastContentSize { fitPresentation(lastContentSize) }
     }
+    private func configureTitlebarColor() {
+        guard let window else { return }
+        window.backgroundColor = chrome.normalNavigation ? chrome.titlebarBackground : .clear
+        window.appearance = chrome.titlebarColor.map { NSAppearance(named: $0.isDark ? .darkAqua : .aqua) } ?? nil
+    }
+    private func configureMetrics() {
+        guard chrome.normalNavigation, let toolbar = window?.toolbar else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.metricsItem }
+        if chrome.metricsPresented, index == nil {
+            let menuIndex = toolbar.items.firstIndex { $0.itemIdentifier == Self.menuItem } ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: Self.metricsItem, at: menuIndex)
+        } else if !chrome.metricsPresented, let index {
+            toolbar.removeItem(at: index)
+        }
+    }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, Self.menuItem, .flexibleSpace]
+        chrome.metricsPresented ? [.flexibleSpace, Self.metricsItem, Self.menuItem] : [.flexibleSpace, Self.menuItem]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.menuItem, .flexibleSpace]
+        [Self.metricsItem, Self.menuItem, .flexibleSpace]
     }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if identifier == Self.metricsItem {
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "性能信息"
+            item.visibilityPriority = .low
+            item.isBordered = false
+            item.view = NSHostingView(rootView: RemoteMetricsReadout(session: session))
+            return item
+        }
         guard identifier == Self.menuItem else { return nil }
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "远程应用菜单"
+        item.visibilityPriority = .high
         item.view = NSHostingView(rootView: RemoteApplicationMenu(session: session, chrome: chrome,
             chooseApplication: { [weak self] in
                 guard let self else { return }

@@ -63,6 +63,7 @@ struct SettingsView: View, Equatable {
                 clipboardEnabled: Binding(get: { presentation.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
                 debugLoggingEnabled: Binding(get: { presentation.debugLoggingEnabled }, set: { store.send(.setDebugLogging(enabled: $0)) }),
                 hideDockIcon: Binding(get: { store.hideDockIcon }, set: { store.setHideDockIcon($0) }),
+                keepAwake: Binding(get: { store.keepAwake }, set: { store.keepAwake = $0 }),
                 ready: store.client != nil, exportingDiagnostics: exportingDiagnostics, exportDiagnostics: exportDiagnostics)
         case .permissions:
             SettingsPermissionsView(store: store, permissions: presentation.permissions)

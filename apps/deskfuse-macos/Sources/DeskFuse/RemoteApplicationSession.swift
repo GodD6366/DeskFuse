@@ -676,11 +676,18 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 try? await Task.sleep(for: .milliseconds(50))
             }
             guard controlPending, controlRequest == request else { return }
-            guard ready else { releaseControl(); status = "请先结束当前键鼠控制或更新操作后重试"; return }
+            guard ready else {
+                // 控制申请失败，需要清理状态但保持鼠标穿梭可用
+                releaseControlLocally()
+                status = "请先结束当前键鼠控制或更新操作后重试"
+                return
+            }
             var message = RemoteMessage(.acquire); message.identity = surface.identity; plane.send(message)
             try? await Task.sleep(for: .seconds(3))
             if controlPending, controlRequest == request {
-                releaseControl(); status = "控制申请未得到响应，请点击画面重试"; diagnostic("acquire_timeout")
+                releaseControlLocally()
+                status = "控制申请未得到响应，请点击画面重试"
+                diagnostic("acquire_timeout")
             }
         }
     }
@@ -713,6 +720,14 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         // Explicit release, errors, timeout and blur all restore sharing now.
         // Only an ownership handoff may deliberately retain the global pause.
         if role == .viewer && resumeSharing { RemoteApplicationManager.shared.releaseViewerControl(self) }
+        controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
+    }
+    
+    /// 释放本地控制状态，但不通知 RemoteApplicationManager，以保持鼠标穿梭可用
+    /// 用于控制申请失败的场景，需要清理控制状态但不影响鼠标穿梭
+    private func releaseControlLocally() {
+        diagnostic("release_control_locally")
+        controlRequest = UUID()
         controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
     }
     private func waitForInitialCapture(token: UUID) async throws {
