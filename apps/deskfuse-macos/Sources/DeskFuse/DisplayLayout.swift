@@ -55,10 +55,12 @@ struct DisplayLayout: View {
 
                 ForEach(Array(displays.enumerated()), id: \.element.layoutID) { index, display in
                     let outline = DisplayPalette.color(for: display.deviceId, displays: displays)
-                    // No device silhouette or wallpaper: adjoining screen edges stay visible.
                     let reconnecting = isReconnecting(display.deviceId)
                     let canReconnect = showsReconnect(for: display)
                     ZStack {
+                        // 显示屏幕壁纸
+                        DisplayWallpaperView(display: display, outline: outline)
+                        
                         RoundedRectangle(cornerRadius: 2)
                             .fill(outline.opacity(dragging == display.deviceId ? 0.09 : (display.ready ? 0.025 : 0.06)))
                             .overlay {
@@ -327,5 +329,64 @@ enum DisplayPalette {
             }
         }
         return .secondary
+    }
+}
+
+/// 显示屏幕壁纸的视图
+private struct DisplayWallpaperView: View {
+    let display: Display
+    let outline: Color
+    
+    var body: some View {
+        ZStack {
+            // 获取当前屏幕的壁纸
+            if let wallpaper = getWallpaper(for: display) {
+                Image(nsImage: wallpaper)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipped()
+            } else {
+                // 如果无法获取壁纸，显示渐变背景
+                LinearGradient(
+                    colors: [
+                        outline.opacity(0.3),
+                        outline.opacity(0.15)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 2))
+    }
+    
+    private func getWallpaper(for display: Display) -> NSImage? {
+        let workspace = NSWorkspace.shared
+        let screens = NSScreen.screens
+        
+        // 如果是本地屏幕，尝试获取对应屏幕的壁纸
+        if display.local {
+            // 遍历所有屏幕，尝试找到匹配的屏幕
+            for screen in screens {
+                // 尝试通过屏幕编号或位置匹配
+                let screenFrame = screen.frame
+                if abs(screenFrame.width - CGFloat(display.width)) < 10 &&
+                   abs(screenFrame.height - CGFloat(display.height)) < 10 {
+                    if let imageURL = workspace.desktopImageURL(for: screen),
+                       let image = NSImage(contentsOf: imageURL) {
+                        return image
+                    }
+                }
+            }
+            
+            // 如果没有精确匹配，使用第一个屏幕的壁纸
+            if let screen = screens.first,
+               let imageURL = workspace.desktopImageURL(for: screen),
+               let image = NSImage(contentsOf: imageURL) {
+                return image
+            }
+        }
+        
+        return nil
     }
 }

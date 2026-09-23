@@ -67,6 +67,7 @@ struct MainSidebar: View {
                     SidebarUpdateButton(store: store, update: update)
                 }
                 SidebarDeviceStatus(store: store)
+                SidebarVersionInfo()
             }
         }
     }
@@ -210,11 +211,32 @@ private struct SidebarDeviceStatus: View {
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.42))
         }
         .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .padding(.bottom, 8)
     }
 
     private var runtimeColor: Color {
         if store.error != nil || store.snapshot?.error != nil { return .orange }
         return store.snapshot == nil || store.starting ? .secondary : .green
+    }
+}
+
+private struct SidebarVersionInfo: View {
+    private var versionString: String {
+        guard let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else {
+            return "DeskFuse"
+        }
+        guard let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String else {
+            return "v\(version)"
+        }
+        return "v\(version) (\(build))"
+    }
+    
+    var body: some View {
+        Text(versionString)
+            .font(.system(size: 11, weight: .regular))
+            .foregroundStyle(.secondary.opacity(0.6))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
     }
 }
