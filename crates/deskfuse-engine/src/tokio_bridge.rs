@@ -1730,10 +1730,22 @@ async fn run_worker(
     library_prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut library_prune_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut update_tick = tokio::time::interval(Duration::from_secs(2));
-    let mut clipboard_tick = tokio::time::interval(Duration::from_millis(250));
-    clipboard_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut permission_tick = tokio::time::interval(Duration::from_secs(2));
     permission_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Event-driven clipboard observer channel
+    let (clipboard_tx, mut clipboard_rx) = tokio::sync::mpsc::unbounded_channel::<i64>();
+    #[cfg(target_os = "macos")]
+    let _clipboard_observer = {
+        use deskfuse_platform_macos::PasteboardObserver;
+        let observer = PasteboardObserver::new();
+        observer.on_change(move |count| {
+            let _ = clipboard_tx.send(count);
+        });
+        observer
+    };
+    #[cfg(not(target_os = "macos"))]
+    let _clipboard_observer = ();
 
     loop {
         finder_pastes.reconcile_waiting(&file_policy, &incoming_file_clipboards, &ui_sender);
@@ -2490,9 +2502,9 @@ async fn run_worker(
                     }));
                 }
             }
-            _ = clipboard_tick.tick() => {
-                library_sync.refresh(&runtime, &ui_sender);
-                if let Ok(count)=pasteboard.change_count() {
+            count = clipboard_rx.recv() => {
+                if let Some(count) = count {
+                    library_sync.refresh(&runtime, &ui_sender);
                     clipboard_sync.refresh(&runtime,count,clipboard_enabled,&ui_sender);
                     while let Some(ready)=clipboard_sync.poll(pasteboard.change_count().unwrap_or(count),&runtime,&ui_sender,&diagnostics,&file_policy.outgoing) {
                         // Recognize an image echo before a Deferred file reference
