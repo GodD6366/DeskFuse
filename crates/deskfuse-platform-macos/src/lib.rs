@@ -17,6 +17,7 @@ mod input;
 mod input_native;
 mod paste_shortcut;
 mod pasteboard;
+mod pasteboard_observer;
 mod permissions;
 pub mod sharing;
 mod status_item;
@@ -42,6 +43,7 @@ pub use pasteboard::{
     MacOSPasteboard, MemoryPasteboard, Pasteboard, PasteboardItem, PasteboardRepresentation,
     PasteboardSnapshot, REMOTE_ORIGIN_MARKER_TYPE,
 };
+pub use pasteboard_observer::PasteboardObserver;
 pub use permissions::{
     MacOSPermissionService, MemoryPermissionService, PermissionKind, PermissionService,
     PermissionSnapshot, PermissionStatus, PlatformCapabilities, StubPermissionService,
