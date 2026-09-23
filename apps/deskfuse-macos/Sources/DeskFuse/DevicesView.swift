@@ -221,30 +221,101 @@ struct DevicesView: View {
     }
 
     private var pairingNotice: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(snapshot.pairing, id: \.id) { request in
-                HStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.badge.questionmark")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(request.name).font(.callout.weight(.semibold))
-                        Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
-                            .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    // Animated icon container
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.orange.opacity(0.2),
+                                        Color.orange.opacity(0.1)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 40, height: 40)
+                        
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(Color.orange)
                     }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(request.name)
+                            .font(.system(size: 14, weight: .semibold))
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 5, height: 5)
+                            Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    
                     Spacer(minLength: 4)
+                    
                     if request.incoming {
-                        Button("允许") { store.send(.approve(requestId: request.id), pairing: request.id) }
-                            .buttonStyle(.borderedProminent)
-                        Button("拒绝") { store.send(.reject(requestId: request.id), pairing: request.id) }
-                            .buttonStyle(.borderless)
-                    } else if store.pairingDecisions.contains(request.id) {
-                        ProgressView().controlSize(.small)
+                        if store.pairingDecisions.contains(request.id) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.75)
+                        } else {
+                            HStack(spacing: 6) {
+                                Button {
+                                    store.send(.reject(requestId: request.id), pairing: request.id)
+                                } label: {
+                                    Text("拒绝")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
+                                .clipShape(Capsule())
+                                
+                                Button {
+                                    store.send(.approve(requestId: request.id), pairing: request.id)
+                                } label: {
+                                    Text("允许")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                                .background(Color.orange)
+                                .clipShape(Capsule())
+                            }
+                        }
                     }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.orange.opacity(0.06))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.orange.opacity(0.2), lineWidth: 1)
                 }
             }
         }
         .padding(12)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.orange.opacity(0.04))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.15), lineWidth: 1)
+        }
     }
 
     private var manualPairPopover: some View {
@@ -651,21 +722,144 @@ struct PairingRow: View {
     let request: Pairing
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(request.name, systemImage: "person.crop.circle.badge.questionmark").font(.headline)
-                Text(request.incoming ? "请求加入设备网络" : "等待对端确认").foregroundStyle(.secondary)
-                if request.incoming {
-                    HStack {
-                        Button("拒绝") { store.send(.reject(requestId: request.id), pairing: request.id) }
-                        Button("允许配对") { store.send(.approve(requestId: request.id), pairing: request.id) }.buttonStyle(.borderedProminent)
-                    }
-                    .disabled(store.pairingDecisions.contains(request.id))
-                    if store.pairingDecisions.contains(request.id) { ProgressView("正在处理…").controlSize(.small) }
+        HStack(alignment: .center, spacing: 16) {
+            // Icon container with gradient background
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.accentColor.opacity(0.18),
+                                Color.accentColor.opacity(0.08)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 56, height: 56)
+                
+                Image(systemName: "person.crop.circle.badge.plus")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.accentColor, Color.accentColor.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            
+            // Content
+            VStack(alignment: .leading, spacing: 6) {
+                Text(request.name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
+            
+            // Actions
+            if request.incoming {
+                if store.pairingDecisions.contains(request.id) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.8)
+                        Text("处理中")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                } else {
+                    HStack(spacing: 10) {
+                        Button {
+                            store.send(.reject(requestId: request.id), pairing: request.id)
+                        } label: {
+                            Text("拒绝")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 9)
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
+                        .clipShape(Capsule())
+                        .contentShape(Capsule())
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
+                        }
+                        
+                        Button {
+                            store.send(.approve(requestId: request.id), pairing: request.id)
+                        } label: {
+                            Text("允许配对")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 9)
+                        }
+                        .buttonStyle(.plain)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color.accentColor,
+                                    Color.accentColor.opacity(0.9)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .clipShape(Capsule())
+                        .contentShape(Capsule())
+                        .shadow(color: Color.accentColor.opacity(0.3), radius: 8, y: 4)
+                    }
+                }
+            }
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.08),
+                            Color.white.opacity(0.02)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.15),
+                            Color.white.opacity(0.05)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 }
