@@ -5,8 +5,9 @@ import DeskFuseEngine
 struct InputView: View {
     @Bindable var store: AppStore
     let snapshot: EngineSnapshot
-    @State private var showSettings = false
     @State private var showAddDevice = false
+    @State private var showSaveLayout = false
+    @State private var layoutName = ""
     @State private var updatingSettings = false
     @State private var retryingInput = false
     @State private var reconnectingDevices: Set<String> = []
@@ -39,11 +40,6 @@ struct InputView: View {
                 }
             }.background(Color(nsColor: .textBackgroundColor))
         }
-        .sheet(isPresented: $showSettings) {
-            if snapshot.input.canConfigure {
-                InputSettingsEditor(store: store, initial: snapshot.input.settings).frame(width: 640, height: 610)
-            }
-        }
         .sheet(isPresented: $showAddDevice) {
             InputDevicePicker(snapshot: snapshot, adding: updatingSettings, error: store.error, onAdd: { id in
                 setParticipant(id, included: true)
@@ -52,8 +48,15 @@ struct InputView: View {
                 store.selectedPage = .devices
             })
         }
+        .alert("保存布局", isPresented: $showSaveLayout) {
+            TextField("布局名称", text: $layoutName)
+            Button("保存") { saveLayoutNamed(layoutName) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("独立布局不会绑定 Wi-Fi，可在「设置 → 键鼠共享」中随时应用。")
+        }
         .onChange(of: snapshot.input.canConfigure) { _, allowed in
-            if !allowed { showSettings = false; showAddDevice = false }
+            if !allowed { showAddDevice = false }
         }
         .onChange(of: snapshot.input.displays.filter(\.ready).map(\.deviceId)) { _, ready in
             reconnectingDevices.subtract(Set(ready))
@@ -113,23 +116,18 @@ struct InputView: View {
     }
 
     private var headerActions: some View {
-        HStack(alignment: .center, spacing: 12) {
-            NativeGlassGroup {
-                HStack(alignment: .center, spacing: 12) {
-                    WorkspaceChromeButton("添加设备屏幕", systemImage: "plus", prominent: true) {
-                        showAddDevice = true
-                    }
-                    WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
-                        showSettings = true
-                    }
-                    sharingControl
+        NativeGlassGroup {
+            HStack(alignment: .center, spacing: 12) {
+                WorkspaceChromeButton("添加设备屏幕", systemImage: "plus", prominent: true) {
+                    showAddDevice = true
                 }
-                .fixedSize(horizontal: true, vertical: false)
-                .disabled(updatingSettings)
+                WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
+                    store.openSettings(tab: SettingsCategory.input.rawValue)
+                }
+                sharingControl
             }
-            WorkspaceChromeButton("紧急收回", systemImage: "arrow.uturn.backward", help: "立即收回键鼠控制（⌃⌥⌘ Esc）", destructive: true) {
-                store.reclaim()
-            }
+            .fixedSize(horizontal: true, vertical: false)
+            .disabled(updatingSettings)
         }
     }
 
@@ -146,6 +144,12 @@ struct InputView: View {
         settings.enabled = enabled
         if enabled { settings.controller = true }
         applySettings(settings)
+    }
+
+    private func saveLayoutNamed(_ rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespaces)
+        store.error = nil
+        store.send(.saveScene(name: name.isEmpty ? "布局 \(snapshot.input.scenes.count + 1)" : name))
     }
 
     /// 成为主控但不自动打开共享，避免新设备默认开始注入键鼠。
@@ -204,7 +208,11 @@ struct InputView: View {
 
     private func layout(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 12) {
+                Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                layoutMenu
+            }
             DisplayLayout(store: store, snapshot: snapshot, onRemoveDevice: { id in
                 setParticipant(id, included: false)
             }, onReconnectDevice: reconnectDevice, reconnecting: reconnectingDevices,
@@ -212,6 +220,35 @@ struct InputView: View {
             Text("拖动屏幕调整位置，松手自动贴合。添加或移除按整台设备生效，不解除配对。")
                 .font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity)
+    }
+
+    /// 布局既能随 Wi-Fi 自动保存/恢复，也能另存为独立布局。
+    private var layoutMenu: some View {
+        Menu {
+            if let ssid = snapshot.input.ssid {
+                Button(boundScene == nil ? "保存布局到「\(ssid)」" : "更新「\(ssid)」布局") {
+                    store.error = nil
+                    store.send(.saveEnvironmentLayout(name: nil))
+                }
+            }
+            Button("另存为新布局…") { layoutName = ""; showSaveLayout = true }
+            if !snapshot.input.scenes.isEmpty {
+                Divider()
+                ForEach(snapshot.input.scenes, id: \.id) { scene in
+                    Button(scene.name) { store.send(.applyScene(id: scene.id)) }
+                }
+            }
+        } label: {
+            Label("布局", systemImage: "square.on.square")
+        }
+        .fixedSize()
+        .disabled(updatingSettings)
+        .help("保存或应用屏幕布局；绑定 Wi-Fi 的布局会在回到该网络时自动恢复。")
+    }
+
+    private var boundScene: DeskFuseEngine.Scene? {
+        guard let ssid = snapshot.input.ssid else { return nil }
+        return snapshot.input.scenes.first { $0.ssid == ssid }
     }
 
     private var participantList: some View {
@@ -284,49 +321,4 @@ struct InputView: View {
             }
         }.padding(.vertical, 12)
     }
-}
-
-struct InputSettingsEditor: View {
-    @Bindable var store: AppStore
-    @State var draft: InputSettings
-    @State private var sceneName = ""
-    @State private var renameID: String?
-    @State private var remember = true
-    @State private var selectedController = ""
-    @Environment(\.dismiss) private var dismiss
-    init(store: AppStore, initial: InputSettings) { self.store = store; _draft = State(initialValue: initial) }
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack { Text("键鼠共享设置").font(.title2.bold()); Spacer(); Button("取消") { dismiss() }; Button("保存") { store.send(.setInput(settings: draft)); dismiss() }.keyboardShortcut(.defaultAction) }.padding()
-            Form {
-                Section("主控") {
-                    Toggle("此设备作为主控", isOn: $draft.controller)
-                    Text("在键鼠共享页面添加或移除设备屏幕。").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("跨屏方式") {
-                    Picker("触发方式", selection: $draft.switchMode) { Text("立即穿越").tag(SwitchMode.instant); Text("停留 250 毫秒").tag(SwitchMode.dwell); Text("双触边缘").tag(SwitchMode.doubleTap) }
-                    ForEach(0..<4) { index in Toggle(["禁用左上角", "禁用右上角", "禁用左下角", "禁用右下角"][index], isOn: Binding(get: { draft.disabledCorners & (1 << index) != 0 }, set: { enabled in if enabled { draft.disabledCorners |= 1 << index } else { draft.disabledCorners &= ~(1 << index) } })) }
-                    Stepper("边角范围：\(draft.cornerSize) pt", value: $draft.cornerSize, in: 0...256)
-                }
-                Section("快捷键") { ShortcutEditor(store: store, shortcuts: $draft.shortcuts) }
-                Section("场景") {
-                    HStack { TextField("场景名称", text: $sceneName); Button(renameID == nil ? "保存当前布局" : "重命名") { if let id = renameID { store.send(.renameScene(id: id, name: sceneName)); renameID = nil } else { store.send(.saveScene(name: sceneName)) }; sceneName = "" }.disabled(sceneName.trimmingCharacters(in: .whitespaces).isEmpty) }
-                    Text("保存场景使用已应用的设置；请先保存上方配置。").font(.caption).foregroundStyle(.secondary)
-                    ForEach(store.snapshot?.input.scenes ?? [], id: \.id) { scene in HStack { Text(scene.name); Spacer(); Button("应用") { store.send(.applyScene(id: scene.id)); dismiss() }; Button("重命名") { renameID = scene.id; sceneName = scene.name }; Button("删除", role: .destructive) { store.send(.deleteScene(id: scene.id)) } } }
-                }
-                Section("按 Wi-Fi 自动选择主控") {
-                    Text(store.snapshot?.input.environmentMessage ?? "等待网络状态").foregroundStyle(.secondary)
-                    Button("允许读取当前 Wi-Fi") { requestWifiAccess() }
-                    Picker("主控", selection: $selectedController) { Text("选择设备").tag(""); if let snapshot = store.snapshot { Text(snapshot.localName).tag(snapshot.localId); ForEach(snapshot.devices.filter { $0.member }, id: \.id) { Text($0.name).tag($0.id) } } }
-                    Toggle("记住当前 Wi-Fi", isOn: $remember)
-                    Button("使用此主控") { store.send(.chooseController(id: selectedController, remember: remember)) }.disabled(selectedController.isEmpty)
-                    ForEach(store.snapshot?.input.rules ?? [], id: \.ssid) { rule in HStack { Text(rule.ssid); Spacer(); Text(controllerName(rule.controller)).foregroundStyle(.secondary); Button("删除") { store.send(.forgetEnvironment(ssid: rule.ssid)) } } }
-                }
-            }.formStyle(.grouped)
-        }
-        .onChange(of: store.snapshot?.input.canConfigure) { _, allowed in
-            if allowed != true { dismiss() }
-        }
-    }
-    private func controllerName(_ id: String) -> String { if id == store.snapshot?.localId { return store.snapshot?.localName ?? "本机" }; return store.snapshot?.devices.first { $0.id == id }?.name ?? "离线设备" }
 }

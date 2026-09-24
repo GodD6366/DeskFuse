@@ -8,6 +8,7 @@ struct SettingsPermissionsView: View {
     let permissions: [Permission]
     @Environment(\.scenePhase) private var scenePhase
     @State private var screenRecordingGranted = false
+    @State private var wifiGranted = false
 
     var body: some View {
         Form {
@@ -18,6 +19,7 @@ struct SettingsPermissionsView: View {
                 if #available(macOS 14.2, *) {
                     screenRecordingRow
                 }
+                wifiRow
                 if permissions.isEmpty {
                     Text("正在读取系统权限…").foregroundStyle(.secondary)
                 }
@@ -42,10 +44,62 @@ struct SettingsPermissionsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { refreshScreenRecordingPermission() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshScreenRecordingPermission() }
+        .onAppear {
+            refreshScreenRecordingPermission()
+            refreshWifiPermission()
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                refreshScreenRecordingPermission()
+                refreshWifiPermission()
+            }
+        }
+    }
+
+    /// SSID reads power per-Wi-Fi controller and layout memory. The row lives on
+    /// this page so the launch prompt and 设置 → 权限 offer the same request.
+    private var wifiRow: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "wifi")
+                .font(.system(size: 20))
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Wi-Fi 名称（定位）").font(.body.weight(.medium))
+                Text("读取当前 Wi-Fi 名称，用于按网络保存主控与布局；不采集位置")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Label(wifiGranted ? "已授权" : WifiPermission.statusText,
+                  systemImage: wifiGranted ? "checkmark.circle.fill" : "circle.dashed")
+                .font(.caption)
+                .foregroundStyle(wifiGranted ? Color.green : Color.secondary)
+                .frame(width: 120, alignment: .leading)
+            Button(wifiGranted ? "查看设置" : "前往授权") {
+                if wifiGranted {
+                    openLocationSettings()
+                } else {
+                    WifiPermission.request()
+                }
+                refreshWifiPermission()
+            }
+            .buttonStyle(.bordered)
+            .frame(width: 88)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Wi-Fi 名称（定位），\(wifiGranted ? "已授权" : WifiPermission.statusText)")
+    }
+
+    private func refreshWifiPermission() {
+        wifiGranted = WifiPermission.isGranted
+    }
+
+    private func openLocationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @available(macOS 14.2, *)

@@ -361,6 +361,18 @@ impl Engine {
             }
             EngineCommand::ClearCache => TokioCommand::ClearTransferCache,
             EngineCommand::RefreshCache => TokioCommand::RefreshTransferCache,
+            EngineCommand::PublishDisplayWallpaper { display_id, jpeg } => {
+                deskfuse_core::InputShareMessage::DisplayWallpaper {
+                    display_id: deskfuse_core::DisplayId::new(&display_id),
+                    jpeg: jpeg.clone(),
+                }
+                .validate()
+                .map_err(failure)?;
+                TokioCommand::Runtime(RuntimeCommand::PublishDisplayWallpaper {
+                    display_id: deskfuse_core::DisplayId::new(display_id),
+                    jpeg,
+                })
+            }
             EngineCommand::MoveInputDevice {
                 device_id,
                 display_id,
@@ -421,6 +433,9 @@ impl Engine {
             }
             EngineCommand::SaveScene { name } => {
                 TokioCommand::Runtime(RuntimeCommand::SaveInputSharingScene { name })
+            }
+            EngineCommand::SaveEnvironmentLayout { name } => {
+                TokioCommand::Runtime(RuntimeCommand::SaveEnvironmentLayout { name })
             }
             EngineCommand::ApplyScene { id } => {
                 TokioCommand::Runtime(RuntimeCommand::ApplyInputSharingScene { scene_id: id })

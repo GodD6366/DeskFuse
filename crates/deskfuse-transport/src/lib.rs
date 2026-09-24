@@ -3226,7 +3226,12 @@ async fn read_input_frame(
     recv: &mut quinn::RecvStream,
     timeout: Duration,
 ) -> Result<Envelope, TransportError> {
-    read_frame_limited(recv, timeout, 70 * 1024).await
+    read_frame_limited(
+        recv,
+        timeout,
+        deskfuse_protocol::wire::MAX_INPUT_WALLPAPER_PAYLOAD + 4096,
+    )
+    .await
 }
 async fn read_frame_limited(
     recv: &mut quinn::RecvStream,

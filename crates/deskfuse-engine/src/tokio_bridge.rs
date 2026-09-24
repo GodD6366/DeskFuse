@@ -1733,19 +1733,15 @@ async fn run_worker(
     let mut permission_tick = tokio::time::interval(Duration::from_secs(2));
     permission_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Event-driven clipboard observer channel
-    let (clipboard_tx, mut clipboard_rx) = tokio::sync::mpsc::unbounded_channel::<i64>();
-    #[cfg(target_os = "macos")]
-    let _clipboard_observer = {
-        use deskfuse_platform_macos::PasteboardObserver;
-        let observer = PasteboardObserver::new();
-        observer.on_change(move |count| {
-            let _ = clipboard_tx.send(count);
-        });
-        observer
-    };
-    #[cfg(not(target_os = "macos"))]
-    let _clipboard_observer = ();
+    // NSPasteboard has no usable change notification for the general pasteboard:
+    // the legacy `com.apple.pasteboard.changed` distributed notification is no
+    // longer posted on current macOS, and NSNotificationCenter never reports
+    // general-pasteboard changes. Poll `changeCount` instead — it is a cheap
+    // integer read. This tick also has to keep running for `library_sync`
+    // worker lifecycle and for `clipboard_sync.poll`, which advances async
+    // prepare/decode/send work that never produces a pasteboard event.
+    let mut clipboard_tick = tokio::time::interval(Duration::from_millis(250));
+    clipboard_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         finder_pastes.reconcile_waiting(&file_policy, &incoming_file_clipboards, &ui_sender);
@@ -2502,9 +2498,9 @@ async fn run_worker(
                     }));
                 }
             }
-            count = clipboard_rx.recv() => {
-                if let Some(count) = count {
-                    library_sync.refresh(&runtime, &ui_sender);
+            _ = clipboard_tick.tick() => {
+                library_sync.refresh(&runtime, &ui_sender);
+                if let Ok(count)=pasteboard.change_count() {
                     clipboard_sync.refresh(&runtime,count,clipboard_enabled,&ui_sender);
                     while let Some(ready)=clipboard_sync.poll(pasteboard.change_count().unwrap_or(count),&runtime,&ui_sender,&diagnostics,&file_policy.outgoing) {
                         // Recognize an image echo before a Deferred file reference

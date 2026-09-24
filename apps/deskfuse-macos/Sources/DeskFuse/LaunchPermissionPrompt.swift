@@ -10,14 +10,18 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
     case accessibility
     case fullDiskAccess
     case screenRecording
+    case wifi
 
     var id: String { rawValue }
 
-    var pane: PermissionFlowPane {
+    var pane: PermissionFlowPane? {
         switch self {
         case .accessibility: .accessibility
         case .fullDiskAccess: .fullDiskAccess
         case .screenRecording: .screenRecording
+        // Location authorization has no PermissionFlow pane; the row requests
+        // it through the CoreLocation entry point instead.
+        case .wifi: nil
         }
     }
 
@@ -26,6 +30,7 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
         case .accessibility: "辅助功能"
         case .fullDiskAccess: "完全磁盘访问"
         case .screenRecording: "屏幕录制"
+        case .wifi: "Wi-Fi 名称（定位）"
         }
     }
 
@@ -34,6 +39,7 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
         case .accessibility: "拦截文件粘贴、检查 Finder 焦点与控制键鼠"
         case .fullDiskAccess: "访问受系统保护的文件与目录"
         case .screenRecording: "远程应用访问本机窗口时捕获屏幕内容"
+        case .wifi: "读取当前 Wi-Fi 名称，用于按网络保存主控与布局；不采集位置"
         }
     }
 
@@ -42,6 +48,7 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
         case .accessibility: "accessibility"
         case .fullDiskAccess: "folder.badge.gearshape"
         case .screenRecording: "rectangle.dashed.badge.record"
+        case .wifi: "wifi"
         }
     }
 }
@@ -97,8 +104,23 @@ final class PermissionPromptController {
     func authorize(_ permission: LaunchPermission) {
         hasOpenedAuthorization = true
         authorizationTask?.cancel()
+        if permission == .wifi {
+            WifiPermission.request()
+            authorizationTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    guard let self, self.isGranted(.wifi) else { continue }
+                    self.reevaluateWhilePresented()
+                    AppStore.shared.send(.refreshPermissions)
+                    AppStore.shared.openMain()
+                    return
+                }
+            }
+            return
+        }
+        guard let pane = permission.pane else { return }
         authorizationFlow.setLocaleIdentifier("zh-Hans")
-        authorizationFlow.authorize(pane: permission.pane, suggestedAppURLs: [Bundle.main.bundleURL])
+        authorizationFlow.authorize(pane: pane, suggestedAppURLs: [Bundle.main.bundleURL])
         authorizationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -184,7 +206,9 @@ final class PermissionPromptController {
     }
 
     private func isGranted(_ permission: LaunchPermission) -> Bool {
-        PermissionStatusRegistry.provider(for: permission.pane).authorizationState() == .granted
+        if permission == .wifi { return WifiPermission.isGranted }
+        guard let pane = permission.pane else { return false }
+        return PermissionStatusRegistry.provider(for: pane).authorizationState() == .granted
     }
 }
 

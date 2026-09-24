@@ -63,6 +63,14 @@ impl InputActor {
         if !self.environment_capable(peer, context) {
             return;
         }
+        // A device the user enabled as a controller here stays the controller.
+        // A remote device cannot suspend that role; only an explicit local
+        // handover (choose_environment_controller) may do that.
+        if self.snapshot.settings.enabled
+            && self.snapshot.settings.role == InputShareRole::Controller
+        {
+            return;
+        }
         // A wired Mac may adopt its trusted Wi-Fi peer's scene. A different
         // locally observed SSID must not be overwritten by a remembered remote
         // rule; an explicit one-time handover can resolve differing SSIDs.
@@ -158,7 +166,11 @@ impl InputActor {
                 return;
             }
         }
-        // An explicit click permits a handover, including release of held input.
+        // An explicit local handover is the only Wi-Fi selection allowed to
+        // preempt a live receiver activation; passive votes never do.
+        if self.incoming.as_ref().is_some_and(|a| a.peer != controller) {
+            self.end_incoming("controller selected locally", true);
+        }
         self.release_all("controller selected locally");
         self.environment.temporary = Some(controller);
         self.environment.last_sent = None;
@@ -271,6 +283,9 @@ impl InputActor {
                 self.snapshot.environment.ssid = ssid.clone();
                 self.environment.temporary = None;
                 self.environment.pending = None;
+                // A network with a remembered arrangement restores it here; the
+                // sharing switch, participants and consent are never touched.
+                self.apply_environment_layout(ssid.as_deref());
             }
         } else {
             self.environment.pending = None;
@@ -315,7 +330,7 @@ impl InputActor {
         let conflict = (ambiguous && self.environment.temporary.is_none())
             || votes.len() > 1
             || (votes.is_empty() && candidates.len() > 1);
-        let selected = if conflict {
+        let requested = if conflict {
             None
         } else {
             votes
@@ -323,7 +338,18 @@ impl InputActor {
                 .copied()
                 .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
         };
-        if !busy && self.environment.pending.is_none() {
+        // A locally enabled controller is handed over only by the local user.
+        // A remote rule or vote surfaces as a conflict to resolve instead of a
+        // silent takeover of this device's controller role.
+        let remote_request = local_controller
+            && self.environment.temporary.is_none()
+            && requested.is_some_and(|id| id != local);
+        let conflict = conflict || remote_request;
+        let selected = if remote_request { None } else { requested };
+        // A verified, live activation is the current controller. Wi-Fi votes
+        // must not revoke its lease or switch the receiver back to a stale
+        // preference; a later selection takes effect after that activation ends.
+        if !busy && self.environment.pending.is_none() && self.incoming.is_none() {
             // Conflicting rules keep the existing effective controller stable.
             if !conflict || self.snapshot.environment.selected.is_none() {
                 let previous = self.snapshot.environment.selected;

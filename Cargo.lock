@@ -569,6 +569,7 @@ dependencies = [
 name = "deskfuse-core"
 version = "0.4.4"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -793,6 +794,7 @@ name = "deskfuse-runtime"
 version = "0.4.4"
 dependencies = [
  "async-trait",
+ "base64",
  "deskfuse-core",
  "deskfuse-discovery",
  "deskfuse-identity",

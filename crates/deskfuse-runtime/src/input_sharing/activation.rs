@@ -361,16 +361,14 @@ impl InputActor {
             }
             return;
         }
-        if (self.snapshot.environment.conflict
-            && self.incoming.as_ref().is_none_or(|a| a.peer != peer))
-            || self
-                .snapshot
-                .environment
-                .selected
-                .is_some_and(|selected| selected != peer)
-            || (self.snapshot.settings.enabled
-                && self.snapshot.settings.role == InputShareRole::Controller
-                && !self.snapshot.environment.local_suspended)
+        // A configured controller with no selected devices is idle: adding it
+        // from another controller should make it a receiver automatically.
+        // Do not displace an active controller with selected participants or
+        // outgoing activations, which could otherwise create mutual control.
+        if self.snapshot.settings.enabled
+            && self.snapshot.settings.role == InputShareRole::Controller
+            && !self.snapshot.environment.local_suspended
+            && (!self.snapshot.settings.participants.is_empty() || !self.outgoing.is_empty())
         {
             self.activation_reply(
                 peer,
@@ -633,16 +631,9 @@ impl InputActor {
         let desired = if settings.enabled
             && settings.role == InputShareRole::Controller
             && !self.snapshot.environment.local_suspended
+            && self.incoming.is_none()
         {
-            settings
-                .participants
-                .iter()
-                .copied()
-                .filter(|peer| {
-                    !self.snapshot.environment.conflict
-                        || self.outgoing.get(peer).is_some_and(Activation::ready)
-                })
-                .collect()
+            settings.participants.to_vec()
         } else {
             Vec::new()
         };
@@ -926,6 +917,51 @@ mod tests {
         actor.network = network;
         id
     }
+    #[test]
+    fn idle_controller_becomes_receiver_when_added_by_another_controller() {
+        let (mut actor, peer, context, _, _) = setup(true);
+        actor.snapshot.settings.participants.clear();
+        actor.outgoing.clear();
+        let id = InputActivationId::new();
+        offer(&mut actor, peer, &context, id, InputActivationId::new(), 1);
+        assert_eq!(actor.incoming.as_ref().unwrap().id, id);
+        actor.tick_activations();
+        assert!(actor.outgoing.is_empty());
+        actor.publish();
+        assert_eq!(
+            actor.snapshot.effective_settings().role,
+            InputShareRole::Controlled
+        );
+    }
+
+    #[test]
+    fn explicit_participant_activates_through_wifi_vote_conflict() {
+        let (mut controller, peer, _, transport, _) = setup(true);
+        controller.outgoing.clear();
+        controller.snapshot.environment.conflict = true;
+        controller.tick_activations();
+        let (id, intent) = match &transport.sent.lock().unwrap().last().unwrap().2 {
+            InputShareMessage::Activate {
+                activation_id,
+                intent_id,
+                ..
+            } => (*activation_id, *intent_id),
+            other => panic!("expected an activation for the selected device: {other:?}"),
+        };
+
+        let (mut receiver, receiver_peer, context, _, _) = setup(false);
+        receiver.incoming = None;
+        let other = add_peer(&mut receiver);
+        receiver.snapshot.environment.conflict = true;
+        receiver.snapshot.environment.selected = Some(other);
+        offer(&mut receiver, receiver_peer, &context, id, intent, 1);
+        assert_eq!(receiver.incoming.as_ref().unwrap().peer, receiver_peer);
+        // Subsequent Wi-Fi votes cannot discard this live activation.
+        receiver.tick_environment();
+        assert_eq!(receiver.incoming.as_ref().unwrap().peer, receiver_peer);
+        assert_eq!(controller.outgoing[&peer].id, id);
+    }
+
     #[tokio::test]
     async fn disabled_receiver_prepares_and_requires_matching_native_ready_without_persisting() {
         let (mut actor, peer, context, transport, _) = setup(false);
@@ -1054,6 +1090,7 @@ mod tests {
         let settings = InputSharingSettings {
             enabled: true,
             role: InputShareRole::Controller,
+            participants: vec![other],
             ..Default::default()
         };
         actor
@@ -1263,6 +1300,7 @@ mod tests {
         assert_eq!(restarted.outgoing[&peer].intent_id, first.intent_id);
         assert_ne!(restarted.outgoing[&peer].id, first.id);
         let (mut restarted_receiver, _, _, receiver_transport, _) = setup(false);
+        let receiver_settings = restarted_receiver.snapshot.settings.clone();
         restarted_receiver.incoming = None;
         restarted_receiver.store = receiver_store;
         restarted_receiver.load_activation_policy().await;
@@ -1313,10 +1351,7 @@ mod tests {
             1,
         );
         assert_eq!(restarted_receiver.incoming.as_ref().unwrap().id, fresh.id);
-        assert_eq!(
-            restarted_receiver.snapshot.settings,
-            InputSharingSettings::default()
-        );
+        assert_eq!(restarted_receiver.snapshot.settings, receiver_settings);
         assert_eq!(
             restarted
                 .store

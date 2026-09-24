@@ -32,6 +32,9 @@ import DeskFuseEngine
     }
     static let keepAwakeDefaultsKey = "deskfuse.keepAwake"
     private let caffeineController = CaffeineController()
+    @ObservationIgnored private let displayWallpaperPublisher = DisplayWallpaperPublisher()
+    @ObservationIgnored private var wallpaperTask: Task<Void, Never>?
+    var localDisplayWallpapers: [String: NSImage] = [:]
     var clipboardNavigation: ClipboardNavigationRequest?
     /// One-shot request from the sidebar footer to show the local device in the
     /// devices inspector without duplicating selection state in the store.
@@ -92,6 +95,7 @@ import DeskFuseEngine
                     }
                 }
                 try await client.listen(relay)
+                startWallpaperRefresh()
                 transferWindow = TransferProgressWindowController(store: self)
                 transferWindow?.reconcile(snapshot?.transfers ?? [])
                 shelf = ShelfController(store: self)
@@ -101,6 +105,22 @@ import DeskFuseEngine
             } catch { self.error = error.userFacingMessage; starting = false }
         }
     }
+    private func startWallpaperRefresh() {
+        wallpaperTask?.cancel()
+        wallpaperTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if let self {
+                    let updates = await self.displayWallpaperPublisher.refresh()
+                    for (id, preview) in updates {
+                        self.localDisplayWallpapers[id] = preview.image
+                        self.send(.publishDisplayWallpaper(displayId: id, jpeg: preview.jpeg))
+                    }
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
     func consume(_ event: EngineEvent) {
         switch event {
         case .workflowCatalogChanged:
@@ -242,7 +262,7 @@ import DeskFuseEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "屏幕与键鼠", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
+    case clipboard = "剪贴板", input = "鼠标共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
     /// The transfer queue is presented together with LAN sharing. Keep the
     /// legacy case for deep links and existing command code, but do not expose
     /// a second top-level destination in the redesigned sidebar.

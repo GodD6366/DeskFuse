@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import DeskFuseEngine
 
 /// Screen coordinates come from the engine; this canvas never invents a topology.
@@ -15,7 +16,7 @@ struct DisplayLayout: View {
     @State private var delta: CGSize = .zero
     @State private var dragDisplays: [Display] = []
     @State private var dragScale: CGFloat = 1
-    @State private var snapped = false
+    @State private var hoveredDisplay: String?
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -29,7 +30,7 @@ struct DisplayLayout: View {
             let scale = max(0.001, min(
                 (geometry.size.width - 64) / max(1, maxX - minX),
                 (geometry.size.height - 64) / max(1, maxY - minY)
-            ))
+            ) * 0.9)
             let offsetX = (geometry.size.width - (maxX - minX) * scale) / 2
             let offsetY = (geometry.size.height - (maxY - minY) * scale) / 2
 
@@ -55,10 +56,12 @@ struct DisplayLayout: View {
 
                 ForEach(Array(displays.enumerated()), id: \.element.layoutID) { index, display in
                     let outline = DisplayPalette.color(for: display.deviceId, displays: displays)
-                    // No device silhouette or wallpaper: adjoining screen edges stay visible.
                     let reconnecting = isReconnecting(display.deviceId)
                     let canReconnect = showsReconnect(for: display)
                     ZStack {
+                        DisplayWallpaperView(display: display, localWallpaper: store.localDisplayWallpapers[display.id],
+                            outline: outline, size: CGSize(
+                                width: display.width * scale, height: display.height * scale))
                         RoundedRectangle(cornerRadius: 2)
                             .fill(outline.opacity(dragging == display.deviceId ? 0.09 : (display.ready ? 0.025 : 0.06)))
                             .overlay {
@@ -69,7 +72,7 @@ struct DisplayLayout: View {
                                     ))
                             }
                             .contentShape(Rectangle())
-                            .gesture(DragGesture(minimumDistance: 4)
+                            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("displayLayoutCanvas"))
                                 .onChanged { value in
                                     guard !editingDisabled else { return }
                                     if dragging == nil {
@@ -78,7 +81,7 @@ struct DisplayLayout: View {
                                         dragging = display.deviceId
                                     }
                                     guard dragging == display.deviceId else { return }
-                                    updateDrag(value.translation, device: display.deviceId, attach: false)
+                                    delta = value.translation
                                 }
                                 .onEnded { value in
                                     guard dragging == display.deviceId else { return }
@@ -86,34 +89,51 @@ struct DisplayLayout: View {
                                         dragging = nil
                                         dragDisplays = []
                                         delta = .zero
-                                        snapped = false
                                     }
                                     guard !editingDisabled else { return }
-                                    if updateDrag(value.translation, device: display.deviceId, attach: true),
+                                    if let offset = snappedDrop(value.translation, device: display.deviceId),
                                        let anchor = dragDisplays.first(where: { $0.layoutID == display.layoutID }) {
                                         store.send(.moveInputDevice(deviceId: display.deviceId, displayId: display.id,
-                                            x: anchor.x + delta.width / dragScale,
-                                            y: anchor.y + delta.height / dragScale))
+                                            x: anchor.x + offset.x, y: anchor.y + offset.y))
                                     }
                                 })
-                        DisplayScreenLabel(
-                            index: index + 1,
-                            display: display,
-                            outline: outline,
-                            showReconnect: canReconnect,
-                            reconnecting: reconnecting,
-                            reduceMotion: reduceMotion,
-                            action: { onReconnectDevice?(display.deviceId) }
-                        )
-                        .disabled(editingDisabled)
-                        .padding(10)
-                        .allowsHitTesting(canReconnect)
+                        if hoveredDisplay == display.layoutID && dragging == nil {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("屏幕 \(String(format: "%02d", index + 1)) · \(display.local ? "本机" : "远端")")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(display.name).font(.system(size: 12, weight: .medium))
+                                Text("\(display.layoutSizeLabel) · \(display.ready ? "已就绪" : "未就绪")")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(outline.opacity(0.35)))
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                        }
+                        if canReconnect {
+                            DisplayReconnectButton(
+                                color: outline,
+                                busy: reconnecting,
+                                reduceMotion: reduceMotion,
+                                action: { onReconnectDevice?(display.deviceId) }
+                            )
+                            .disabled(editingDisabled)
+                            .padding(10)
+                        }
                     }
                     .frame(width: display.width * scale, height: display.height * scale)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
                     .offset(
                         x: offsetX + (display.x - minX) * scale + (dragging == display.deviceId ? delta.width : 0),
                         y: offsetY + (display.y - minY) * scale + (dragging == display.deviceId ? delta.height : 0)
                     )
+                    .onHover { inside in
+                        if inside { hoveredDisplay = display.layoutID }
+                        else if hoveredDisplay == display.layoutID { hoveredDisplay = nil }
+                    }
                     .contextMenu {
                         if !display.local {
                             if canReconnect {
@@ -128,15 +148,15 @@ struct DisplayLayout: View {
                             }
                         }
                     }
-                    .help(screenHelp(display, reconnecting: reconnecting))
                     .accessibilityElement(children: canReconnect ? .contain : .ignore)
                     .accessibilityLabel("屏幕 \(index + 1)，\(display.name)，\(display.layoutSizeLabel)，\(display.ready ? "已就绪" : "未就绪")")
                     .accessibilityHint(canReconnect ? "未正式连接。可重新连接并通知对端准备键鼠共享。" : "")
                 }
             }
+            .coordinateSpace(name: "displayLayoutCanvas")
             .overlay(alignment: .topLeading) {
                 if dragging != nil {
-                    Label(snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
+                    Label("松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
                         .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                         .allowsHitTesting(false)
                 }
@@ -157,32 +177,18 @@ struct DisplayLayout: View {
             || snapshot.devices.contains { $0.id == id && $0.detail.contains("正在连接") }
     }
 
-    private func screenHelp(_ display: Display, reconnecting: Bool) -> String {
-        let status: String
-        if display.ready {
-            status = "已就绪"
-        } else if reconnecting {
-            status = "正在重新连接"
-        } else {
-            status = "未就绪，可点中间的重连按钮通知对端准备连接"
-        }
-        return "\(display.name)\(display.local ? " · 本机" : "") · \(status)\n拖动自动吸附边缘；同一设备的屏幕整体移动，松手贴合相邻屏幕。"
-    }
-
-    @discardableResult
-    private func updateDrag(_ translation: CGSize, device: String, attach: Bool) -> Bool {
+    private func snappedDrop(_ translation: CGSize, device: String) -> (x: Double, y: Double)? {
         do {
             let offset = try previewDisplayMove(displays: dragDisplays, deviceId: device,
                 deltaX: translation.width / dragScale, deltaY: translation.height / dragScale,
-                snapDistance: 14 / dragScale, attach: attach)
-            delta = CGSize(width: offset.x * dragScale, height: offset.y * dragScale)
-            snapped = abs(delta.width - translation.width) > 0.1 || abs(delta.height - translation.height) > 0.1
-            return true
+                snapDistance: 0, attach: true)
+            return (offset.x, offset.y)
         } catch {
-            if attach { store.error = error.userFacingMessage }
-            return false
+            store.error = error.userFacingMessage
+            return nil
         }
     }
+
 
 }
 
@@ -190,60 +196,6 @@ extension Display {
     var layoutID: String { deviceId + ":" + id }
     // The topology contains logical desktop bounds, not physical panel inches.
     var layoutSizeLabel: String { "\(Int(width)) × \(Int(height)) pt" }
-}
-
-/// Identity stays centered; the reconnect control only occupies the middle when
-/// the screen is dashed. Smaller tiles drop labels before dropping the button.
-private struct DisplayScreenLabel: View {
-    let index: Int
-    let display: Display
-    let outline: Color
-    let showReconnect: Bool
-    let reconnecting: Bool
-    let reduceMotion: Bool
-    let action: () -> Void
-
-    var body: some View {
-        if showReconnect {
-            ViewThatFits(in: .vertical) {
-                VStack(spacing: 10) {
-                    identity
-                    reconnectButton
-                }
-                VStack(spacing: 8) {
-                    Text(display.name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                    reconnectButton
-                }
-                reconnectButton
-            }
-        } else {
-            identity
-        }
-    }
-
-    private var identity: some View {
-        VStack(spacing: 6) {
-            Text(String(format: "%02d", index))
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                .foregroundStyle(outline)
-            Text(display.name + (display.local ? " · 本机" : ""))
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(2).multilineTextAlignment(.center)
-            Text(display.layoutSizeLabel)
-                .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.7)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    private var reconnectButton: some View {
-        DisplayReconnectButton(color: outline, busy: reconnecting, reduceMotion: reduceMotion, action: action)
-    }
 }
 
 private struct DisplayReconnectButton: View {
@@ -327,5 +279,37 @@ enum DisplayPalette {
             }
         }
         return .secondary
+    }
+}
+
+/// Local desktop image or a bounded JPEG preview sent by the remote Mac.
+private struct DisplayWallpaperView: View {
+    let display: Display
+    let localWallpaper: NSImage?
+    let outline: Color
+    let size: CGSize
+    @State private var remoteWallpaper: NSImage?
+
+    var body: some View {
+        Group {
+            if let wallpaper = display.local ? localWallpaper : remoteWallpaper {
+                Image(nsImage: wallpaper)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+            } else {
+                LinearGradient(
+                    colors: [outline.opacity(0.3), outline.opacity(0.15)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: 2))
+        .allowsHitTesting(false)
+        .task(id: display.wallpaperJpeg?.hashValue) {
+            remoteWallpaper = display.wallpaperJpeg.flatMap(NSImage.init(data:))
+        }
     }
 }

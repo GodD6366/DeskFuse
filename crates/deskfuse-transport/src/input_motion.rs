@@ -111,7 +111,7 @@ impl MotionLink {
     /// At most one sample per second per link, because `stats()` takes the QUIC
     /// connection lock; a `force` sample fires regardless, so the moment the
     /// path is declared unusable is captured while debug collection is enabled.
-    fn sample_diagnostics(&self, session: &Session, event: &'static str, force: bool) {
+    pub(super) fn sample_diagnostics(&self, session: &Session, event: &'static str, force: bool) {
         if !deskfuse_core::debug_logging::enabled() {
             return;
         }

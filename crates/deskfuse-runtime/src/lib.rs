@@ -1038,7 +1038,28 @@ impl RuntimeStore for MemoryRuntimeStore {
     }
 }
 
-/// Commands accepted by the runtime actor.
+// Host-to-input-service IPC keeps wallpaper commands small instead of encoding
+// each JPEG byte as a JSON number. Peer messages use the same bounded format.
+mod wallpaper_command_base64 {
+    use base64::Engine;
+    use deskfuse_core::MAX_DISPLAY_WALLPAPER_BASE64_BYTES;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() > MAX_DISPLAY_WALLPAPER_BASE64_BYTES {
+            return Err(D::Error::custom("wallpaper preview too large"));
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(D::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RuntimeCommand {
     #[serde(skip)]
@@ -1073,6 +1094,11 @@ pub enum RuntimeCommand {
     },
     SaveInputSharingScene {
         name: String,
+    },
+    /// Create or refresh the layout scene bound to the current Wi-Fi network.
+    /// An empty name keeps the existing scene name.
+    SaveEnvironmentLayout {
+        name: Option<String>,
     },
     ApplyInputSharingScene {
         scene_id: String,
@@ -1114,6 +1140,11 @@ pub enum RuntimeCommand {
     },
     #[serde(skip)]
     PublishDisplayTopology(DisplayTopology),
+    PublishDisplayWallpaper {
+        display_id: DisplayId,
+        #[serde(with = "wallpaper_command_base64")]
+        jpeg: Vec<u8>,
+    },
     RequestInputControl {
         peer_id: DeviceId,
         target_display: DisplayId,
@@ -1192,6 +1223,7 @@ impl RuntimeCommand {
                 | Self::ChooseEnvironmentController { .. }
                 | Self::ForgetControllerEnvironment { .. }
                 | Self::SaveInputSharingScene { .. }
+                | Self::SaveEnvironmentLayout { .. }
                 | Self::ApplyInputSharingScene { .. }
                 | Self::RenameInputSharingScene { .. }
                 | Self::DeleteInputSharingScene { .. }
@@ -1204,6 +1236,7 @@ impl RuntimeCommand {
                 | Self::PauseCurrentManagedActivation
                 | Self::SetInputAvailability { .. }
                 | Self::PublishDisplayTopology(_)
+                | Self::PublishDisplayWallpaper { .. }
                 | Self::RequestInputControl { .. }
                 | Self::EnterInputControl { .. }
                 | Self::SendSharedInput { .. }

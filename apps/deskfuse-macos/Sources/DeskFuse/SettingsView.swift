@@ -18,7 +18,6 @@ struct SettingsView: View, Equatable {
     @State private var fileSaveFailure: String?
     @State private var clearHistory = false
     @State private var clearCache = false
-    @State private var inputSettings = false
     @State private var exportingDiagnostics = false
     @SceneStorage("settings.selectedTab") private var selectedTab = "general"
     var body: some View {
@@ -52,8 +51,6 @@ struct SettingsView: View, Equatable {
         .onChange(of: maximum) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
         .confirmationDialog("清空所有剪贴板历史？", isPresented: $clearHistory) { Button("清空历史", role: .destructive) { store.send(.clearHistory) } }
         .confirmationDialog("清除可回收的传输缓存？", isPresented: $clearCache) { Button("清除缓存", role: .destructive) { store.send(.clearCache) } }
-        .onChange(of: presentation.canConfigureInput) { _, allowed in if !allowed { inputSettings = false } }
-        .sheet(isPresented: $inputSettings) { if presentation.canConfigureInput, let settings = presentation.inputSettings { InputSettingsEditor(store: store, initial: settings).frame(width: 640, height: 610) } }
     }
 
     @ViewBuilder private func settingsPage(_ category: SettingsCategory) -> some View {
@@ -67,6 +64,12 @@ struct SettingsView: View, Equatable {
                 ready: store.client != nil, exportingDiagnostics: exportingDiagnostics, exportDiagnostics: exportDiagnostics)
         case .permissions:
             SettingsPermissionsView(store: store, permissions: presentation.permissions)
+        case .input:
+            if let settings = presentation.inputSettings {
+                InputSharingSettingsView(store: store, initial: settings)
+            } else {
+                Text("正在读取键鼠共享设置…").foregroundStyle(.secondary)
+            }
         case .storage:
             VStack(spacing: 0) {
                 Form {
@@ -100,7 +103,7 @@ struct SettingsView: View, Equatable {
         case .shortcuts:
             ShortcutSettingsPage(store: store,
                 manageWorkflows: { selectedTab = "workflows" },
-                configureInput: { inputSettings = true })
+                configureInput: { selectedTab = SettingsCategory.input.rawValue })
         case .updates:
             Form {
                 if let update = presentation.update {

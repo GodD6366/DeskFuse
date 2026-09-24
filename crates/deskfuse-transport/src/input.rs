@@ -387,10 +387,13 @@ impl InputHub {
             .unwrap_or_else(tokio::runtime::Handle::current);
         background.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(250));
-            loop {
-                tokio::select! { _ = interval.tick() => {}, _ = watched.cancel.notified() => break }
+            let reason = loop {
+                tokio::select! {
+                    _ = interval.tick() => {},
+                    _ = watched.cancel.notified() => break "input session cancelled",
+                }
                 if !watched.live() {
-                    break;
+                    break "input QUIC connection closed";
                 }
                 let original = watched.context.clone();
                 let Ok(current) = crate::input_executor::inspect_blocking(move || {
@@ -402,13 +405,19 @@ impl InputHub {
                 })
                 .await
                 else {
-                    break;
+                    break "input route inspection failed";
                 };
-                if current != watched.context {
-                    break;
+                if current.interface_name != watched.context.interface_name {
+                    break "input route interface changed";
                 }
-            }
-            hub.invalidate(&watched, "connection route changed or closed");
+                if current.interface_kind != watched.context.interface_kind {
+                    break "input route kind changed";
+                }
+                if current.scope != watched.context.scope {
+                    break "input route scope changed";
+                }
+            };
+            hub.invalidate(&watched, reason);
         });
         let hub = self.clone();
         executor.spawn(async move {
@@ -495,8 +504,9 @@ impl InputHub {
         sessions.insert(session.context.session_id, session);
         true
     }
-    fn invalidate(&self, session: &Session, reason: &str) {
+    fn invalidate(&self, session: &Session, reason: &'static str) {
         if session.valid.swap(false, Ordering::AcqRel) {
+            session.motion.sample_diagnostics(session, reason, true);
             session.cancel.notify_waiters();
             session.motion.close();
             self.motion_inbox
@@ -980,6 +990,53 @@ mod tests {
         let (a, b) = tokio::join!(outgoing, async { incoming.await.unwrap().await.unwrap() });
         (server, client_endpoint, a.unwrap(), b)
     }
+    #[tokio::test]
+    async fn full_size_wallpaper_crosses_the_input_stream() {
+        let (_server, client, outgoing, incoming) = connections().await;
+        let hub = InputHub::new();
+        let peer = DeviceId::from_bytes([7; 32]);
+        let context = ConnectionContext {
+            session_id: TransportSessionId::new(),
+            local_addr: client.local_addr().unwrap(),
+            remote_addr: outgoing.remote_address(),
+            interface_name: None,
+            interface_kind: InterfaceKind::Loopback,
+            scope: LinkScope::Unknown,
+        };
+        let session = Session {
+            negotiated: Capabilities::INPUT_SHARING,
+            peer,
+            connection: outgoing,
+            context: context.clone(),
+            valid: Arc::new(AtomicBool::new(true)),
+            cancel: Arc::new(CancelSignal::default()),
+            motion: Arc::default(),
+        };
+        let message = InputShareMessage::DisplayWallpaper {
+            display_id: deskfuse_core::DisplayId::new("screen"),
+            jpeg: [
+                vec![0xff, 0xd8, 0xff],
+                vec![42; deskfuse_core::MAX_DISPLAY_WALLPAPER_BYTES - 3],
+            ]
+            .concat(),
+        };
+        let wire = deskfuse_protocol::InputSharing::from_core(&message).unwrap();
+        assert!(wire.payload.len() > 64 * 1024);
+        let writer = hub.spawn_writer((context.session_id, StreamKey::Topology), session);
+        writer.try_send(message.clone()).unwrap();
+        let mut stream = tokio::time::timeout(Duration::from_secs(2), incoming.accept_uni())
+            .await
+            .unwrap()
+            .unwrap();
+        let frame = read_input_frame(&mut stream, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let Some(Message::InputSharing(received)) = frame.message else {
+            panic!("wrong frame")
+        };
+        assert_eq!(received.to_core().unwrap(), message);
+    }
+
     #[tokio::test]
     async fn persistent_writer_orders_frames_and_releases_stream_capacity() {
         // Socket/route authorization is tested separately. Exercise the exact

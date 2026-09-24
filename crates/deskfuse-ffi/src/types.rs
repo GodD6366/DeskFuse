@@ -405,11 +405,15 @@ pub struct Display {
     pub rotation: u16,
     pub local: bool,
     pub ready: bool,
+    pub wallpaper_jpeg: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Scene {
     pub id: String,
     pub name: String,
+    /// When set, this scene is the remembered layout of that Wi-Fi network and
+    /// is applied automatically when the stable environment returns to it.
+    pub ssid: Option<String>,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct EnvironmentRule {
@@ -538,6 +542,10 @@ pub enum EngineCommand {
     },
     ClearCache,
     RefreshCache,
+    PublishDisplayWallpaper {
+        display_id: String,
+        jpeg: Vec<u8>,
+    },
     MoveInputDevice {
         device_id: String,
         display_id: String,
@@ -553,6 +561,10 @@ pub enum EngineCommand {
     },
     SaveScene {
         name: String,
+    },
+    /// Create or refresh the layout bound to the current Wi-Fi network.
+    SaveEnvironmentLayout {
+        name: Option<String>,
     },
     ApplyScene {
         id: String,
@@ -698,6 +710,11 @@ impl From<&EngineState> for EngineSnapshot {
                             rotation: screen.display.rotation_degrees,
                             local: id == local,
                             ready: screen.ready,
+                            wallpaper_jpeg: input
+                                .remote_wallpapers
+                                .get(&screen.key.device_id)
+                                .and_then(|images| images.get(&screen.key.display_id))
+                                .cloned(),
                         }
                     })
                     .collect()
@@ -851,6 +868,7 @@ impl From<&EngineState> for EngineSnapshot {
                     .map(|s| Scene {
                         id: s.id.clone(),
                         name: s.name.clone(),
+                        ssid: s.ssid.clone(),
                     })
                     .collect(),
                 environment_message: input.environment.message.clone(),

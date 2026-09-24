@@ -212,8 +212,14 @@ PausedByUser; the same activation cannot resume from a delayed Ready snapshot.
 The controller must explicitly disable/re-enable or remove/re-add that receiver.
 The local emergency button reaches the dedicated input worker independently of
 clipboard and file work. The receiver UI offers status, system permission links
-and emergency reclaim instead of a persistent receiver switch or authorization
-picker. Existing scenes and layouts remain editable and unchanged by activation.
+and emergency reclaim, not a persistent authorization switch. A trusted
+controller can activate a receiver that it explicitly added to its layout;
+Wi-Fi scene votes are advisory and cannot suppress that activation or revoke
+an active receiver session. A local controller managing selected devices still
+refuses incoming control to prevent mutual takeover; an idle controller with
+no selected devices may yield to an explicit incoming activation without
+persisting a role change. Existing scenes and layouts remain editable and
+unchanged by activation.
 
 An expired/retired activation replies with `Deactivate`, allowing the controller
 to retry with a fresh activation ID and the same enable intent. It must not send
@@ -534,10 +540,10 @@ package boundary; that development ZIP still excludes the WPF client and input h
 
 ### 按 Wi-Fi 场景选择键鼠主控
 
-当前 Wi-Fi 名称通过 macOS CoreWLAN 读取；用户点击后申请系统定位授权，仅为读取 SSID，不启动定位采集。读取任务独立于 UI 与输入处理，5 秒更新一次。可信物理局域网内支持 `INPUT_ENVIRONMENT` 的设备交换主控意图与 Wi-Fi 场景，供有线设备识别唯一场景；SSID 不是身份或授权依据。
+当前 Wi-Fi 名称通过 macOS CoreWLAN 读取；用户在启动授权步骤或「设置 → 权限」中申请系统定位授权，仅为读取 SSID，不启动定位采集。读取任务独立于 UI 与输入处理，5 秒更新一次。可信物理局域网内支持 `INPUT_ENVIRONMENT` 的设备交换主控意图与 Wi-Fi 场景，供有线设备识别唯一场景；SSID 不是身份或授权依据。
 
 `INPUT_ENVIRONMENT` 使用独立的 bit 10；鼠标 Datagram 的 `INPUT_MOTION_DATAGRAM_V1` 保持 bit 9。协商到鼠标 Datagram 不代表支持主控场景消息，只有双方明确支持场景能力时才能发送这类消息。
 
-首次双主控或规则冲突由用户选择，可选仅本次或记住当前 SSID。明确选择和删除规则同步到当前在线的兼容设备；离线设备不承诺已同步，其旧规则冲突时仍需选择。规则随激活策略持久化，原有主控设置、参与设备和显示器布局不被覆盖。SSID 变化稳定 10 秒且鼠标返回本机后应用；短暂连接中断保留主控意图 12 秒，原生输入控制租约仍独立及时失效并释放按键。保存的主控离线时不自动抢控，可临时选择其他主控。
+首次双主控或规则冲突在 Wi-Fi 场景页面提示用户选择，但场景投票不阻断主控对排布中明确加入的设备发起激活，也不撤销已经建立的被控会话。明确选择和删除规则同步到当前在线的兼容设备；离线设备不承诺已同步，其旧规则冲突时仍需选择。规则随激活策略持久化，原有主控设置、参与设备和显示器布局不被覆盖。本机已开启主控时，远端的选择与投票不会自动挂起本机主控角色。SSID 变化稳定 10 秒且鼠标返回本机后应用；短暂连接中断保留主控意图 12 秒，原生输入控制租约仍独立及时失效并释放按键。保存的主控离线时不自动抢控，可临时选择其他主控。绑定到当前 SSID 的布局场景会在该网络稳定后自动恢复排布，仅恢复屏幕排布，不改变共享开关、参与设备或授权。
 
 陌生网络、SSID 读取失败、多个不同 SSID 或矛盾规则提供本次选择入口；有线设备可依据可信 Wi-Fi 成员的唯一 SSID 匹配场景。相同名称网络上的规则仍只能选择已配对设备。旧客户端继续使用原激活协议，场景协商需相关设备安装支持此能力的版本。

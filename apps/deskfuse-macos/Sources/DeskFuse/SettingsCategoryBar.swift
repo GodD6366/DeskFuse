@@ -1,11 +1,12 @@
 import SwiftUI
 
 enum SettingsCategory: String, CaseIterable {
-    case general, permissions, storage, clipboard, workflows, shortcuts, updates
+    case general, input, permissions, storage, clipboard, workflows, shortcuts, updates
 
     var title: String {
         switch self {
         case .general: "通用"
+        case .input: "键鼠共享"
         case .permissions: "权限"
         case .storage: "传输与存储"
         case .clipboard: "剪贴板"
@@ -18,6 +19,7 @@ enum SettingsCategory: String, CaseIterable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
+        case .input: "rectangle.on.rectangle"
         case .permissions: "shield"
         case .storage: "tray"
         case .clipboard: "clipboard"

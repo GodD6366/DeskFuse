@@ -120,6 +120,21 @@ struct Summary {
     kind: String,
 }
 
+/// A synced text row carries its preview in the index record. `length` is the
+/// byte count of the original text, so a preview that matches it is the whole
+/// text: the row can be used before the on-demand payload transfer finishes.
+fn reconstructed_text_snapshot(s: &Summary) -> Option<PasteboardSnapshot> {
+    (!s.preview.is_empty()
+        && s.kind == "text"
+        && !s.has_image
+        && s.file_count == 0
+        && s.preview.len() as u64 == s.length)
+        .then(|| PasteboardSnapshot {
+            text: Some(s.preview.clone()),
+            ..Default::default()
+        })
+}
+
 #[derive(Clone, Debug)]
 struct QueryRow {
     id: u64,
@@ -756,17 +771,36 @@ END;").map_err(err)?;
     pub fn snapshot(&self, id: u64) -> Result<PasteboardSnapshot> {
         self.prune()?;
         let db = self.db.lock().map_err(err)?;
-        let bytes: Option<Vec<u8>> = db
-            .query_row("SELECT payload FROM cl_items WHERE id=?1", [id], |r| {
-                r.get(0)
-            })
+        let row: Option<(Option<Vec<u8>>, Option<String>, String)> = db
+            .query_row(
+                "SELECT payload,summary,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .optional()
-            .map_err(err)?
-            .flatten();
-        // Decode outside the connection lock: a large native image must not
-        // block metadata queries while bincode expands its representations.
+            .map_err(err)?;
         drop(db);
-        decode(&bytes.ok_or("内容尚未同步或历史已过期")?)
+        let (bytes, summary, blob_hash) = row.ok_or("内容不存在")?;
+        if let Some(bytes) = bytes {
+            // Decode outside the connection lock: a large native image must not
+            // block metadata queries while bincode expands its representations.
+            return decode(&bytes);
+        }
+        // A synced row keeps only its metadata until the payload is fetched, and
+        // an attempted use is exactly the on-demand trigger. Queue the fetch so
+        // the caller never confirms a failure that would have resolved itself.
+        if blob_hash.len() == 64 && blob_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let _ = self.want_blob(&blob_hash);
+        }
+        let summary = summary.and_then(|raw| serde_json::from_str::<Summary>(&raw).ok());
+        if let Some(snapshot) = summary.as_ref().and_then(reconstructed_text_snapshot) {
+            return Ok(snapshot);
+        }
+        if blob_hash.is_empty() {
+            Err("历史内容已过期或被清理".into())
+        } else {
+            Err("内容正在从来源设备获取，请稍后重试".into())
+        }
     }
     /// Return only a display-sized derivative across FFI, not the 1600px
     /// detail preview or the original restorable clipboard representations.
@@ -1497,8 +1531,15 @@ END;").map_err(err)?;
         // A metadata-only remote archive can join another list while its original
         // blob is still syncing, without being overwritten by local history.
         if present && !existing_archive {
-            let bytes = payload.ok_or("内容尚未同步")?;
-            let snapshot = decode(&bytes)?;
+            // A short synced text is complete in its summary; freeze that text
+            // instead of failing until the richer payload transfer arrives.
+            let snapshot = match payload {
+                Some(bytes) => decode(&bytes)?,
+                None => {
+                    let summary: Summary = serde_json::from_str(&summary).map_err(err)?;
+                    reconstructed_text_snapshot(&summary).ok_or("内容尚未同步")?
+                }
+            };
             let device = self.device.lock().map_err(err)?.clone();
             let snapshot = crate::library_files::register(&snapshot, &device)?;
             let bytes = encode(&snapshot, "归档")?;
@@ -1847,9 +1888,10 @@ fn query_item_value_with_summary(
     summary: &mut Summary,
     memberships: Vec<String>,
 ) -> Result<Value> {
+    let available = row.available || reconstructed_text_snapshot(summary).is_some();
     let mut value = serde_json::to_value(summary).map_err(err)?;
     value["id"] = json!(row.id);
-    value["available"] = json!(row.available);
+    value["available"] = json!(available);
     value["memberships"] = json!(memberships);
     value["title"] = json!(row.title);
     value["ocr_text"] = json!(row.ocr_text);
@@ -2748,6 +2790,99 @@ mod membership_tests {
         library.membership("second", archive, false).unwrap();
         assert_eq!(manual_count(&library, "second"), 0);
         assert_eq!(page(&library, None)["total"], 0);
+    }
+}
+
+#[cfg(test)]
+mod remote_text_tests {
+    use super::*;
+
+    /// Materialize a synced `index:` record the way the library sync worker does.
+    fn sync_text(library: &Library, gid: &str, hash: &str, text: &str) -> u64 {
+        let summary = json!({
+            "id": 0,
+            "copied_at_ms": now_ms(),
+            "mime": "text/plain",
+            "length": text.len() as u64,
+            "preview": text.chars().take(160).collect::<String>(),
+            "source": "本机",
+            "has_image": false,
+            "file_count": 0,
+            "source_device_id": null,
+            "source_app_id": null,
+            "source_app_name": null,
+            "kind": "text",
+        });
+        library
+            .merge_operations(vec![json!({
+                "op_id": format!("op-{gid}"),
+                "key": format!("index:{gid}"),
+                "revision": 1,
+                "author": "peer-device",
+                "clock": {"peer-device": 1},
+                "deleted": false,
+                "value": {
+                    "id": gid,
+                    "digest": format!("text:{gid}"),
+                    "summary": summary,
+                    "title": null,
+                    "ocr_text": null,
+                    "search_text": text.to_lowercase(),
+                    "blob_hash": hash,
+                },
+            })])
+            .unwrap();
+        let db = library.db.lock().unwrap();
+        db.query_row("SELECT id FROM cl_items WHERE global_id=?1", [gid], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    fn page_row(library: &Library, id: u64) -> Value {
+        let page: Value = serde_json::from_str(
+            &library
+                .query(&json!({"op": "items", "limit": 50}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"].as_u64() == Some(id))
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn complete_short_text_is_usable_before_its_payload_arrives() {
+        let library = Library::open().unwrap();
+        library.set_local_device("receive-test".into()).unwrap();
+        let text = "ssh -i ~/.ssh/my_docker_key godd@64.32.22.19";
+        let hash = "a".repeat(64);
+        let id = sync_text(&library, "remote-short", &hash, text);
+        let row = page_row(&library, id);
+        assert_eq!(row["remote"], json!(true));
+        assert_eq!(row["available"], json!(true));
+        assert_eq!(library.snapshot(id).unwrap().text.as_deref(), Some(text));
+        // The full-fidelity blob is still fetched in the background.
+        assert_eq!(library.take_wanted_blobs().unwrap(), vec![hash]);
+    }
+
+    #[test]
+    fn truncated_text_stays_unavailable_until_the_payload_arrives() {
+        let library = Library::open().unwrap();
+        library.set_local_device("receive-test".into()).unwrap();
+        let text = "长文本".repeat(100);
+        let hash = "b".repeat(64);
+        let id = sync_text(&library, "remote-long", &hash, &text);
+        assert_eq!(page_row(&library, id)["available"], json!(false));
+        assert_eq!(
+            library.snapshot(id).unwrap_err(),
+            "内容正在从来源设备获取，请稍后重试"
+        );
+        assert_eq!(library.take_wanted_blobs().unwrap(), vec![hash]);
     }
 }
 

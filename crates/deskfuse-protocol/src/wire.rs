@@ -316,6 +316,11 @@ impl std::fmt::Debug for InputSharing {
         f.write_str("InputSharing([redacted])")
     }
 }
+/// A 64 KiB JPEG is base64-encoded inside JSON, so its wire payload can
+/// exceed the ordinary 64 KiB input bound without exceeding 96 KiB.
+pub const MAX_INPUT_WALLPAPER_PAYLOAD: usize = 96 * 1024;
+const MAX_ORDINARY_INPUT_PAYLOAD: usize = 64 * 1024;
+
 impl InputSharing {
     pub fn from_core(
         message: &deskfuse_core::InputShareMessage,
@@ -323,19 +328,41 @@ impl InputSharing {
         message
             .validate()
             .map_err(|_| crate::ProtocolError::InvalidPayload("invalid input sharing message"))?;
-        Ok(Self {
-            payload: serde_json::to_vec(message)
-                .map_err(|_| crate::ProtocolError::InvalidPayload("input serialization failed"))?,
-        })
+        let payload = serde_json::to_vec(message)
+            .map_err(|_| crate::ProtocolError::InvalidPayload("input serialization failed"))?;
+        let limit = if matches!(
+            message,
+            deskfuse_core::InputShareMessage::DisplayWallpaper { .. }
+        ) {
+            MAX_INPUT_WALLPAPER_PAYLOAD
+        } else {
+            MAX_ORDINARY_INPUT_PAYLOAD
+        };
+        if payload.len() > limit {
+            return Err(crate::ProtocolError::InvalidPayload(
+                "input payload too large",
+            ));
+        }
+        Ok(Self { payload })
     }
     pub fn to_core(&self) -> Result<deskfuse_core::InputShareMessage, crate::ProtocolError> {
-        if self.payload.len() > 65536 {
+        if self.payload.len() > MAX_INPUT_WALLPAPER_PAYLOAD {
             return Err(crate::ProtocolError::InvalidPayload(
                 "input payload too large",
             ));
         }
         let message: deskfuse_core::InputShareMessage = serde_json::from_slice(&self.payload)
             .map_err(|_| crate::ProtocolError::InvalidPayload("invalid input payload"))?;
+        if self.payload.len() > MAX_ORDINARY_INPUT_PAYLOAD
+            && !matches!(
+                message,
+                deskfuse_core::InputShareMessage::DisplayWallpaper { .. }
+            )
+        {
+            return Err(crate::ProtocolError::InvalidPayload(
+                "input payload too large",
+            ));
+        }
         message
             .validate()
             .map_err(|_| crate::ProtocolError::InvalidPayload("invalid input sharing message"))?;

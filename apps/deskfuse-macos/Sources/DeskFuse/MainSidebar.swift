@@ -165,6 +165,14 @@ private struct SidebarCheckUpdateButton: View {
 
 private struct SidebarDeviceStatus: View {
     let store: AppStore
+
+    private var versionText: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info["CFBundleVersion"] as? String
+        return build.map { "v\(version) (\($0))" } ?? "v\(version)"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Button { store.showLocalDevice() } label: {
@@ -173,24 +181,24 @@ private struct SidebarDeviceStatus: View {
                         .font(.system(size: 23, weight: .regular))
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("这台 Mac")
-                            .font(.system(size: 15, weight: .medium))
-                            .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
                             Circle().fill(runtimeColor).frame(width: 6, height: 6)
                             Text(store.snapshot?.runtimeStatus ?? "正在启动")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
                         }
+                        Text(versionText)
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("在设备页查看本机：\(store.snapshot?.localName ?? "这台 Mac")")
+            .help("查看本机运行状态：\(store.snapshot?.localName ?? "这台 Mac")")
             HStack(spacing: 4) {
                 SidebarCheckUpdateButton(store: store)
                 Button { store.openSettings() } label: {

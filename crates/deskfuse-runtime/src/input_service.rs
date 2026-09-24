@@ -14,7 +14,7 @@ use std::{
 mod child;
 pub use child::{ChildConnection, InputOnlyRuntime};
 const VERSION: u32 = 1;
-const MAX_FRAME: usize = 1024 * 1024;
+const MAX_FRAME: usize = 2 * 1024 * 1024;
 
 /// 主进程和输入进程共用的构建号。安装包从 `release.json` 读取，
 /// 不编译进 Rust，因此只改构建号不会重编 FFI 和 Swift。
@@ -118,6 +118,68 @@ mod build_identity_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn wallpaper_crosses_both_input_service_ipc_directions() {
+        use super::*;
+        let peer = DeviceId::from_public_key([7; 32]).unwrap();
+        let display_id = DisplayId::from("remote-screen");
+        let jpeg = [
+            vec![0xff, 0xd8, 0xff],
+            vec![42; deskfuse_core::MAX_DISPLAY_WALLPAPER_BYTES - 3],
+        ]
+        .concat();
+        let command = RuntimeCommand::PublishDisplayWallpaper {
+            display_id: display_id.clone(),
+            jpeg: jpeg.clone(),
+        };
+        assert!(command.is_input() && host_command_allowed(&command));
+        let (mut host, mut child) = UnixStream::pair().unwrap();
+        let mut command_writer = host.try_clone().unwrap();
+        let writer = std::thread::spawn(move || {
+            write_frame(
+                &mut command_writer,
+                &HostMessage::Command {
+                    id: 1,
+                    value: command,
+                },
+            )
+            .unwrap();
+        });
+        match read_frame::<HostMessage>(&mut child).unwrap() {
+            HostMessage::Command {
+                value:
+                    RuntimeCommand::PublishDisplayWallpaper {
+                        display_id: received_id,
+                        jpeg: received_jpeg,
+                    },
+                ..
+            } => {
+                assert_eq!(received_id, display_id);
+                assert_eq!(received_jpeg, jpeg);
+            }
+            _ => panic!("wallpaper command lost across IPC"),
+        }
+        writer.join().unwrap();
+
+        let mut snapshot = ServiceSnapshot {
+            generation: 1,
+            native: NativeStatus::default(),
+            input: InputSharingSnapshot::default(),
+            diagnostics: String::new(),
+            last_command: 1,
+        };
+        snapshot
+            .input
+            .remote_wallpapers
+            .insert(peer, BTreeMap::from([(display_id.clone(), jpeg.clone())]));
+        let mut snapshot_writer = child.try_clone().unwrap();
+        let writer =
+            std::thread::spawn(move || write_frame(&mut snapshot_writer, &snapshot).unwrap());
+        let returned: ServiceSnapshot = read_frame(&mut host).unwrap();
+        writer.join().unwrap();
+        assert_eq!(returned.input.remote_wallpapers[&peer][&display_id], jpeg);
     }
 
     #[test]
@@ -387,6 +449,7 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::SetInputSharingSettings(_)
             | RuntimeCommand::RestartInputActivation { .. }
             | RuntimeCommand::RefreshNativeObserver
+            | RuntimeCommand::PublishDisplayWallpaper { .. }
             | RuntimeCommand::MoveInputDevice { .. }
             | RuntimeCommand::PauseManagedActivation { .. }
             | RuntimeCommand::PauseCurrentManagedActivation
@@ -492,7 +555,7 @@ pub(super) async fn run_host(
                     }
                     Some(_) => {
                         let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand(
-                            "输入服务暂不可用，请在屏幕与键鼠页面点击重试".into(),
+                            "输入服务暂不可用，请在鼠标共享页面点击重试".into(),
                         )));
                     }
                 }

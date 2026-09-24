@@ -7,10 +7,64 @@ use deskfuse_input::layout::{
 #[derive(Default)]
 pub(super) struct LayoutPersistence {
     pub(super) dirty: bool,
+    pub(super) scene_dirty: bool,
     pub(super) pending: Option<tokio::task::JoinHandle<std::result::Result<(), RuntimeError>>>,
 }
 
 impl InputActor {
+    /// Keep the scene bound to the current network in step with the layout that
+    /// is being persisted, so returning to this Wi-Fi restores this arrangement
+    /// without a manual save.
+    pub(super) fn refresh_environment_scene(&mut self) -> bool {
+        let Some(ssid) = self.snapshot.environment.ssid.clone() else {
+            return false;
+        };
+        let mut scenes = self.snapshot.scenes.clone();
+        let Some(scene) = scenes
+            .iter_mut()
+            .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
+        else {
+            return false;
+        };
+        if scene.settings.placements == self.snapshot.settings.placements
+            && scene.settings.layout_profiles == self.snapshot.settings.layout_profiles
+        {
+            return false;
+        }
+        scene.settings.placements = self.snapshot.settings.placements.clone();
+        scene.settings.layout_profiles = self.snapshot.settings.layout_profiles.clone();
+        self.snapshot.scenes = scenes;
+        self.layout_persistence.scene_dirty = true;
+        true
+    }
+
+    /// Apply the arrangement remembered for this network. Only the display
+    /// arrangement travels with the network; sharing switches, participants and
+    /// consent stay with the device, so a network change never turns input on.
+    pub(super) fn apply_environment_layout(&mut self, ssid: Option<&str>) -> bool {
+        if !self.snapshot.can_configure_layout() {
+            return false;
+        }
+        let Some(scene) = ssid.and_then(|ssid| {
+            self.snapshot
+                .scenes
+                .iter()
+                .find(|scene| scene.ssid.as_deref() == Some(ssid))
+        }) else {
+            return false;
+        };
+        let mut settings = self.snapshot.settings.clone();
+        settings.placements = scene.settings.placements.clone();
+        settings.layout_profiles = scene.settings.layout_profiles.clone();
+        if settings == self.snapshot.settings || settings.validate().is_err() {
+            return false;
+        }
+        self.release_all("Wi-Fi environment layout changed");
+        self.snapshot.settings = settings.clone();
+        self.layout_persistence.dirty = true;
+        self.emit(RuntimeEvent::InputSharingSettingsChanged(settings));
+        true
+    }
     // Capture before replacing native topology, and on idle for newly seen setups.
     // Missing peers never participate in the key or erase an existing profile.
     pub(super) fn remember_visible_layout(&mut self) {
@@ -33,9 +87,16 @@ impl InputActor {
         }
         let store = self.store.clone();
         let settings = self.snapshot.settings.clone();
+        self.refresh_environment_scene();
+        let scenes = std::mem::take(&mut self.layout_persistence.scene_dirty)
+            .then(|| self.snapshot.scenes.clone());
         self.layout_persistence.dirty = false;
         self.layout_persistence.pending = Some(tokio::task::spawn_blocking(move || {
-            store.set_input_sharing_settings(settings)
+            store.set_input_sharing_settings(settings)?;
+            if let Some(scenes) = scenes {
+                store.set_input_sharing_scenes(scenes)?;
+            }
+            Ok(())
         }));
     }
 
@@ -45,7 +106,10 @@ impl InputActor {
         };
         if !matches!(task.await, Ok(Ok(()))) {
             self.layout_persistence.dirty = true;
+            self.layout_persistence.scene_dirty = true;
             self.error("屏幕组合排布未能保存，将自动重试");
+        } else {
+            self.layout_persistence.scene_dirty = false;
         }
     }
 
@@ -106,12 +170,39 @@ impl InputActor {
         self.finish_layout_save().await;
         let store = self.store.clone();
         let saved = settings.clone();
+        // Keep the scene bound to this network in step with the arrangement.
+        let scenes = self.snapshot.environment.ssid.clone().and_then(|ssid| {
+            let mut scenes = self.snapshot.scenes.clone();
+            let scene = scenes
+                .iter_mut()
+                .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))?;
+            if scene.settings.placements == saved.placements
+                && scene.settings.layout_profiles == saved.layout_profiles
+            {
+                return None;
+            }
+            scene.settings.placements = saved.placements.clone();
+            scene.settings.layout_profiles = saved.layout_profiles.clone();
+            Some(scenes)
+        });
+        let applied_scenes = scenes.clone();
         if matches!(
-            tokio::task::spawn_blocking(move || store.set_input_sharing_settings(saved)).await,
+            tokio::task::spawn_blocking(move || -> std::result::Result<(), RuntimeError> {
+                store.set_input_sharing_settings(saved)?;
+                if let Some(scenes) = scenes {
+                    store.set_input_sharing_scenes(scenes)?;
+                }
+                Ok(())
+            })
+            .await,
             Ok(Ok(()))
         ) {
             self.layout_persistence.dirty = false;
+            self.layout_persistence.scene_dirty = false;
             self.snapshot.settings = settings.clone();
+            if let Some(scenes) = applied_scenes {
+                self.snapshot.scenes = scenes;
+            }
             // Re-routing an active pointer is handled by the native coordinator, not an
             // availability toggle or a new controller intent. Pre-granted leases survive.
             self.emit(RuntimeEvent::InputSharingSettingsChanged(settings));

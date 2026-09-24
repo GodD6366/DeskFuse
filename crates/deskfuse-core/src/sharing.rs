@@ -585,6 +585,36 @@ pub enum InputShareMessage {
         sequence: u64,
     },
     DisplayTopology(DisplayTopology),
+    /// Small JPEG preview, sent independently of geometry so artwork never
+    /// changes an input lease or the layout generation.
+    DisplayWallpaper {
+        display_id: DisplayId,
+        #[serde(with = "wallpaper_base64")]
+        jpeg: Vec<u8>,
+    },
+}
+pub const MAX_DISPLAY_WALLPAPER_BYTES: usize = 64 * 1024;
+pub const MAX_DISPLAY_WALLPAPER_BASE64_BYTES: usize = MAX_DISPLAY_WALLPAPER_BYTES.div_ceil(3) * 4;
+
+mod wallpaper_base64 {
+    use super::MAX_DISPLAY_WALLPAPER_BASE64_BYTES;
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        // Reject oversized untrusted artwork before allocating decoded bytes.
+        if encoded.len() > MAX_DISPLAY_WALLPAPER_BASE64_BYTES {
+            return Err(D::Error::custom("wallpaper preview too large"));
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(D::Error::custom)
+    }
 }
 impl InputShareMessage {
     pub fn session_id(&self) -> Option<InputSessionId> {
@@ -604,6 +634,7 @@ impl InputShareMessage {
             | Self::ControllerPresence { .. }
             | Self::ControllerSelection { .. }
             | Self::DisplayTopology(_)
+            | Self::DisplayWallpaper { .. }
             | Self::Activate { .. }
             | Self::Activated { .. }
             | Self::Deactivate { .. } => None,
@@ -653,6 +684,16 @@ impl InputShareMessage {
                 return Err(invalid("zero activation sequence"));
             }
             Self::DisplayTopology(t) => t.validate()?,
+            Self::DisplayWallpaper { display_id, jpeg } => {
+                if display_id.0.is_empty()
+                    || display_id.0.len() > 128
+                    || jpeg.is_empty()
+                    || jpeg.len() > MAX_DISPLAY_WALLPAPER_BYTES
+                    || !jpeg.starts_with(&[0xff, 0xd8, 0xff])
+                {
+                    return Err(invalid("invalid display wallpaper preview"));
+                }
+            }
             Self::Grant { ttl_ms, .. } | Self::GrantHybrid { ttl_ms, .. } if *ttl_ms != 1500 => {
                 return Err(invalid("invalid input lease duration"));
             }
@@ -832,8 +873,72 @@ pub struct InputSharingSnapshot {
     pub settings: InputSharingSettings,
     pub local_topology: Option<DisplayTopology>,
     pub remote_topologies: BTreeMap<DeviceId, DisplayTopology>,
+    #[serde(default, with = "remote_wallpapers_base64")]
+    pub remote_wallpapers: BTreeMap<DeviceId, BTreeMap<DisplayId, Vec<u8>>>,
     pub links: Vec<InputPeerStatus>,
 }
+/// Keep image previews below the input-service status IPC frame limit, even
+/// when a trusted peer advertises the maximum 32 displays.
+pub const MAX_REMOTE_WALLPAPER_PREVIEWS: usize = 16;
+
+mod remote_wallpapers_base64 {
+    use super::{
+        DeviceId, DisplayId, MAX_DISPLAY_WALLPAPER_BASE64_BYTES, MAX_REMOTE_WALLPAPER_PREVIEWS,
+    };
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+    use std::collections::BTreeMap;
+
+    type Previews = BTreeMap<DeviceId, BTreeMap<DisplayId, Vec<u8>>>;
+    type Encoded = BTreeMap<DeviceId, BTreeMap<DisplayId, String>>;
+
+    pub fn serialize<S: Serializer>(previews: &Previews, serializer: S) -> Result<S::Ok, S::Error> {
+        let encoded: Encoded = previews
+            .iter()
+            .map(|(peer, displays)| {
+                (
+                    *peer,
+                    displays
+                        .iter()
+                        .map(|(id, jpeg)| {
+                            (
+                                id.clone(),
+                                base64::engine::general_purpose::STANDARD.encode(jpeg),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        encoded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Previews, D::Error> {
+        let encoded = Encoded::deserialize(deserializer)?;
+        if encoded.values().map(BTreeMap::len).sum::<usize>() > MAX_REMOTE_WALLPAPER_PREVIEWS {
+            return Err(D::Error::custom("too many wallpaper previews"));
+        }
+        encoded
+            .into_iter()
+            .map(|(peer, displays)| {
+                let decoded: Result<BTreeMap<_, _>, D::Error> = displays
+                    .into_iter()
+                    .map(|(id, jpeg)| {
+                        if jpeg.len() > MAX_DISPLAY_WALLPAPER_BASE64_BYTES {
+                            return Err(D::Error::custom("wallpaper preview too large"));
+                        }
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(jpeg)
+                            .map_err(D::Error::custom)?;
+                        Ok((id, bytes))
+                    })
+                    .collect();
+                decoded.map(|displays| (peer, displays))
+            })
+            .collect()
+    }
+}
+
 impl InputSharingSnapshot {
     /// Layout authoring belongs only to the selected local controller, never a receiver.
     pub fn can_configure_layout(&self) -> bool {
@@ -901,6 +1006,34 @@ mod tests {
             x: 1.,
             y: 2.,
         }
+    }
+
+    #[test]
+    fn wallpaper_preview_is_bounded_and_uses_compact_wire_encoding() {
+        let message = InputShareMessage::DisplayWallpaper {
+            display_id: DisplayId::new("screen"),
+            jpeg: [
+                vec![0xff, 0xd8, 0xff],
+                vec![42; MAX_DISPLAY_WALLPAPER_BYTES - 3],
+            ]
+            .concat(),
+        };
+        message.validate().unwrap();
+        let encoded = serde_json::to_vec(&message).unwrap();
+        assert!(encoded.len() < 100_000);
+        assert_eq!(
+            serde_json::from_slice::<InputShareMessage>(&encoded).unwrap(),
+            message
+        );
+        let too_large = InputShareMessage::DisplayWallpaper {
+            display_id: DisplayId::new("screen"),
+            jpeg: [
+                vec![0xff, 0xd8, 0xff],
+                vec![42; MAX_DISPLAY_WALLPAPER_BYTES - 2],
+            ]
+            .concat(),
+        };
+        assert!(too_large.validate().is_err());
     }
 
     #[test]
@@ -1084,6 +1217,17 @@ mod tests {
         assert_eq!(settings.shortcuts.left.modifiers, 0x1C0000);
         assert!(settings.validate().is_ok());
     }
+
+    #[test]
+    fn legacy_scenes_without_a_network_binding_still_load() {
+        let json = format!(
+            r#"{{"id":"{}","name":"Office","settings":{{}}}}"#,
+            Uuid::new_v4()
+        );
+        let scene: InputSharingScene = serde_json::from_str(&json).unwrap();
+        assert_eq!(scene.ssid, None);
+        assert!(scene.validate().is_ok());
+    }
     #[test]
     fn permission_shape_and_coordinates_are_bounded() {
         let settings = InputSharingSettings {
@@ -1145,6 +1289,11 @@ mod tests {
 pub struct InputSharingScene {
     pub id: String,
     pub name: String,
+    /// When set, this scene is the remembered layout for that Wi-Fi network and
+    /// is applied automatically when the stable environment returns to it.
+    /// Scene bindings stay local; SSID is a switch key, never an authorization.
+    #[serde(default)]
+    pub ssid: Option<String>,
     pub settings: InputSharingSettings,
 }
 impl InputSharingScene {
@@ -1152,6 +1301,7 @@ impl InputSharingScene {
         let scene = Self {
             id: Uuid::new_v4().to_string(),
             name: name.trim().to_owned(),
+            ssid: None,
             settings,
         };
         scene.validate()?;
@@ -1162,8 +1312,12 @@ impl InputSharingScene {
             || self.name.trim().is_empty()
             || self.name.chars().count() > 80
             || self.name.chars().any(char::is_control)
+            || self
+                .ssid
+                .as_ref()
+                .is_some_and(|ssid| ssid.is_empty() || ssid.len() > 32)
         {
-            return Err(invalid("invalid input scene id or name"));
+            return Err(invalid("invalid input scene id, name or network binding"));
         }
         self.settings.validate()
     }
@@ -1172,10 +1326,16 @@ impl InputSharingScene {
             return Err(invalid("at most 16 input scenes are supported"));
         }
         let mut ids = BTreeSet::new();
+        let mut networks = BTreeSet::new();
         for scene in scenes {
             scene.validate()?;
             if !ids.insert(&scene.id) {
                 return Err(invalid("duplicate input scene id"));
+            }
+            if let Some(ssid) = &scene.ssid
+                && !networks.insert(ssid.clone())
+            {
+                return Err(invalid("only one scene may be bound to a network"));
             }
         }
         Ok(())

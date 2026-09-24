@@ -15,6 +15,7 @@ default = ["updates"]
 updates = ["dep:deskfuse-update"]
 
 [dependencies]
+base64 = "0.22"
 serde.workspace = true
 deskfuse-update = { path = "../deskfuse-update", optional = true }
 serde_json = "1"

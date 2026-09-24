@@ -101,6 +101,8 @@ struct InputActor {
     unavailable_reason: Option<String>,
     leases: BTreeMap<InputSessionId, Lease>,
     published_topologies: BTreeMap<(DeviceId, TransportSessionId, u64), Instant>,
+    local_wallpapers: BTreeMap<DisplayId, Vec<u8>>,
+    published_wallpapers: std::collections::BTreeSet<(DeviceId, TransportSessionId, DisplayId)>,
     attempted: BTreeMap<DeviceId, Instant>,
     motion_probe_started: BTreeMap<TransportSessionId, Instant>,
     motion_disabled_until: BTreeMap<DeviceId, Instant>,
@@ -162,6 +164,8 @@ pub(crate) async fn run(
         unavailable_reason: Some("Input permissions or active login session unavailable".into()),
         leases: BTreeMap::new(),
         published_topologies: BTreeMap::new(),
+        local_wallpapers: BTreeMap::new(),
+        published_wallpapers: Default::default(),
         attempted: BTreeMap::new(),
         motion_probe_started: BTreeMap::new(),
         motion_disabled_until: BTreeMap::new(),
@@ -386,6 +390,21 @@ impl InputActor {
             && self.send(peer, context, InputShareMessage::DisplayTopology(topology))
         {
             self.published_topologies.insert(key, now);
+            for (display_id, jpeg) in &self.local_wallpapers {
+                let image_key = (peer, context.session_id, display_id.clone());
+                if !self.published_wallpapers.contains(&image_key)
+                    && self.send(
+                        peer,
+                        context,
+                        InputShareMessage::DisplayWallpaper {
+                            display_id: display_id.clone(),
+                            jpeg: jpeg.clone(),
+                        },
+                    )
+                {
+                    self.published_wallpapers.insert(image_key);
+                }
+            }
         }
     }
     fn emit_release(&self, id: InputSessionId, peer: DeviceId, reason: &str) {
@@ -543,6 +562,46 @@ impl InputActor {
             self.error("Input scenes could not be persisted");
         }
     }
+    /// Create or refresh the layout scene bound to the current Wi-Fi network.
+    /// Saving again on the same network updates that one scene instead of
+    /// stacking duplicates, so the automatic restore stays unambiguous.
+    async fn save_environment_layout(&mut self, name: Option<String>) {
+        let Some(ssid) = self.snapshot.environment.ssid.clone() else {
+            self.settings_error("尚未取得唯一的 Wi-Fi 名称，暂时无法绑定布局");
+            return;
+        };
+        if !self.snapshot.can_configure_layout() {
+            self.settings_error("只能在主控电脑上保存屏幕布局");
+            return;
+        }
+        self.remember_visible_layout();
+        let mut scenes = self.snapshot.scenes.clone();
+        if let Some(scene) = scenes
+            .iter_mut()
+            .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
+        {
+            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+                scene.name = name.trim().to_owned();
+            }
+            scene.settings.placements = self.snapshot.settings.placements.clone();
+            scene.settings.layout_profiles = self.snapshot.settings.layout_profiles.clone();
+        } else {
+            let name = name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| format!("{ssid} 布局"));
+            match InputSharingScene::new(name, self.snapshot.settings.clone()) {
+                Ok(mut scene) => {
+                    scene.ssid = Some(ssid.clone());
+                    scenes.push(scene);
+                }
+                Err(error) => {
+                    self.settings_error(error.to_string());
+                    return;
+                }
+            }
+        }
+        self.save_scenes(scenes).await;
+    }
     fn settings_error(&self, error: impl Into<String>) {
         self.error(error);
         self.emit(RuntimeEvent::InputSharingSettingsChanged(
@@ -620,6 +679,9 @@ impl InputActor {
                     Err(e) => self.settings_error(e.to_string()),
                 }
             }
+            RuntimeCommand::SaveEnvironmentLayout { name } => {
+                self.save_environment_layout(name).await;
+            }
             RuntimeCommand::RenameInputSharingScene { scene_id, name } => {
                 let mut scenes = self.snapshot.scenes.clone();
                 if let Some(scene) = scenes.iter_mut().find(|s| s.id == scene_id) {
@@ -677,6 +739,7 @@ impl InputActor {
                         self.layout_persistence.dirty = false;
                         self.snapshot.settings = settings.clone();
                         self.published_topologies.clear();
+                        self.published_wallpapers.clear();
                         self.attempted.clear();
                         self.emit(RuntimeEvent::InputSharingSettingsChanged(settings));
                     }
@@ -706,6 +769,22 @@ impl InputActor {
                     self.attempted.clear();
                 }
             }
+            RuntimeCommand::PublishDisplayWallpaper { display_id, jpeg } => {
+                let message = InputShareMessage::DisplayWallpaper {
+                    display_id: display_id.clone(),
+                    jpeg: jpeg.clone(),
+                };
+                if message.validate().is_err() {
+                    return;
+                }
+                if self.local_wallpapers.get(&display_id) == Some(&jpeg) {
+                    return;
+                }
+                self.local_wallpapers
+                    .insert(display_id.clone(), jpeg.clone());
+                self.published_wallpapers
+                    .retain(|(_, _, id)| *id != display_id);
+            }
             RuntimeCommand::PublishDisplayTopology(topology) => {
                 if let Err(e) = topology.validate() {
                     self.error(e.to_string());
@@ -716,6 +795,7 @@ impl InputActor {
                     self.release_all("display topology changed");
                     self.snapshot.local_topology = Some(topology);
                     self.published_topologies.clear();
+                    self.published_wallpapers.clear();
                 }
             }
             RuntimeCommand::RequestInputControl {
@@ -985,6 +1065,11 @@ impl InputActor {
                                 self.release(id, "remote display topology changed", true)
                             }
                             self.snapshot
+                                .remote_wallpapers
+                                .entry(peer_id)
+                                .or_default()
+                                .retain(|id, _| topology.displays.iter().any(|d| &d.id == id));
+                            self.snapshot
                                 .remote_topologies
                                 .insert(peer_id, topology.clone());
                             self.emit(RuntimeEvent::RemoteDisplayTopology { peer_id, topology });
@@ -993,6 +1078,35 @@ impl InputActor {
                         // permissions or control are enabled. The outer check still requires a
                         // trusted current member on an authenticated physical LAN context.
                         self.publish_topology(peer_id, &context, Instant::now());
+                    }
+                    InputShareMessage::DisplayWallpaper { display_id, jpeg } => {
+                        if self
+                            .snapshot
+                            .remote_topologies
+                            .get(&peer_id)
+                            .is_some_and(|t| t.displays.iter().any(|d| d.id == display_id))
+                        {
+                            let already_present = self
+                                .snapshot
+                                .remote_wallpapers
+                                .get(&peer_id)
+                                .is_some_and(|images| images.contains_key(&display_id));
+                            let count: usize = self
+                                .snapshot
+                                .remote_wallpapers
+                                .values()
+                                .map(BTreeMap::len)
+                                .sum();
+                            if already_present
+                                || count < deskfuse_core::MAX_REMOTE_WALLPAPER_PREVIEWS
+                            {
+                                self.snapshot
+                                    .remote_wallpapers
+                                    .entry(peer_id)
+                                    .or_default()
+                                    .insert(display_id, jpeg);
+                            }
+                        }
                     }
                     InputShareMessage::Request {
                         session_id,
@@ -1356,6 +1470,8 @@ impl InputActor {
             .collect::<Vec<_>>();
         for peer in disconnected {
             self.snapshot.remote_topologies.remove(&peer);
+            self.snapshot.remote_wallpapers.remove(&peer);
+            self.published_wallpapers.retain(|(id, _, _)| *id != peer);
             self.published_topologies
                 .retain(|(id, _, _), _| *id != peer);
         }
@@ -1676,6 +1792,7 @@ mod tests {
             settings,
             local_topology: Some(topology.clone()),
             remote_topologies: BTreeMap::from([(peer, topology)]),
+            remote_wallpapers: BTreeMap::new(),
             links: vec![],
         };
         let (output, _) = watch::channel(snapshot.clone());
@@ -1724,6 +1841,8 @@ mod tests {
                 unavailable_reason: None,
                 leases: BTreeMap::new(),
                 published_topologies: BTreeMap::new(),
+                local_wallpapers: BTreeMap::new(),
+                published_wallpapers: Default::default(),
                 attempted: BTreeMap::new(),
                 motion_probe_started: BTreeMap::new(),
                 motion_disabled_until: BTreeMap::new(),
@@ -1736,6 +1855,112 @@ mod tests {
             receiver,
         )
     }
+    #[tokio::test]
+    async fn local_controller_choice_preempts_existing_receiver() {
+        let (mut actor, _, _, _, _) = setup(false);
+        let local = actor.network.borrow().snapshot.local_device_id;
+        actor.snapshot.environment.candidates.push(local);
+        assert!(actor.incoming.is_some());
+        actor.choose_environment_controller(local, false).await;
+        assert!(actor.incoming.is_none());
+    }
+
+    #[test]
+    fn remote_selection_cannot_take_over_a_locally_enabled_controller() {
+        let (mut actor, peer, context, transport, _) = setup(true);
+        transport.capabilities.lock().unwrap().insert(
+            context.session_id,
+            Capabilities::INPUT_SHARING
+                | Capabilities::INPUT_ACTIVATION
+                | Capabilities::INPUT_ENVIRONMENT,
+        );
+        actor.observe_environment(Some("Home".into()));
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::ControllerPresence {
+                controller: true,
+                ssid: Some("Home".into()),
+                preferred: Some(peer),
+            },
+        );
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::ControllerSelection {
+                controller: peer,
+                ssid: Some("Home".into()),
+                remember: true,
+            },
+        );
+        actor.tick_environment();
+        assert_eq!(actor.snapshot.environment.selected, None);
+        assert!(actor.snapshot.environment.conflict);
+        assert!(!actor.snapshot.environment.local_suspended);
+        assert!(
+            actor.snapshot.environment.rules.is_empty(),
+            "a remote selection must not rewrite this device's rules"
+        );
+        assert!(actor.snapshot.settings.enabled);
+    }
+
+    #[test]
+    fn network_layout_restores_arrangement_without_touching_sharing_switches() {
+        let (mut actor, peer, _, _, _) = setup(true);
+        actor.snapshot.environment.ssid = Some("Home".into());
+        let mut scene =
+            InputSharingScene::new("Home".into(), actor.snapshot.settings.clone()).unwrap();
+        scene.ssid = Some("Home".into());
+        scene.settings.placements = vec![DisplayPlacementSetting {
+            display: DisplayKey {
+                device_id: peer,
+                display_id: DisplayId::from("display"),
+            },
+            x: 1000.0,
+            y: 0.0,
+        }];
+        actor.snapshot.scenes = vec![scene];
+        assert!(actor.apply_environment_layout(Some("Home")));
+        assert_eq!(actor.snapshot.settings.placements.len(), 1);
+        assert!(actor.snapshot.settings.enabled);
+        assert_eq!(actor.snapshot.settings.role, InputShareRole::Controller);
+        // The debounced layout save then keeps the bound scene in step.
+        actor.snapshot.settings.placements[0].x = 2000.0;
+        assert!(actor.refresh_environment_scene());
+        assert_eq!(actor.snapshot.scenes[0].settings.placements[0].x, 2000.0);
+        assert!(actor.layout_persistence.scene_dirty);
+    }
+
+    #[test]
+    fn remote_wallpaper_updates_preview_without_releasing_control() {
+        let (mut actor, peer, context, _, _) = setup(false);
+        let (session, _) = receiver_grant(&mut actor, peer, &context);
+        let topology = actor.snapshot.remote_topologies[&peer].clone();
+        let display_id = topology.displays[0].id.clone();
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xd9];
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::DisplayWallpaper {
+                display_id: display_id.clone(),
+                jpeg: jpeg.clone(),
+            },
+        );
+        assert_eq!(actor.snapshot.remote_wallpapers[&peer][&display_id], jpeg);
+        assert!(actor.leases.contains_key(&session));
+        receive(
+            &mut actor,
+            peer,
+            &context,
+            InputShareMessage::DisplayTopology(topology),
+        );
+        assert_eq!(actor.snapshot.remote_wallpapers[&peer][&display_id], jpeg);
+        assert!(actor.leases.contains_key(&session));
+    }
+
     #[tokio::test]
     async fn refresh_reaches_native_delivery_without_changing_settings() {
         let (mut actor, _, _, _, delivery) = setup(false);
