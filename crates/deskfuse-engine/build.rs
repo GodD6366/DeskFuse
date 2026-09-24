@@ -20,6 +20,7 @@ fn main() {
         serde_json::from_slice(&fs::read(&active_path).unwrap()).unwrap();
     assert_eq!(active["schema_version"], 1);
     let repository = active["release_repository"].as_str().unwrap();
+    let cask_token = active["cask_token"].as_str().unwrap();
     let parts: Vec<_> = repository.split('/').collect();
     assert!(
         parts.len() == 2
@@ -48,6 +49,10 @@ fn main() {
         (
             "API",
             format!("https://api.github.com/repos/{repository}/releases?per_page=100"),
+        ),
+        (
+            "HOMEBREW",
+            format!("https://formulae.brew.sh/api/cask/{cask_token}.json"),
         ),
         (
             "DOWNLOAD",
