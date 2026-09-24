@@ -1,9 +1,10 @@
 //! Public distributions check GitHub and install the official DMG after SHA-256
 //! and code-signing checks.
 //!
-//! The release list and the small per-release metadata files are read from the
-//! site mirror first and fall back to GitHub, so a blocked or throttled GitHub
-//! never blocks an update check. The DMG itself always comes from GitHub, and
+//! The release list and the small per-release metadata files are read from
+//! GitHub first and fall back to the site mirror, so the canonical release
+//! source wins whenever it is reachable while the independent domain keeps
+//! checks working through GitHub outages. The DMG itself always comes from GitHub, and
 //! GitHub bytes never enter the signed LAN installer. Public bundles also zip
 //! the running app and serve it to other GitHub-channel devices over the LAN
 //! update transport; those ZIP bytes use Developer ID + SHA-256, not Ed25519.
@@ -15,6 +16,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -78,7 +80,7 @@ impl GitHubUpdater {
             view: LanUpdateView {
                 installed: Some(installed),
                 github: Some(GitHubUpdateView::default()),
-                message: "公开发行版从更新站点与 GitHub 检查并安装更新".into(),
+                message: "公开发行版优先从 GitHub 检查，失败时使用独立更新站点".into(),
                 ..Default::default()
             },
             task: None,
@@ -97,7 +99,7 @@ impl GitHubUpdater {
         }
         self.view.checking = true;
         self.view.error = None;
-        self.view.message = "正在检查更新站点与 GitHub 的发布版本…".into();
+        self.view.message = "正在从 GitHub 检查发布版本，失败时自动使用独立站点…".into();
         self.last_check = Instant::now();
         self.task = Some(Task::Check(tokio::spawn(fetch_offer())));
     }
@@ -617,42 +619,46 @@ async fn fetch_release_list(url: &str) -> Result<Vec<Release>, String> {
         .map_err(|_| "发布列表格式无效".into())
 }
 
-/// 同一个 tag 只保留资产更完整的一份，站点快照与 GitHub 都不会因此丢信息。
-fn merge_release_lists(lists: impl IntoIterator<Item = Vec<Release>>) -> Vec<Release> {
-    let mut merged: Vec<Release> = Vec::new();
-    for release in lists.into_iter().flatten() {
-        match merged
-            .iter()
-            .position(|entry| entry.tag_name == release.tag_name)
-        {
-            Some(index) if release.assets.len() > merged[index].assets.len() => {
-                merged[index] = release;
-            }
-            Some(_) => {}
-            None => merged.push(release),
+/// GitHub 是 canonical release source；只有 GitHub 请求失败或返回空列表时，
+/// 才访问独立域名，避免一个旧站点快照覆盖 GitHub 上的新版本。
+async fn release_candidates_with<F, Fut>(fetch: F) -> Result<Vec<Release>, String>
+where
+    F: Fn(&'static str) -> Fut,
+    Fut: Future<Output = Result<Vec<Release>, String>>,
+{
+    let github_error = match fetch(API).await {
+        Ok(releases) if !releases.is_empty() => return Ok(releases),
+        Ok(_) => "GitHub 返回空发布列表".to_owned(),
+        Err(error) => error,
+    };
+    match fetch(FEED).await {
+        Ok(releases) if !releases.is_empty() => Ok(releases),
+        Ok(_) => Err(format!(
+            "更新检查失败：GitHub 返回空发布列表，独立域名也返回空发布列表"
+        )),
+        Err(site_error) => Err(format!(
+            "更新检查失败：GitHub（{github_error}）；独立域名（{site_error}）"
+        )),
+    }
+}
+
+async fn release_candidates() -> Result<Vec<Release>, String> {
+    release_candidates_with(fetch_release_list).await
+}
+
+/// 版本元数据也优先读取 GitHub 资产；只有 canonical 资产不可用时才读取站点镜像。
+/// 两个来源的字节都必须通过 `SHA256SUMS` 校验，校验逻辑不变。
+async fn fetch_release_file(tag: &str, name: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let github_url = format!("{DOWNLOAD}/{tag}/{name}");
+    match fetch_json(&github_url, limit).await {
+        Ok(bytes) => Ok(bytes),
+        Err(github_error) => {
+            let site_url = format!("{FEED_FILES}/{tag}/{name}");
+            fetch_json(&site_url, limit).await.map_err(|site_error| {
+                format!("GitHub 与独立域名均无法读取 {name}：{github_error}；{site_error}")
+            })
         }
     }
-    merged
-}
-
-/// 站点接口在自定义域名下，api.github.com 在部分网络不可达且匿名配额很低，
-/// 因此两个来源并行查询并合并；只要其中一个可用就继续检查更新。
-async fn release_candidates() -> Result<Vec<Release>, String> {
-    let (feed, api) = tokio::join!(fetch_release_list(FEED), fetch_release_list(API));
-    let merged = merge_release_lists([feed.unwrap_or_default(), api.unwrap_or_default()]);
-    if merged.is_empty() {
-        return Err("更新检查失败：站点接口与 GitHub 均不可用".into());
-    }
-    Ok(merged)
-}
-
-/// 站点按 GitHub 的资产路径镜像元数据；站点缺失或异常时回落到 GitHub 资产 CDN，
-/// 两个来源的字节都与 `SHA256SUMS` 相同，校验逻辑不变。
-async fn fetch_release_file(tag: &str, name: &str, limit: usize) -> Result<Vec<u8>, String> {
-    if let Ok(bytes) = fetch_json(&format!("{FEED_FILES}/{tag}/{name}"), limit).await {
-        return Ok(bytes);
-    }
-    fetch_json(&format!("{DOWNLOAD}/{tag}/{name}"), limit).await
 }
 
 async fn fetch_offer() -> Result<GitHubOffer, String> {
@@ -763,41 +769,55 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn release_candidates_prioritize_github_and_only_fallback_to_site() {
+        use std::sync::{Arc, Mutex};
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let releases = release_candidates_with(move |url| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.lock().unwrap().push(url);
+                if url == API {
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![release("v0.4.5", &[("DeskFuse-arm64.dmg", 10)])])
+                }
+            }
+        })
+        .await
+        .expect("site fallback");
+
+        assert_eq!(releases[0].tag_name, "v0.4.5");
+        assert_eq!(*calls.lock().unwrap(), vec![API, FEED]);
+    }
+
+    #[tokio::test]
+    async fn release_candidates_do_not_query_site_when_github_succeeds() {
+        use std::sync::{Arc, Mutex};
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let releases = release_candidates_with(move |url| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.lock().unwrap().push(url);
+                Ok(vec![release("v0.4.5", &[("DeskFuse-arm64.dmg", 10)])])
+            }
+        })
+        .await
+        .expect("github release list");
+
+        assert_eq!(releases[0].tag_name, "v0.4.5");
+        assert_eq!(*calls.lock().unwrap(), vec![API]);
+    }
+
     #[test]
     fn the_metadata_mirror_sits_beside_the_feed() {
         let base = FEED.strip_suffix("releases.json").expect("feed file name");
         assert_eq!(FEED_FILES, format!("{base}releases"));
         assert!(FEED_FILES.starts_with("https://"));
-    }
-
-    #[test]
-    fn merged_release_lists_keep_the_complete_entry() {
-        let merged = merge_release_lists([
-            vec![
-                release("v0.5.0", &[("DeskFuse-arm64.dmg", 10)]),
-                release("v0.4.0", &[("DeskFuse-arm64.dmg", 10)]),
-            ],
-            vec![
-                release(
-                    "v0.5.0",
-                    &[
-                        ("DeskFuse-arm64.dmg", 10),
-                        ("release.json", 1),
-                        ("build-info.json", 1),
-                        ("SHA256SUMS", 1),
-                    ],
-                ),
-                release("v0.3.5", &[("DeskFuse-arm64.dmg", 10)]),
-            ],
-        ]);
-        assert_eq!(
-            merged
-                .iter()
-                .map(|entry| entry.tag_name.as_str())
-                .collect::<Vec<_>>(),
-            ["v0.5.0", "v0.4.0", "v0.3.5"]
-        );
-        assert_eq!(merged[0].assets.len(), 4);
     }
 
     /// GitHub 的资产 CDN 偶发 504，交叉校验前先重试几次
@@ -810,6 +830,20 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
             }
         }
         Err(last)
+    }
+
+    #[tokio::test]
+    #[ignore = "live network verification"]
+    async fn live_github_release_list_is_reachable() {
+        let releases = fetch_release_list(API).await.expect("github release list");
+        assert!(releases.iter().any(|release| release.tag_name == "v0.4.5"));
+    }
+
+    #[tokio::test]
+    #[ignore = "live network verification"]
+    async fn live_site_release_list_is_reachable() {
+        let releases = fetch_release_list(FEED).await.expect("site release list");
+        assert!(releases.iter().any(|release| release.tag_name == "v0.4.5"));
     }
 
     #[tokio::test]
@@ -843,7 +877,7 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
 
     #[tokio::test]
     #[ignore = "live network verification"]
-    async fn live_offer_is_reachable_through_the_site_feed() {
+    async fn live_offer_is_reachable_through_primary_update_path() {
         let offer = fetch_offer().await.expect("live offer");
         println!(
             "version={} build={} size={} url={}",

@@ -47,3 +47,9 @@
 - 修复：公开仓库提交 `3b71062`，将 `Casks/**` 加入 Pages push 触发路径；同时提交 `v0.4.5` feed、`release.json`、`build-info.json`、`SHA256SUMS` 基线，并把网站 fallback/说明更新为 `v0.4.5`。
 - 结果：Pages push run `35987764276` 成功；线上 feed 首条为 `v0.4.5`，线上三个元数据文件与仓库基线逐字节一致。
 - 预防：每次 release 后必须同时确认公开仓库 cask commit 已触发 Pages，并直接请求自定义域名的 `/api/releases.json` 和 `/api/releases/vX.Y.Z/{SHA256SUMS,release.json,build-info.json}`；GitHub Release 或 Pages job 成功不等于自定义域名已更新。
+
+## 更新源优先级（2026-09-24）
+
+- 公开发行版更新检查必须先读取 GitHub Releases canonical source；只有 GitHub 请求失败或返回空列表时，才读取 `release_feed_url` 的独立域名镜像。
+- `SHA256SUMS`、`release.json`、`build-info.json` 同样遵守 GitHub 资产优先、独立域名回退；最终仍必须通过哈希、版本描述、build-info、签名和公证校验。
+- Homebrew tap 的 raw cask 只提供版本号和 arm64 SHA-256，不提供完整 Release 元数据，不能单独作为更新源。发布或更新检查改动后要分别验证 GitHub Releases API、独立 feed、元数据镜像和 Homebrew cask endpoint。
