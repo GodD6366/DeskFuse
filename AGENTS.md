@@ -39,3 +39,11 @@
 - 修复内容：同步 workspace crate 版本、生成 `0.4.5` release descriptor（build `64`），将远程 `v0.4.5` tag 移到修复提交。
 - 结果：Prerelease run `35983236623` 的 preflight、Rust checks、arm64 DMG、x86_64 DMG、Developer ID 签名、公证、publish 和 cask 全部成功。
 - 经验：版本元数据错误应在打 tag 前由发布脚本或 checklist 阻断；不要通过放宽 preflight 校验来“修复”发布。
+
+## 0.4.5 更新接口事故记录（2026-09-24）
+
+- 现象：`https://deskfuse.godd.cc/api/releases.json` 在 `v0.4.5` Release 和 Pages workflow 成功后仍返回 `v0.4.4`。
+- 根因：Pages 的 `release` 事件使用 release tag 的 `GITHUB_SHA` 作为 `pages_build_version`；`v0.4.5` tag 当时仍指向公开仓库旧的 Cask 提交 `7a01054`，与此前定时部署相同。随后 cask job 提交 `dc5382e` 只改了 `Casks/**`，原 Pages workflow 的 `push.paths` 只监听 `web/**`，因此没有产生新的 Pages 部署，旧 CDN 内容继续提供服务。
+- 修复：公开仓库提交 `3b71062`，将 `Casks/**` 加入 Pages push 触发路径；同时提交 `v0.4.5` feed、`release.json`、`build-info.json`、`SHA256SUMS` 基线，并把网站 fallback/说明更新为 `v0.4.5`。
+- 结果：Pages push run `35987764276` 成功；线上 feed 首条为 `v0.4.5`，线上三个元数据文件与仓库基线逐字节一致。
+- 预防：每次 release 后必须同时确认公开仓库 cask commit 已触发 Pages，并直接请求自定义域名的 `/api/releases.json` 和 `/api/releases/vX.Y.Z/{SHA256SUMS,release.json,build-info.json}`；GitHub Release 或 Pages job 成功不等于自定义域名已更新。
