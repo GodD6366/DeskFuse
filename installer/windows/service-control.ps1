@@ -133,6 +133,14 @@ namespace UniDeskInstaller {
             $expected.Remove($sid)
         }
     }
+    function Configure-ServiceRecovery {
+        # SCM owns recovery; no second watchdog process is installed. The final
+        # action is none so a persistent failure remains visible as stopped.
+        & "$env:SystemRoot\System32\sc.exe" failure UniDeskService reset= 86400 actions= restart/5000/restart/30000/""/0 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'SCM recovery configuration failed' }
+        & "$env:SystemRoot\System32\sc.exe" failureflag UniDeskService 1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'SCM failure flag configuration failed' }
+    }
     function Remove-InstallerFirewallRules {
         foreach ($definition in $firewallRules) {
             $existing = Get-NetFirewallRule -PolicyStore PersistentStore -Name $definition.Name -ErrorAction SilentlyContinue
@@ -183,6 +191,9 @@ namespace UniDeskInstaller {
         $step = 'Apply service security'
         Write-Output "uniDesk installer: $Action / $step"
         Protect-Service
+        $step = 'Configure SCM recovery'
+        Write-Output "uniDesk installer: $Action / $step"
+        Configure-ServiceRecovery
         $step = 'Configure private LAN firewall rules'
         Write-Output "uniDesk installer: $Action / $step"
         Remove-InstallerFirewallRules
@@ -199,6 +210,15 @@ namespace UniDeskInstaller {
     if ($Action -eq 'Remove' -and $service) {
         & "$env:SystemRoot\System32\sc.exe" delete UniDeskService
         if ($LASTEXITCODE -ne 0) { throw 'SCM removal failed' }
+        # `sc delete` is asynchronous while old handles drain. NSIS must not
+        # remove the binary until SCM has released the service registration.
+        $deadline = [Environment]::TickCount64 + 30000
+        while ($true) {
+            $remaining = Get-CimInstance Win32_Service -Filter "Name='UniDeskService'" -ErrorAction SilentlyContinue
+            if (!$remaining) { break }
+            if ([Environment]::TickCount64 -ge $deadline) { throw 'SCM removal did not complete before timeout' }
+            Start-Sleep -Milliseconds 250
+        }
     }
     # Deliberately never touch ProgramData, AppData, device identity, pairing or user files.
     exit 0

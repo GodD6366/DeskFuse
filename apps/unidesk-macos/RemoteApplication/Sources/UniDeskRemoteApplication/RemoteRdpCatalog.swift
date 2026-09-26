@@ -35,6 +35,10 @@ public enum RemoteRdpMessage: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(String.self, forKey: .type)
+        guard try container.decode(UInt32.self, forKey: .version) == 1 else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: container,
+                debugDescription: "Unsupported Windows RemoteApp catalog version")
+        }
         switch type {
         case "catalog":
             self = .catalog(

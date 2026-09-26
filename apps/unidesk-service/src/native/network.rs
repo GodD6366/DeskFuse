@@ -52,7 +52,8 @@ impl Network {
             | Capabilities::CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::DEFERRED_FILE_CLIPBOARD
-            | Capabilities::REMOTE_APPLICATION;
+            | Capabilities::REMOTE_APPLICATION
+            | Capabilities::REMOTE_APPLICATION_RDP;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)

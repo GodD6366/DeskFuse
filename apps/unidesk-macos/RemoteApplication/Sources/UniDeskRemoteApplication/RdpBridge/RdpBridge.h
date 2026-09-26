@@ -49,7 +49,8 @@ int rdp_bridge_frame_size(rdp_bridge* bridge, uint32_t* width, uint32_t* height)
 /* Copies the latest composed frame into `dst` (XRGB32 / BGRA byte order).
  * `dst_stride` is in bytes. Returns 0 on success, non-zero when no frame is
  * available or the destination is too small. */
-int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride);
+int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride, size_t capacity,
+                          uint32_t expected_width, uint32_t expected_height);
 
 /* Input injection; flags use FreeRDP's PTR_FLAGS_* / KBD_FLAGS_* values. */
 void rdp_bridge_mouse(rdp_bridge* bridge, uint16_t x, uint16_t y, uint16_t flags);

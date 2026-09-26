@@ -21,10 +21,10 @@ Rust Windows target 全依赖使用静态 CRT（`-C target-feature=+crt-static`�
 ## 安装与卸载
 
 - 安装器请求一次管理员授权，固定写入 `%ProgramFiles%\uniDesk`，不接受用户可写路径或 `/D` 目录覆盖。
-- 安装器先要求退出托盘客户端，再停止旧服务、复制完整载荷并注册 `UniDeskService` 为自动启动的 LocalSystem 服务。安装时会启动服务；**打包脚本本身不会**。
+- 安装器先要求退出托盘客户端，再停止旧服务、复制完整载荷并注册 `UniDeskService` 为自动启动的 LocalSystem 服务。SCM recovery 配置为失败后 5 秒、30 秒各重启一次，最终保持停止并显示故障；安装时会启动服务；**打包脚本本身不会**。卸载等待 SCM 异步删除完成后才清理本次载荷。
 - 从卷根逐级检查安装路径祖先，目录或载荷含 reparse point 时拒绝操作；只逐层枚举直接子项，不递归跟随链接。安装前和注册服务前将安装树 owner 设为 Administrators，使用受保护 ACL：SYSTEM/Administrators 完全控制、Users 只读执行；应用后读回核对。服务 owner 同样限制为 Administrators，DACL 仅允许 SYSTEM/Administrators 完全控制，Users 查询配置/状态及启动固定服务，不得停止服务或改服务路径。已有服务指向其他路径时拒绝操作；此安装器不迁移此前手工注册在其他目录的实验服务。
 - 仅此新桌面安装器创建三条固定命名的 Windows Defender Firewall 入站规则：服务程序的 UDP 42424（控制/剪贴板 QUIC）、UDP 42425（独立键鼠 QUIC）与 UDP 5353（mDNS），限定 Private profile、LocalSubnet 来源、禁止 edge traversal。没有 TCP 或任意端口放行，不更改网络 profile、全局防火墙设置或其他应用规则。卸载只移除 `UniDesk.Installer.Private.QUIC.UDP42424` / `UniDesk.Installer.Private.Input.UDP42425` / `UniDesk.Installer.Private.mDNS.UDP5353` 且 group 为 `uniDesk Desktop Installer` 的规则。旧的 service-checkpoint ZIP 仍不修改防火墙。
-- GUI 通过开始菜单由普通用户主动启动；安装器不会从管理员会话启动 GUI，不创建管理员常驻任务。GUI 登录启动策略由客户端负责。
+- GUI 通过开始菜单由普通用户主动启动；安装器不会从管理员会话启动 GUI，不创建管理员常驻任务。GUI 登录启动策略由客户端负责。桌面启动时只查询并在必要时请求固定服务的 START 权限；不会执行任意 SCM 命令。
 - 卸载只删除本次载荷清单中的程序文件、快捷方式和服务注册；不会递归删除安装目录，更不会删除 ProgramData/AppData 中的身份、配对、设置或任何用户源文件。
 - 这是首次安装/手动重新安装路径。复制或服务启动失败会明确中止；`unidesk-update` 的 Windows 策略要求固定发行 Ed25519 清单、Windows 安装器 Authenticode、程序与 SQLite/WAL/SHM 备份、服务/GUI/input helper admission 及 60 秒启动自检，全部证据齐全前不得接入永久自动更新流程。现有 NSIS 安装路径仍不是事务安装器。
 

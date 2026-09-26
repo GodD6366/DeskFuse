@@ -60,12 +60,15 @@ RemoteRdpSession ──JSON catalog/launch──▶ unidesk-service (Rust)
 ./scripts/package-macos.sh                # 正常打包（需完整 Xcode + Rust FFI）
 ```
 
-## 剩余集成点（把 RemoteRdpSession 接进现有 UI）
+## 已接入主 UI（RDP 与媒体能力的边界）
 
-1. **Windows 检测与路由**：`RemoteApplicationManager.openPicker/openApplication` 目前走 Mac↔Mac 媒体协议。需在打开会话后检测首帧是 JSON（Windows RDP）还是 PropertyList（Mac 媒体），Windows 时改走 `RemoteRdpSession`。最简检测：对端 `Device.name == "uniDesk Windows"`（服务 HELLO 固定名），或首条消息以 `{` 开头。
-2. **应用选择器 UI**：为 `RemoteRdpApp` 做一个简单列表（可复用 `RemoteApplicationPicker` 的样式）。
-3. **远程画布**：新建一个 `NSView`/Metal 层，用 `RemoteRdpSession.copyFrame` 轮询 RDP 帧并显示；把鼠标/键盘事件映射为 `mouse/key/unicode` 调用。
-4. **凭据**：`RemoteRdpSession.launch` 的 `username/password` 目前空置；需在 launch 时弹出凭据输入（RDP NLA），走 `RemoteRdpBridge.start(rdpFile:username:password:)`。
+- `Device` 的活动路由能力宣告包含 `REMOTE_APPLICATION_RDP` 时，`RemoteApplicationManager` 进入 Windows RDP picker；没有该能力的设备继续使用 Mac↔Mac PropertyList 媒体会话。不会根据设备名猜测平台，也不会把两种首帧协议混在一条会话中。
+- `RemoteRdpPicker` 展示 Windows 注册目录、NLA 用户名/密码字段和可用性错误；每个应用建立自己的 `RemoteRdpSession` 与原生 RDP 窗口。RDP framebuffer 按服务端实际 resize 动态分配并在 C mutex 下复核尺寸。
+- RDP 输入映射包含鼠标、滚轮、键盘扫描码和 Unicode；凭据只传给本次 FreeRDP 连接，不写入 uniDesk。RDP 证书仍按配对 LAN 边界自动接受。
+
+RDP RemoteApp 是 Windows 原生 `rdpinit.exe`/NLA 会话，不等价于 Mac↔Mac 的 ScreenCaptureKit 编码流：没有媒体协议的暂停、HEVC/H.264 偏好、Surface layout 或共享控制租约。UI 明确标注该差异，不能宣称跨平台能力完全相同。
+
+Windows 桌面端通过 `RemoteAppWindow` 调用受认证的服务 IPC 管理 `TSAppAllowList`，不会由普通用户 GUI 直接写 HKLM。
 5. **`{host}` 解析**：`RemoteRdpSession.peerHost` 由调用方从 `Device.endpoint`/route 去掉端口得到。
 
 ## 已知边界

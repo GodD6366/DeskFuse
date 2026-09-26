@@ -30,6 +30,7 @@ pub struct Device {
     pub input_reason: String,
     /// The far side reclaimed input locally; a new enable cycle is required.
     pub input_restart_required: bool,
+    pub remote_app_rdp: bool,
 }
 /// A discovered/cached route is a candidate, not proof of a live session.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -659,6 +660,10 @@ impl From<&EngineState> for EngineSnapshot {
                             .into(),
                         input_reason: m.input_availability_reason(&d.id),
                         input_restart_required: m.input_restart_required(&d.id),
+                        remote_app_rdp: d.routes.iter().any(|route| {
+                            Some(route.id) == d.selected_route_id
+                                && route.capabilities.contains(core::Capabilities::REMOTE_APPLICATION_RDP)
+                        }),
                     });
                 }
                 devices

@@ -20,7 +20,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let lock = NSLock()
     private var _state: State = .idle
-    private let frameLock = NSLock()
+    private let handleLock = NSRecursiveLock()
 
     public var state: State {
         lock.withLock { _state }
@@ -31,6 +31,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     /// Starts a connection. `rdpFile` must have `full address` already resolved
     /// (the `{host}` token replaced with the peer IPv4 and `:3389`).
     public func start(rdpFile: String, username: String?, password: String?) {
+        handleLock.lock(); defer { handleLock.unlock() }
         stop()
         lock.withLock { _state = .connecting }
         let selfPointer = Unmanaged.passUnretained(self).toOpaque()
@@ -47,6 +48,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     }
 
     public func stop() {
+        handleLock.lock(); defer { handleLock.unlock() }
         if let handle {
             rdp_bridge_stop(handle)
             rdp_bridge_free(handle)
@@ -56,32 +58,50 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     }
 
     public var connected: Bool {
+        handleLock.lock(); defer { handleLock.unlock() }
         guard let handle else { return false }
         return rdp_bridge_connected(handle) != 0
     }
 
-    /// Copies the latest frame into `destination` (BGRA / XRGB32 byte order).
-    /// Returns the frame size on success, or nil when no frame is available.
-    public func copyFrame(destination: UnsafeMutableRawPointer, stride: UInt32) -> (width: UInt32, height: UInt32)? {
+    public struct Frame: Sendable {
+        public let bytes: Data
+        public let width: Int
+        public let height: Int
+    }
+
+    /// Size is rechecked under the C frame mutex before copying: a resize
+    /// between allocation and copy cannot overrun or mislabel the destination.
+    public func frame() -> Frame? {
+        handleLock.lock(); defer { handleLock.unlock() }
         guard let handle else { return nil }
-        var width: UInt32 = 0
-        var height: UInt32 = 0
-        guard rdp_bridge_frame_size(handle, &width, &height) == 0 else { return nil }
-        guard rdp_bridge_copy_frame(handle, destination, stride) == 0 else { return nil }
-        return (width, height)
+        var width: UInt32 = 0, height: UInt32 = 0
+        guard rdp_bridge_frame_size(handle, &width, &height) == 0,
+              width > 0, height > 0, width <= 8192, height <= 8192 else { return nil }
+        let stride = width * 4
+        var bytes = Data(count: Int(stride) * Int(height))
+        let count = bytes.count
+        let copied = bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return -1 }
+            return rdp_bridge_copy_frame(handle, base, stride, count, width, height)
+        }
+        guard copied == 0 else { return nil }
+        return Frame(bytes: bytes, width: Int(width), height: Int(height))
     }
 
     public func mouse(x: UInt16, y: UInt16, flags: UInt16) {
+        handleLock.lock(); defer { handleLock.unlock() }
         guard let handle else { return }
         rdp_bridge_mouse(handle, x, y, flags)
     }
 
     public func key(flags: UInt16, scancode: UInt8) {
+        handleLock.lock(); defer { handleLock.unlock() }
         guard let handle else { return }
         rdp_bridge_key(handle, flags, scancode)
     }
 
     public func unicode(flags: UInt16, code: UInt16) {
+        handleLock.lock(); defer { handleLock.unlock() }
         guard let handle else { return }
         rdp_bridge_unicode(handle, flags, code)
     }

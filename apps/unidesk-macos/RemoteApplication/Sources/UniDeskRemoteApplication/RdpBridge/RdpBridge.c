@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define TAG "rdp.bridge"
 
@@ -44,8 +45,8 @@ struct rdp_bridge
 	rdp_bridge_callback cb;
 	void* userdata;
 
-	volatile int connected;
-	volatile int stop_requested;
+	atomic_int connected;
+	atomic_int stop_requested;
 
 	pthread_mutex_t lock;
 	uint8_t* pixels; /* bridge-owned copy of the composed frame */
@@ -125,7 +126,9 @@ static BOOL bridge_end_paint(rdpContext* context)
 	rdp_bridge* bridge = ((bridgeContext*)context)->bridge;
 	rdpGdi* gdi = context->gdi;
 
-	if (!bridge || !gdi || !gdi->primary_buffer)
+	if (!bridge || !gdi || !gdi->primary_buffer || gdi->width <= 0 ||
+        gdi->height <= 0 || gdi->width > 8192 || gdi->height > 8192 ||
+        (size_t)gdi->stride * gdi->height > 256 * 1024 * 1024)
 		return FALSE;
 
 	pthread_mutex_lock(&bridge->lock);
@@ -265,7 +268,7 @@ static DWORD bridge_thread(LPVOID arg)
 	bridge->connected = 1;
 	notify(bridge, RDP_EVENT_CONNECTED, NULL);
 
-	while (!bridge->stop_requested && !freerdp_shall_disconnect_context(instance->context))
+	while (!atomic_load(&bridge->stop_requested) && !freerdp_shall_disconnect_context(instance->context))
 	{
 		HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
 		DWORD count = freerdp_get_event_handles(instance->context, handles, MAXIMUM_WAIT_OBJECTS);
@@ -358,7 +361,8 @@ void rdp_bridge_stop(rdp_bridge* bridge)
 		freerdp_abort_connect_context(bridge->context);
 	if (bridge->thread)
 	{
-		WaitForSingleObject(bridge->thread, 5000);
+		/* Never free context/userdata while the callback thread still runs. */
+        WaitForSingleObject(bridge->thread, INFINITE);
 		CloseHandle(bridge->thread);
 		bridge->thread = NULL;
 	}
@@ -385,7 +389,8 @@ int rdp_bridge_frame_size(rdp_bridge* bridge, uint32_t* width, uint32_t* height)
 	return -1;
 }
 
-int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride)
+int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride, size_t capacity,
+                          uint32_t expected_width, uint32_t expected_height)
 {
 	uint32_t rows = 0;
 	uint32_t row_bytes = 0;
@@ -400,7 +405,8 @@ int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride)
 		return -1;
 	}
 	row_bytes = bridge->width * 4;
-	if (dst_stride < row_bytes)
+	if (bridge->width != expected_width || bridge->height != expected_height ||
+        dst_stride < row_bytes || capacity / dst_stride < bridge->height)
 	{
 		pthread_mutex_unlock(&bridge->lock);
 		return -1;

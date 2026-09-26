@@ -572,6 +572,17 @@ public partial class MainWindow : Window
         routePreference.ToolTip = "当前桌面 IPC 尚未开放路径偏好命令。";
         DeviceDetails.Children.Add(routePreference);
         var buttons = new WrapPanel();
+        if (peer.String("trust") == "trusted" && latest.Value.TryGetProperty("capabilities", out var localCaps)
+            && localCaps.Bool("remote_app"))
+        {
+            var remoteApps = new Button { Content = "管理 Windows RemoteApp", IsEnabled = service.IsConnected && !busy, Margin = new Thickness(0, 0, 8, 0) };
+            remoteApps.Click += (_, _) =>
+            {
+                var window = new RemoteAppWindow(service) { Owner = this };
+                window.ShowDialog();
+            };
+            buttons.Children.Add(remoteApps);
+        }
         if (peer.String("trust") != "trusted") buttons.Children.Add(ActionButton("邀请配对", "RequestPairing", new { peer_id = device.Id }));
         if (connected) buttons.Children.Add(ActionButton("断开连接", "Disconnect", new { peer_id = device.Id }));
         if (peer.String("trust") == "trusted") buttons.Children.Add(ActionButton("撤销信任", "Revoke", new { peer_id = device.Id }));
