@@ -155,7 +155,14 @@ public sealed class DesktopClipboardController : IDisposable
         bool applied = false;
         try
         {
-            if (SyncEnabled && !paused && pollNativeSequence is uint expected)
+            if (SyncEnabled && !paused && item.String("file_transfer_id") is string fileTransferId && !string.IsNullOrWhiteSpace(fileTransferId))
+            {
+                native.WriteOle(new ExplorerOleFileDataObject(MaterializeDeferredFileTransfer(fileTransferId)));
+                nativeRevision++;
+                observedNativeSequence = native.SequenceNumber;
+                applied = true;
+            }
+            else if (SyncEnabled && !paused && pollNativeSequence is uint expected)
             {
                 var formats = item.Array("formats").Select(f => new ClipboardRepresentation(f.String("mime"), Convert.FromBase64String(f.String("data_base64")))).ToArray();
                 if (formats.Length is 0 or > 4 || formats.Sum(f => (long)f.Data.Length) > NativeClipboard.MaxContentBytes) throw new InvalidDataException();
@@ -234,13 +241,50 @@ public sealed class DesktopClipboardController : IDisposable
 
     /// <summary>Requests the content of one incoming offer, remembering the
     /// user-chosen destination folder for the copy-out phase.</summary>
+    private IReadOnlyList<string> MaterializeDeferredFileTransfer(string transferId)
+    {
+        long epoch = generation ?? throw new IOException("桌面会话已失效");
+        service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { session_epoch = epoch, transfer_id = transferId })).GetAwaiter().GetResult();
+        var deadline = Environment.TickCount64 + 60_000;
+        while (Environment.TickCount64 < deadline)
+        {
+            var reply = service.SendAsync(ServiceClient.Command("Poll", new { session_epoch = epoch, after_sequence = 0L })).GetAwaiter().GetResult();
+            if (reply.TryGetProperty("Poll", out var poll))
+            {
+                foreach (var transfer in poll.GetProperty("snapshot").Array("file_transfers"))
+                {
+                    if (transfer.String("transfer_id") == transferId && transfer.String("state") == "staged")
+                    {
+                        var paths = transfer.Array("staged_paths").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").Where(File.Exists).ToArray();
+                        if (paths.Length > 0)
+                        {
+                            string cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "uniDesk", "desktop", "ole-files", transferId);
+                            Directory.CreateDirectory(cache);
+                            var copies = new List<string>();
+                            foreach (var path in paths)
+                            {
+                                string target = Path.Combine(cache, Path.GetFileName(path));
+                                File.Copy(path, target, overwrite: true);
+                                copies.Add(target);
+                            }
+                            service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = epoch, transfer_id = transferId, applied = true })).GetAwaiter().GetResult();
+                            return copies;
+                        }
+                    }
+                }
+            }
+            Thread.Sleep(100);
+        }
+        throw new IOException("远端文件准备超时，Explorer 未收到文件内容");
+    }
+
     public async Task<bool> ReceiveFileAsync(string transferId, string destination)
     {
         try
         {
             Directory.CreateDirectory(destination);
             destinations[transferId] = destination;
-            await service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { transfer_id = transferId }));
+            await service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { session_epoch = generation ?? 0, transfer_id = transferId }));
             return true;
         }
         catch (Exception ex) { Error?.Invoke(ex is IOException ? ex.Message : "无法请求文件内容，请稍后重试。"); return false; }
@@ -251,7 +295,7 @@ public sealed class DesktopClipboardController : IDisposable
         try
         {
             destinations.Remove(transferId);
-            await service.SendAsync(ServiceClient.Command("CancelFileClipboard", new { transfer_id = transferId }));
+            await service.SendAsync(ServiceClient.Command("CancelFileClipboard", new { session_epoch = generation ?? 0, transfer_id = transferId }));
         }
         catch (Exception) { Error?.Invoke("取消请求未送达，请检查连接。"); }
     }
@@ -299,13 +343,13 @@ public sealed class DesktopClipboardController : IDisposable
             native.Write(content);
             observedNativeSequence = native.SequenceNumber;
             if (CaptureEnabled) history.Add(content, "local", "本机");
-            await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { transfer_id = id, applied = true }));
+            await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
             FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
         }
         catch (Exception ex)
         {
             Error?.Invoke(ex is IOException or UnauthorizedAccessException ? $"文件落地失败：{ex.Message}" : "文件落地失败，未向对端确认成功。");
-            try { await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { transfer_id = id, applied = false })); }
+            try { await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = false })); }
             catch (Exception) { Error?.Invoke("文件落地回执未送达，请检查连接。"); }
             FileTransferSettled?.Invoke(id, ex.Message, false);
         }

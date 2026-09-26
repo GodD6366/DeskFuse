@@ -20,9 +20,9 @@ Requests have `version:2`, a process-local monotonically increasing `request_id`
 {"version":2,"request_id":9,"command":{"Poll":{"session_epoch":0,"after_sequence":0}}}
 {"version":2,"request_id":10,"command":{"PublishClipboard":{"session_epoch":0,"sequence":1,"formats":[{"mime":"text/plain","data_base64":"aGVsbG8="}]}}}
 {"version":2,"request_id":10,"command":{"PublishFileClipboard":{"session_epoch":0,"sequence":2,"paths":["C:\\Users\\me\\Documents\\a.txt"]}}}
-{"version":2,"request_id":10,"command":{"RequestFileClipboard":{"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0"}}}
-{"version":2,"request_id":10,"command":{"CancelFileClipboard":{"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0"}}}
-{"version":2,"request_id":10,"command":{"CommitFileClipboard":{"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0","applied":true}}}
+{"version":2,"request_id":10,"command":{"RequestFileClipboard":{"session_epoch":1,"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0"}}}
+{"version":2,"request_id":10,"command":{"CancelFileClipboard":{"session_epoch":1,"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0"}}}
+{"version":2,"request_id":10,"command":{"CommitFileClipboard":{"session_epoch":1,"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0","applied":true}}}
 {"version":2,"request_id":11,"command":{"RegisterInput":{"topology":{"generation":1,"displays":[{"id":"win-monitor-1","frame_x":0.0,"frame_y":0.0,"width":1920,"height":1080,"scale_factor":1.0,"rotation_degrees":0,"is_primary":true}]}}}}
 {"version":2,"request_id":12,"command":{"PollInput":{"after_sequence":0}}}
 {"version":2,"request_id":13,"command":"ReclaimInput"}
@@ -76,7 +76,7 @@ Receiving (remote → Windows):
 3. After the last chunk the worker verifies every complete-file SHA-256 and commits; `Snapshot` then shows `state:"staged"` with absolute `staged_paths`. The desktop copies the files into a user-chosen destination (as the user), may place them on the clipboard, and reports `CommitFileClipboard { applied }`; only then does the service send the protocol `Ack` (or `Cancel` on failure). The staging directory is removed after the commit. The desktop has 60 s after staging; a timeout cancels the sender and removes staged bytes.
 4. Only up to 3 receiving and 4 sending transfers run concurrently. Session lock/logoff, epoch change or service stop cancel all transfers, notify peers, and remove staged bytes. Received files never overwrite silently: the desktop renames conflicts (`名称 (2).扩展名`), and the service cache never mixes transfers.
 
-`Snapshot` additionally carries `file_transfers` (bridge view rows: `transfer_id`, `peer_id`, `direction`, `names`, `total_bytes`, `transferred_bytes`, `state`, `detail`, `staged_paths`, `created_unix_ms`, `updated_unix_ms`) and `file_cache { max_bytes, used_bytes }`. Terminal rows remain visible for ten minutes. Explorer OLE on-demand rendering (paste before download) is NOT part of this milestone: content is always fully received and verified before it is exposed; `CommitClipboard` remains text/image-only and file items must not be reduced to path text.
+`Snapshot` additionally carries `file_transfers` (bridge view rows: `transfer_id`, `peer_id`, `direction`, `names`, `total_bytes`, `transferred_bytes`, `state`, `detail`, `staged_paths`, `created_unix_ms`, `updated_unix_ms`) and `file_cache { max_bytes, used_bytes }`. Terminal rows remain visible for ten minutes. Explorer OLE on-demand rendering uses `FileGroupDescriptorW` and `FileContents`: metadata enumeration does not download, while the first `GetData(FileGroupDescriptorW)` requests and verifies the deferred offer into a user-private staging view. `CommitClipboard` remains text/image-only for ordinary payloads; file offers use `CommitFileClipboard`. Explorer may invoke the descriptor while previewing, so that call can intentionally start the transfer.
 
 Implementation note for parent integration: runtime currently exposes no rename-local command. `Rename` explicitly rejects; the displayed local name is the Windows computer hostname (`GetComputerNameExW(ComputerNameDnsHostname)`), matching the macOS engine's `/bin/hostname` display label. Renaming the computer and restarting the service updates it; the GUI keeps the field read-only like macOS.
 

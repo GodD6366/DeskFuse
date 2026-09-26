@@ -218,8 +218,16 @@ impl Sync {
         runtime: &RuntimeHandle,
         id: DeviceId,
         payload: ClipboardPayload,
-        files: &mut FileBridge,
+        files: &FileBridge,
     ) {
+        // Content frames use the authenticated direct file MIME channel and
+        // must not enter the acknowledged text/image reassembly state machine.
+        if payload.mime == unidesk_transfer::CLIPBOARD_FILE_MIME {
+            if let Ok(frame) = ClipboardFileFrame::decode(&payload.data) {
+                files.on_frame(id, frame);
+            }
+            return;
+        }
         if payload.mime != wire::MIME {
             return;
         }
@@ -356,27 +364,29 @@ impl Sync {
             self.ack(runtime, id, &frame, wire::REJECTED);
             return;
         }
-        // Deferred file announcements ride the acknowledged sync channel as
-        // CLIPBOARD_FILE_MIME payloads; the bridge records the offer and the
-        // announcement is acknowledged like any other clipboard payload.
-        if frame.mime == unidesk_transfer::CLIPBOARD_FILE_MIME {
-            let outcome = match ClipboardFileFrame::decode(&incoming.body) {
-                Ok(file_frame) => {
-                    let accepted = files.accept_wire_offer(id, file_frame);
-                    if accepted {
-                        wire::APPLIED
-                    } else {
-                        wire::REJECTED
-                    }
+        // File references share the same ordered native-application cursor as
+        // text/image copies. Recording an offer is not native OLE publication.
+        let (formats, file_transfer_id) = if frame.mime == unidesk_transfer::CLIPBOARD_FILE_MIME {
+            match ClipboardFileFrame::decode(&incoming.body) {
+                Ok(file_frame @ ClipboardFileFrame::Deferred { .. }) => {
+                    let ClipboardFileFrame::Deferred { transfer_id, .. } = &file_frame else {
+                        unreachable!()
+                    };
+                    let transfer_id = transfer_id.to_hex();
+                    files.accept_wire_offer(id, file_frame);
+                    (Vec::new(), Some(transfer_id))
                 }
-                Err(_) => wire::REJECTED,
+                _ => {
+                    self.ack(runtime, id, &frame, wire::REJECTED);
+                    return;
+                }
+            }
+        } else {
+            let Ok(formats) = clipboard_codec::decode(&frame.mime, &incoming.body) else {
+                self.ack(runtime, id, &frame, wire::REJECTED);
+                return;
             };
-            self.ack(runtime, id, &frame, outcome);
-            return;
-        }
-        let Ok(formats) = clipboard_codec::decode(&frame.mime, &incoming.body) else {
-            self.ack(runtime, id, &frame, wire::REJECTED);
-            return;
+            (formats, None)
         };
         if let Some(previous) = self.apply.take() {
             self.ack(runtime, previous.peer, &previous.frame, wire::SUPERSEDED);
@@ -387,6 +397,7 @@ impl Sync {
                 sequence: self.cursor,
                 peer_id: id.to_string(),
                 formats,
+                file_transfer_id,
             },
             peer: id,
             frame,
@@ -504,6 +515,29 @@ impl Sync {
         self.send_grouped(runtime, sends);
         self.status = Some("clipboard queued; waiting for remote application receipt".into());
         Ok(())
+    }
+
+    /// Only authenticated current-generation peers can use the file channel.
+    pub fn file_peers(&self, runtime: &RuntimeHandle) -> Vec<DeviceId> {
+        let view = runtime.snapshot_view();
+        self.peers
+            .iter()
+            .filter_map(|(id, state)| {
+                (state.ready
+                    && runtime.control_generation(*id) == Some(state.generation)
+                    && view.snapshot.peers.iter().any(|peer| {
+                        peer.id == *id
+                            && peer.selected_route.is_some_and(|route| {
+                                peer.routes.iter().any(|r| {
+                                    r.id == route
+                                        && r.capabilities
+                                            .contains(Capabilities::DEFERRED_FILE_CLIPBOARD)
+                                })
+                            })
+                    }))
+                .then_some(*id)
+            })
+            .collect()
     }
 
     /// Announces one deferred file offer to a single ready peer over the

@@ -74,12 +74,15 @@ pub enum Command {
         paths: Vec<String>,
     },
     RequestFileClipboard {
+        session_epoch: u64,
         transfer_id: String,
     },
     CancelFileClipboard {
+        session_epoch: u64,
         transfer_id: String,
     },
     CommitFileClipboard {
+        session_epoch: u64,
         transfer_id: String,
         applied: bool,
     },
@@ -155,6 +158,9 @@ pub struct Clipboard {
     pub sequence: u64,
     pub peer_id: String,
     pub formats: Vec<Format>,
+    /// Ordered with text/image copies; absent for ordinary content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_transfer_id: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Response {

@@ -16,6 +16,7 @@ use std::{
 use tokio::{io::AsyncReadExt, net::windows::named_pipe::NamedPipeServer};
 use unidesk_core::Endpoint;
 use unidesk_runtime::{RuntimeCommand, RuntimeEvent};
+use unidesk_transfer::FileBridge;
 #[derive(Default)]
 pub(super) struct State {
     owner: Option<ClientSession>,
@@ -33,9 +34,13 @@ pub(super) struct State {
     input_sequence: u64,
     input_reported_activation: Option<String>,
     input_last_lease: Option<(String, u64)>,
+    file_bridge: Option<FileBridge>,
 }
 impl State {
     pub(super) fn clear(&mut self) {
+        if let Some(files) = self.file_bridge.take() {
+            files.reset(true);
+        }
         *self = Self::default();
     }
     fn active(&self, control: &Control) -> bool {
@@ -90,6 +95,37 @@ impl State {
                 .local_topology
                 .as_ref()
                 .map_or(0, |topology| topology.displays.len()),
+            local_device_id: network.runtime.snapshot_view().snapshot.local_device_id.to_string(),
+            settings: Some(snapshot.effective_settings()),
+            controlling: None,
+            activations: snapshot
+                .activations
+                .iter()
+                .map(|(peer, state)| ipc::ActivationView {
+                    peer_id: peer.to_string(),
+                    status: enum_string(&state.status),
+                    reason: state.reason.clone(),
+                })
+                .collect(),
+            remote_topologies: snapshot
+                .remote_topologies
+                .iter()
+                .map(|(peer, topology)| ipc::RemoteTopologyView {
+                    peer_id: peer.to_string(),
+                    topology: topology.clone(),
+                })
+                .collect(),
+            links: snapshot
+                .links
+                .iter()
+                .map(|link| ipc::LinkView {
+                    peer_id: link.peer_id.to_string(),
+                    ready: link.ready,
+                    control_session: link.control_session.map(|id| id.to_string()),
+                    lease_revision: link.lease_revision,
+                    motion_mode: link.motion_mode.clone(),
+                })
+                .collect(),
         }
     }
     pub(super) fn input_event(
@@ -148,6 +184,10 @@ impl State {
             return;
         }
         self.sync.tick(&network.runtime);
+        if let Some(files) = self.file_bridge.as_ref() {
+            let connected = self.sync.file_peers(&network.runtime);
+            files.tick(&connected);
+        }
         let input_active = self.input_active(control);
         let snapshot = network.input_runtime.handle.input_snapshot();
         if input_active {
@@ -216,7 +256,9 @@ impl State {
         }
         match event {
             RuntimeEvent::ClipboardReceived { peer_id, payload } => {
-                self.sync.receive(&network.runtime, peer_id, payload)
+                if let Some(files) = self.file_bridge.as_ref() {
+                    self.sync.receive(&network.runtime, peer_id, payload, files)
+                }
             }
             RuntimeEvent::PairingStatus { .. } => {
                 self.pairing_status =
@@ -245,6 +287,9 @@ impl State {
     pub(super) fn lagged(&mut self) {
         // A lost event may invalidate ordering, so retire all content and handshakes.
         self.sync = clipboard_sync::Sync::default();
+        if let Some(files) = self.file_bridge.take() {
+            files.reset(true);
+        }
         self.last_error = Some("event stream overflow; clipboard session reset; copy again".into());
     }
     fn snapshot(&self, network: &Network, auth: ClientSession, epoch: u64) -> ipc::Snapshot {
@@ -311,7 +356,10 @@ impl State {
             control_port: network.control_port,
             capabilities: ipc::Capabilities {
                 clipboard: self.owner == Some(auth) && self.epoch == epoch,
-                files: false,
+                files: self.owner == Some(auth)
+                    && self.epoch == epoch
+                    && self.file_bridge.is_some()
+                    && !self.sync.file_peers(&network.runtime).is_empty(),
                 input: self
                     .input_heartbeat
                     .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
@@ -324,6 +372,23 @@ impl State {
             input: self.input_state(network),
             peers,
             pending,
+            file_transfers: self
+                .file_bridge
+                .as_ref()
+                .map_or_else(Vec::new, FileBridge::views),
+            file_cache: self.file_bridge.as_ref().map_or(
+                ipc::FileCache {
+                    max_bytes: 0,
+                    used_bytes: 0,
+                },
+                |bridge| {
+                    let usage = bridge.cache_usage();
+                    ipc::FileCache {
+                        max_bytes: usage.max_bytes,
+                        used_bytes: usage.used_bytes,
+                    }
+                },
+            ),
             pairing_status: self
                 .sync
                 .status
@@ -349,6 +414,7 @@ impl State {
             self.owner = Some(auth);
             self.epoch = epoch;
             self.heartbeat = Some(Instant::now());
+            self.file_bridge = Some(crate::native::file_transfer::session_bridge());
             self.sync.tick(&network.runtime);
             return ipc::Reply::Snapshot(self.snapshot(network, auth, epoch));
         }
@@ -419,6 +485,95 @@ impl State {
                 match self.sync.publish(&network.runtime, &formats) {
                     Ok(()) => ipc::Reply::queued(),
                     Err(message) => ipc::Reply::rejected("clipboard_unavailable", message),
+                }
+            }
+            ipc::Command::PublishFileClipboard {
+                session_epoch,
+                sequence,
+                paths,
+            } => {
+                if session_epoch != epoch
+                    || sequence == 0
+                    || sequence <= self.local_sequence
+                    || sequence <= self.published_sequence
+                {
+                    return ipc::Reply::rejected(
+                        "stale_clipboard",
+                        "clipboard generation is no longer current",
+                    );
+                }
+                self.local_sequence = sequence;
+                self.published_sequence = sequence;
+                self.sync.invalidate_copy(&network.runtime);
+                let Some(files) = self.file_bridge.as_ref() else {
+                    return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
+                };
+                let peers = self.sync.file_peers(&network.runtime);
+                let frames = match files.publish_local(
+                    &peers,
+                    paths.into_iter().map(std::path::PathBuf::from).collect(),
+                ) {
+                    Ok(frames) => frames,
+                    Err(message) => return ipc::Reply::rejected("files_unavailable", &message),
+                };
+                for (peer, _id, frame) in frames {
+                    if let Ok(data) = frame.encode() {
+                        self.sync.announce_file_offer(&network.runtime, peer, data);
+                    }
+                }
+                ipc::Reply::queued()
+            }
+            ipc::Command::RequestFileClipboard {
+                session_epoch,
+                transfer_id,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                match self.file_bridge.as_ref().map_or_else(
+                    || Err("文件通道尚未就绪".to_owned()),
+                    |files| files.request_incoming(&transfer_id),
+                ) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(message) => ipc::Reply::rejected("files_unavailable", &message),
+                }
+            }
+            ipc::Command::CancelFileClipboard {
+                session_epoch,
+                transfer_id,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                if let Some(files) = self.file_bridge.as_ref() {
+                    files.cancel_incoming(&transfer_id, "Windows desktop cancelled file transfer");
+                }
+                ipc::Reply::queued()
+            }
+            ipc::Command::CommitFileClipboard {
+                session_epoch,
+                transfer_id,
+                applied,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                match self.file_bridge.as_ref().map_or_else(
+                    || Err("文件通道尚未就绪".to_owned()),
+                    |files| files.commit_incoming(&transfer_id, applied),
+                ) {
+                    Ok(true) => ipc::Reply::queued(),
+                    Ok(false) => ipc::Reply::rejected("stale_transfer", "文件传输不再等待桌面确认"),
+                    Err(message) => ipc::Reply::rejected("files_unavailable", &message),
                 }
             }
             ipc::Command::CommitClipboard {

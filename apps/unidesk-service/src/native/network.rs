@@ -1,5 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
-use super::remote_app;
+use super::{file_transfer, remote_app};
 use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
 use unidesk_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
@@ -44,10 +44,14 @@ impl Network {
         store.get_settings().map_err(|_| stage(22))?;
         TrustStore::list(&store).map_err(|_| stage(22))?;
 
+        let cache = directory.transfer_cache_path();
+        file_transfer::open_transfer_cache(&cache)?;
+        file_transfer::set_cache_root(cache);
         let control_capabilities = Capabilities::NETWORK
             | Capabilities::DEVICE_NETWORK
             | Capabilities::CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
+            | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::REMOTE_APPLICATION;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
@@ -90,6 +94,7 @@ impl Network {
             .build()
             .map_err(|_| stage(26))?;
 
+        file_transfer::start_delivery(runtime.clone());
         let input_transport =
             bind_transport(identity.as_ref(), INPUT_CAPABILITIES, INPUT_PORT, true)
                 .await
