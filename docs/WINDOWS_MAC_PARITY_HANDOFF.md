@@ -63,8 +63,8 @@
 3. 首次 `GetData(FileGroupDescriptorW)` 时请求 `RequestFileClipboard`，接收、校验并写入用户私有缓存。
 4. 返回真实文件/目录描述符；`FileContents` 按 `lindex` 返回对应流。
 5. 支持取消、超时、断线、重名和缓存清理。
-6. 现有协议没有完整目录标志和子树元数据，因此先按当前 names/total_bytes 契约实现；后续再扩展目录描述符协议。
-7. 预览程序触发 `FileGroupDescriptorW` 时可能导致下载，文档中必须明确这一行为。
+6. deferred announcement 现在携带完整相对目录树：文件、目录、空目录和子树均有稳定的 `lindex`；旧版 names/total_bytes 二元组仍可解码，并合成顶层文件元数据。`FileGroupDescriptorW` 和 `FileContents` 使用同一 lindex，目录不提供 FileContents。
+7. 预览程序触发 `FileGroupDescriptorW` 时可能导致下载，文档中必须明确这一行为；目录树元数据枚举本身不下载。
 
 涉及：
 

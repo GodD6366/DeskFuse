@@ -44,7 +44,7 @@ Windows 设备密钥由服务保管，使用系统保护存储及服务/管理�
 
 通用格式为文字、PNG、HTML、RTF、文件引用；原生 UTI 和 Windows 注册格式仅用于平台转换，同平台可保留增强格式。文件引用优先于附带的路径文本，不把来源机器的绝对路径写入目标剪贴板。
 
-Windows 已有文件使用原生文件数据对象；尚未下载文件使用 OLE 虚拟文件与异步内容提供。专用 STA/OLE 线程持有数据对象，通过异步桥接供给数据，不在 GUI 主线程下载文件。保留既有提前传输、配额、取消、去重和旧任务不得污染新剪贴板的契约。
+Windows 已有文件使用原生文件数据对象；尚未下载文件使用 OLE 虚拟文件与异步内容提供。deferred manifest 表达完整目录树、子树和空目录，并为所有描述符分配稳定 lindex；目录只出现在 `FileGroupDescriptorW`，文件内容按相同 lindex 延迟提供。专用 STA/OLE 线程持有数据对象，通过异步桥接供给数据，不在 GUI 主线程下载文件。保留既有提前传输、配额、取消、去重和旧任务不得污染新剪贴板的契约。
 
 接收前检查 Windows 保留名、非法字符、大小写冲突、路径长度及逃逸；无法保持名称的任务明确拒绝，不静默重命名或覆盖。清理只处理应用自有缓存，保护接收、粘贴和导出任务。
 
@@ -154,6 +154,6 @@ Windows 使用用户提供的构建机：OpenSSH + PowerShell + MSVC x64 Release
 
 macOS arm64 已接入完整客户端更新流程：可信物理局域网库存交换、独立分块下载、签名与完整性验证、带发送保护的缓存回收、文件/原生导出/输入空闲安装、独立 helper、数据库与应用备份、60 秒 SwiftUI 启动自检、失败回滚和持久化隔离，以及重连安装回执。设置页和设备页提供本机“立即下载安装”：立即唤醒检查并下载兼容新版，下载中点击会加入当前任务，已下载时显示“立即安装并重启”。主动请求在当前尝试结束、无兼容新版或失败后失效，不延续到未来发行；安装就绪后由输入线程结束键鼠控制、释放按键并停用捕获，普通主动请求会等待文件传输、粘贴和原生导出完成，点击“立即安装”则跳过这段等待。界面显示真实下载字节、目标版本和等待原因。“检查更新”及原有自动下载、空闲安装保留；失败发行在验证或自检失败时隔离，被中断的尝试不隔离，已经安装到位的回滚记录连同其隔离项按历史清理；本机打包自动签发更新载荷、归档 NAS 并提供本机分发种子。没有更新协议的旧版仍须逐机手动安装一次基础包。自动检查和隔离应用副本的安装演练属于开发验证；真实两机下载、断网重连和使用中等待仍由用户验收。
 
-Windows 已新增原生 WPF 桌面、托盘、当前用户历史和本地暂存区，设备配对及受限业务 IPC 已接入服务；文字/图片/富文本经 clipboard-sync-v2 与原生写入回执交接，当前最多 16 MiB。普通已解锁桌面已接入独立 42425 input-only runtime 与用户态 helper，双向键鼠已接入源码链路：Mac 主控到 Windows 被控，以及 Windows 主控（本地钩子采集 + 跨平台 SharingController 边缘逻辑 + 会话去重回执）到 Mac 被控，均带 1.5 秒原生释放看门狗和紧急收回；对端仍需设备激活确认。首次手动安装的 NSIS 脚本已提供。**跨设备文件按需传输已接入源码链路**：Windows 作为收发两端使用与 macOS 引擎相同的 deferred clipboard file 帧协议，本机 CF_HDROP 复制与暂存区发送报价，接收端显式请求后分块暂存、逐文件校验、落地并回执；Explorer OLE 延迟渲染、高完整性/安全桌面输入、自动升级/回滚、工作流执行/跨设备规则同步和 Windows 原生安装/两机验收仍未完成；Windows 已可编辑并持久化与 Rust 模型对齐的工作流目录、共享快捷键及主控多屏布局。本机显示名与 macOS 一致使用操作系统主机名。完整进度见 [WINDOWS_CLIENT.md](WINDOWS_CLIENT.md)，当前 IPC 见 [WINDOWS_DESKTOP_IPC.md](WINDOWS_DESKTOP_IPC.md)；旧服务检查点见 [WINDOWS_SERVICE_CHECKPOINT.md](WINDOWS_SERVICE_CHECKPOINT.md)。
+Windows 已新增原生 WPF 桌面、托盘、当前用户历史和本地暂存区，设备配对及受限业务 IPC 已接入服务；文字/图片/富文本经 clipboard-sync-v2 与原生写入回执交接，当前最多 16 MiB。普通已解锁桌面已接入独立 42425 input-only runtime 与用户态 helper，双向键鼠已接入源码链路：Mac 主控到 Windows 被控，以及 Windows 主控（本地钩子采集 + 跨平台 SharingController 边缘逻辑 + 会话去重回执）到 Mac 被控，均带 1.5 秒原生释放看门狗和紧急收回；对端仍需设备激活确认。首次手动安装的 NSIS 脚本已提供。**跨设备文件按需传输已接入源码链路**：Windows 作为收发两端使用与 macOS 引擎相同的 deferred clipboard file 帧协议，本机 CF_HDROP 复制与暂存区发送报价，接收端显式请求后分块暂存、逐文件校验、落地并回执；高完整性/安全桌面输入、自动升级/回滚、工作流执行/跨设备规则同步和 Windows 原生安装/两机验收仍未完成；Windows 已可编辑并持久化与 Rust 模型对齐的工作流目录、共享快捷键及主控多屏布局。本机显示名与 macOS 一致使用操作系统主机名。完整进度见 [WINDOWS_CLIENT.md](WINDOWS_CLIENT.md)，当前 IPC 见 [WINDOWS_DESKTOP_IPC.md](WINDOWS_DESKTOP_IPC.md)；旧服务检查点见 [WINDOWS_SERVICE_CHECKPOINT.md](WINDOWS_SERVICE_CHECKPOINT.md)。
 
 GitHub 0.3.1 预发行提供 macOS arm64 DMG 和 macOS x86_64 DMG；Windows 构建暂跳过。版本由提交的 release.json 描述，构建机不分配编号。发行私钥与 ledger 不进入 CI；未签名的 update ZIP 不公开为 LAN 更新载荷。参见 [发行指南](RELEASING.md)。

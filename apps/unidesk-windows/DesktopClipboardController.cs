@@ -157,7 +157,8 @@ public sealed class DesktopClipboardController : IDisposable
         {
             if (SyncEnabled && !paused && item.String("file_transfer_id") is string fileTransferId && !string.IsNullOrWhiteSpace(fileTransferId))
             {
-                native.WriteOle(new ExplorerOleFileDataObject(MaterializeDeferredFileTransfer(fileTransferId)));
+                var metadata = DeferredOleEntries(fileTransferId);
+                native.WriteOle(new ExplorerOleFileDataObject(metadata, () => MaterializeDeferredFileTransfer(fileTransferId, metadata)));
                 nativeRevision++;
                 observedNativeSequence = native.SequenceNumber;
                 applied = true;
@@ -241,7 +242,35 @@ public sealed class DesktopClipboardController : IDisposable
 
     /// <summary>Requests the content of one incoming offer, remembering the
     /// user-chosen destination folder for the copy-out phase.</summary>
-    private IReadOnlyList<string> MaterializeDeferredFileTransfer(string transferId)
+    private IReadOnlyList<ExplorerOleFileEntry> DeferredOleEntries(string transferId)
+    {
+        var snapshot = service.LatestSnapshot;
+        if (snapshot is null) return [];
+        var transfer = snapshot.Value.Array("file_transfers")
+            .FirstOrDefault(item => item.String("transfer_id") == transferId);
+        return DeferredOleEntriesFromTransfer(transfer);
+    }
+
+    private static IReadOnlyList<ExplorerOleFileEntry> DeferredOleEntriesFromTransfer(JsonElement transfer)
+    {
+        var entries = transfer.Array("entries")
+            .Select(item => new ExplorerOleFileEntry(
+                item.String("path"),
+                item.String("kind") is "directory" or "symlink",
+                item.Number("size"),
+                (int)item.Number("lindex")))
+            .Where(item => !string.IsNullOrWhiteSpace(item.RelativePath))
+            .OrderBy(item => item.Lindex)
+            .ToArray();
+        if (entries.Length > 0) return entries;
+        return transfer.Array("names")
+            .Select((item, index) => new ExplorerOleFileEntry(item.GetString() ?? "file", false, 0, index))
+            .ToArray();
+    }
+
+    private IReadOnlyList<ExplorerOleFileEntry> MaterializeDeferredFileTransfer(
+        string transferId,
+        IReadOnlyList<ExplorerOleFileEntry> metadata)
     {
         long epoch = generation ?? throw new IOException("桌面会话已失效");
         service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { session_epoch = epoch, transfer_id = transferId })).GetAwaiter().GetResult();
@@ -256,16 +285,26 @@ public sealed class DesktopClipboardController : IDisposable
                     if (transfer.String("transfer_id") == transferId && transfer.String("state") == "staged")
                     {
                         var paths = transfer.Array("staged_paths").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").Where(File.Exists).ToArray();
-                        if (paths.Length > 0)
+                        if (paths.Length > 0 || metadata.Any(item => item.IsDirectory))
                         {
                             string cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "uniDesk", "desktop", "ole-files", transferId);
                             Directory.CreateDirectory(cache);
-                            var copies = new List<string>();
-                            foreach (var path in paths)
+                            var copies = new List<ExplorerOleFileEntry>();
+                            foreach (var item in metadata)
                             {
-                                string target = Path.Combine(cache, Path.GetFileName(path));
-                                File.Copy(path, target, overwrite: true);
-                                copies.Add(target);
+                                string target = Path.Combine(cache, item.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                                if (item.IsDirectory)
+                                {
+                                    Directory.CreateDirectory(target);
+                                    copies.Add(item.WithLocalPath(target));
+                                    continue;
+                                }
+                                string? source = paths.FirstOrDefault(path => path.EndsWith(Path.DirectorySeparatorChar + item.RelativePath.Replace('/', Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                                    ?? paths.FirstOrDefault(path => string.Equals(Path.GetFileName(path), Path.GetFileName(item.RelativePath), StringComparison.OrdinalIgnoreCase));
+                                if (source is null) throw new IOException($"暂存文件缺失：{item.RelativePath}");
+                                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                                File.Copy(source, target, overwrite: true);
+                                copies.Add(item.WithLocalPath(target));
                             }
                             service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = epoch, transfer_id = transferId, applied = true })).GetAwaiter().GetResult();
                             return copies;
@@ -327,6 +366,37 @@ public sealed class DesktopClipboardController : IDisposable
         try
         {
             var staged = transfer.Array("staged_paths").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").Where(p => File.Exists(p) || Directory.Exists(p)).ToArray();
+            var metadata = DeferredOleEntriesFromTransfer(transfer);
+            if (metadata.Count > 0)
+            {
+                var roots = metadata.Select(item => item.RelativePath.Split('/')[0]).Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(root => root, root => ResolveConflict(Path.Combine(destination, root)), StringComparer.OrdinalIgnoreCase);
+                foreach (var item in metadata.Where(item => item.IsDirectory))
+                {
+                    string root = item.RelativePath.Split('/')[0];
+                    int separator = item.RelativePath.IndexOf('/');
+                    string suffix = separator < 0 ? "" : item.RelativePath[(separator + 1)..];
+                    Directory.CreateDirectory(Path.Combine(roots[root], suffix.Replace('/', Path.DirectorySeparatorChar)));
+                }
+                foreach (var item in metadata.Where(item => !item.IsDirectory))
+                {
+                    string? source = staged.FirstOrDefault(path => path.EndsWith(Path.DirectorySeparatorChar + item.RelativePath.Replace('/', Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
+                    if (source is null) throw new IOException($"暂存文件缺失：{item.RelativePath}");
+                    string root = item.RelativePath.Split('/')[0];
+                    string suffix = item.RelativePath.Length == root.Length ? "" : item.RelativePath[(root.Length + 1)..];
+                    string target = Path.Combine(roots[root], suffix.Replace('/', Path.DirectorySeparatorChar));
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(source, target, overwrite: false);
+                }
+                var copies = roots.Values.ToList();
+                destinations.Remove(id);
+                var content = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
+                native.Write(content);
+                observedNativeSequence = native.SequenceNumber;
+                if (CaptureEnabled) history.Add(content, "local", "本机");
+                await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
+                FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
+                return;
+            }
             if (staged.Length == 0) throw new IOException("暂存文件不可用，接收已终止。");
             var copies = new List<string>();
             foreach (var path in staged)

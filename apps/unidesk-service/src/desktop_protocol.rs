@@ -2,7 +2,15 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
-pub use unidesk_transfer::FileTransferView;
+pub use unidesk_transfer::{DeferredEntryKind, DeferredFileEntry, FileTransferView};
+#[cfg(not(windows))]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeferredFileEntry {
+    pub path: String,
+    pub kind: String,
+    pub size: u64,
+    pub lindex: u32,
+}
 // The desktop pipe is Windows-only; non-Windows builds keep the crate green.
 #[cfg(not(windows))]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -11,6 +19,8 @@ pub struct FileTransferView {
     pub peer_id: String,
     pub direction: String,
     pub names: Vec<String>,
+    #[serde(default)]
+    pub entries: Vec<DeferredFileEntry>,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
     pub state: String,

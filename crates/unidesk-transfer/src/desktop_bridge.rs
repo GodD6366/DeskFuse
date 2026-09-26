@@ -26,8 +26,8 @@
 //! holding the state lock for an unbounded time.
 
 use crate::{
-    ChunkDescriptor, ClipboardFileFrame, ClipboardFilePlan, DeferredClipboardSource, RelativePath,
-    TransferId, TransferManifest,
+    ChunkDescriptor, ClipboardFileFrame, ClipboardFilePlan, DeferredClipboardSource,
+    DeferredEntryKind, DeferredFileEntry, RelativePath, TransferId, TransferManifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -150,6 +150,9 @@ pub struct FileTransferView {
     /// `outgoing` or `incoming`.
     pub direction: String,
     pub names: Vec<String>,
+    /// Complete relative tree metadata. Stable `lindex` values are used by OLE.
+    #[serde(default)]
+    pub entries: Vec<DeferredFileEntry>,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
     /// `offered` | `requested` | `preparing` | `receiving` | `verifying` |
@@ -233,6 +236,7 @@ impl SendPhase {
 struct SendingJob {
     peer: DeviceId,
     names: Vec<String>,
+    entries: Vec<DeferredFileEntry>,
     total: u64,
     sent_bytes: u64,
     phase: SendPhase,
@@ -245,6 +249,7 @@ struct SendingJob {
 struct IncomingOffer {
     peer: DeviceId,
     names: Vec<String>,
+    entries: Vec<DeferredFileEntry>,
     total_bytes: u64,
     created: Instant,
     requested: bool,
@@ -253,6 +258,7 @@ struct IncomingOffer {
 struct ReceivingTransfer {
     peer: DeviceId,
     names: Vec<String>,
+    entries: Vec<DeferredFileEntry>,
     total_bytes: u64,
     accepted_frames: u64,
     received_bytes: u64,
@@ -266,6 +272,7 @@ struct PendingApply {
     transfer_id: TransferId,
     peer: DeviceId,
     names: Vec<String>,
+    entries: Vec<DeferredFileEntry>,
     total_bytes: u64,
     staged_paths: Vec<String>,
     destination: PathBuf,
@@ -434,6 +441,7 @@ impl FileBridge {
                     transfer_id: id,
                     names: source.names.clone(),
                     total_bytes: source.total_bytes,
+                    entries: source.deferred_entries().to_vec(),
                 },
             ));
         }
@@ -460,8 +468,9 @@ impl FileBridge {
                 transfer_id,
                 names,
                 total_bytes,
+                entries,
             } => {
-                self.record_incoming_offer(peer, transfer_id, names, total_bytes);
+                self.record_incoming_offer(peer, transfer_id, names, total_bytes, entries);
             }
             ClipboardFileFrame::Request { transfer_id } => self.start_sending(peer, transfer_id),
             ClipboardFileFrame::RequestedOffer {
@@ -588,6 +597,7 @@ impl FileBridge {
                     peer_id: pending.peer.to_hex(),
                     direction: "incoming".into(),
                     names: pending.names,
+                    entries: pending.entries,
                     total_bytes: pending.total_bytes,
                     transferred_bytes: pending.total_bytes,
                     state: "cancelled".into(),
@@ -615,6 +625,7 @@ impl FileBridge {
                     peer_id: offer.peer.to_hex(),
                     direction: "incoming".into(),
                     names: offer.names,
+                    entries: offer.entries,
                     total_bytes: offer.total_bytes,
                     transferred_bytes: 0,
                     state: "cancelled".into(),
@@ -655,6 +666,7 @@ impl FileBridge {
                     peer_id: pending.peer.to_hex(),
                     direction: "incoming".into(),
                     names: pending.names.clone(),
+                    entries: pending.entries.clone(),
                     total_bytes: pending.total_bytes,
                     transferred_bytes: pending.total_bytes,
                     state: "completed".into(),
@@ -679,6 +691,7 @@ impl FileBridge {
                     peer_id: pending.peer.to_hex(),
                     direction: "incoming".into(),
                     names: pending.names,
+                    entries: pending.entries,
                     total_bytes: pending.total_bytes,
                     transferred_bytes: pending.total_bytes,
                     state: "failed".into(),
@@ -776,6 +789,7 @@ impl FileBridge {
                     peer_id: pending.peer.to_hex(),
                     direction: "incoming".into(),
                     names: pending.names,
+                    entries: pending.entries,
                     total_bytes: pending.total_bytes,
                     transferred_bytes: pending.total_bytes,
                     state: "failed".into(),
@@ -851,6 +865,7 @@ impl FileBridge {
                 peer_id: offer.peer.to_hex(),
                 direction: "incoming".into(),
                 names: offer.names.clone(),
+                entries: offer.entries.clone(),
                 total_bytes: offer.total_bytes,
                 transferred_bytes: 0,
                 state: if offer.requested {
@@ -871,6 +886,7 @@ impl FileBridge {
                 peer_id: active.peer.to_hex(),
                 direction: "incoming".into(),
                 names: active.names.clone(),
+                entries: active.entries.clone(),
                 total_bytes: active.total_bytes,
                 transferred_bytes: active.received_bytes,
                 state: if active.finishing {
@@ -891,6 +907,7 @@ impl FileBridge {
                 peer_id: pending.peer.to_hex(),
                 direction: "incoming".into(),
                 names: pending.names.clone(),
+                entries: pending.entries.clone(),
                 total_bytes: pending.total_bytes,
                 transferred_bytes: pending.total_bytes,
                 state: "staged".into(),
@@ -906,6 +923,7 @@ impl FileBridge {
                 peer_id: job.peer.to_hex(),
                 direction: "outgoing".into(),
                 names: job.names.clone(),
+                entries: job.entries.clone(),
                 total_bytes: job.total,
                 transferred_bytes: if job.phase == SendPhase::Preparing {
                     0
@@ -928,6 +946,7 @@ impl FileBridge {
                 peer_id: offer.peer.to_hex(),
                 direction: "outgoing".into(),
                 names: offer.source.names.clone(),
+                entries: offer.source.deferred_entries().to_vec(),
                 total_bytes: offer.source.total_bytes,
                 transferred_bytes: 0,
                 state: "offered".into(),
@@ -960,7 +979,22 @@ impl FileBridge {
         id: TransferId,
         names: Vec<String>,
         total_bytes: u64,
+        entries: Vec<DeferredFileEntry>,
     ) {
+        let entries = if entries.is_empty() {
+            names
+                .iter()
+                .enumerate()
+                .map(|(lindex, name)| DeferredFileEntry {
+                    path: RelativePath::new(name).expect("validated deferred name"),
+                    kind: DeferredEntryKind::File,
+                    size: if names.len() == 1 { total_bytes } else { 0 },
+                    lindex: lindex as u32,
+                })
+                .collect()
+        } else {
+            entries
+        };
         let mut state = self.inner.state.lock().expect("file bridge state");
         // A retransmitted announcement for a known offer is idempotent.
         if state
@@ -1002,6 +1036,7 @@ impl FileBridge {
             IncomingOffer {
                 peer,
                 names,
+                entries,
                 total_bytes,
                 created: Instant::now(),
                 requested: false,
@@ -1063,6 +1098,7 @@ impl FileBridge {
             SendingJob {
                 peer,
                 names: source.names.clone(),
+                entries: source.deferred_entries().to_vec(),
                 total: source.total_bytes,
                 sent_bytes: 0,
                 phase: SendPhase::Preparing,
@@ -1145,6 +1181,7 @@ impl FileBridge {
         let (commands, events) = spawn_receive_worker(manifest, transfer_id, factory);
         let IncomingOffer {
             names,
+            entries,
             total_bytes,
             created,
             ..
@@ -1154,6 +1191,7 @@ impl FileBridge {
             ReceivingTransfer {
                 peer,
                 names,
+                entries,
                 total_bytes,
                 accepted_frames: 1,
                 received_bytes: 0,
@@ -1276,6 +1314,7 @@ impl FileBridge {
                     peer_id: peer.to_hex(),
                     direction: "incoming".into(),
                     names: active.names,
+                    entries: active.entries,
                     total_bytes: active.total_bytes,
                     transferred_bytes: active.received_bytes,
                     state: "cancelled".into(),
@@ -1327,6 +1366,7 @@ impl FileBridge {
                     peer_id: pending.peer.to_hex(),
                     direction: "incoming".into(),
                     names: pending.names,
+                    entries: pending.entries,
                     total_bytes: pending.total_bytes,
                     transferred_bytes: pending.total_bytes,
                     state: "cancelled".into(),
@@ -1394,6 +1434,7 @@ impl FileBridge {
                     transfer_id: id,
                     peer: active.peer,
                     names: active.names,
+                    entries: active.entries,
                     total_bytes: active.total_bytes,
                     staged_paths: paths,
                     destination: active.destination,
@@ -1411,6 +1452,7 @@ impl FileBridge {
                         peer_id: active.peer.to_hex(),
                         direction: "incoming".into(),
                         names: active.names,
+                        entries: active.entries,
                         total_bytes: active.total_bytes,
                         transferred_bytes: active.received_bytes,
                         state: "failed".into(),
@@ -1460,6 +1502,7 @@ impl FileBridge {
                     peer_id: job.peer.to_hex(),
                     direction: "outgoing".into(),
                     names: job.names,
+                    entries: job.entries,
                     total_bytes: job.total,
                     transferred_bytes: job.sent_bytes,
                     state: state_label,
@@ -1895,7 +1938,14 @@ impl IncomingStore for WindowsStore {
                 return Err(format!("暂存文件 {} 校验失败", entry.path()));
             }
         }
-        // Commit: move staged entries into the transfer destination.
+        // Commit directories first so empty folders and complete subtrees are
+        // preserved even when no file supplied a parent directory.
+        for entry in self.manifest.directories() {
+            let staged = self.staged_path(entry.path())?;
+            fs::create_dir_all(&staged)
+                .map_err(|error| format!("无法创建暂存目录 {}：{error}", entry.path()))?;
+        }
+        // Commit: move staged files into the transfer destination.
         let mut written = Vec::new();
         for entry in self.manifest.files() {
             let staged = self.staged_path(entry.path())?;
@@ -1905,6 +1955,14 @@ impl IncomingStore for WindowsStore {
             }
             fs::rename(&staged, &final_path)
                 .map_err(|error| format!("无法落盘 {}：{error}", entry.path()))?;
+            written.push(final_path.to_string_lossy().into_owned());
+        }
+        for entry in self.manifest.directories() {
+            let staged = self.staged_path(entry.path())?;
+            let final_path = self.destination.join(entry.path().to_path_buf());
+            fs::create_dir_all(&final_path)
+                .map_err(|error| format!("无法落盘目录 {}：{error}", entry.path()))?;
+            let _ = fs::remove_dir_all(&staged);
             written.push(final_path.to_string_lossy().into_owned());
         }
         let _ = fs::remove_dir_all(&self.staging);
@@ -2300,6 +2358,12 @@ mod tests {
                 transfer_id: id,
                 names: vec!["huge.bin".into()],
                 total_bytes: receiver.bridge.limits().cache_max_bytes + 1,
+                entries: vec![DeferredFileEntry {
+                    path: RelativePath::new("huge.bin").expect("path"),
+                    kind: DeferredEntryKind::File,
+                    size: receiver.bridge.limits().cache_max_bytes + 1,
+                    lindex: 0,
+                }],
             },
         );
         let error = receiver
@@ -2322,6 +2386,12 @@ mod tests {
                     transfer_id: id,
                     names: vec!["same.txt".into()],
                     total_bytes: 4,
+                    entries: vec![DeferredFileEntry {
+                        path: RelativePath::new("same.txt").expect("path"),
+                        kind: DeferredEntryKind::File,
+                        size: 4,
+                        lindex: 0,
+                    }],
                 },
             );
         }

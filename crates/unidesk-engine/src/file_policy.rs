@@ -340,6 +340,7 @@ impl FilePolicy {
                 transfer_id,
                 names,
                 total_bytes,
+                ..
             } => {
                 if self
                     .pending
@@ -1277,6 +1278,12 @@ mod tests {
             transfer_id: id,
             names: vec!["large-folder".into()],
             total_bytes: 400 * 1024 * 1024,
+            entries: vec![unidesk_transfer::DeferredFileEntry {
+                path: unidesk_transfer::RelativePath::new("large-folder").unwrap(),
+                kind: unidesk_transfer::DeferredEntryKind::Directory,
+                size: 0,
+                lindex: 0,
+            }],
         };
         assert!(
             policy

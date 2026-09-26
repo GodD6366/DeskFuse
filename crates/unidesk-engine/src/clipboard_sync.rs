@@ -946,6 +946,7 @@ impl Sync {
                                     transfer_id: id,
                                     names: source.names.clone(),
                                     total_bytes: source.total_bytes,
+                                    entries: source.deferred_entries().to_vec(),
                                 };
                                 if let Ok(data) = frame.encode() {
                                     self.start(

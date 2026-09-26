@@ -15,7 +15,7 @@
 
 ## 明确未就绪
 
-Explorer OLE 延迟渲染（粘贴时才下载）未接入：文件内容必须完整接收并通过校验后才落盘可见。工作流目录、工作流快捷键和键鼠共享快捷键已接入认证桌面 IPC；工作流执行/跨设备规则共享仍由 Rust 工作流引擎负责，Windows UI 当前只编辑并持久化模型。安全桌面输入和自动升级仍未接入，UI 不声明可用。服务已预留独立 session-agent 状态，但当前没有安装或授权生产 agent；锁屏、UAC、登录输入及 SAS 仍为 false，任何 session/epoch/身份探测失败都会 fail-closed。agent 不能通过普通桌面 IPC 自授权，uniDesk 不注入或拦截 SAS，也不处理 Windows 凭据。本机改名与 macOS 一致使用操作系统主机名，设置页只读显示；`Rename` 服务命令仍明确拒绝。路径偏好尚未开放业务 IPC；候选和当前活动路径分开显示。普通桌面输入源码接线不等于管理员窗口、登录、UAC 或真实两机已验收。
+Explorer OLE 延迟渲染已接入：deferred manifest 先枚举完整目录树与稳定 lindex，首次 `FileGroupDescriptorW` 请求时才下载并校验内容；文件内容必须校验后才对 Explorer 可见。工作流目录、工作流快捷键和键鼠共享快捷键已接入认证桌面 IPC；工作流执行和跨设备规则共享已接入 capability-gated Rust 服务链路。安全桌面输入和自动升级仍未接入，UI 不声明可用。服务已预留独立 session-agent 状态，但当前没有安装或授权生产 agent；锁屏、UAC、登录输入及 SAS 仍为 false，任何 session/epoch/身份探测失败都会 fail-closed。agent 不能通过普通桌面 IPC 自授权，uniDesk 不注入或拦截 SAS，也不处理 Windows 凭据。本机改名与 macOS 一致使用操作系统主机名，设置页只读显示；`Rename` 服务命令仍明确拒绝。路径偏好尚未开放业务 IPC；候选和当前活动路径分开显示。普通桌面输入源码接线不等于管理员窗口、登录、UAC 或真实两机已验收。
 
 ## 构建与边界
 

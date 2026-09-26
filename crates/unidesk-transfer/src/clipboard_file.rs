@@ -3,6 +3,7 @@
 use super::{
     ChunkDescriptor, RelativePath, TransferEntry, TransferError, TransferId, TransferManifest,
 };
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ const DEFERRED: u8 = 6;
 const REQUEST: u8 = 7;
 const REQUESTED_OFFER: u8 = 8;
 const RECEIPT: u8 = 11;
+const COMPRESSED_DEFERRED: u8 = 12;
 const COMPRESSED_OFFER: u8 = 9;
 const COMPRESSED_REQUESTED_OFFER: u8 = 10;
 const MAX_MANIFEST_BYTES: usize = 256 * 1024 * 1024;
@@ -161,10 +163,14 @@ impl ClipboardFilePlan {
 #[derive(Clone, Debug)]
 pub enum ClipboardFileFrame {
     /// A clipboard announcement; carries no content and creates no destination files.
+    /// `entries` is optional on the wire for compatibility with the original
+    /// names/bytes-only deferred frame. New senders include the complete tree;
+    /// old frames decode to synthetic top-level file entries.
     Deferred {
         transfer_id: TransferId,
         names: Vec<String>,
         total_bytes: u64,
+        entries: Vec<DeferredFileEntry>,
     },
     /// Explicit demand from the target after paste or permitted small-file prefetch.
     Request {
@@ -232,14 +238,50 @@ impl ClipboardFileFrame {
                 transfer_id,
                 names,
                 total_bytes,
+                entries,
             } => {
                 validate_deferred_names(names)?;
-                output.push(DEFERRED);
+                // Preserve the original tuple wire shape for callers that do
+                // not have tree metadata; this lets old peers continue to
+                // consume compatibility announcements.
+                if entries.is_empty() {
+                    output.push(DEFERRED);
+                    output.extend_from_slice(transfer_id.as_bytes());
+                    output.extend_from_slice(
+                        &serde_json::to_vec(&(names, total_bytes))
+                            .map_err(|e| TransferError::InvalidManifest(e.to_string()))?,
+                    );
+                    return Ok(output);
+                }
+                validate_deferred_entries(names, *total_bytes, entries)?;
+                let wire = DeferredWire {
+                    names,
+                    total_bytes: *total_bytes,
+                    entries,
+                };
+                let json = serde_json::to_vec(&wire)
+                    .map_err(|e| TransferError::InvalidManifest(e.to_string()))?;
+                let compressed = json.len() > 64 * 1024;
+                let body = if compressed {
+                    let mut encoder =
+                        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                    encoder.write_all(&json)?;
+                    encoder.finish()?
+                } else {
+                    json
+                };
+                if body.len() > MAX_OFFER_BYTES {
+                    return Err(TransferError::InvalidManifest(
+                        "延迟文件清单过大，请分批复制".into(),
+                    ));
+                }
+                output.push(if compressed {
+                    COMPRESSED_DEFERRED
+                } else {
+                    DEFERRED
+                });
                 output.extend_from_slice(transfer_id.as_bytes());
-                output.extend_from_slice(
-                    &serde_json::to_vec(&(names, total_bytes))
-                        .map_err(|e| TransferError::InvalidManifest(e.to_string()))?,
-                );
+                output.extend_from_slice(&body);
             }
             Self::Request { transfer_id } => {
                 output.push(REQUEST);
@@ -354,14 +396,49 @@ impl ClipboardFileFrame {
         let transfer_id = TransferId::from_bytes(id);
         let body = &bytes[MAGIC.len() + 17..];
         match kind {
-            DEFERRED if body.len() <= 256 * 1024 => {
-                let (names, total_bytes): (Vec<String>, u64) = serde_json::from_slice(body)
-                    .map_err(|e| TransferError::InvalidManifest(e.to_string()))?;
+            DEFERRED | COMPRESSED_DEFERRED if body.len() <= MAX_OFFER_BYTES => {
+                let mut decoded = Vec::new();
+                let json = if kind == COMPRESSED_DEFERRED {
+                    flate2::read::ZlibDecoder::new(body)
+                        .take(MAX_MANIFEST_BYTES as u64 + 1)
+                        .read_to_end(&mut decoded)?;
+                    if decoded.len() > MAX_MANIFEST_BYTES {
+                        return Err(TransferError::InvalidManifest(
+                            "expanded deferred file manifest is too large".into(),
+                        ));
+                    }
+                    decoded.as_slice()
+                } else {
+                    body
+                };
+                let (names, total_bytes, entries) =
+                    match serde_json::from_slice::<DeferredWireOwned>(json) {
+                        Ok(wire) => (wire.names, wire.total_bytes, wire.entries),
+                        // The original protocol encoded exactly `(names, total_bytes)`.
+                        Err(_) => {
+                            let (names, total_bytes): (Vec<String>, u64) =
+                                serde_json::from_slice(json)
+                                    .map_err(|e| TransferError::InvalidManifest(e.to_string()))?;
+                            let entries = names
+                                .iter()
+                                .enumerate()
+                                .map(|(lindex, name)| DeferredFileEntry {
+                                    path: RelativePath::new(name).expect("validated deferred name"),
+                                    kind: DeferredEntryKind::File,
+                                    size: if lindex == 0 { total_bytes } else { 0 },
+                                    lindex: lindex as u32,
+                                })
+                                .collect();
+                            (names, total_bytes, entries)
+                        }
+                    };
                 validate_deferred_names(&names)?;
+                validate_deferred_entries(&names, total_bytes, &entries)?;
                 Ok(Self::Deferred {
                     transfer_id,
                     names,
                     total_bytes,
+                    entries,
                 })
             }
             REQUEST if body.is_empty() => Ok(Self::Request { transfer_id }),
@@ -424,6 +501,89 @@ impl ClipboardFileFrame {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeferredEntryKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+/// Metadata advertised before content is requested. Paths are relative to the
+/// copied top-level roots and `lindex` is a deterministic, zero-based ordinal
+/// used by Windows `FileContents`; it never changes after a request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeferredFileEntry {
+    pub path: RelativePath,
+    pub kind: DeferredEntryKind,
+    pub size: u64,
+    pub lindex: u32,
+}
+
+#[derive(Serialize)]
+struct DeferredWire<'a> {
+    names: &'a [String],
+    total_bytes: u64,
+    entries: &'a [DeferredFileEntry],
+}
+
+#[derive(Deserialize)]
+struct DeferredWireOwned {
+    names: Vec<String>,
+    total_bytes: u64,
+    entries: Vec<DeferredFileEntry>,
+}
+
+fn validate_deferred_entries(
+    names: &[String],
+    total_bytes: u64,
+    entries: &[DeferredFileEntry],
+) -> Result<(), TransferError> {
+    if entries.is_empty() {
+        return Err(TransferError::InvalidManifest(
+            "deferred clipboard manifest has no entries".into(),
+        ));
+    }
+    if entries.len() > super::MAX_MANIFEST_ENTRIES {
+        return Err(TransferError::InvalidManifest(
+            "deferred clipboard manifest has too many entries".into(),
+        ));
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    let mut bytes = 0_u64;
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.lindex != index as u32 || !paths.insert(entry.path.as_str()) {
+            return Err(TransferError::InvalidManifest(
+                "deferred clipboard manifest has unstable indexes or duplicate paths".into(),
+            ));
+        }
+        if entry.kind == DeferredEntryKind::File {
+            bytes = bytes.checked_add(entry.size).ok_or_else(|| {
+                TransferError::InvalidManifest("deferred clipboard size overflow".into())
+            })?;
+        } else if entry.size != 0 {
+            return Err(TransferError::InvalidManifest(
+                "deferred directory has non-zero size".into(),
+            ));
+        }
+    }
+    if bytes != total_bytes {
+        return Err(TransferError::InvalidManifest(
+            "deferred file bytes do not match manifest".into(),
+        ));
+    }
+    let roots = entries
+        .iter()
+        .filter_map(|entry| entry.path.as_str().split('/').next())
+        .collect::<std::collections::BTreeSet<_>>();
+    if roots.len() != names.len() || names.iter().any(|name| !roots.contains(name.as_str())) {
+        return Err(TransferError::InvalidManifest(
+            "deferred manifest roots do not match names".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_deferred_names(names: &[String]) -> Result<(), TransferError> {
     if names.is_empty()
         || names.len() > 1024
@@ -451,6 +611,7 @@ pub struct DeferredClipboardSource {
     pub names: Vec<String>,
     pub total_bytes: u64,
     entries: std::sync::Arc<Vec<SourceMetadata>>,
+    deferred_entries: std::sync::Arc<Vec<DeferredFileEntry>>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SourceMetadata {
@@ -562,13 +723,61 @@ impl DeferredClipboardSource {
             }
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut deferred_entries = entries
+            .iter()
+            .map(|entry| {
+                let root = roots
+                    .iter()
+                    .filter(|root| entry.path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+                    .expect("source descendant");
+                let root_name = root.file_name().expect("validated source name");
+                let relative = if &entry.path == root {
+                    PathBuf::from(root_name)
+                } else {
+                    PathBuf::from(root_name)
+                        .join(entry.path.strip_prefix(root).expect("descendant"))
+                };
+                let path = RelativePath::new(relative).expect("validated source relative path");
+                let kind = if entry.link_target.is_some() {
+                    DeferredEntryKind::Symlink
+                } else if entry.directory {
+                    DeferredEntryKind::Directory
+                } else {
+                    DeferredEntryKind::File
+                };
+                DeferredFileEntry {
+                    path,
+                    kind,
+                    size: if kind == DeferredEntryKind::File {
+                        entry.size
+                    } else {
+                        0
+                    },
+                    lindex: 0,
+                }
+            })
+            .collect::<Vec<_>>();
+        deferred_entries.sort_by(|left, right| left.path.cmp(&right.path));
+        for (index, entry) in deferred_entries.iter_mut().enumerate() {
+            entry.lindex = u32::try_from(index)
+                .map_err(|_| TransferError::InvalidManifest("deferred lindex overflow".into()))?;
+        }
+        validate_deferred_entries(&names, total_bytes, &deferred_entries)?;
         Ok(Self {
             roots,
             names,
             total_bytes,
             entries: std::sync::Arc::new(entries),
+            deferred_entries: std::sync::Arc::new(deferred_entries),
         })
     }
+    /// Metadata entries with deterministic paths and OLE indexes.
+    #[must_use]
+    pub fn deferred_entries(&self) -> &[DeferredFileEntry] {
+        &self.deferred_entries
+    }
+
     /// Reject deleted, replaced, resized, edited, or renamed sources before any
     /// content is read. Hash verification still protects the eventual transfer.
     /// Do not compare Unix ctime: Finder tags, quarantine attributes and chmod
@@ -782,6 +991,7 @@ mod tests {
             transfer_id: id,
             names: source.names.clone(),
             total_bytes: source.total_bytes,
+            entries: source.deferred_entries().to_vec(),
         };
         let encoded = frame.encode().unwrap();
         assert!(encoded.len() < 100);

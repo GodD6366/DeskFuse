@@ -37,7 +37,7 @@ mod desktop_bridge;
 
 pub use clipboard_file::{
     CLIPBOARD_FILE_MIME, ClipboardFileFrame, ClipboardFilePlan, ClipboardSourceFile,
-    DeferredClipboardSource,
+    DeferredClipboardSource, DeferredEntryKind, DeferredFileEntry,
 };
 pub use desktop_bridge::{
     FileBridge, FileCacheUsage, FileFrameSink, FileTransferView, IncomingStore, Limits,

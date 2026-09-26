@@ -62,7 +62,7 @@
 ## Windows 客户端实现边界（2026-09-18）
 
 - Windows 服务与桌面端使用同一帧协议：发送端报价/响应请求/流式分块/等待 Ack 的状态机位于 `unidesk-transfer::desktop_bridge`（环回测试覆盖两端）；接收端把分块写入服务保护目录内的逐任务暂存区，逐文件 SHA-256 校验后提交，桌面把文件复制到用户选择的目标位置并放入剪贴板后才回 `CommitFileClipboard(applied)`，服务此时才发送协议 Ack。
-- Windows 无 Finder 粘贴目录查询；接收目标是用户在「传输」页显式选择的文件夹，重名按 `name (2).ext` 自动改名，不静默覆盖。本里程碑不提供 Explorer OLE 延迟渲染（粘贴时才下载）；文件必须完整接收并通过校验后才可见。
+- Windows 无 Finder 粘贴目录查询；接收目标是用户在「传输」页显式选择的文件夹，重名按 `name (2).ext` 自动改名，不静默覆盖。Explorer OLE 使用完整 deferred manifest 延迟渲染：目录、子树和空目录先以元数据枚举，首次 `FileGroupDescriptorW` 请求时才下载并校验，`FileContents.lindex` 与描述符保持稳定一致。
 - Windows 每任务缓存预算默认 1 GiB；并发接收最多 3、发送最多 4 个任务；报价有效期与 macOS 相同为 10 分钟。会话锁屏/注销、服务停止或断线都会取消任务、通知对端并清理暂存字节。
 - macOS 独有的自动目录交付、浮窗进度与历史缓存长期保留不适用于 Windows 检查点；Windows 终态记录在传输页保留 10 分钟。
 
