@@ -1,5 +1,24 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
 use serde::{Deserialize, Serialize};
+
+#[cfg(windows)]
+pub use unidesk_transfer::FileTransferView;
+// The desktop pipe is Windows-only; non-Windows builds keep the crate green.
+#[cfg(not(windows))]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FileTransferView {
+    pub transfer_id: String,
+    pub peer_id: String,
+    pub direction: String,
+    pub names: Vec<String>,
+    pub total_bytes: u64,
+    pub transferred_bytes: u64,
+    pub state: String,
+    pub detail: Option<String>,
+    pub staged_paths: Vec<String>,
+    pub created_unix_ms: u64,
+    pub updated_unix_ms: u64,
+}
 pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 24 * 1024 * 1024;
 pub const MAX_CONTENT: usize = 16 * 1024 * 1024;
@@ -49,6 +68,21 @@ pub enum Command {
         sequence: u64,
         formats: Vec<Format>,
     },
+    PublishFileClipboard {
+        session_epoch: u64,
+        sequence: u64,
+        paths: Vec<String>,
+    },
+    RequestFileClipboard {
+        transfer_id: String,
+    },
+    CancelFileClipboard {
+        transfer_id: String,
+    },
+    CommitFileClipboard {
+        transfer_id: String,
+        applied: bool,
+    },
     CommitClipboard {
         session_epoch: u64,
         sequence: u64,
@@ -62,6 +96,37 @@ pub enum Command {
     },
     InputFault {
         message: String,
+    },
+    EnterInputControl {
+        session_id: String,
+        target_display: String,
+        x: f64,
+        y: f64,
+    },
+    SendInputEvents {
+        session_id: String,
+        target_display: String,
+        batch: u64,
+        events: Vec<unidesk_core::SharedInputEvent>,
+    },
+    LeaveInputControl {
+        session_id: String,
+    },
+    ReleaseInputControl {
+        session_id: String,
+    },
+    EnableInputControl {
+        peer_id: String,
+    },
+    DisableInputControl,
+    RestartInputControl {
+        peer_id: String,
+    },
+    MoveControlDevice {
+        device_id: String,
+        display_id: String,
+        x: f64,
+        y: f64,
     },
     ReclaimInput,
     ListRemoteApps,
@@ -157,8 +222,15 @@ pub struct Snapshot {
     pub input: InputState,
     pub peers: Vec<Peer>,
     pub pending: Vec<Pending>,
+    pub file_transfers: Vec<FileTransferView>,
+    pub file_cache: FileCache,
     pub pairing_status: Option<String>,
     pub last_error: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FileCache {
+    pub max_bytes: u64,
+    pub used_bytes: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Capabilities {
@@ -176,6 +248,43 @@ pub struct InputState {
     pub reason: Option<String>,
     pub controller_id: Option<String>,
     pub display_count: usize,
+    /// The local device identity, needed to anchor the input layout.
+    pub local_device_id: String,
+    /// Effective sharing settings; `None` before the input runtime reports.
+    pub settings: Option<unidesk_core::InputSharingSettings>,
+    /// The control session this machine currently holds, if any.
+    pub controlling: Option<ControlView>,
+    /// Outgoing controller activations, one per participant peer.
+    pub activations: Vec<ActivationView>,
+    /// Remote input topologies of participant peers.
+    pub remote_topologies: Vec<RemoteTopologyView>,
+    /// Input session links with granted control sessions.
+    pub links: Vec<LinkView>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ControlView {
+    pub session_id: String,
+    pub peer_id: String,
+    pub target_display: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ActivationView {
+    pub peer_id: String,
+    pub status: String,
+    pub reason: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RemoteTopologyView {
+    pub peer_id: String,
+    pub topology: unidesk_core::DisplayTopology,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LinkView {
+    pub peer_id: String,
+    pub ready: bool,
+    pub control_session: Option<String>,
+    pub lease_revision: u64,
+    pub motion_mode: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub enum InputDelivery {
@@ -195,6 +304,20 @@ pub enum InputDelivery {
         sequence: u64,
         reason: String,
     },
+    ControlGranted {
+        sequence: u64,
+        session_id: String,
+        lease_ms: u64,
+    },
+    ControlDenied {
+        sequence: u64,
+        reason: String,
+    },
+    ControlReleased {
+        sequence: u64,
+        session_id: String,
+        reason: String,
+    },
 }
 impl InputDelivery {
     #[must_use]
@@ -202,8 +325,18 @@ impl InputDelivery {
         match self {
             Self::Lease { sequence, .. }
             | Self::Batch { sequence, .. }
-            | Self::Release { sequence, .. } => *sequence,
+            | Self::Release { sequence, .. }
+            | Self::ControlGranted { sequence, .. }
+            | Self::ControlDenied { sequence, .. }
+            | Self::ControlReleased { sequence, .. } => *sequence,
         }
+    }
+    #[must_use]
+    pub fn is_controller_event(&self) -> bool {
+        matches!(
+            self,
+            Self::ControlGranted { .. } | Self::ControlDenied { .. } | Self::ControlReleased { .. }
+        )
     }
 }
 #[derive(Clone, Serialize, Deserialize)]

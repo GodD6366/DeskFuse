@@ -33,10 +33,15 @@ mod cache;
 mod windows_paths;
 pub use cache::{CacheCleanup, ExternalCacheLeases, TransferCache};
 mod clipboard_file;
+mod desktop_bridge;
 
 pub use clipboard_file::{
     CLIPBOARD_FILE_MIME, ClipboardFileFrame, ClipboardFilePlan, ClipboardSourceFile,
     DeferredClipboardSource,
+};
+pub use desktop_bridge::{
+    FileBridge, FileCacheUsage, FileFrameSink, FileTransferView, IncomingStore, Limits,
+    StoreFactory,
 };
 
 /// The protocol's default chunk size (1 MiB).
