@@ -22,6 +22,7 @@ bincode = "1.3"
 flate2 = "1"
 image = { version = "0.25.9", default-features = false, features = ["tiff", "png"] }
 sha2.workspace = true
+hex = "0.4"
 unidesk-protocol = { path = "../../crates/unidesk-protocol" }
 unidesk-identity = { path = "../../crates/unidesk-identity" }
 unidesk-runtime = { path = "../../crates/unidesk-runtime" }

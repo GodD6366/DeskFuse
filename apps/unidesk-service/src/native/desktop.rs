@@ -40,6 +40,7 @@ pub(super) struct State {
     input_last_lease: Option<(String, u64)>,
     session_agent: session_agent::SessionAgent,
     file_bridge: Option<FileBridge>,
+    workflow_sync_at: Option<Instant>,
 }
 impl State {
     pub(super) fn clear(&mut self) {
@@ -219,6 +220,30 @@ impl State {
             return;
         }
         self.sync.tick(&network.runtime);
+        if self
+            .workflow_sync_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(5))
+        {
+            if let Ok(frames) = network.workflow_catalog.frames() {
+                let peers = network.runtime.snapshot_view().snapshot.peers;
+                for peer in peers.into_iter().filter(|peer| {
+                    peer.connection == unidesk_core::ConnectionState::Connected
+                        && peer.routes.iter().any(|route| {
+                            route
+                                .capabilities
+                                .contains(unidesk_core::Capabilities::WORKFLOW_SYNC)
+                        })
+                }) {
+                    for frame in &frames {
+                        let _ = network.runtime.try_send(RuntimeCommand::SendWorkflowSync {
+                            peer_id: peer.id,
+                            payload: frame.clone(),
+                        });
+                    }
+                }
+            }
+            self.workflow_sync_at = Some(Instant::now());
+        }
         if let Some(files) = self.file_bridge.as_ref() {
             let connected = self.sync.file_peers(&network.runtime);
             files.tick(&connected);
@@ -293,6 +318,19 @@ impl State {
             RuntimeEvent::ClipboardReceived { peer_id, payload } => {
                 if let Some(files) = self.file_bridge.as_ref() {
                     self.sync.receive(&network.runtime, peer_id, payload, files)
+                }
+            }
+            RuntimeEvent::WorkflowSyncReceived { peer_id, payload } => {
+                match network.workflow_catalog.receive(&payload) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            let _ = network.runtime.try_send(RuntimeCommand::SendWorkflowSync {
+                                peer_id,
+                                payload: frame,
+                            });
+                        }
+                    }
+                    Err(error) => self.last_error = Some(error.chars().take(256).collect()),
                 }
             }
             RuntimeEvent::PairingStatus { .. } => {
@@ -396,7 +434,9 @@ impl State {
                     && self.file_bridge.is_some()
                     && !self.sync.file_peers(&network.runtime).is_empty(),
                 input: self.helper_available()
-                    && self.input_heartbeat.is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+                    && self
+                        .input_heartbeat
+                        .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
                 elevated_input: self.helper_available()
                     && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
                 secure_desktop_input: self.session_agent.secure_desktop_input_available(),
@@ -409,6 +449,8 @@ impl State {
                     remote_app::availability(),
                     remote_app::Availability::Available
                 ),
+                workflow_execution: self.owner == Some(auth) && self.epoch == epoch,
+                workflow_sync: self.owner == Some(auth) && self.epoch == epoch,
             },
             input: self.input_state(network),
             peers,
@@ -729,44 +771,66 @@ impl State {
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
-            ipc::Command::GetWorkflows => match network.store.workflows() {
+            ipc::Command::GetWorkflows => match network.workflow_catalog.list() {
                 Ok(workflows) => ipc::Reply::Workflows { workflows },
                 Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
             },
             ipc::Command::SaveWorkflow { workflow } => {
-                if let Err(error) = workflow.validate() {
-                    return ipc::Reply::rejected("invalid_workflow", &error);
-                }
-                match network.store.workflows() {
-                    Ok(mut workflows) => {
-                        if let Some(existing) = workflows.iter_mut().find(|item| item.id == workflow.id) {
-                            *existing = workflow;
-                        } else {
-                            workflows.push(workflow);
-                        }
-                        match network.store.set_workflows(&workflows) {
-                            Ok(()) => ipc::Reply::queued(),
-                            Err(_) => ipc::Reply::rejected("storage_unavailable", "无法保存工作流目录"),
-                        }
-                    }
-                    Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+                match network.workflow_catalog.save(workflow) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("invalid_workflow", &error),
                 }
             }
-            ipc::Command::DeleteWorkflow { id } => match network.store.workflows() {
-                Ok(mut workflows) => {
-                    let before = workflows.len();
-                    workflows.retain(|workflow| workflow.id != id);
-                    if workflows.len() == before {
-                        ipc::Reply::rejected("not_found", "工作流不存在")
-                    } else {
-                        match network.store.set_workflows(&workflows) {
-                            Ok(()) => ipc::Reply::queued(),
-                            Err(_) => ipc::Reply::rejected("storage_unavailable", "无法保存工作流目录"),
-                        }
-                    }
-                }
-                Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+            ipc::Command::DeleteWorkflow { id } => match network.workflow_catalog.delete(&id) {
+                Ok(()) => ipc::Reply::queued(),
+                Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
             },
+            ipc::Command::SaveWorkflowRule { rule } => {
+                match network.workflow_catalog.save_rule(rule) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("invalid_workflow_rule", &error),
+                }
+            }
+            ipc::Command::DeleteWorkflowRule { id } => {
+                match network.workflow_catalog.delete_rule(&id) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
+                }
+            }
+            ipc::Command::RunWorkflow { workflow_id, input } => {
+                let workflow = match network.workflow_catalog.list() {
+                    Ok(workflows) => workflows.into_iter().find(|item| item.id == workflow_id),
+                    Err(_) => {
+                        return ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录");
+                    }
+                };
+                let Some(workflow) = workflow else {
+                    return ipc::Reply::rejected("not_found", "工作流不存在");
+                };
+                match workflow::execute(&workflow, &input) {
+                    Ok(result) => ipc::Reply::WorkflowResult {
+                        run_id: result.run_id,
+                        workflow_id,
+                        formats: result.formats,
+                        message: result.message,
+                    },
+                    Err(message) => ipc::Reply::rejected("workflow_failed", &message),
+                }
+            }
+            ipc::Command::CancelWorkflow { .. } => ipc::Reply::rejected(
+                "not_supported",
+                "当前 Windows 工作流步骤为受限同步执行，无需取消",
+            ),
+            ipc::Command::GetWorkflowCatalog => match network.workflow_catalog.view_json() {
+                Ok(json) => ipc::Reply::WorkflowCatalog { json },
+                Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
+            },
+            ipc::Command::RestoreWorkflowConflict { conflict_id } => {
+                match network.workflow_catalog.restore(&conflict_id) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("not_found", &error),
+                }
+            }
             ipc::Command::ReclaimInput => {
                 self.release_input("Windows user reclaimed local input");
                 self.input_reported_activation = None;

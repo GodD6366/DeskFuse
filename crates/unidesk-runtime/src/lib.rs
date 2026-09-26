@@ -83,6 +83,8 @@ pub enum PeerMessage {
     InputBatch(InputEventBatch),
     /// The peer's main-display geometry.
     DisplayInfo(DisplayInfo),
+    /// Authenticated workflow catalog anti-entropy frame.
+    WorkflowSync(Vec<u8>),
 }
 
 /// A stream of authenticated application messages received from peers.
@@ -1048,6 +1050,10 @@ pub enum RuntimeCommand {
         request_id: unidesk_core::RequestId,
         payload: ClipboardPayload,
     },
+    SendWorkflowSync {
+        peer_id: DeviceId,
+        payload: Vec<u8>,
+    },
     ObserveWifiEnvironment {
         ssid: Option<String>,
     },
@@ -1424,6 +1430,11 @@ pub enum RuntimeEvent {
     ClipboardReceived {
         peer_id: DeviceId,
         payload: ClipboardPayload,
+    },
+    /// A trusted, connected peer pushed one bounded workflow catalog frame.
+    WorkflowSyncReceived {
+        peer_id: DeviceId,
+        payload: Vec<u8>,
     },
     /// A trusted, connected peer pushed a remote-input batch.
     InputReceived {
@@ -2721,6 +2732,10 @@ impl Actor {
                     Some(request_id),
                 );
             }
+            RuntimeCommand::SendWorkflowSync { peer_id, payload } => {
+                self.send_peer_message(peer_id, PeerMessage::WorkflowSync(payload))
+                    .await;
+            }
             RuntimeCommand::SendClipboard { peer_id, payload } => {
                 self.send_peer_message(peer_id, PeerMessage::Clipboard(payload))
                     .await;
@@ -2805,6 +2820,11 @@ impl Actor {
                     .send(RuntimeEvent::ClipboardReceived { peer_id, payload });
             }
             PeerMessage::InputBatch(_) => {}
+            PeerMessage::WorkflowSync(payload) => {
+                let _ = self
+                    .event_tx
+                    .send(RuntimeEvent::WorkflowSyncReceived { peer_id, payload });
+            }
             PeerMessage::DisplayInfo(display) => {
                 let _ = self
                     .event_tx
@@ -4392,6 +4412,16 @@ fn peer_message_to_wire(message: PeerMessage) -> Result<unidesk_protocol::Messag
         PeerMessage::DisplayInfo(display) => Ok(WireMessage::DisplayInfo(
             unidesk_protocol::display_info_to_wire(display).map_err(protocol)?,
         )),
+        PeerMessage::WorkflowSync(payload) => {
+            if payload.len() > 128 * 1024 {
+                return Err(RuntimeError::InvalidCommand(
+                    "workflow frame too large".into(),
+                ));
+            }
+            Ok(WireMessage::WorkflowSync(unidesk_protocol::WorkflowSync {
+                payload,
+            }))
+        }
     }
 }
 
@@ -4409,6 +4439,12 @@ fn peer_message_from_wire(message: unidesk_protocol::Message) -> Result<PeerMess
         unidesk_protocol::Message::DisplayInfo(display) => Ok(PeerMessage::DisplayInfo(
             unidesk_protocol::display_info_from_wire(&display).map_err(protocol)?,
         )),
+        unidesk_protocol::Message::WorkflowSync(frame) => {
+            if frame.payload.len() > 128 * 1024 {
+                return Err(RuntimeError::Protocol("workflow frame too large".into()));
+            }
+            Ok(PeerMessage::WorkflowSync(frame.payload))
+        }
         _ => Err(RuntimeError::Protocol(
             "unsupported application message".to_owned(),
         )),

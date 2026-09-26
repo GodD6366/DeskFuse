@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Interop;
 using Button = System.Windows.Controls.Button;
 using CheckBox = System.Windows.Controls.CheckBox;
 using ComboBox = System.Windows.Controls.ComboBox;
@@ -38,11 +39,19 @@ public partial class MainWindow : Window
     private WorkflowRecord? editingWorkflow;
     private Border? draggingDisplay;
     private Point dragOrigin;
+    private HwndSource? hotkeySource;
+    private readonly Dictionary<int, WorkflowRecord> hotkeys = [];
+    private const int WmHotKey = 0x0312;
+    private const uint ModAlt = 0x0001;
+    private const uint ModControl = 0x0002;
+    private const uint ModShift = 0x0004;
+    private const uint ModWin = 0x0008;
     public MainWindow(ServiceClient service, DesktopClipboardController clipboard)
     {
         this.service = service;
         this.clipboard = clipboard;
         InitializeComponent();
+        SourceInitialized += (_, _) => InstallWorkflowHotkeys();
         clipboard.Entries.CollectionChanged += HistoryChanged;
         clipboard.Error += ShowNotice;
         clipboard.FileOfferReceived += FileOfferArrived;
@@ -214,7 +223,11 @@ public partial class MainWindow : Window
             RebuildDevices();
             ShowNotice(message);
         }
-        else if (!wasConnected) ShowNotice("uniDesk 已就绪。关闭窗口后仍在托盘运行；从托盘菜单可以退出。");
+        else if (!wasConnected)
+        {
+            ShowNotice("uniDesk 已就绪。关闭窗口后仍在托盘运行；从托盘菜单可以退出。");
+            _ = LoadWorkflowsAsync();
+        }
         wasConnected = connected;
     }
     private void RefreshInputState(JsonElement snapshot)
@@ -581,11 +594,67 @@ public partial class MainWindow : Window
             if (!result.TryGetProperty("Workflows", out var catalog) || !catalog.TryGetProperty("workflows", out var values) || values.ValueKind != JsonValueKind.Array) return;
             var loaded = JsonSerializer.Deserialize<List<WorkflowRecord>>(values.GetRawText()) ?? [];
             workflows.Clear(); workflows.AddRange(loaded);
+            InstallWorkflowHotkeys();
             WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
             if (editingWorkflow is not null) WorkflowList.SelectedItem = workflows.FirstOrDefault(w => w.Id == editingWorkflow.Id);
         }
         catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流目录暂时不可用。"; }
     }
+    private void InstallWorkflowHotkeys()
+    {
+        if (!IsInitialized) return;
+        hotkeySource ??= PresentationSource.FromVisual(this) as HwndSource;
+        if (hotkeySource is null) return;
+        hotkeySource.RemoveHook(HotkeyWindowProc);
+        hotkeySource.AddHook(HotkeyWindowProc);
+        foreach (var id in hotkeys.Keys.ToArray()) UnregisterHotKey(hotkeySource.Handle, id);
+        hotkeys.Clear();
+        int id = 0x5540;
+        foreach (var workflow in workflows.Where(w => w.Enabled && w.Shortcut is not null))
+        {
+            var shortcut = workflow.Shortcut!;
+            uint modifiers = shortcut.Modifiers switch
+            {
+                var value when (value & 0x80000) != 0 => ModAlt,
+                _ => 0,
+            };
+            if ((shortcut.Modifiers & 0x40000) != 0) modifiers |= ModControl;
+            if ((shortcut.Modifiers & 0x20000) != 0) modifiers |= ModShift;
+            if ((shortcut.Modifiers & 0x100000) != 0) modifiers |= ModWin;
+            if (modifiers == 0 || !RegisterHotKey(hotkeySource.Handle, id, modifiers, shortcut.KeyCode)) continue;
+            hotkeys[id++] = workflow;
+        }
+    }
+    private IntPtr HotkeyWindowProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmHotKey && hotkeys.TryGetValue(wParam.ToInt32(), out var workflow))
+        {
+            _ = ExecuteWorkflowAsync(workflow);
+            handled = true;
+        }
+        return IntPtr.Zero;
+    }
+    private async Task ExecuteWorkflowAsync(WorkflowRecord workflow)
+    {
+        if (!service.IsConnected || latest is not JsonElement snapshot || !snapshot.TryGetProperty("capabilities", out var caps) || !caps.Bool("workflow_execution"))
+        {
+            ShowNotice("工作流执行能力尚未就绪；没有向服务发送剪贴板内容。");
+            return;
+        }
+        try
+        {
+            string text = Clipboard.ContainsText() ? Clipboard.GetText() : "";
+            var bytes = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text));
+            var reply = await service.SendAsync(ServiceClient.Command("RunWorkflow", new { workflow_id = workflow.Id, input = new[] { new { mime = "text/plain", data_base64 = bytes } } }));
+            if (!reply.TryGetProperty("WorkflowResult", out var result)) return;
+            var formats = result.Array("formats").FirstOrDefault(f => f.String("mime") == "text/plain");
+            string output = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(formats.String("data_base64")));
+            Clipboard.SetText(output);
+            ShowNotice($"已执行工作流：{workflow.Name}");
+        }
+        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "工作流未执行，剪贴板保持不变。"); }
+    }
+
     private void NewWorkflowClick(object sender, RoutedEventArgs args)
     {
         editingWorkflow = new WorkflowRecord { Name = "新工作流", Id = Guid.NewGuid().ToString() };
@@ -626,6 +695,7 @@ public partial class MainWindow : Window
             if (editingWorkflow.Steps.Count == 0) editingWorkflow.Steps = [WorkflowStepRecord.Copy()];
             await service.SendAsync("SaveWorkflow", new { workflow = editingWorkflow });
             if (!workflows.Contains(editingWorkflow)) workflows.Add(editingWorkflow);
+            InstallWorkflowHotkeys();
             WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
             WorkflowList.SelectedItem = editingWorkflow;
             WorkflowNotice.Text = "已提交；服务端 Rust 模型校验并持久化。";
@@ -639,7 +709,7 @@ public partial class MainWindow : Window
         try
         {
             await service.SendAsync("DeleteWorkflow", new { id = editingWorkflow.Id });
-            workflows.Remove(editingWorkflow); editingWorkflow = null; WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows; RenderWorkflowEditor();
+            workflows.Remove(editingWorkflow); editingWorkflow = null; InstallWorkflowHotkeys(); WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows; RenderWorkflowEditor();
         }
         catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流删除失败。"; }
     }
@@ -843,6 +913,11 @@ public partial class MainWindow : Window
     }
     private void OnClosing(object? sender, CancelEventArgs args)
     {
+        if (hotkeySource is not null)
+        {
+            foreach (var id in hotkeys.Keys) UnregisterHotKey(hotkeySource.Handle, id);
+            hotkeySource.RemoveHook(HotkeyWindowProc);
+        }
         if (Application.Current is App { Exiting: false }) { args.Cancel = true; Hide(); return; }
         clipboard.Entries.CollectionChanged -= HistoryChanged;
         clipboard.Error -= ShowNotice;
@@ -851,5 +926,9 @@ public partial class MainWindow : Window
         service.SnapshotChanged -= SnapshotChanged;
         service.ConnectionChanged -= ConnectionChanged;
     }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     private sealed record DeviceRow(string Id, string Name, string Group, string Detail, bool Local, JsonElement Peer);
 }

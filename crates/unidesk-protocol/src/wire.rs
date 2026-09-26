@@ -26,7 +26,7 @@ pub struct Envelope {
     /// The message carried by this envelope.
     #[prost(
         oneof = "envelope::Message",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 40, 41, 42, 43, 44, 45"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 40, 41, 42, 43, 44, 45, 46"
     )]
     pub message: Option<envelope::Message>,
 }
@@ -36,7 +36,7 @@ pub mod envelope {
         ClipboardUpdate, DisplayInfo, Error, Goodbye, Hello, HelloAck, InputEndpoints,
         InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest, PeerInfo,
         Ping, Pong, ReleaseInventory, RemoteApplicationOpen, SessionProof, UpdateCancel,
-        UpdateChunk, UpdateReceipt, UpdateRequest, UpdateStatus,
+        UpdateChunk, UpdateReceipt, UpdateRequest, UpdateStatus, WorkflowSync,
     };
     use prost::Oneof;
 
@@ -89,6 +89,9 @@ pub mod envelope {
         UpdateStatus(UpdateStatus),
         #[prost(message, tag = "45")]
         UpdateReceipt(UpdateReceipt),
+        /// Bounded, authenticated workflow-catalog anti-entropy frame.
+        #[prost(message, tag = "46")]
+        WorkflowSync(WorkflowSync),
     }
 }
 
@@ -302,6 +305,20 @@ pub struct DisplayInfo {
     pub width: u32,
     #[prost(uint32, tag = "2")]
     pub height: u32,
+}
+
+/// Bounded workflow-catalog anti-entropy data. The payload is the catalog's
+/// authenticated record frame; it is never interpreted by the wire layer.
+#[derive(Clone, PartialEq, Message)]
+#[prost(skip_debug)]
+pub struct WorkflowSync {
+    #[prost(bytes = "vec", tag = "1")]
+    pub payload: Vec<u8>,
+}
+impl std::fmt::Debug for WorkflowSync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WorkflowSync([redacted])")
+    }
 }
 
 /// Capability-gated version-one input sharing payload. Legacy tags remain unchanged.

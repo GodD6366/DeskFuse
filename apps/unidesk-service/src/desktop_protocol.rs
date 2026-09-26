@@ -153,6 +153,23 @@ pub enum Command {
     DeleteWorkflow {
         id: String,
     },
+    SaveWorkflowRule {
+        rule: unidesk_core::workflow::WorkflowRule,
+    },
+    DeleteWorkflowRule {
+        id: String,
+    },
+    RunWorkflow {
+        workflow_id: String,
+        input: Vec<WorkflowInput>,
+    },
+    CancelWorkflow {
+        run_id: String,
+    },
+    GetWorkflowCatalog,
+    RestoreWorkflowConflict {
+        conflict_id: String,
+    },
     ReclaimInput,
     ListRemoteApps,
     ListInstalledApps,
@@ -172,6 +189,12 @@ pub enum Command {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Format {
+    pub mime: String,
+    pub data_base64: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowInput {
     pub mime: String,
     pub data_base64: String,
 }
@@ -208,6 +231,15 @@ pub enum Reply {
     },
     Workflows {
         workflows: Vec<unidesk_core::workflow::Workflow>,
+    },
+    WorkflowResult {
+        run_id: String,
+        workflow_id: String,
+        formats: Vec<Format>,
+        message: String,
+    },
+    WorkflowCatalog {
+        json: String,
     },
     RemoteApps {
         available: bool,
@@ -281,6 +313,11 @@ pub struct Capabilities {
     pub secure_attention_sequence: bool,
     pub updater: bool,
     pub remote_app: bool,
+    /// Runtime observations, not user preferences.
+    #[serde(default)]
+    pub workflow_execution: bool,
+    #[serde(default)]
+    pub workflow_sync: bool,
 }
 /// The fixed helper probes its own session/desktop; the Session-0 service must not
 /// mistake its own desktop for the user's input desktop. Unknown values fail closed.

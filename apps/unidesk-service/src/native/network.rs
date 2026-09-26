@@ -28,6 +28,7 @@ pub struct Network {
     /// Shared settings store for desktop-owned catalogs. The service remains
     /// the only writer; the WPF process accesses it through authenticated IPC.
     pub store: SQLiteStore,
+    pub workflow_catalog: super::workflow::Catalog,
     pub control_port: u16,
     input_transport: QuinnTransport,
     remote_app_transport: QuinnTransport,
@@ -56,7 +57,8 @@ impl Network {
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::REMOTE_APPLICATION
-            | Capabilities::REMOTE_APPLICATION_RDP;
+            | Capabilities::REMOTE_APPLICATION_RDP
+            | Capabilities::WORKFLOW_SYNC;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
@@ -128,10 +130,14 @@ impl Network {
             initial,
         )
         .map_err(|_| stage(26))?;
+        let workflow_catalog =
+            super::workflow::Catalog::open(store.clone(), identity.device_id().to_string())
+                .map_err(|_| stage(22))?;
         let network = Self {
             runtime,
             input_runtime,
             store,
+            workflow_catalog,
             control_port,
             input_transport,
             remote_app_transport,
