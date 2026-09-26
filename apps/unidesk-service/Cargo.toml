@@ -28,6 +28,7 @@ unidesk-runtime = { path = "../../crates/unidesk-runtime" }
 unidesk-store = { path = "../../crates/unidesk-store" }
 unidesk-transport = { path = "../../crates/unidesk-transport" }
 unidesk-discovery = { path = "../../crates/unidesk-discovery" }
+unidesk-input = { path = "../../crates/unidesk-input" }
 unidesk-transfer = { path = "../../crates/unidesk-transfer" }
 unidesk-platform = { path = "../../crates/unidesk-platform" }
 unidesk-platform-windows = { path = "../../crates/unidesk-platform-windows" }

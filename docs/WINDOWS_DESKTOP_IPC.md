@@ -24,7 +24,7 @@ Requests have `version:2`, a process-local monotonically increasing `request_id`
 {"version":2,"request_id":10,"command":{"CancelFileClipboard":{"session_epoch":1,"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0"}}}
 {"version":2,"request_id":10,"command":{"CommitFileClipboard":{"session_epoch":1,"transfer_id":"0b9e6c1d-2d40-4f21-a15b-64d5b8e4c8f0","applied":true}}}
 {"version":2,"request_id":11,"command":{"RegisterInput":{"topology":{"generation":1,"displays":[{"id":"win-monitor-1","frame_x":0.0,"frame_y":0.0,"width":1920,"height":1080,"scale_factor":1.0,"rotation_degrees":0,"is_primary":true}]}}}}
-{"version":2,"request_id":12,"command":{"PollInput":{"after_sequence":0}}}
+{"version":2,"request_id":12,"command":{"PollInput":{"session_epoch":1,"after_sequence":0,"desktop":"Default"}}}
 {"version":2,"request_id":13,"command":"ReclaimInput"}
 {"version":2,"request_id":13,"command":{"EnterInputControl":{"session_id":"6f0f3d1e-8d1a-4c25-9f0e-111111111111","target_display":"mac-display-1","x":5.0,"y":200.0}}}
 {"version":2,"request_id":13,"command":{"SendInputEvents":{"session_id":"6f0f3d1e-8d1a-4c25-9f0e-111111111111","target_display":"mac-display-1","batch":1,"events":[]}}}
@@ -54,7 +54,7 @@ Always `{"version":2,"request_id":<echo>,"result":...}`. `result` is one of:
 Snapshot shape (all keys always present):
 
 ```json
-{"package_version":"0.1.0","session_epoch":0,"client_session_id":1,"sequence":1,"local_device_id":"...","local_name":"DESKTOP-AB12CD3","network_running":true,"control_port":42424,"capabilities":{"clipboard":true,"files":true,"input":true,"updater":false},"input":{"helper_connected":true,"managed":false,"status":"standby","reason":null,"controller_id":null,"display_count":1},"peers":[],"pending":[],"file_transfers":[],"file_cache":{"max_bytes":1073741824,"used_bytes":0},"pairing_status":null,"last_error":null}
+{"package_version":"0.1.0","session_epoch":0,"client_session_id":1,"sequence":1,"local_device_id":"...","local_name":"DESKTOP-AB12CD3","network_running":true,"control_port":42424,"capabilities":{"clipboard":true,"files":true,"input":true,"elevated_input":true,"secure_desktop_input":false,"login_input":false,"secure_attention_sequence":false,"updater":false},"input":{"security":{"session_bound":true,"ui_access":true,"elevated":false,"desktop":"Default","reason":"UIAccess verified; Default desktop only; secure/login desktops and SAS unsupported"},"helper_connected":true,"managed":false,"status":"standby","reason":null,"controller_id":null,"display_count":1},"peers":[],"pending":[],"file_transfers":[],"file_cache":{"max_bytes":1073741824,"used_bytes":0},"pairing_status":null,"last_error":null}
 ```
 
 `routes` contain serialized core RouteCandidate values; labels can display `endpoint`, `health`, `kind`. `last_error` and `pairing_status` are bounded metadata-only messages. Capability flags are runtime availability, not user preference; false must visibly disable the relevant UI. Updater remains false. `files` is true for an active authenticated desktop session whose service runtime advertises `DEFERRED_FILE_CLIPBOARD`; it gates `PublishFileClipboard` and the transfer queue UI, and is additionally gated per peer by the route capability and actual HELLO exchange. Input is true only while the ordinary desktop helper heartbeat and authenticated GUI generation are current; elevated, Winlogon and UAC desktops remain unavailable. Clipboard is true for an active authenticated desktop session; per-peer readiness is additionally gated by the actual HELLO exchange and connection generation. Publish rejects when no eligible trusted peer has completed that handshake. Clipboard uses the existing acknowledged sync v2 protocol and the macOS zlib/fixed-bincode native bundle (common UTI subset), never bare legacy ClipboardPayload MIME. It sends APPLIED only after CommitClipboard(applied:true). TIFF-only mac native images are converted to PNG (prefer existing public.png), with 4,194,304-pixel / 32 MiB decoder allocation limits and PNG output within the remaining 16 MiB common-content budget. Larger or unsupported images are rejected, not silently acknowledged.
@@ -99,7 +99,13 @@ The same helper captures local input when this desktop is an input controller. A
 
 `Snapshot.input` now carries `local_device_id`, effective `settings`, `controlling`, `activations`, `remote_topologies` and `links` for both directions. Ctrl+Alt+Win+Esc remains the emergency chord for both roles: it releases held input, ends any control session, pauses a managed activation and stops the helper.
 
-This checkpoint wires both directions on the unlocked ordinary desktop. It is not evidence for elevated applications, UAC/Winlogon/login input, cross-system latency acceptance or physical two-machine behavior.
+This checkpoint wires both directions on the unlocked ordinary desktop. It is not evidence for UAC/Winlogon/login input, secure-desktop input, SAS, cross-system latency acceptance or physical two-machine behavior.
+
+### UIAccess and capability truth
+
+`RegisterInput` and every subsequent helper request are authenticated against the kernel-reported named-pipe client PID. The service opens that process with query/synchronize rights and verifies its installed helper path, process creation time, token session, user SID, authentication LUID, and `TokenUIAccess`; a helper without the effective UIAccess token bit is rejected rather than downgraded to ordinary input. `PollInput` carries the helper's fresh read-only session/desktop probe and the current service epoch. The service accepts input only when the helper is alive, bound to the same unlocked physical-console user session, and on `Default`; `Locked`, `Winlogon`/UAC and unknown desktops clear the lease and report `desktop_unavailable`.
+
+The protocol exposes `capabilities.elevated_input` and `input.security` only from these observations. `secure_desktop_input`, `login_input`, and `secure_attention_sequence` are always false in this implementation: UIAccess is not a service/session-agent or secure-desktop authorization, and no capability is inferred from the manifest alone.
 
 ## Windows 启动与传输修正（2026-09-13）
 

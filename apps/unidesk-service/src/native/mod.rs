@@ -5,6 +5,7 @@ mod clipboard_sync;
 pub(crate) mod desktop;
 pub(super) mod file_transfer;
 pub(crate) mod input_helper;
+mod input_security;
 mod network;
 mod remote_app;
 mod security;

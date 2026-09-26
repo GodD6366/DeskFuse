@@ -25,4 +25,4 @@ Explorer OLE 延迟渲染（粘贴时才下载）未接入：文件内容必须�
 dotnet build apps/unidesk-windows/UniDesk.Windows.csproj -c Release
 ```
 
-交叉编译只证明托管代码与 XAML 可构建，不证明 Windows 启动、服务授权、Explorer、真实剪贴板、多屏或跨系统验收。协议以 `docs/WINDOWS_DESKTOP_IPC.md` 为准。进程只请求常规用户权限，不启用 `uiAccess`。
+交叉编译只证明托管代码与 XAML 可构建，不证明 Windows 启动、服务授权、Explorer、真实剪贴板、多屏或跨系统验收。协议以 `docs/WINDOWS_DESKTOP_IPC.md` 为准。桌面进程与固定 helper 请求 `uiAccess`；只有受信任安装目录中的已签名镜像、且服务实际验证 helper token 的 UIAccess 位后才报告高完整性输入能力。安全桌面、登录桌面和 SAS 仍明确不支持。

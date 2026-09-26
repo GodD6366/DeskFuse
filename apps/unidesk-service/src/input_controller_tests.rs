@@ -143,6 +143,7 @@ fn controller_deliveries_serialize_and_classify() {
 fn input_state_carries_layout_and_control_views() {
     let peer = DeviceId::from_bytes([7; 32]);
     let state = ipc::InputState {
+        security: ipc::InputSecurityState::default(),
         helper_connected: true,
         managed: false,
         status: "standby".into(),

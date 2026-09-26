@@ -31,7 +31,8 @@
 | Explorer 按需虚拟文件/OLE 延迟渲染 | **未接入**；接收必须完整下载并校验后才落盘可见，不提供粘贴时才下载的虚拟数据对象 |
 | 键鼠、多屏布局 | Windows 发布稳定显示器 ID、DPI、旋转和负坐标拓扑；双向均已接入：Mac 主控 → Windows 被控，以及 Windows 主控 → Mac 被控（设备页一键开启/停止，服务持久化角色与参与者，激活状态与控制会话实时显示；布局画布展示本机+远端显示器，运行时负责实际吸附定位） |
 | 普通桌面输入 | 已接入独立 42425 input-only runtime、会话绑定 helper、1.5 秒原生租约、按键/按钮释放与 Ctrl+Alt+Win+Esc 紧急收回；双向支持：Mac 主控 → Windows 被控，以及 Windows 主控（本地低级钩子采集、跨平台 SharingController 边缘逻辑、会话/租约/去重回执）→ Mac 被控（对端仍需设备激活确认） |
-| 管理员/UAC/锁屏/登录输入 | **未接入高完整性及安全桌面 helper**；普通 helper 明确拒绝非 Default desktop，不宣称可用 |
+| 管理员窗口输入 | 已接入签名 UIAccess helper；服务按 kernel PID、进程创建时间、路径、会话 SID/LUID 与 TokenUIAccess 实际验证后才报告 `elevated_input`，仅 Default desktop 可用 |
+| UAC/锁屏/登录输入、安全桌面、SAS | **未接入**；协议 capability 明确为 false，helper 对非 Default desktop fail-closed |
 | 自动更新、跨系统包分发、事务回滚 | **签名/NSIS 验证与 admission/self-test/回滚策略已定义，但尚未接入 Windows 安装协调器**；helper fail-closed，updater capability 为 false |
 | 工作流、快捷键与工作流共享 | **尚未对齐** |
 

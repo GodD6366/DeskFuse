@@ -95,7 +95,9 @@ pub enum Command {
         topology: unidesk_core::DisplayTopology,
     },
     PollInput {
+        session_epoch: u64,
         after_sequence: u64,
+        desktop: InputDesktop,
     },
     InputFault {
         message: String,
@@ -176,6 +178,9 @@ pub enum Reply {
         clipboard: Option<Clipboard>,
         clipboard_sequence: u64,
     },
+    InputRegistered {
+        session_epoch: u64,
+    },
     InputPoll {
         state: InputState,
         deliveries: Vec<InputDelivery>,
@@ -243,11 +248,39 @@ pub struct Capabilities {
     pub clipboard: bool,
     pub files: bool,
     pub input: bool,
+    #[serde(default)]
+    pub elevated_input: bool,
+    #[serde(default)]
+    pub secure_desktop_input: bool,
+    #[serde(default)]
+    pub login_input: bool,
+    #[serde(default)]
+    pub secure_attention_sequence: bool,
     pub updater: bool,
     pub remote_app: bool,
 }
+/// The fixed helper probes its own session/desktop; the Session-0 service must not
+/// mistake its own desktop for the user's input desktop. Unknown values fail closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputDesktop {
+    Default,
+    Protected,
+    Locked,
+    #[default]
+    Unavailable,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct InputSecurityState {
+    pub session_bound: bool,
+    pub ui_access: bool,
+    pub elevated: bool,
+    pub desktop: InputDesktop,
+    pub reason: Option<String>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InputState {
+    #[serde(default)]
+    pub security: InputSecurityState,
     pub helper_connected: bool,
     pub managed: bool,
     pub status: String,

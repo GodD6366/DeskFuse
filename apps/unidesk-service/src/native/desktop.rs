@@ -1,5 +1,5 @@
 //! Authenticated desktop coordinator; shared state never contains private keys.
-use super::{Control, Network, clipboard_sync, remote_app, security};
+use super::{Control, Network, clipboard_sync, input_security, remote_app, security};
 use crate::{
     desktop_protocol as ipc,
     policy::{ClientSession, same_session},
@@ -29,6 +29,8 @@ pub(super) struct State {
     pairing_status: Option<String>,
     last_error: Option<String>,
     input_heartbeat: Option<Instant>,
+    input_helper: Option<input_security::HelperIdentity>,
+    input_desktop: ipc::InputDesktop,
     input_topology: Option<unidesk_core::DisplayTopology>,
     input_deliveries: VecDeque<ipc::InputDelivery>,
     input_sequence: u64,
@@ -53,11 +55,18 @@ impl State {
                 .owner
                 .is_some_and(|owner| security::session_still_active(owner))
     }
-    fn input_active(&self, control: &Control) -> bool {
-        self.active(control)
+    fn helper_available(&self) -> bool {
+        self.input_helper
+            .as_ref()
+            .is_some_and(|helper| helper.alive())
+            && self.input_desktop == ipc::InputDesktop::Default
             && self
                 .input_heartbeat
                 .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1))
+            && self.owner.is_some_and(security::session_still_active)
+    }
+    fn input_active(&self, control: &Control) -> bool {
+        self.active(control) && self.helper_available()
     }
     fn push_input(&mut self, delivery: impl FnOnce(u64) -> ipc::InputDelivery) {
         self.input_sequence = self.input_sequence.saturating_add(1).max(1);
@@ -84,9 +93,26 @@ impl State {
         let snapshot = network.input_runtime.handle.input_snapshot();
         let managed = snapshot.managed_control.as_ref();
         ipc::InputState {
-            helper_connected: self
-                .input_heartbeat
-                .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+            helper_connected: self.helper_available(),
+            security: ipc::InputSecurityState {
+                session_bound: self.helper_available(),
+                ui_access: self
+                    .helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
+                elevated: self
+                    .helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.elevated),
+                desktop: if self.helper_available() {
+                    self.input_desktop
+                } else {
+                    ipc::InputDesktop::Unavailable
+                },
+                reason: Some(if self.helper_available() {
+                    "UIAccess verified; Default desktop only; secure/login desktops and SAS unsupported"
+                } else {
+                    "No live authenticated UIAccess helper on the unlocked Default desktop"
+                }.into()),
+            },
             managed: managed.is_some(),
             status: managed.map_or_else(|| "standby".into(), |value| enum_string(&value.status)),
             reason: managed.and_then(|value| value.reason.clone()),
@@ -95,16 +121,16 @@ impl State {
                 .local_topology
                 .as_ref()
                 .map_or(0, |topology| topology.displays.len()),
-            local_device_id: network.runtime.snapshot_view().snapshot.local_device_id.to_string(),
+            local_device_id: network.runtime.snapshot_view().snapshot.local_device_id.to_string()
             settings: Some(snapshot.effective_settings()),
             controlling: None,
             activations: snapshot
                 .activations
                 .iter()
-                .map(|(peer, state)| ipc::ActivationView {
+                .map(|(peer, activation)| ipc::ActivationView {
                     peer_id: peer.to_string(),
-                    status: enum_string(&state.status),
-                    reason: state.reason.clone(),
+                    status: enum_string(&activation.status),
+                    reason: activation.reason.clone(),
                 })
                 .collect(),
             remote_topologies: snapshot
@@ -121,9 +147,9 @@ impl State {
                 .map(|link| ipc::LinkView {
                     peer_id: link.peer_id.to_string(),
                     ready: link.ready,
-                    control_session: link.control_session.map(|id| id.to_string()),
+                    control_session: link.control_session.map(|session| session.to_string()),
                     lease_revision: link.lease_revision,
-                    motion_mode: link.motion_mode.clone(),
+                    motion_mode: Some(enum_string(&link.motion_mode)),
                 })
                 .collect(),
         }
@@ -360,9 +386,13 @@ impl State {
                     && self.epoch == epoch
                     && self.file_bridge.is_some()
                     && !self.sync.file_peers(&network.runtime).is_empty(),
-                input: self
-                    .input_heartbeat
-                    .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+                input: self.helper_available()
+                    && self.input_heartbeat.is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+                elevated_input: self.helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
+                secure_desktop_input: false,
+                login_input: false,
+                secure_attention_sequence: false,
                 updater: false,
                 remote_app: matches!(
                     remote_app::availability(),
@@ -594,7 +624,8 @@ impl State {
                 if topology.validate().is_err() {
                     return ipc::Reply::rejected("invalid_input", "invalid display topology");
                 }
-                self.input_heartbeat = Some(Instant::now());
+                self.input_heartbeat = None;
+                self.input_desktop = ipc::InputDesktop::Unavailable;
                 self.input_topology = Some(topology.clone());
                 self.input_reported_activation = None;
                 self.input_last_lease = None;
@@ -604,11 +635,29 @@ impl State {
                     .handle
                     .try_send(RuntimeCommand::PublishDisplayTopology(topology))
                 {
-                    Ok(()) => ipc::Reply::queued(),
+                    Ok(()) => ipc::Reply::InputRegistered {
+                        session_epoch: epoch,
+                    },
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
-            ipc::Command::PollInput { after_sequence } => {
+            ipc::Command::PollInput {
+                session_epoch,
+                after_sequence,
+                desktop,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected("session_expired", "input helper epoch expired");
+                }
+                self.input_desktop = desktop;
+                if desktop != ipc::InputDesktop::Default {
+                    self.input_heartbeat = None;
+                    self.release_input("Windows input desktop is protected or unavailable");
+                    return ipc::Reply::rejected(
+                        "desktop_unavailable",
+                        "Default input desktop required",
+                    );
+                }
                 if self.input_topology.is_none() {
                     return ipc::Reply::rejected(
                         "input_unregistered",
@@ -875,6 +924,27 @@ pub(super) async fn handle(
                     | ipc::Command::PollInput { .. }
                     | ipc::Command::InputFault { .. }
             );
+            let helper_identity = if helper_request {
+                Some(input_security::authenticate(pipe.as_raw_handle(), before)?)
+            } else {
+                None
+            };
+            if let Some(identity) = helper_identity {
+                if let Some(registered) = state.input_helper.as_ref() {
+                    if !registered.same_process(&identity) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "input helper process changed; reopen desktop session",
+                        ));
+                    }
+                } else if !matches!(&request.command, ipc::Command::RegisterInput { .. }) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "input helper not registered",
+                    ));
+                }
+                state.input_helper = Some(identity);
+            }
             // Helper polling has an independent process-local request sequence.
             // Its commands are idempotent and remain bound to the authenticated
             // desktop generation, so they do not share the GUI monotonic cursor.

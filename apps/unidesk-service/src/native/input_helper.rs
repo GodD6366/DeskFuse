@@ -36,6 +36,17 @@ const INPUT_LEASE: Duration = Duration::from_millis(1_500);
 const MAX_BATCH_EVENTS: usize = 256;
 const LEASE_TTL: Duration = Duration::from_millis(1_500);
 
+fn input_desktop() -> ipc::InputDesktop {
+    match unidesk_platform_windows::session::session_capabilities().desktop {
+        unidesk_platform::DesktopState::UserDesktop => ipc::InputDesktop::Default,
+        unidesk_platform::DesktopState::Locked => ipc::InputDesktop::Locked,
+        unidesk_platform::DesktopState::LoginOrSecureDesktop
+        | unidesk_platform::DesktopState::InactiveSession
+        | unidesk_platform::DesktopState::RemoteSession => ipc::InputDesktop::Protected,
+        unidesk_platform::DesktopState::Unavailable => ipc::InputDesktop::Unavailable,
+    }
+}
+
 /// Run the fixed UIAccess input helper. It owns no identity, trust or network
 /// runtime and accepts no path, shell or installation command. UIAccess lets the
 /// signed helper cross UIPI for elevated applications; secure Winlogon desktops
@@ -157,6 +168,7 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
     let mut cursor = 0_u64;
     let mut current_session = None;
     let mut registered = false;
+    let mut session_epoch = 0_u64;
     let mut failures = 0_u8;
     loop {
         if !parent.alive()? {
@@ -173,8 +185,11 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
             )
             .await
             {
-                Ok(ipc::Reply::Queued { .. }) => {
+                Ok(ipc::Reply::InputRegistered {
+                    session_epoch: epoch,
+                }) => {
                     registered = true;
+                    session_epoch = epoch;
                     cursor = 0;
                     failures = 0;
                 }
@@ -191,7 +206,9 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
         let reply = match exchange(
             &mut request_id,
             ipc::Command::PollInput {
+                session_epoch,
                 after_sequence: cursor,
+                desktop: input_desktop(),
             },
         )
         .await
