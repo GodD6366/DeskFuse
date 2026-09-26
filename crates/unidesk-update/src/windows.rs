@@ -1,9 +1,11 @@
-//! Windows helper handoff and transaction policy, not a privileged installer.
+//! Windows helper handoff and transaction policy.
 //!
-//! No public API here launches NSIS, stops SCM, or writes installation paths.
-//! Until a machine-owned staging directory, external helper and native startup
-//! self-test are connected, Windows must not advertise LAN_UPDATES. In
-//! particular, a successful NSIS exit or SERVICE_RUNNING is not commit evidence.
+//! The privileged helper implements machine admission, SCM/process quiescence,
+//! database backup/restore and startup evidence in `installer_windows`. This
+//! policy module still does not launch installers or grant capability authority:
+//! the published NSIS package has no signed transactional activation contract,
+//! so Windows must not advertise LAN_UPDATES and SERVICE_RUNNING is not commit
+//! evidence.
 use crate::{
     ActiveWork, ArtifactDescriptor, FailureReason, Installation, PackageKind, ReleaseVersion,
     SELF_TEST_TIMEOUT_MS, SignedReleaseManifest, Target, UpdateError, UpdatePhase, UpdateStatus,

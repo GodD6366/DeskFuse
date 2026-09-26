@@ -33,7 +33,7 @@
 | 普通桌面输入 | 已接入独立 42425 input-only runtime、会话绑定 helper、1.5 秒原生租约、按键/按钮释放与 Ctrl+Alt+Win+Esc 紧急收回；双向支持：Mac 主控 → Windows 被控，以及 Windows 主控（本地低级钩子采集、跨平台 SharingController 边缘逻辑、会话/租约/去重回执）→ Mac 被控（对端仍需设备激活确认） |
 | 管理员窗口输入 | 已接入签名 UIAccess helper；服务按 kernel PID、进程创建时间、路径、会话 SID/LUID 与 TokenUIAccess 实际验证后才报告 `elevated_input`，仅 Default desktop 可用 |
 | UAC/锁屏/登录输入、安全桌面、SAS | **未接入**；协议 capability 明确为 false，helper 对非 Default desktop fail-closed |
-| 自动更新、跨系统包分发、事务回滚 | **签名/NSIS 验证与 admission/self-test/回滚策略已定义，但尚未接入 Windows 安装协调器**；helper fail-closed，updater capability 为 false |
+| 自动更新、跨系统包分发、事务回滚 | 机器 helper 已具备 UAC/SCM admission、GUI/input-helper 停止协调、SQLite/WAL/SHM 备份恢复及启动自检证据链；当前发布物仍是仅首次安装的 NSIS，缺少签名事务载荷/activation contract，因此 replacement fail-closed，updater capability 为 false |
 | 工作流、快捷键与工作流共享 | **尚未对齐** |
 
 ## 剪贴板生命周期
@@ -56,7 +56,7 @@ Windows MSVC x64 / .NET 8 / NSIS 3：
 
 脚本默认不运行测试、不安装服务、不启动应用。安装器实际执行时按安装说明注册服务和仅 Private / LocalSubnet 的程序端口规则。移除只处理本安装器的载荷和规则，保留身份、配对和用户数据。
 
-没有 Authenticode 或发行签名时明确记录未签名。**该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。服务 admission、机器级提权、SQLite/WAL/SHM 备份恢复和 GUI/service/input-helper 启动自检尚未接线；helper 在缺少这些证据时拒绝执行。Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
+没有 Authenticode 或发行签名时明确记录未签名。**该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。机器 helper 已接线 UAC/SCM admission、GUI/service/input-helper 协调、SQLite/WAL/SHM 备份恢复和启动自检证据；当前 NSIS 仍只允许首次安装，缺少签名事务载荷/activation contract 时 helper 在 replacement 前拒绝执行，updater 继续为 false。Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
 
 ## 剪贴板去回环修正（build 105）
 
