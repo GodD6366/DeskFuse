@@ -106,6 +106,7 @@ public sealed class DesktopClipboardController : IDisposable
     {
         long epoch = snapshot.Number("session_epoch");
         if (generation != epoch) { generation = epoch; publishSequence = 0; nativeRevision++; }
+        ObserveFileTransfers(snapshot);
     }
     private void Connection(bool connected, string message)
     {
@@ -130,9 +131,16 @@ public sealed class DesktopClipboardController : IDisposable
             // Every native mutation first cancels old remote content, even when
             // sync is disabled or the new clipboard cannot be transported.
             await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
-            if (disposed || paused || generation != epoch || nativeRevision != revision || !SyncEnabled || content is null) return;
+            if (disposed || paused || generation != epoch || nativeRevision != revision) return;
             if (!snapshot.Value.TryGetProperty("capabilities", out var capabilities) || !capabilities.Bool("clipboard")) return;
-            if (content.Files is { Count: > 0 }) { Error?.Invoke("本机文件已记录；Windows 跨设备文件传输尚未接入。"); return; }
+            if (!SyncEnabled) return;
+            if (content is not null && content.Files is { Count: > 0 })
+            {
+                if (!capabilities.Bool("files")) { Error?.Invoke("本机文件已记录；对端或本机暂未启用跨设备文件传输。"); return; }
+                await service.SendAsync(ServiceClient.Command("PublishFileClipboard", new { session_epoch = epoch, sequence = ++publishSequence, paths = content.Files }));
+                return;
+            }
+            if (content is null) return;
             var representations = content.Representations ?? [new ClipboardRepresentation(content.Mime, content.Data)];
             if (representations.Sum(r => (long)r.Data.Length) > NativeClipboard.MaxContentBytes) { Error?.Invoke("内容已保存在本机历史；当前桌面同步通道最多支持 16 MiB。"); return; }
             await service.SendAsync(ServiceClient.Command("PublishClipboard", new { session_epoch = epoch, sequence = ++publishSequence, formats = representations.Select(r => new { mime = r.Mime, data_base64 = Convert.ToBase64String(r.Data) }).ToArray() }));
@@ -178,11 +186,165 @@ public sealed class DesktopClipboardController : IDisposable
         observedNativeSequence = native.SequenceNumber;
         _ = InvalidateAndPublishAsync(entry.Content);
     }
+
+    // ---- Cross-device file transfer (deferred clipboard file protocol) ----
+
+    /// <summary>Destination chosen for one incoming transfer (per transfer id).</summary>
+    private readonly Dictionary<string, string> destinations = new();
+    /// <summary>Transfer ids currently being copied out, to avoid double copy.</summary>
+    private readonly HashSet<string> copying = new();
+    /// <summary>Offers already announced, so notices fire once per offer.</summary>
+    private readonly HashSet<string> seenOffers = new();
+    /// <summary>Raised when a new remote file offer arrives (notice/托盘).</summary>
+    public event Action<string, string>? FileOfferReceived;
+    /// <summary>Raised when a transfer settles (transfer id, detail, success).</summary>
+    public event Action<string, string, bool>? FileTransferSettled;
+
+    public bool FilesEnabled
+    {
+        get
+        {
+            var snapshot = service.LatestSnapshot;
+            return snapshot is not null && snapshot.Value.TryGetProperty("capabilities", out var caps) && caps.Bool("files");
+        }
+    }
+
+    /// <summary>Tracks snapshot transfer rows: new offers raise notices; staged
+    /// transfers with a chosen destination are copied out and committed.</summary>
+    private void ObserveFileTransfers(JsonElement snapshot)
+    {
+        foreach (var transfer in snapshot.Array("file_transfers"))
+        {
+            string id = transfer.String("transfer_id");
+            string state = transfer.String("state");
+            if (state != "staged" && state != "offered") { seenOffers.Remove(id); continue; }
+            if (state == "offered" && seenOffers.Add(id))
+            {
+                string peer = transfer.String("peer_id");
+                string name = service.LatestSnapshot?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", peer) ?? peer;
+                var names = transfer.Array("names").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").ToArray();
+                FileOfferReceived?.Invoke(name, names.Length > 0 ? string.Join("、", names) : "文件");
+            }
+            if (state == "staged" && destinations.TryGetValue(id, out var destination) && copying.Add(id))
+            {
+                _ = CopyStagedAsync(transfer, destination);
+            }
+        }
+    }
+
+    /// <summary>Requests the content of one incoming offer, remembering the
+    /// user-chosen destination folder for the copy-out phase.</summary>
+    public async Task<bool> ReceiveFileAsync(string transferId, string destination)
+    {
+        try
+        {
+            Directory.CreateDirectory(destination);
+            destinations[transferId] = destination;
+            await service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { transfer_id = transferId }));
+            return true;
+        }
+        catch (Exception ex) { Error?.Invoke(ex is IOException ? ex.Message : "无法请求文件内容，请稍后重试。"); return false; }
+    }
+
+    public async Task CancelFileAsync(string transferId)
+    {
+        try
+        {
+            destinations.Remove(transferId);
+            await service.SendAsync(ServiceClient.Command("CancelFileClipboard", new { transfer_id = transferId }));
+        }
+        catch (Exception) { Error?.Invoke("取消请求未送达，请检查连接。"); }
+    }
+
+    /// <summary>Publishes existing local files as a deferred file clipboard
+    /// (shared with local copies and the shelf's send action).</summary>
+    public async Task<bool> PublishFilesAsync(IReadOnlyList<string> paths)
+    {
+        try
+        {
+            NativeClipboard.ValidateLocalFiles(paths);
+            var snapshot = service.LatestSnapshot;
+            if (snapshot is null || generation is null) { Error?.Invoke("后台组件尚未就绪，无法发送文件。"); return false; }
+            if (!FilesEnabled) { Error?.Invoke("对端设备尚未支持跨设备文件传输。"); return false; }
+            long epoch = generation.Value;
+            await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
+            await service.SendAsync(ServiceClient.Command("PublishFileClipboard", new { session_epoch = epoch, sequence = ++publishSequence, paths = paths }));
+            return true;
+        }
+        catch (Exception ex) { Error?.Invoke(ex is IOException or InvalidOperationException ? ex.Message : "文件发送未完成，请稍后重试。"); return false; }
+    }
+
+    /// <summary>Copies verified staged files from the service cache into the
+    /// user destination, places the copies on the clipboard (like the macOS
+    /// receiver installing URLs), and commits the transfer.</summary>
+    private async Task CopyStagedAsync(JsonElement transfer, string destination)
+    {
+        string id = transfer.String("transfer_id");
+        try
+        {
+            var staged = transfer.Array("staged_paths").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").Where(p => File.Exists(p) || Directory.Exists(p)).ToArray();
+            if (staged.Length == 0) throw new IOException("暂存文件不可用，接收已终止。");
+            var copies = new List<string>();
+            foreach (var path in staged)
+            {
+                string target = ResolveConflict(Path.Combine(destination, Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar))));
+                if (File.Exists(path)) File.Copy(path, target, overwrite: false);
+                else CopyDirectory(path, target);
+                copies.Add(target);
+            }
+            destinations.Remove(id);
+            // The received copies are installed onto the clipboard so the user
+            // can paste them in Explorer immediately, mirroring macOS.
+            var content = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
+            native.Write(content);
+            observedNativeSequence = native.SequenceNumber;
+            if (CaptureEnabled) history.Add(content, "local", "本机");
+            await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { transfer_id = id, applied = true }));
+            FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
+        }
+        catch (Exception ex)
+        {
+            Error?.Invoke(ex is IOException or UnauthorizedAccessException ? $"文件落地失败：{ex.Message}" : "文件落地失败，未向对端确认成功。");
+            try { await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { transfer_id = id, applied = false })); }
+            catch (Exception) { Error?.Invoke("文件落地回执未送达，请检查连接。"); }
+            FileTransferSettled?.Invoke(id, ex.Message, false);
+        }
+        finally { copying.Remove(id); }
+    }
+
+    private static string ResolveConflict(string target)
+    {
+        if (!File.Exists(target) && !Directory.Exists(target)) return target;
+        string directory = Path.GetDirectoryName(target) ?? ".";
+        string name = Path.GetFileName(target.TrimEnd(Path.DirectorySeparatorChar));
+        string stem = File.Exists(target) ? Path.GetFileNameWithoutExtension(name) : name;
+        string extension = File.Exists(target) ? Path.GetExtension(name) : "";
+        for (var number = 2; number < 1000; number++)
+        {
+            string candidate = Path.Combine(directory, $"{stem} ({number}){extension}");
+            if (!File.Exists(candidate) && !Directory.Exists(candidate)) return candidate;
+        }
+        throw new IOException("目标位置存在同名文件，无法安全落盘");
+    }
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            string destination = ResolveConflict(Path.Combine(target, Path.GetFileName(file)));
+            File.Copy(file, destination, overwrite: false);
+        }
+        foreach (var directory in Directory.EnumerateDirectories(source))
+        {
+            CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar))));
+        }
+    }
     public void Clear() => history.Clear();
     public void Remove(ClipboardEntry entry) => history.Remove(entry);
     public void ShowShelf(ClipboardEntry? entry = null)
     {
-        if (shelf is null) { shelf = new ShelfWindow(native, history); shelf.Closed += (_, _) => shelf = null; }
+        if (shelf is null) { shelf = new ShelfWindow(native, history, this); shelf.Closed += (_, _) => shelf = null; }
         if (entry is not null) shelf.Add(entry);
         shelf.Show();
     }

@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Windows 与 macOS 对齐跨设备按需文件传输：新增 `unidesk-transfer` 桌面桥（与 macOS 引擎相同的 deferred clipboard file 帧协议，含环回状态机测试）；Windows 服务新增 `PublishFileClipboard`/`RequestFileClipboard`/`CancelFileClipboard`/`CommitFileClipboard` 桌面 IPC 与 `DEFERRED_FILE_CLIPBOARD` 能力，接收端在保护目录内分块暂存、逐文件 SHA-256 校验后由桌面落地并回执；发送端支持本机 CF_HDROP 复制与暂存区「发送到设备」。传输页显示真实任务进度与缓存用量（默认每任务 1 GiB）。
+- Windows 本机显示名与 macOS 一致改为操作系统主机名（`GetComputerNameExW`），设备页改为只读展示，`Rename` 命令仍明确拒绝。
+- Windows 主控键鼠共享：`unidesk-input-helper` 扩展为采集+注入代理（复用平台钩子与跨平台 SharingController/布局解析），新增桌面 IPC（`EnableInputControl`/`DisableInputControl`/`RestartInputControl`/`MoveControlDevice` + helper 的 `EnterInputControl`/`SendInputEvents`/`LeaveInputControl`/`ReleaseInputControl` 与 `ControlGranted/Denied/Released` 回执），服务校验会话归属与单调批次去重；helper 心跳驱动 `SetInputAvailability`。输入页布局画布显示本机+远端显示器。
+- 文件传输状态在会话锁屏/注销/服务停止时显式通知对端并清理暂存；Windows 暂存目录、传输视图与配额纳入桌面快照。
+
 ## [0.2.3] — 剪贴板、设备连接与构建流程改进
 
 - 使用等价指纹识别剪贴板接力回声，改进复制排序、瀑布流、菜单栏卡片和界面入口。

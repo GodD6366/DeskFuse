@@ -1,14 +1,27 @@
 use super::security;
 use crate::{
-    desktop_protocol::{self as ipc, InputDelivery},
+    desktop_protocol::{self as ipc, InputDelivery, InputState},
     protocol,
 };
-use std::{io, os::windows::io::AsRawHandle, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    os::windows::io::AsRawHandle,
+    time::{Duration, Instant},
+};
 use tokio::time::{sleep, timeout};
-use unidesk_core::InputSessionId;
-use unidesk_platform::SharedInputInjector;
+use unidesk_core::{
+    DeviceId, InputSessionId, InputShareRole, InputSharingSettings, InputSharingSnapshot,
+    SharedInputEvent,
+};
+use unidesk_input::{
+    Point, Vector2,
+    layout::layout_displays,
+    sharing::{HotkeyBindings, HotkeyChord, SharingAction, SharingController, SharingDisplay},
+};
+use unidesk_platform::{CaptureEvent, SharedInputCapture, SharedInputInjector};
 use unidesk_platform_windows::{
-    WindowsSharingInjector,
+    WindowsSharingCapture, WindowsSharingInjector,
     capture::{CaptureFault, CapturePoll, WindowsInputCapture},
     display_topology,
 };
@@ -19,9 +32,14 @@ use windows_sys::Win32::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const INPUT_LEASE: Duration = Duration::from_millis(1_500);
+/// One controller IPC request per drained capture batch.
+const MAX_BATCH_EVENTS: usize = 256;
+const LEASE_TTL: Duration = Duration::from_millis(1_500);
 
 /// Run the fixed ordinary-desktop input helper. It owns no identity, trust or
-/// network runtime and accepts no path, shell or installation command.
+/// network runtime and accepts no path, shell or installation command. It
+/// injects remote input (receiver) and captures local input (controller); the
+/// service runtime stays the sole authority for both directions.
 pub fn run_input_helper(parent_pid: u32) -> io::Result<()> {
     let parent = ParentProcess::open(parent_pid)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -59,10 +77,80 @@ impl Drop for ParentProcess {
     }
 }
 
+/// A runtime-granted control session, mirroring the runtime lease locally.
+#[derive(Clone)]
+struct Grant {
+    session: InputSessionId,
+    expires: Instant,
+}
+impl Grant {
+    fn remaining(&self) -> Duration {
+        self.expires.saturating_duration_since(Instant::now())
+    }
+    fn expired(&self) -> bool {
+        Instant::now() >= self.expires
+    }
+}
+
+/// Controller-side state, mirroring the macOS input coordinator. All edge
+/// math runs locally through the cross-platform `SharingController`; only the
+/// session protocol crosses the service IPC.
+struct Controller {
+    local: Option<DeviceId>,
+    policy: SharingController,
+    capture: Box<dyn SharedInputCapture>,
+    capture_started: bool,
+    anchor: (f64, f64),
+    grants: BTreeMap<InputSessionId, Grant>,
+    retired: BTreeSet<InputSessionId>,
+    outbound: Option<Grant>,
+    last_revision: u64,
+    configured: Option<InputSharingSettings>,
+    layout: Vec<SharingDisplay>,
+    /// (peer, granted control session, ready) rows mirrored from the state.
+    links: Vec<(DeviceId, Option<InputSessionId>, bool)>,
+    pending: Vec<SharedInputEvent>,
+    pending_target: Option<(InputSessionId, String)>,
+    batch: u64,
+    started: Instant,
+}
+
+impl Controller {
+    fn new() -> Self {
+        Self {
+            local: None,
+            policy: SharingController::new(DeviceId::from_bytes([0; 32])),
+            capture: Box::new(WindowsSharingCapture::new()),
+            capture_started: false,
+            anchor: (0.0, 0.0),
+            grants: BTreeMap::new(),
+            retired: BTreeSet::new(),
+            outbound: None,
+            last_revision: 0,
+            configured: None,
+            layout: Vec::new(),
+            links: Vec::new(),
+            pending: Vec::new(),
+            pending_target: None,
+            batch: 0,
+            started: Instant::now(),
+        }
+    }
+
+    fn restore_local(&mut self) {
+        self.outbound = None;
+        self.policy.reclaim();
+        if self.capture_started {
+            let _ = self.capture.exit_remote(Some(self.anchor));
+        }
+    }
+}
+
 async fn run(parent: ParentProcess) -> io::Result<()> {
     let topology = display_topology().map_err(io::Error::other)?;
     let injector = WindowsSharingInjector::new().map_err(io::Error::other)?;
     let emergency_capture = WindowsInputCapture::start(2_048).map_err(io::Error::other)?;
+    let mut controller = Controller::new();
     let mut request_id = 0_u64;
     let mut cursor = 0_u64;
     let mut current_session = None;
@@ -71,6 +159,7 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
     loop {
         if !parent.alive()? {
             let _ = injector.release_all_nowait();
+            stop_controller(&mut controller);
             return Err(io::Error::other("desktop parent process exited"));
         }
         if !registered {
@@ -110,6 +199,7 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
                 registered = false;
                 current_session = None;
                 let _ = injector.release_all_nowait();
+                stop_controller(&mut controller);
                 sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -117,7 +207,7 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
         let ipc::Reply::InputPoll {
             deliveries,
             sequence,
-            ..
+            state,
         } = reply
         else {
             registered = false;
@@ -176,19 +266,144 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
                     current_session = None;
                     injector.release_all_nowait().map_err(io::Error::other)
                 }
+                InputDelivery::ControlGranted {
+                    session_id,
+                    lease_ms,
+                    ..
+                } => {
+                    let session = parse_session(&session_id)?;
+                    controller.retired.remove(&session);
+                    controller.grants.insert(
+                        session,
+                        Grant {
+                            session,
+                            expires: Instant::now()
+                                + Duration::from_millis(lease_ms.clamp(1, 60_000)),
+                        },
+                    );
+                    Ok(())
+                }
+                InputDelivery::ControlDenied { .. } => {
+                    // A denial is peer state, not a helper fault: keep the
+                    // helper alive so the user can retry after the peer
+                    // re-enables input sharing.
+                    controller.grants.clear();
+                    controller.restore_local();
+                    // The bounded reason is already mirrored by the service in
+                    // the snapshot's activation state; nothing further to do.
+                    Ok(())
+                }
+                InputDelivery::ControlReleased {
+                    session_id, reason, ..
+                } => {
+                    if let Ok(session) = parse_session(&session_id) {
+                        if !reason.contains("left display") {
+                            controller.retired.insert(session);
+                        }
+                        if controller
+                            .outbound
+                            .as_ref()
+                            .is_some_and(|grant| grant.session == session)
+                        {
+                            controller.restore_local();
+                        }
+                    } else {
+                        // A wildcard release clears the whole controller state.
+                        controller.restore_local();
+                    }
+                    Ok(())
+                }
             };
             if let Err(error) = result {
                 let _ = injector.release_all_nowait();
-                return report_failure(&mut request_id, &error.to_string()).await;
+                let _ = exchange(
+                    &mut request_id,
+                    ipc::Command::InputFault {
+                        message: error.to_string().chars().take(256).collect(),
+                    },
+                )
+                .await;
+                return Err(error);
             }
         }
         cursor = sequence;
+
+        // Controller maintenance from the latest state view.
+        match maintain_controller(&mut controller, &state, &topology) {
+            Ok(Some(released)) => {
+                let _ = exchange(
+                    &mut request_id,
+                    ipc::Command::ReleaseInputControl {
+                        session_id: released.to_string(),
+                    },
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = injector.release_all_nowait();
+                return report_failure(&mut request_id, &error).await;
+            }
+        }
+
+        // Drain captured local input while this desktop is a controller.
+        if controller.capture_started
+            && let Some(local) = controller.local
+        {
+            let mut actions = Vec::new();
+            for _ in 0..MAX_BATCH_EVENTS {
+                match controller.capture.next_event() {
+                    Ok(Some(CaptureEvent::Input(sample))) => {
+                        if !controller.policy.is_remote() {
+                            controller.anchor = (sample.global_x, sample.global_y);
+                        }
+                        let global = Point::new(sample.global_x, sample.global_y);
+                        let now_ms = controller.started.elapsed().as_millis() as u64;
+                        actions.extend(controller.policy.handle_input(
+                            sample.event,
+                            global,
+                            Vector2::new(sample.delta_x, sample.delta_y),
+                            now_ms,
+                        ));
+                    }
+                    Ok(None) => break,
+                    Ok(Some(_)) | Err(_) => {
+                        let _ = injector.release_all_nowait();
+                        return report_failure(&mut request_id, "输入捕获中断，已恢复本机输入")
+                            .await;
+                    }
+                }
+            }
+            if let Err(error) =
+                apply_actions(&mut controller, &mut request_id, actions, local).await
+            {
+                let _ = injector.release_all_nowait();
+                return report_failure(&mut request_id, &error.to_string()).await;
+            }
+            // Flush the routed batch collected during this iteration.
+            if controller.outbound.is_some() {
+                flush_pending(&mut controller, &mut request_id).await;
+            } else {
+                controller.pending.clear();
+                controller.pending_target = None;
+            }
+        }
+
         loop {
             match emergency_capture.poll() {
                 CapturePoll::Event(_) => {}
                 CapturePoll::Idle => break,
                 CapturePoll::Fault(CaptureFault::EmergencyReclaim) => {
                     let _ = injector.release_all_nowait();
+                    if let Some(outbound) = controller.outbound.take() {
+                        let _ = exchange(
+                            &mut request_id,
+                            ipc::Command::ReleaseInputControl {
+                                session_id: outbound.session.to_string(),
+                            },
+                        )
+                        .await;
+                    }
                     let _ = exchange(&mut request_id, ipc::Command::ReclaimInput).await;
                     return Err(io::Error::other(
                         "input reclaimed by Windows emergency chord",
@@ -212,7 +427,348 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
     }
 }
 
-fn parse_session(value: &str) -> io::Result<InputSessionId> {
+/// Rebuilds layout, hotkeys and the capture lifecycle from the state view.
+/// Returns a control session the caller must release when the configuration
+/// changed while this desktop was controlling, mirroring the coordinator's
+/// conservative reclaim (never keep a remote session across a layout change).
+fn maintain_controller(
+    controller: &mut Controller,
+    state: &InputState,
+    topology: &unidesk_core::DisplayTopology,
+) -> Result<Option<InputSessionId>, String> {
+    let Some(settings) = state.settings.clone() else {
+        return Ok(None);
+    };
+    if let Ok(local) = state.local_device_id.parse::<DeviceId>()
+        && controller.local.is_none()
+    {
+        controller.local = Some(local);
+        controller.policy = SharingController::new(local);
+    }
+    let Some(local) = controller.local else {
+        return Ok(None);
+    };
+    let controller_enabled = settings.enabled && settings.role == InputShareRole::Controller;
+    let mut snapshot = InputSharingSnapshot {
+        settings: settings.clone(),
+        local_topology: Some(topology.clone()),
+        ..InputSharingSnapshot::default()
+    };
+    snapshot.remote_topologies = state
+        .remote_topologies
+        .iter()
+        .filter_map(|view| {
+            view.peer_id
+                .parse::<DeviceId>()
+                .ok()
+                .map(|peer| (peer, view.topology.clone()))
+        })
+        .collect();
+    snapshot.links = state
+        .links
+        .iter()
+        .filter_map(|link| {
+            let peer = link.peer_id.parse::<DeviceId>().ok()?;
+            Some(unidesk_core::InputPeerStatus {
+                peer_id: peer,
+                ready: link.ready,
+                control_session: link
+                    .control_session
+                    .as_deref()
+                    .and_then(|id| id.parse::<uuid::Uuid>().ok())
+                    .map(InputSessionId),
+                lease_revision: link.lease_revision,
+                context: None,
+                reason: None,
+                motion_mode: link.motion_mode.clone(),
+                motion_fallback_reason: None,
+            })
+        })
+        .collect();
+    controller.links = state
+        .links
+        .iter()
+        .filter_map(|link| {
+            let peer = link.peer_id.parse::<DeviceId>().ok()?;
+            let session = link
+                .control_session
+                .as_deref()
+                .and_then(|id| id.parse::<uuid::Uuid>().ok())
+                .map(InputSessionId);
+            Some((peer, session, link.ready))
+        })
+        .collect();
+    let mut release_on_change = None;
+    if controller.configured.as_ref() != Some(&settings) {
+        if let Some(outbound) = controller.outbound.take() {
+            controller.policy.reclaim();
+            let _ = controller.capture.exit_remote(Some(controller.anchor));
+            controller.retired.insert(outbound.session);
+            release_on_change = Some(outbound.session);
+        }
+        let layout = layout_displays(&snapshot, local, true);
+        if !layout.is_empty() {
+            controller.policy.set_layout(layout.clone())?;
+        }
+        controller.layout = layout;
+        let bindings = hotkey_bindings(&settings);
+        controller.policy.set_mode(settings.switch_mode);
+        controller.policy.set_hotkeys(bindings.clone());
+        controller
+            .policy
+            .set_disabled_corners(settings.disabled_corners, f64::from(settings.corner_size));
+        controller.capture.set_hotkeys(bindings);
+        controller
+            .capture
+            .set_controller_hotkeys_enabled(controller_enabled);
+        controller.configured = Some(settings);
+    }
+    if controller_enabled && !controller.capture_started {
+        controller
+            .capture
+            .start()
+            .map_err(|error| format!("无法启动本机输入捕获：{error}"))?;
+        controller.capture_started = true;
+    } else if !controller_enabled && controller.capture_started {
+        stop_controller(controller);
+    }
+    // Renew the outbound lease from the runtime's link revision.
+    let outbound_session = controller.outbound.as_ref().map(|grant| grant.session);
+    if let Some(session) = outbound_session
+        && let Some(link) = state
+            .links
+            .iter()
+            .find(|link| link.control_session.as_deref() == Some(session.to_string().as_str()))
+    {
+        if link.ready {
+            if link.lease_revision != controller.last_revision {
+                controller.last_revision = link.lease_revision;
+                controller.outbound = controller.outbound.take().map(|mut grant| {
+                    grant.expires = Instant::now() + LEASE_TTL;
+                    grant
+                });
+                if !controller.capture.renew_deadline(LEASE_TTL) {
+                    controller.restore_local();
+                }
+            }
+        } else if controller.outbound.as_ref().is_some_and(Grant::expired) {
+            controller.restore_local();
+        }
+    } else if controller.outbound.as_ref().is_some_and(Grant::expired) {
+        controller.restore_local();
+    }
+    // Drop grants the runtime has already superseded.
+    controller.grants.retain(|_, grant| !grant.expired());
+    Ok(release_on_change)
+}
+
+/// Sends the pending routed batch to the service. Batch identifiers are
+/// per-session monotonic; the service drops replays and the runtime validates
+/// every event against the live lease.
+async fn flush_pending(controller: &mut Controller, request_id: &mut u64) {
+    let Some((session, target)) = controller.pending_target.clone() else {
+        return;
+    };
+    if controller.pending.is_empty() {
+        controller.pending_target = None;
+        return;
+    }
+    controller.batch = controller.batch.wrapping_add(1).max(1);
+    let batch = controller.batch;
+    let events = std::mem::take(&mut controller.pending);
+    controller.pending_target = None;
+    let reply = exchange(
+        request_id,
+        ipc::Command::SendInputEvents {
+            session_id: session.to_string(),
+            target_display: target,
+            batch,
+            events,
+        },
+    )
+    .await;
+    if !matches!(reply, Ok(ipc::Reply::Queued { .. })) {
+        controller.restore_local();
+    }
+}
+
+/// Applies crossing/routing actions exactly like the macOS coordinator, with
+/// the service IPC replacing the in-process runtime channel.
+async fn apply_actions(
+    controller: &mut Controller,
+    request_id: &mut u64,
+    actions: Vec<SharingAction>,
+    local: DeviceId,
+) -> Result<(), io::Error> {
+    for action in actions {
+        match action {
+            SharingAction::Crossed { from, to, position } => {
+                let changing_device = from.device_id != to.device_id;
+                if changing_device && let Some(outbound) = controller.outbound.take() {
+                    let _ = exchange(
+                        request_id,
+                        ipc::Command::LeaveInputControl {
+                            session_id: outbound.session.to_string(),
+                        },
+                    )
+                    .await;
+                }
+                if to.device_id == local {
+                    let restore = controller
+                        .layout
+                        .iter()
+                        .find(|display| display.key == to)
+                        .map(|display| {
+                            (
+                                display.display.frame_x + position.x,
+                                display.display.frame_y + position.y,
+                            )
+                        });
+                    if changing_device {
+                        controller.outbound = None;
+                        // No policy reclaim here: the macOS coordinator lets
+                        // the next local sample re-anchor the active display,
+                        // preserving dwell/double-tap attempt state.
+                        let _ = controller.capture.exit_remote(restore);
+                    }
+                } else {
+                    // Entering a remote display. The link names the granted
+                    // session; a live runtime grant must still arm the capture.
+                    let Some(session) = controller
+                        .links
+                        .iter()
+                        .find(|(peer, session, ready)| {
+                            *peer == to.device_id && *ready && session.is_some()
+                        })
+                        .and_then(|(_, session, _)| *session)
+                    else {
+                        controller.policy.reclaim();
+                        continue;
+                    };
+                    let Some(grant) = controller
+                        .grants
+                        .get(&session)
+                        .filter(|grant| !grant.expired())
+                        .cloned()
+                    else {
+                        controller.policy.reclaim();
+                        continue;
+                    };
+                    if controller
+                        .outbound
+                        .as_ref()
+                        .is_none_or(|outbound| outbound.session != session)
+                    {
+                        if controller.retired.contains(&session)
+                            || !controller.capture.arm_session(session, grant.remaining())
+                        {
+                            controller.retired.insert(session);
+                            let _ = exchange(
+                                request_id,
+                                ipc::Command::ReleaseInputControl {
+                                    session_id: session.to_string(),
+                                },
+                            )
+                            .await;
+                            controller.policy.reclaim();
+                            continue;
+                        }
+                        controller.outbound = Some(grant);
+                    }
+                    let entered = exchange(
+                        request_id,
+                        ipc::Command::EnterInputControl {
+                            session_id: session.to_string(),
+                            target_display: to.display_id.0.clone(),
+                            x: position.x,
+                            y: position.y,
+                        },
+                    )
+                    .await;
+                    match entered {
+                        Ok(ipc::Reply::Queued { .. }) => {
+                            if changing_device {
+                                let _ = controller
+                                    .capture
+                                    .enter_remote(controller.anchor.0, controller.anchor.1);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => {
+                            controller.outbound = None;
+                            controller.policy.reclaim();
+                            return Err(io::Error::other("进入远端输入控制失败"));
+                        }
+                    }
+                }
+            }
+            SharingAction::Route { target, event } => {
+                let Some(outbound) = controller.outbound.clone() else {
+                    continue;
+                };
+                if outbound.expired() {
+                    controller.restore_local();
+                    continue;
+                }
+                let key = (outbound.session, target.display_id.0.clone());
+                if controller
+                    .pending_target
+                    .as_ref()
+                    .is_some_and(|existing| *existing != key)
+                {
+                    flush_pending(controller, request_id).await;
+                }
+                controller.pending_target = Some(key);
+                controller.pending.push(event);
+            }
+            SharingAction::Reclaim => {
+                if let Some(outbound) = controller.outbound.take() {
+                    let _ = exchange(
+                        request_id,
+                        ipc::Command::ReleaseInputControl {
+                            session_id: outbound.session.to_string(),
+                        },
+                    )
+                    .await;
+                }
+                controller.restore_local();
+                let _ = exchange(request_id, ipc::Command::ReclaimInput).await;
+            }
+            SharingAction::LockChanged(_) => {}
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn hotkey_bindings(settings: &InputSharingSettings) -> HotkeyBindings {
+    let shortcuts = &settings.shortcuts;
+    let chord = |shortcut: &unidesk_core::InputShortcut| HotkeyChord {
+        code: shortcut.key_code,
+        modifiers: shortcut.modifiers,
+    };
+    HotkeyBindings {
+        directional: [
+            chord(&shortcuts.left),
+            chord(&shortcuts.right),
+            chord(&shortcuts.up),
+            chord(&shortcuts.down),
+        ],
+        lock: chord(&shortcuts.lock),
+    }
+}
+
+fn stop_controller(controller: &mut Controller) {
+    controller.outbound = None;
+    controller.grants.clear();
+    controller.policy.reclaim();
+    if controller.capture_started {
+        let _ = controller.capture.exit_remote(None);
+        let _ = controller.capture.stop();
+        controller.capture_started = false;
+    }
+}
+
+pub(crate) fn parse_session(value: &str) -> io::Result<InputSessionId> {
     value
         .parse::<uuid::Uuid>()
         .map(InputSessionId)

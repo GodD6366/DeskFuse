@@ -1,4 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
+use super::file_transfer;
 use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
 use unidesk_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
@@ -45,12 +46,14 @@ impl Network {
         let control_capabilities = Capabilities::NETWORK
             | Capabilities::DEVICE_NETWORK
             | Capabilities::CLIPBOARD
-            | Capabilities::CLIPBOARD_SYNC_V2;
+            | Capabilities::CLIPBOARD_SYNC_V2
+            | Capabilities::DEFERRED_FILE_CLIPBOARD;
+        let display_name = crate::native::file_transfer::computer_display_name();
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
                 .with_public_network_enabled(false),
-            display_name: "uniDesk Windows".into(),
+            display_name: display_name.clone(),
             capabilities: control_capabilities,
             ..RuntimeConfig::default()
         };
@@ -67,7 +70,7 @@ impl Network {
             .set_advertisement(
                 ServiceRecord::v1(
                     identity.device_id(),
-                    config.display_name.clone(),
+                    display_name.clone(),
                     control_capabilities,
                     control_port,
                 )
@@ -98,7 +101,7 @@ impl Network {
             .set_advertisement(
                 ServiceRecord::v1(
                     identity.device_id(),
-                    "uniDesk Windows",
+                    display_name,
                     INPUT_CAPABILITIES,
                     input_port,
                 )
@@ -113,6 +116,19 @@ impl Network {
             initial,
         )
         .map_err(|_| stage(26))?;
+        // Own the transfer cache beneath the protected data directory before
+        // any session can publish or receive files. The interactive user gets
+        // read+execute so the desktop can copy staged files out; per-transfer
+        // subdirectories inherit and are cleaned by the bridge.
+        let transfer_root = directory.transfer_cache_path();
+        file_transfer::open_transfer_cache(&transfer_root).map_err(|_| stage(27))?;
+        if let Ok(entries) = std::fs::read_dir(&transfer_root) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+        file_transfer::set_cache_root(transfer_root);
+        file_transfer::start_delivery(runtime.clone());
         let network = Self {
             runtime,
             input_runtime,

@@ -22,14 +22,15 @@ public sealed class ShelfWindow : Window
 {
     private readonly NativeClipboard clipboard;
     private readonly ClipboardHistory history;
+    private readonly DesktopClipboardController controller;
     private readonly ObservableCollection<ClipboardEntry> entries = new();
     private readonly ListBox list = new() { DisplayMemberPath = nameof(ClipboardEntry.Title), BorderThickness = new Thickness(0) };
     private readonly TextBlock status = new() { Text = "拖入本机文件，或从历史加入", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, FontSize = 11 };
     private Point? dragStart;
     private bool exiting;
-    public ShelfWindow(NativeClipboard clipboard, ClipboardHistory history)
+    public ShelfWindow(NativeClipboard clipboard, ClipboardHistory history, DesktopClipboardController controller)
     {
-        this.clipboard = clipboard; this.history = history;
+        this.clipboard = clipboard; this.history = history; this.controller = controller;
         Title = "uniDesk 暂存区"; Width = 240; Height = 240; MinWidth = 240; MinHeight = 240;
         ShowInTaskbar = false; ShowActivated = false; ResizeMode = ResizeMode.CanResizeWithGrip;
         Background = Brushes.White; AllowDrop = true; WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -44,7 +45,7 @@ public sealed class ShelfWindow : Window
         list.ItemsSource = entries; layout.Children.Add(list); Content = layout;
         var menu = new ContextMenu();
         var copy = new MenuItem { Header = "复制" }; copy.Click += (_, _) => CopySelection(); menu.Items.Add(copy);
-        var send = new MenuItem { Header = "发送到设备", IsEnabled = false, ToolTip = "Windows 文件传输链路尚未接入" }; menu.Items.Add(send);
+        var send = new MenuItem { Header = "发送到设备" }; send.Click += (_, _) => _ = SendSelectionAsync(); menu.Items.Add(send);
         var remove = new MenuItem { Header = "移出暂存区" }; remove.Click += (_, _) => { if (list.SelectedItem is ClipboardEntry e) entries.Remove(e); }; menu.Items.Add(remove);
         list.ContextMenu = menu;
         list.PreviewMouseLeftButtonDown += (_, e) => dragStart = e.GetPosition(list);
@@ -81,6 +82,17 @@ public sealed class ShelfWindow : Window
         try { clipboard.Write(entry.Content); status.Text = "已复制到本机剪贴板"; }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Runtime.InteropServices.COMException or NotSupportedException or ArgumentException)
         { status.Text = "复制失败，原文件保持不变"; }
+    }
+    private async Task SendSelectionAsync()
+    {
+        if (list.SelectedItem is not ClipboardEntry entry) return;
+        if (entry.Content.Files is not { Count: > 0 } paths)
+        { status.Text = "只有本机文件或文件夹可以发送到设备"; return; }
+        status.Text = "正在发送到已连接设备…";
+        bool sent = await controller.PublishFilesAsync(paths);
+        status.Text = sent
+            ? "已发送文件引用；对方粘贴时按需传输并校验。"
+            : "文件未发送；请查看主窗口提示";
     }
     private void BeginDrag(object sender, System.Windows.Input.MouseEventArgs args)
     {

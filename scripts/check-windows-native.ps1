@@ -15,8 +15,8 @@ $env:CARGO_NET_GIT_FETCH_WITH_CLI = 'true'
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
 & cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-platform -p unidesk-platform-windows -p unidesk-identity --lib
 if ($LASTEXITCODE -ne 0) { throw 'Windows native adapter tests failed' }
-& cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-transfer windows_paths --lib
-if ($LASTEXITCODE -ne 0) { throw 'Windows filename validation tests failed' }
+& cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-transfer --lib windows_paths desktop_bridge
+if ($LASTEXITCODE -ne 0) { throw 'Windows filename and file bridge validation tests failed' }
 & cargo clippy --locked --target x86_64-pc-windows-msvc -p unidesk-platform -p unidesk-platform-windows -p unidesk-identity --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { throw 'Windows native adapter lint failed' }
 & cargo build --locked --release --target x86_64-pc-windows-msvc -p unidesk-platform-windows --bin unidesk-native-probe
