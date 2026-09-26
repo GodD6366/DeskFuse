@@ -20,9 +20,9 @@ use unidesk_transport::remote_application::RemoteSession;
 use windows_sys::Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
     System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
         RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW, RegOpenKeyExW,
-        RegQueryValueExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
-        REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RegQueryValueExW, RegSetValueExW,
     },
 };
 
@@ -41,7 +41,9 @@ pub const RDP_HOST_TOKEN: &str = "{host}";
 pub enum Availability {
     Available,
     /// Home / Core editions ship neither the RDP host nor RemoteApp support.
-    UnsupportedEdition { edition: String },
+    UnsupportedEdition {
+        edition: String,
+    },
 }
 
 /// One registered RemoteApp, mirroring RemoteApp Tool's registry schema.
@@ -530,8 +532,9 @@ pub fn serve(session: Arc<RemoteSession>) {
                             );
                             continue;
                         }
-                        let Some(entry) =
-                            list_remote_apps().into_iter().find(|entry| entry.name == name)
+                        let Some(entry) = list_remote_apps()
+                            .into_iter()
+                            .find(|entry| entry.name == name)
                         else {
                             let _ = send(
                                 &session,

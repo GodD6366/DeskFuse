@@ -1,6 +1,6 @@
 # Windows 离线桌面安装包
 
-本目录用于 WPF .NET 8 桌面客户端与 Rust `UniDeskService` 的首次手动安装；不是 LAN 自动更新器，不包含自动更新回滚协议。
+本目录用于 WPF .NET 8 桌面客户端与 Rust `UniDeskService` 的首次手动安装。Windows updater helper 与签名/事务策略已随包构建，但在服务 admission、机器级提权和启动自检接线完成前保持 fail-closed；该安装器不是 LAN 自动更新器，不会把 NSIS 进程内退出码当作提交成功。
 
 ## 构建
 
@@ -14,9 +14,9 @@
 
 构建依赖已经缓存并且 WPF 工程已针对 `win-x64` restore 时，可附加 `-Offline`：Cargo 使用 `--offline`，dotnet 使用 `--no-restore`。首次构建未缓存依赖时，需要正常 restore；“离线安装包”指安装时无须下载 .NET runtime，不代表首次构建不需要依赖缓存。源码快照覆盖 `resources/`（包含服务编译所需的固定 transport cert/key）、Rust crates、WPF 工程及安装脚本；SHA-256 在构建前、构建后、生成安装器后核对，并拒绝快照遗漏的构建输入。新增源码必须重新生成快照。
 
-Rust Windows target 全依赖使用静态 CRT（`-C target-feature=+crt-static`），保留调用方有效 Rust flags；结束后恢复原 `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`。打包器对四个应用 EXE 检查普通及 delay-load imports；非系统依赖必须以准确 DLL 名称随包存在，不能依赖构建机已经安装的 VC runtime，也不会从构建机复制任意 DLL。该检查不等价于所有随包 DLL 的递归依赖或实际启动验证。
+Rust Windows target 全依赖使用静态 CRT（`-C target-feature=+crt-static`），保留调用方有效 Rust flags；结束后恢复原 `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`。打包器对五个应用/helper EXE 检查普通及 delay-load imports；非系统依赖必须以准确 DLL 名称随包存在，不能依赖构建机已经安装的 VC runtime，也不会从构建机复制任意 DLL。该检查不等价于所有随包 DLL 的递归依赖或实际启动验证。
 
-输出至 `dist/windows/`：EXE、`.manifest.json` 和 `.sha256`。清单分别记录每个载荷的 SHA-256 与 Authenticode 状态。当前脚本不签名，正常输出为 `NotSigned`；即使运行库自带 Microsoft 签名，也不意味着 uniDesk 或发行清单已签名。没有发行签名的安装器标记 `lan_update_eligible: false`。
+输出至 `dist/windows/`：EXE、`.manifest.json` 和 `.sha256`。清单分别记录每个载荷的 SHA-256 与 Authenticode 状态。当前脚本不签名，正常输出为 `NotSigned`；即使运行库自带 Microsoft 签名，也不意味着 uniDesk 或发行清单已签名。没有发行签名的安装器标记 `lan_update_eligible: false`。即使 helper 已随包存在，当前 `updater_helper_enabled` 仍为 `false`，不会绕过服务协调器执行更新。
 
 ## 安装与卸载
 
@@ -26,7 +26,7 @@ Rust Windows target 全依赖使用静态 CRT（`-C target-feature=+crt-static`�
 - 仅此新桌面安装器创建三条固定命名的 Windows Defender Firewall 入站规则：服务程序的 UDP 42424（控制/剪贴板 QUIC）、UDP 42425（独立键鼠 QUIC）与 UDP 5353（mDNS），限定 Private profile、LocalSubnet 来源、禁止 edge traversal。没有 TCP 或任意端口放行，不更改网络 profile、全局防火墙设置或其他应用规则。卸载只移除 `UniDesk.Installer.Private.QUIC.UDP42424` / `UniDesk.Installer.Private.Input.UDP42425` / `UniDesk.Installer.Private.mDNS.UDP5353` 且 group 为 `uniDesk Desktop Installer` 的规则。旧的 service-checkpoint ZIP 仍不修改防火墙。
 - GUI 通过开始菜单由普通用户主动启动；安装器不会从管理员会话启动 GUI，不创建管理员常驻任务。GUI 登录启动策略由客户端负责。
 - 卸载只删除本次载荷清单中的程序文件、快捷方式和服务注册；不会递归删除安装目录，更不会删除 ProgramData/AppData 中的身份、配对、设置或任何用户源文件。
-- 这是首次安装/手动重新安装路径。复制或服务启动失败会明确中止，但尚无应用与数据库的事务性回滚，因此不能接入永久自动更新流程。
+- 这是首次安装/手动重新安装路径。复制或服务启动失败会明确中止；`unidesk-update` 的 Windows 策略要求固定发行 Ed25519 清单、Windows 安装器 Authenticode、程序与 SQLite/WAL/SHM 备份、服务/GUI/input helper admission 及 60 秒启动自检，全部证据齐全前不得接入永久自动更新流程。现有 NSIS 安装路径仍不是事务安装器。
 
 ## 验证边界
 

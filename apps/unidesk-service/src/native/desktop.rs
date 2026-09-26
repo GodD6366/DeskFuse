@@ -316,7 +316,10 @@ impl State {
                     .input_heartbeat
                     .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
                 updater: false,
-                remote_app: matches!(remote_app::availability(), remote_app::Availability::Available),
+                remote_app: matches!(
+                    remote_app::availability(),
+                    remote_app::Availability::Available
+                ),
             },
             input: self.input_state(network),
             peers,
@@ -572,28 +575,23 @@ impl State {
                 };
                 match remote_app::register_app(&entry) {
                     Ok(()) => ipc::Reply::queued(),
-                    Err(_) => ipc::Reply::rejected(
-                        "remote_app_unavailable",
-                        "无法写入 RemoteApp 注册表",
-                    ),
+                    Err(_) => {
+                        ipc::Reply::rejected("remote_app_unavailable", "无法写入 RemoteApp 注册表")
+                    }
                 }
             }
             ipc::Command::UnregisterRemoteApp { name } => match remote_app::unregister_app(&name) {
                 Ok(()) => ipc::Reply::queued(),
-                Err(_) => ipc::Reply::rejected(
-                    "remote_app_unavailable",
-                    "无法移除 RemoteApp 注册项",
-                ),
+                Err(_) => {
+                    ipc::Reply::rejected("remote_app_unavailable", "无法移除 RemoteApp 注册项")
+                }
             },
             ipc::Command::RemoteAppConnection { name } => {
                 let Some(entry) = remote_app::list_remote_apps()
                     .into_iter()
                     .find(|entry| entry.name == name)
                 else {
-                    return ipc::Reply::rejected(
-                        "not_found",
-                        "该应用尚未注册为 RemoteApp",
-                    );
+                    return ipc::Reply::rejected("not_found", "该应用尚未注册为 RemoteApp");
                 };
                 ipc::Reply::RemoteAppConnection {
                     rdp: remote_app::rdp_file(&entry),

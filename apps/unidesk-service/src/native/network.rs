@@ -201,9 +201,11 @@ impl Network {
         view.device_network
             .allows(view.snapshot.local_device_id, peer)
             && !view.device_network.blocked_peer_ids.contains(&peer)
-            && view.snapshot.peers.iter().any(|entry| {
-                entry.id == peer && entry.trust == TrustState::Trusted
-            })
+            && view
+                .snapshot
+                .peers
+                .iter()
+                .any(|entry| entry.id == peer && entry.trust == TrustState::Trusted)
     }
 }
 

@@ -32,7 +32,7 @@
 | 键鼠、多屏布局 | Windows 发布稳定显示器 ID、DPI、旋转和负坐标拓扑；双向均已接入：Mac 主控 → Windows 被控，以及 Windows 主控 → Mac 被控（设备页一键开启/停止，服务持久化角色与参与者，激活状态与控制会话实时显示；布局画布展示本机+远端显示器，运行时负责实际吸附定位） |
 | 普通桌面输入 | 已接入独立 42425 input-only runtime、会话绑定 helper、1.5 秒原生租约、按键/按钮释放与 Ctrl+Alt+Win+Esc 紧急收回；双向支持：Mac 主控 → Windows 被控，以及 Windows 主控（本地低级钩子采集、跨平台 SharingController 边缘逻辑、会话/租约/去重回执）→ Mac 被控（对端仍需设备激活确认） |
 | 管理员/UAC/锁屏/登录输入 | **未接入高完整性及安全桌面 helper**；普通 helper 明确拒绝非 Default desktop，不宣称可用 |
-| 自动更新、跨系统包分发、事务回滚 | **未接入 Windows 安装协调器**，updater capability 为 false |
+| 自动更新、跨系统包分发、事务回滚 | **签名/NSIS 验证与 admission/self-test/回滚策略已定义，但尚未接入 Windows 安装协调器**；helper fail-closed，updater capability 为 false |
 | 工作流、快捷键与工作流共享 | **尚未对齐** |
 
 ## 剪贴板生命周期
@@ -55,7 +55,7 @@ Windows MSVC x64 / .NET 8 / NSIS 3：
 
 脚本默认不运行测试、不安装服务、不启动应用。安装器实际执行时按安装说明注册服务和仅 Private / LocalSubnet 的程序端口规则。移除只处理本安装器的载荷和规则，保留身份、配对和用户数据。
 
-没有 Authenticode 或发行签名时明确记录未签名。**该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。安装失败回滚、Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
+没有 Authenticode 或发行签名时明确记录未签名。**该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。服务 admission、机器级提权、SQLite/WAL/SHM 备份恢复和 GUI/service/input-helper 启动自检尚未接线；helper 在缺少这些证据时拒绝执行。Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
 
 ## 剪贴板去回环修正（build 105）
 

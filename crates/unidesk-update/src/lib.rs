@@ -7,9 +7,13 @@ mod cache;
 mod coordinator;
 #[cfg(target_os = "macos")]
 pub mod installer;
+#[cfg(windows)]
+#[path = "installer_windows.rs"]
+pub mod installer;
 mod manifest;
 mod selection;
 mod transaction;
+pub mod windows;
 
 pub use artifact::{VerifiedArtifact, verify_artifact};
 pub use cache::{CachedArtifact, ReleaseCache};
