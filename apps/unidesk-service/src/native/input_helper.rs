@@ -36,8 +36,10 @@ const INPUT_LEASE: Duration = Duration::from_millis(1_500);
 const MAX_BATCH_EVENTS: usize = 256;
 const LEASE_TTL: Duration = Duration::from_millis(1_500);
 
-/// Run the fixed ordinary-desktop input helper. It owns no identity, trust or
-/// network runtime and accepts no path, shell or installation command. It
+/// Run the fixed UIAccess input helper. It owns no identity, trust or network
+/// runtime and accepts no path, shell or installation command. UIAccess lets the
+/// signed helper cross UIPI for elevated applications; secure Winlogon desktops
+/// remain session-owned by the service and are never entered by this process. It
 /// injects remote input (receiver) and captures local input (controller); the
 /// service runtime stays the sole authority for both directions.
 pub fn run_input_helper(parent_pid: u32) -> io::Result<()> {

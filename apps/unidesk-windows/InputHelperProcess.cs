@@ -4,7 +4,7 @@ using System.Windows.Threading;
 
 namespace UniDesk.Windows;
 
-/// <summary>Supervises the fixed ordinary-desktop Rust input helper.</summary>
+/// <summary>Supervises the fixed signed UIAccess Rust input helper.</summary>
 public sealed class InputHelperProcess : IDisposable
 {
     private readonly Dispatcher dispatcher;
