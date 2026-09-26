@@ -14,7 +14,11 @@ Requests have `version:2`, a process-local monotonically increasing `request_id`
 {"version":2,"request_id":3,"command":{"RequestPairingAt":{"ipv4":"192.168.1.23"}}}
 {"version":2,"request_id":4,"command":{"AcceptPairing":{"request_id":"invitation-uuid"}}}
 {"version":2,"request_id":5,"command":{"RejectPairing":{"request_id":"invitation-uuid"}}}
-{"version":2,"request_id":6,"command":{"Disconnect":{"peer_id":"device-id"}}}
+{"version":2,"request_id":6,"command":"GetWorkflows"}
+{"version":2,"request_id":7,"command":{"SaveWorkflow":{"workflow":{"version":2,"id":"workflow-id","name":"示例","enabled":true,"shortcut":{"key_code":49,"modifiers":1835008},"input_type":"Any","steps":[{"kind":"Copy","quality":90,"target_bytes":null,"max_edge":null,"scale_percent":null,"format":"Png","shortcut_id":"","shortcut_name":"","output_shape":"FollowSource","find":"","replacement":"","prefix":"","suffix":"","shortcut_output":"Any"}]}}}}
+{"version":2,"request_id":8,"command":{"SetInputSharingSettings":{"settings":{"shortcuts":{},"enabled":true,"role":"Controller"}}}}
+{"version":2,"request_id":9,"command":{"MoveControlDevice":{"device_id":"device-id","display_id":"mac-display-1","x":1920.0,"y":0.0}}}
+{"version":2,"request_id":10,"command":{"Disconnect":{"peer_id":"device-id"}}}
 {"version":2,"request_id":7,"command":{"Revoke":{"peer_id":"device-id"}}}
 {"version":2,"request_id":8,"command":{"Rename":{"name":"My Windows PC"}}}
 {"version":2,"request_id":9,"command":{"Poll":{"session_epoch":0,"after_sequence":0}}}
@@ -95,7 +99,8 @@ The same helper captures local input when this desktop is an input controller. A
 3. The runtime's activation actor sends `Activate` intents to the peer (fixed 1500 ms TTL, 250 ms renew) using the same protocol as macOS. Peer approval arrives as an activation status (`Preparing`/`Ready`/`PausedByUser`/`Unavailable`) mirrored in `Snapshot.input.activations`.
 4. When the runtime grants a control session, the desktop pushes a `ControlGranted { session_id, lease_ms }` delivery; denials and releases arrive as `ControlDenied`/`ControlReleased`. The helper mirrors these grants locally exactly like the macOS coordinator (retired-session set, expiry, `arm_session` on the capture suppression lease).
 5. When the local pointer crosses an edge onto a remote display, the helper sends `EnterInputControl { session_id, target_display, x, y }` (session taken from `input.links[].control_session`), then routes captured events as `SendInputEvents { session_id, target_display, batch, events }`. `batch` is per-session monotonic; the service drops non-increasing batches so a retransmitted helper request can never double-inject. Batches are capped at 256 events. Crossing back sends `LeaveInputControl`; ending control sends `ReleaseInputControl`. The runtime validates every frame against the live lease, remote topology and activation, exactly like the macOS engine.
-6. `MoveControlDevice { device_id, display_id, x, y }` moves a remote display group in the controller layout (runtime-owned magnetic snapping and persistence); the GUI canvas is read-only positioning for now.
+6. `MoveControlDevice { device_id, display_id, x, y }` moves a remote display in the controller layout; the runtime performs magnetic snapping and persistence, and the WPF canvas submits this command after a drag.
+7. `GetWorkflows`, `SaveWorkflow` and `DeleteWorkflow` expose the Rust `unidesk_core::workflow::Workflow` JSON model. The service validates and persists the catalog; execution and cross-device rule delivery remain Rust-engine responsibilities.
 
 `Snapshot.input` now carries `local_device_id`, effective `settings`, `controlling`, `activations`, `remote_topologies` and `links` for both directions. Ctrl+Alt+Win+Esc remains the emergency chord for both roles: it releases held input, ends any control session, pauses a managed activation and stops the helper.
 

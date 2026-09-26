@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -32,6 +33,11 @@ public partial class MainWindow : Window
     private string lastDeviceSnapshot = "";
     private JsonElement? latest;
     private bool busy;
+    private bool updatingInputSettings;
+    private readonly List<WorkflowRecord> workflows = [];
+    private WorkflowRecord? editingWorkflow;
+    private Border? draggingDisplay;
+    private Point dragOrigin;
     public MainWindow(ServiceClient service, DesktopClipboardController clipboard)
     {
         this.service = service;
@@ -57,7 +63,9 @@ public partial class MainWindow : Window
         InputPage.Visibility = Navigation.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         DevicesPage.Visibility = Navigation.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
         TransfersPage.Visibility = Navigation.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        WorkflowsPage.Visibility = Navigation.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
         if (Navigation.SelectedIndex == 1) DrawInputLayout(latest.HasValue ? latest.Value.TryGetProperty("input", out var layoutInput) ? layoutInput : default : default);
+        if (Navigation.SelectedIndex == 4) _ = LoadWorkflowsAsync();
     }
     private void HistoryChanged(object? sender, NotifyCollectionChangedEventArgs args) => RefreshHistory();
     private void HistoryFilterChanged(object sender, RoutedEventArgs args)
@@ -243,7 +251,23 @@ public partial class MainWindow : Window
             string peer = snapshot.Array("peers").FirstOrDefault(p => p.String("peer_id") == controllingId).String("display_name", controllingId);
             InputAvailability.Text += $"\n本机已开启主控{(peer.Length > 0 && controllingId.Length > 0 ? $"：正在控制 {peer}{(target.Length > 0 ? $"（{target}）" : "")}" : "；把指针移到屏幕边缘即可控制对端")}";
         }
+        RenderShortcutBindings(input);
         DrawInputLayout(input);
+    }
+
+    private void RenderShortcutBindings(JsonElement input)
+    {
+        if (ShortcutBindings is null || updatingInputSettings || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
+        if (!settings.TryGetProperty("shortcuts", out var shortcuts) || shortcuts.ValueKind != JsonValueKind.Object) return;
+        string[] names = ["left", "right", "up", "down", "lock"];
+        var lines = names.Select(name =>
+        {
+            var shortcut = shortcuts.TryGetProperty(name, out var value) ? value : default;
+            return $"{shortcut.Number("key_code")}, {shortcut.Number("modifiers")}";
+        });
+        updatingInputSettings = true;
+        ShortcutBindings.Text = string.Join(Environment.NewLine, lines);
+        updatingInputSettings = false;
     }
 
     /// <summary>Draws the shared screen layout: local displays plus remote
@@ -327,7 +351,11 @@ public partial class MainWindow : Window
                     var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(6) };
                     content.Children.Add(new TextBlock { Text = name, FontSize = 13, FontWeight = FontWeights.SemiBold, TextAlignment = TextAlignment.Center });
                     content.Children.Add(new TextBlock { Text = $"{width} × {height} px", FontSize = 11, TextAlignment = TextAlignment.Center });
-                    var rectangle = new Border { Width = width * scale, Height = height * scale, BorderBrush = new SolidColorBrush(Color.FromRgb(22, 163, 74)), BorderThickness = new Thickness(2), Background = new SolidColorBrush(Color.FromRgb(220, 245, 228)), CornerRadius = new CornerRadius(6), Child = content };
+                    var rectangle = new Border { Width = width * scale, Height = height * scale, BorderBrush = new SolidColorBrush(Color.FromRgb(22, 163, 74)), BorderThickness = new Thickness(2), Background = new SolidColorBrush(Color.FromRgb(220, 245, 228)), CornerRadius = new CornerRadius(6), Child = content, Tag = new RemoteDisplayDrag(peer, display.String("id"), x, y, scale) };
+                    rectangle.Cursor = Cursors.SizeAll;
+                    rectangle.MouseLeftButtonDown += DisplayDragStarted;
+                    rectangle.MouseMove += DisplayDragMoved;
+                    rectangle.MouseLeftButtonUp += DisplayDragFinished;
                     Canvas.SetLeft(rectangle, remoteOffset + (x - minX) * scale);
                     Canvas.SetTop(rectangle, remoteY + (y - minY) * scale);
                     DisplayCanvas.Children.Add(rectangle);
@@ -336,6 +364,64 @@ public partial class MainWindow : Window
             }
         }
     }
+    private async void SaveShortcutBindingsClick(object sender, RoutedEventArgs args)
+    {
+        if (updatingInputSettings || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings)) return;
+        var lines = ShortcutBindings.Text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length != 5) { ShowNotice("需要按左、右、上、下、锁定顺序填写五行快捷键。 "); return; }
+        try
+        {
+            var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
+            var shortcuts = node["shortcuts"]?.AsObject() ?? throw new FormatException();
+            string[] names = ["left", "right", "up", "down", "lock"];
+            for (int i = 0; i < names.Length; i++)
+            {
+                var values = lines[i].Split(',', StringSplitOptions.TrimEntries);
+                if (values.Length != 2 || !ushort.TryParse(values[0], out var key) || !ulong.TryParse(values[1], out var modifiers)) throw new FormatException();
+                shortcuts[names[i]] = new JsonObject { ["key_code"] = key, ["modifiers"] = modifiers };
+            }
+            await service.SendAsync("SetInputSharingSettings", new { settings = node });
+            ShowNotice("快捷键已提交；以输入状态和服务持久化结果为准。");
+        }
+        catch (FormatException) { ShowNotice("快捷键格式无效，请使用 key code, modifiers，每行一组。"); }
+        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "快捷键未保存，服务可能已断开。"); }
+    }
+
+    private sealed record RemoteDisplayDrag(string DeviceId, string DisplayId, double X, double Y, double Scale);
+    private void DisplayDragStarted(object sender, MouseButtonEventArgs args)
+    {
+        if (sender is not Border border || border.Tag is not RemoteDisplayDrag drag || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
+        if (!settings.TryGetProperty("role", out var role) || role.GetString() != "Controller" || !settings.Bool("enabled")) { ShowNotice("只有已启用的本机主控可以编辑远端布局。"); return; }
+        draggingDisplay = border;
+        dragOrigin = args.GetPosition(DisplayCanvas);
+        border.CaptureMouse();
+        args.Handled = true;
+    }
+    private void DisplayDragMoved(object sender, MouseEventArgs args)
+    {
+        if (draggingDisplay is not Border border || border.Tag is not RemoteDisplayDrag drag || !border.IsMouseCaptured) return;
+        var position = args.GetPosition(DisplayCanvas);
+        double deltaX = position.X - dragOrigin.X;
+        double deltaY = position.Y - dragOrigin.Y;
+        Canvas.SetLeft(border, Canvas.GetLeft(border) + deltaX);
+        Canvas.SetTop(border, Canvas.GetTop(border) + deltaY);
+        dragOrigin = position;
+        border.Tag = drag with { X = drag.X + deltaX / Math.Max(0.01, drag.Scale), Y = drag.Y + deltaY / Math.Max(0.01, drag.Scale) };
+    }
+    private async void DisplayDragFinished(object sender, MouseButtonEventArgs args)
+    {
+        if (sender is not Border border || border.Tag is not RemoteDisplayDrag drag) return;
+        border.ReleaseMouseCapture();
+        draggingDisplay = null;
+        try
+        {
+            await service.SendAsync("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x = drag.X, y = drag.Y });
+            ShowNotice("布局位置已提交；运行时会进行吸附并持久化。");
+        }
+        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。"); }
+        args.Handled = true;
+    }
+
     private async void ReclaimInputClick(object sender, RoutedEventArgs args)
     {
         try
@@ -485,6 +571,77 @@ public partial class MainWindow : Window
         public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
             => value is true ? "选择位置并接收…" : string.Empty;
         public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => throw new NotSupportedException();
+    }
+    private async Task LoadWorkflowsAsync()
+    {
+        if (!service.IsConnected || WorkflowList is null) return;
+        try
+        {
+            var result = await service.SendAsync("GetWorkflows");
+            if (!result.TryGetProperty("Workflows", out var catalog) || !catalog.TryGetProperty("workflows", out var values) || values.ValueKind != JsonValueKind.Array) return;
+            var loaded = JsonSerializer.Deserialize<List<WorkflowRecord>>(values.GetRawText()) ?? [];
+            workflows.Clear(); workflows.AddRange(loaded);
+            WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
+            if (editingWorkflow is not null) WorkflowList.SelectedItem = workflows.FirstOrDefault(w => w.Id == editingWorkflow.Id);
+        }
+        catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流目录暂时不可用。"; }
+    }
+    private void NewWorkflowClick(object sender, RoutedEventArgs args)
+    {
+        editingWorkflow = new WorkflowRecord { Name = "新工作流", Id = Guid.NewGuid().ToString() };
+        WorkflowList.SelectedItem = null;
+        RenderWorkflowEditor();
+    }
+    private void WorkflowSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        editingWorkflow = WorkflowList.SelectedItem as WorkflowRecord;
+        RenderWorkflowEditor();
+    }
+    private void RenderWorkflowEditor()
+    {
+        var workflow = editingWorkflow;
+        bool enabled = workflow is not null;
+        WorkflowName.IsEnabled = enabled; WorkflowEnabled.IsEnabled = enabled; WorkflowShortcut.IsEnabled = enabled;
+        SaveWorkflowButton.IsEnabled = enabled;
+        DeleteWorkflowButton.IsEnabled = workflow is not null && workflows.Contains(workflow);
+        if (workflow is null) { WorkflowName.Text = ""; WorkflowEnabled.IsChecked = false; WorkflowShortcut.Text = ""; return; }
+        WorkflowName.Text = workflow.Name; WorkflowEnabled.IsChecked = workflow.Enabled;
+        WorkflowShortcut.Text = workflow.Shortcut is null ? "" : $"{workflow.Shortcut.KeyCode}, {workflow.Shortcut.Modifiers}";
+        WorkflowNotice.Text = "";
+    }
+    private async void SaveWorkflowClick(object sender, RoutedEventArgs args)
+    {
+        if (editingWorkflow is null) return;
+        if (string.IsNullOrWhiteSpace(WorkflowName.Text)) { WorkflowNotice.Text = "工作流名称不能为空。"; return; }
+        try
+        {
+            ShortcutRecord? shortcut = null;
+            if (!string.IsNullOrWhiteSpace(WorkflowShortcut.Text))
+            {
+                var values = WorkflowShortcut.Text.Split(',', StringSplitOptions.TrimEntries);
+                if (values.Length != 2 || !ushort.TryParse(values[0], out var key) || !ulong.TryParse(values[1], out var modifiers)) throw new FormatException();
+                shortcut = new ShortcutRecord { KeyCode = key, Modifiers = modifiers };
+            }
+            editingWorkflow.Name = WorkflowName.Text.Trim(); editingWorkflow.Enabled = WorkflowEnabled.IsChecked == true; editingWorkflow.Shortcut = shortcut;
+            if (editingWorkflow.Steps.Count == 0) editingWorkflow.Steps = [WorkflowStepRecord.Copy()];
+            await service.SendAsync("SaveWorkflow", new { workflow = editingWorkflow });
+            if (!workflows.Contains(editingWorkflow)) workflows.Add(editingWorkflow);
+            WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
+            WorkflowList.SelectedItem = editingWorkflow;
+            WorkflowNotice.Text = "已提交；服务端 Rust 模型校验并持久化。";
+        }
+        catch (FormatException) { WorkflowNotice.Text = "快捷键格式无效，请使用 key code, modifiers。"; }
+        catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流保存失败。"; }
+    }
+    private async void DeleteWorkflowClick(object sender, RoutedEventArgs args)
+    {
+        if (editingWorkflow is null || !workflows.Contains(editingWorkflow)) return;
+        try
+        {
+            await service.SendAsync("DeleteWorkflow", new { id = editingWorkflow.Id });
+            workflows.Remove(editingWorkflow); editingWorkflow = null; WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows; RenderWorkflowEditor();
+        }
+        catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流删除失败。"; }
     }
     private void DeviceSearchChanged(object sender, TextChangedEventArgs args) { if (service is not null && DevicesList is not null) RebuildDevices(); }
     private void RebuildDevices()

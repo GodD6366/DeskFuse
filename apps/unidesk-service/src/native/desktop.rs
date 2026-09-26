@@ -90,8 +90,37 @@ impl State {
         self.input_last_lease = None;
     }
     fn input_state(&self, network: &Network) -> ipc::InputState {
-        let snapshot = network.input_runtime.handle.input_snapshot();
-        let managed = snapshot.managed_control.as_ref();
+        let input = network.input_runtime.handle.input_snapshot();
+        let managed = input.managed_control.as_ref();
+        let runtime_snapshot = network.runtime.snapshot_view().snapshot;
+        let activations = input
+            .activations
+            .iter()
+            .map(|(peer_id, activation)| ipc::ActivationView {
+                peer_id: peer_id.to_string(),
+                status: enum_string(&activation.status),
+                reason: activation.reason.clone(),
+            })
+            .collect();
+        let remote_topologies = input
+            .remote_topologies
+            .iter()
+            .map(|(peer_id, topology)| ipc::RemoteTopologyView {
+                peer_id: peer_id.to_string(),
+                topology: topology.clone(),
+            })
+            .collect();
+        let links = input
+            .links
+            .iter()
+            .map(|link| ipc::LinkView {
+                peer_id: link.peer_id.to_string(),
+                ready: link.ready,
+                control_session: link.control_session.map(|id| id.to_string()),
+                lease_revision: link.lease_revision,
+                motion_mode: link.motion_mode.clone(),
+            })
+            .collect();
         ipc::InputState {
             helper_connected: self.helper_available(),
             security: ipc::InputSecurityState {
@@ -117,41 +146,16 @@ impl State {
             status: managed.map_or_else(|| "standby".into(), |value| enum_string(&value.status)),
             reason: managed.and_then(|value| value.reason.clone()),
             controller_id: managed.map(|value| value.controller.to_string()),
-            display_count: snapshot
+            display_count: input
                 .local_topology
                 .as_ref()
                 .map_or(0, |topology| topology.displays.len()),
-            local_device_id: network.runtime.snapshot_view().snapshot.local_device_id.to_string()
-            settings: Some(snapshot.effective_settings()),
+            local_device_id: runtime_snapshot.local_device_id.to_string(),
+            settings: Some(input.settings.clone()),
             controlling: None,
-            activations: snapshot
-                .activations
-                .iter()
-                .map(|(peer, activation)| ipc::ActivationView {
-                    peer_id: peer.to_string(),
-                    status: enum_string(&activation.status),
-                    reason: activation.reason.clone(),
-                })
-                .collect(),
-            remote_topologies: snapshot
-                .remote_topologies
-                .iter()
-                .map(|(peer, topology)| ipc::RemoteTopologyView {
-                    peer_id: peer.to_string(),
-                    topology: topology.clone(),
-                })
-                .collect(),
-            links: snapshot
-                .links
-                .iter()
-                .map(|link| ipc::LinkView {
-                    peer_id: link.peer_id.to_string(),
-                    ready: link.ready,
-                    control_session: link.control_session.map(|session| session.to_string()),
-                    lease_revision: link.lease_revision,
-                    motion_mode: Some(enum_string(&link.motion_mode)),
-                })
-                .collect(),
+            activations,
+            remote_topologies,
+            links,
         }
     }
     pub(super) fn input_event(
@@ -704,6 +708,56 @@ impl State {
                 self.input_reported_activation = None;
                 ipc::Reply::queued()
             }
+            ipc::Command::SetInputSharingSettings { settings } => {
+                if let Err(error) = settings.validate() {
+                    return ipc::Reply::rejected("invalid_input", &error);
+                }
+                match network
+                    .runtime
+                    .try_send(RuntimeCommand::SetInputSharingSettings(settings))
+                {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::GetWorkflows => match network.store.workflows() {
+                Ok(workflows) => ipc::Reply::Workflows { workflows },
+                Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+            },
+            ipc::Command::SaveWorkflow { workflow } => {
+                if let Err(error) = workflow.validate() {
+                    return ipc::Reply::rejected("invalid_workflow", &error);
+                }
+                match network.store.workflows() {
+                    Ok(mut workflows) => {
+                        if let Some(existing) = workflows.iter_mut().find(|item| item.id == workflow.id) {
+                            *existing = workflow;
+                        } else {
+                            workflows.push(workflow);
+                        }
+                        match network.store.set_workflows(&workflows) {
+                            Ok(()) => ipc::Reply::queued(),
+                            Err(_) => ipc::Reply::rejected("storage_unavailable", "无法保存工作流目录"),
+                        }
+                    }
+                    Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+                }
+            }
+            ipc::Command::DeleteWorkflow { id } => match network.store.workflows() {
+                Ok(mut workflows) => {
+                    let before = workflows.len();
+                    workflows.retain(|workflow| workflow.id != id);
+                    if workflows.len() == before {
+                        ipc::Reply::rejected("not_found", "工作流不存在")
+                    } else {
+                        match network.store.set_workflows(&workflows) {
+                            Ok(()) => ipc::Reply::queued(),
+                            Err(_) => ipc::Reply::rejected("storage_unavailable", "无法保存工作流目录"),
+                        }
+                    }
+                }
+                Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+            },
             ipc::Command::ReclaimInput => {
                 self.release_input("Windows user reclaimed local input");
                 self.input_reported_activation = None;
@@ -867,6 +921,17 @@ fn runtime_command(command: ipc::Command) -> Option<RuntimeCommand> {
         },
         ipc::Command::Revoke { peer_id } => RuntimeCommand::RevokePeer {
             peer_id: peer_id.parse().ok()?,
+        },
+        ipc::Command::MoveControlDevice {
+            device_id,
+            display_id,
+            x,
+            y,
+        } => RuntimeCommand::MoveInputDevice {
+            device_id: device_id.parse().ok()?,
+            display_id: display_id.into(),
+            x,
+            y,
         },
         _ => return None,
     })

@@ -25,6 +25,9 @@ const INPUT_CAPABILITIES: Capabilities = Capabilities::from_bits(
 pub struct Network {
     pub runtime: RuntimeHandle,
     pub input_runtime: InputOnlyRuntime,
+    /// Shared settings store for desktop-owned catalogs. The service remains
+    /// the only writer; the WPF process accesses it through authenticated IPC.
+    pub store: SQLiteStore,
     pub control_port: u16,
     input_transport: QuinnTransport,
     remote_app_transport: QuinnTransport,
@@ -121,13 +124,14 @@ impl Network {
         let initial = input_view(runtime.snapshot_view());
         let input_runtime = InputOnlyRuntime::start(
             std::sync::Arc::new(ControlTransportAdapter::new(input_transport.clone())),
-            std::sync::Arc::new(store),
+            std::sync::Arc::new(store.clone()),
             initial,
         )
         .map_err(|_| stage(26))?;
         let network = Self {
             runtime,
             input_runtime,
+            store,
             control_port,
             input_transport,
             remote_app_transport,

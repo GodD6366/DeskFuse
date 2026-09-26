@@ -133,6 +133,16 @@ pub enum Command {
         x: f64,
         y: f64,
     },
+    SetInputSharingSettings {
+        settings: unidesk_core::InputSharingSettings,
+    },
+    GetWorkflows,
+    SaveWorkflow {
+        workflow: unidesk_core::workflow::Workflow,
+    },
+    DeleteWorkflow {
+        id: String,
+    },
     ReclaimInput,
     ListRemoteApps,
     ListInstalledApps,
@@ -185,6 +195,9 @@ pub enum Reply {
         state: InputState,
         deliveries: Vec<InputDelivery>,
         sequence: u64,
+    },
+    Workflows {
+        workflows: Vec<unidesk_core::workflow::Workflow>,
     },
     RemoteApps {
         available: bool,
