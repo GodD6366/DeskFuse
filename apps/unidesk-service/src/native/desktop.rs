@@ -1,5 +1,7 @@
 //! Authenticated desktop coordinator; shared state never contains private keys.
-use super::{Control, Network, clipboard_sync, input_security, remote_app, security};
+use super::{
+    Control, Network, clipboard_sync, input_security, remote_app, security, session_agent,
+};
 use crate::{
     desktop_protocol as ipc,
     policy::{ClientSession, same_session},
@@ -36,6 +38,7 @@ pub(super) struct State {
     input_sequence: u64,
     input_reported_activation: Option<String>,
     input_last_lease: Option<(String, u64)>,
+    session_agent: session_agent::SessionAgent,
     file_bridge: Option<FileBridge>,
 }
 impl State {
@@ -121,6 +124,7 @@ impl State {
                 motion_mode: link.motion_mode.clone(),
             })
             .collect();
+        let session_agent = self.session_agent.snapshot();
         ipc::InputState {
             helper_connected: self.helper_available(),
             security: ipc::InputSecurityState {
@@ -141,6 +145,7 @@ impl State {
                 } else {
                     "No live authenticated UIAccess helper on the unlocked Default desktop"
                 }.into()),
+                session_agent,
             },
             managed: managed.is_some(),
             status: managed.map_or_else(|| "standby".into(), |value| enum_string(&value.status)),
@@ -394,9 +399,11 @@ impl State {
                     && self.input_heartbeat.is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
                 elevated_input: self.helper_available()
                     && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
-                secure_desktop_input: false,
-                login_input: false,
-                secure_attention_sequence: false,
+                secure_desktop_input: self.session_agent.secure_desktop_input_available(),
+                login_input: self.session_agent.login_input_available(),
+                secure_attention_sequence: self
+                    .session_agent
+                    .secure_attention_sequence_available(),
                 updater: false,
                 remote_app: matches!(
                     remote_app::availability(),
@@ -656,6 +663,8 @@ impl State {
                 self.input_desktop = desktop;
                 if desktop != ipc::InputDesktop::Default {
                     self.input_heartbeat = None;
+                    self.session_agent
+                        .clear("secure session agent is not available through the ordinary helper");
                     self.release_input("Windows input desktop is protected or unavailable");
                     return ipc::Reply::rejected(
                         "desktop_unavailable",

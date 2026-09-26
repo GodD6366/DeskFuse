@@ -289,6 +289,27 @@ pub struct InputSecurityState {
     pub elevated: bool,
     pub desktop: InputDesktop,
     pub reason: Option<String>,
+    /// Secure-desktop and login capabilities require a separately authenticated
+    /// session agent. Ordinary UIAccess helper state must never populate this.
+    #[serde(default)]
+    pub session_agent: SessionAgentState,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct SessionAgentState {
+    /// True only while the service has a live, kernel-authenticated agent
+    /// channel for the current interactive session.
+    pub connected: bool,
+    /// True only after service authorization, explicit user authorization and
+    /// session/epoch binding have all been validated.
+    pub authorized: bool,
+    /// Lock screen or UAC secure-desktop input; login is reported separately.
+    pub secure_desktop_input: bool,
+    pub locked_desktop_input: bool,
+    pub login_input: bool,
+    /// Deliberately always false: SAS is owned by Windows and is never injected
+    /// or intercepted by uniDesk.
+    pub secure_attention_sequence: bool,
+    pub reason: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InputState {

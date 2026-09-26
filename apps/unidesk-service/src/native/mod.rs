@@ -9,6 +9,7 @@ mod input_security;
 mod network;
 mod remote_app;
 mod security;
+mod session_agent;
 use crate::{
     policy::same_session,
     protocol::{self, Command, Reply, Request, Response, Status},
