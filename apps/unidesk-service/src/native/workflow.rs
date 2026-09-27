@@ -6,6 +6,7 @@ use base64::Engine;
 use serde::Deserialize;
 use sha2::Digest;
 use unidesk_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
+use unidesk_platform::{WorkflowCapabilities, WorkflowExecutionPlan, WorkflowOutputMode};
 use unidesk_store::SettingsStore;
 
 const MAX_INPUT: usize = 16 * 1024 * 1024;
@@ -20,10 +21,17 @@ pub fn execute(
     workflow: &Workflow,
     input: &[WorkflowInput],
 ) -> std::result::Result<Result, String> {
-    if !workflow.enabled {
-        return Err("工作流已停用".into());
-    }
-    workflow.validate()?;
+    // Admission is local and capability checked. The wire payload contains a
+    // model/rule only; it never authorizes native execution by itself.
+    let plan = WorkflowExecutionPlan::new(workflow.clone(), WorkflowOutputMode::ReturnResult)
+        .map_err(|error| error.to_string())?
+        .authorize(&WorkflowCapabilities {
+            steps: vec![WorkflowStepKind::TextReplace, WorkflowStepKind::TextTrim],
+            clipboard_write: false,
+            guarded_paste: false,
+        })
+        .map_err(|error| error.to_string())?;
+    let workflow = plan.workflow();
     let text = input
         .iter()
         .find(|item| item.mime == "text/plain" || item.mime == "text/plain;charset=utf-8")

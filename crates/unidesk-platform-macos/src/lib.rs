@@ -35,8 +35,9 @@ pub use input_native::{
     MacOSGlobalInputCapture, MacOSInputInjector, SYNTHETIC_PASTE_EVENT_MARKER, post_paste_shortcut,
 };
 pub use paste_shortcut::{
-    MacOSPasteShortcutMonitor, WorkflowHotkey, WorkflowHotkeyEvent, WorkflowHotkeys,
-    workflow_frontmost_pid, workflow_modifiers_released, workflow_paste_if_current,
+    MacOSPasteShortcutMonitor, MacOSWorkflowOutputPort, WorkflowHotkey, WorkflowHotkeyEvent,
+    WorkflowHotkeys, workflow_frontmost_pid, workflow_modifiers_released,
+    workflow_paste_if_current,
 };
 pub use pasteboard::{
     MacOSPasteboard, MemoryPasteboard, Pasteboard, PasteboardItem, PasteboardRepresentation,

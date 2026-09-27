@@ -1,6 +1,10 @@
 //! General workflow payloads. All file-changing steps operate on leased private copies.
 use super::*;
 use std::io::Write;
+use unidesk_platform::{
+    WorkflowExecutionPlan, WorkflowOutputMode as PlatformWorkflowOutputMode, WorkflowOutputPort,
+};
+use unidesk_platform_macos::MacOSWorkflowOutputPort;
 
 #[derive(Clone)]
 enum Payload {
@@ -80,6 +84,19 @@ impl WorkflowService {
         cancel: &Arc<AtomicBool>,
     ) -> Result<(), String> {
         check_cancel(cancel)?;
+        let output_port = MacOSWorkflowOutputPort;
+        let planned_output = match output {
+            WorkflowOutputMode::Configured => PlatformWorkflowOutputMode::Configured,
+            WorkflowOutputMode::Copy => PlatformWorkflowOutputMode::Copy,
+            WorkflowOutputMode::ReturnFile => PlatformWorkflowOutputMode::ReturnFile,
+            WorkflowOutputMode::ReturnResult => PlatformWorkflowOutputMode::ReturnResult,
+        };
+        // The synchronized definition is admitted against a fresh local
+        // capability snapshot before any private copy or native action starts.
+        let _authorized_plan = WorkflowExecutionPlan::new(workflow.clone(), planned_output)
+            .map_err(|error| error.to_string())?
+            .authorize(&output_port.capabilities())
+            .map_err(|error| error.to_string())?;
         let reads_clipboard = matches!(input, WorkflowInput::Clipboard | WorkflowInput::History(_));
         let expected = if matches!(
             output,
@@ -87,9 +104,10 @@ impl WorkflowService {
         ) {
             0
         } else {
-            MacOSPasteboard::new()
-                .change_count()
-                .map_err(|e| e.to_string())?
+            output_port
+                .clipboard_revision()
+                .map_err(|error| error.to_string())?
+                .value()
         };
         let snapshot = match input {
             WorkflowInput::Clipboard => self.bridge.workflow_source(None, cancel.clone())?,
@@ -458,7 +476,7 @@ impl WorkflowService {
             self.hold_workspace(&mut workspace)?;
             if will_paste {
                 let deadline = Instant::now() + Duration::from_secs(3);
-                while !unidesk_platform_macos::workflow_modifiers_released() {
+                while !output_port.modifiers_released() {
                     check_cancel(cancel)?;
                     if Instant::now() > deadline {
                         return Err("快捷键仍未释放，结果已复制，请手动粘贴".into());
@@ -466,7 +484,9 @@ impl WorkflowService {
                     thread::sleep(Duration::from_millis(15));
                 }
                 check_cancel(cancel)?;
-                unidesk_platform_macos::workflow_paste_if_current(target_pid, count)?;
+                output_port
+                    .paste_if_current(target_pid, unidesk_platform::NativeRevision::new(count))
+                    .map_err(|error| error.to_string())?;
             }
         }
         self.update(id, |run| {

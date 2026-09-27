@@ -15,11 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use unidesk_core::workflow::*;
-use unidesk_platform::{Pasteboard, PasteboardItem, PasteboardRepresentation, PasteboardSnapshot};
-use unidesk_platform_macos::{
-    MacOSPasteboard,
-    image_processor::{self, ProcessedImage},
-};
+use unidesk_platform::{PasteboardItem, PasteboardRepresentation, PasteboardSnapshot};
+use unidesk_platform_macos::image_processor::{self, ProcessedImage};
 use unidesk_transfer::TransferId;
 
 #[path = "workflow_execution.rs"]

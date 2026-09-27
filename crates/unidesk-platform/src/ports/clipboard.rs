@@ -1,9 +1,12 @@
 //! Clipboard capture and apply ports. Hosts implement these; collaboration owns policy.
 use crate::{PlatformError, PlatformResult};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 /// Opaque native pasteboard revision (change count on macOS/Windows).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize,
+)]
 pub struct NativeRevision(pub i64);
 
 impl NativeRevision {
@@ -19,7 +22,7 @@ impl NativeRevision {
 }
 
 /// How the current pasteboard contents were produced.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub enum CaptureSource {
     /// A local user or application wrote the pasteboard.
     User,
@@ -30,11 +33,11 @@ pub enum CaptureSource {
 }
 
 /// A MIME-like type identifier preserved from the native pasteboard.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ContentType(pub String);
 
 /// Opaque clipboard body. Collaboration never logs these bytes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ContentData {
     pub mime: String,
     pub bytes: Vec<u8>,
@@ -66,7 +69,7 @@ impl ContentData {
 }
 
 /// Point-in-time capture used as the collaboration input.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CapturedContent {
     pub revision: NativeRevision,
     pub types: Vec<ContentType>,
@@ -101,14 +104,14 @@ impl CapturedContent {
 }
 
 /// Payload the host should attempt to write.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ContentToApply {
     pub data: ContentData,
     pub remote_origin_marker: Option<String>,
 }
 
 /// Result of a native apply attempt. Collaboration decides whether to ACK.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum ApplyResult {
     Applied { new_revision: NativeRevision },
     Superseded { current_revision: NativeRevision },

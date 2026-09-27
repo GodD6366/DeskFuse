@@ -8,6 +8,7 @@ mod file;
 mod input;
 mod pasteboard_adapter;
 mod permission;
+mod workflow;
 
 pub use clipboard::*;
 pub use credential::*;
@@ -15,6 +16,7 @@ pub use file::*;
 pub use input::*;
 pub use pasteboard_adapter::{PasteboardPort, apply_clipboard};
 pub use permission::*;
+pub use workflow::*;
 
 use std::sync::Arc;
 

@@ -7,7 +7,7 @@ mod error;
 pub use display::MainDisplayGeometry;
 mod pasteboard;
 mod permissions;
-pub use error::{PlatformError, PlatformResult};
+pub use error::{BoundaryErrorCode, PlatformError, PlatformResult};
 pub use pasteboard::{
     MemoryPasteboard, Pasteboard, PasteboardItem, PasteboardRepresentation, PasteboardSnapshot,
     REMOTE_ORIGIN_MARKER_TYPE, UNIVERSAL_CLIPBOARD_TYPE,
@@ -25,4 +25,9 @@ pub mod timing;
 
 /// Host Ports injected by the application host. Collaboration depends only on these traits.
 pub mod ports;
-pub use ports::{HostPorts, NativeRevision};
+pub use ports::{
+    AuthorizedWorkflowPlan, ClipboardState, FileDataObjectHandle, FileDataObjectPort,
+    FileTransferState, HostPorts, NativeRevision, PlatformCapabilities, PlatformCapability,
+    PlatformCommand, PlatformEvent, WorkflowCapabilities, WorkflowExecutionPlan,
+    WorkflowExecutionPort, WorkflowOutputMode, WorkflowOutputPort,
+};
