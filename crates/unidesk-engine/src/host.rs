@@ -7,6 +7,7 @@ use unidesk_platform::ports::HostPorts;
 pub struct EngineHost {
     core: CollaborationCore,
     ports: HostPorts,
+    workflow_execution: Arc<dyn unidesk_platform::WorkflowExecutionPort>,
 }
 
 impl EngineHost {
@@ -34,6 +35,7 @@ impl EngineHost {
         Ok(Self {
             core: CollaborationCore::new_desktop(ports.clone(), transport, data_dir),
             ports,
+            workflow_execution: crate::platform::create_workflow_execution_port(),
         })
     }
 
@@ -45,6 +47,11 @@ impl EngineHost {
     #[must_use]
     pub fn ports(&self) -> &HostPorts {
         &self.ports
+    }
+
+    #[must_use]
+    pub fn workflow_execution(&self) -> Arc<dyn unidesk_platform::WorkflowExecutionPort> {
+        self.workflow_execution.clone()
     }
 }
 

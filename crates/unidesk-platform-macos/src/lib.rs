@@ -7,7 +7,9 @@
 //! TCC grant is missing and never claim that a no-op reached the OS.
 
 mod wake;
+mod workflow_execution;
 pub use wake::MacOSWakeObserver;
+pub use workflow_execution::MacOSWorkflowExecutionPort;
 
 mod display;
 mod error;

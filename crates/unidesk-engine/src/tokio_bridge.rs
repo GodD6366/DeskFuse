@@ -57,10 +57,8 @@ use unidesk_identity::MemoryIdentityProvider;
 use unidesk_platform::ports::{
     ApplyResult, ContentData, ContentToApply, NativeRevision, apply_clipboard,
 };
-use unidesk_platform::{
-    CapturedFilePaste, FilePasteCapture, FilePasteReference, Pasteboard, PasteboardSnapshot,
-    UNIVERSAL_CLIPBOARD_TYPE,
-};
+use unidesk_platform::{Pasteboard, PasteboardSnapshot, UNIVERSAL_CLIPBOARD_TYPE};
+use unidesk_platform_macos::{CapturedFilePaste, FilePasteCapture, FilePasteReference};
 #[cfg(test)]
 use unidesk_runtime::{ProviderFuture, TransportConnection, TransportProvider};
 use unidesk_runtime::{
@@ -428,16 +426,19 @@ pub(crate) fn clipboard_preview_png_at_size(
         {
             // Decode only when a preview is requested; the clipboard poll and
             // summary query stay free of image IO. ImageIO bounds allocation.
-            return crate::platform::lan_web::image_png(std::path::Path::new(path), max_pixel_size)
-                .ok()
-                .map(Arc::new);
+            return unidesk_platform_macos::lan_web::image_png(
+                std::path::Path::new(path),
+                max_pixel_size,
+            )
+            .ok()
+            .map(Arc::new);
         }
         return None;
     }
     let (data, _, _) = clipboard_primary_image(snapshot)?;
     #[cfg(target_os = "macos")]
     {
-        crate::platform::image_processor::preview_png(data, max_pixel_size)
+        crate::workflow_image::preview_png(data, max_pixel_size)
             .ok()
             .map(Arc::new)
     }
@@ -1572,7 +1573,7 @@ async fn run_worker(
     let mut finder_path_requests: HashMap<TransferId, CapturedFilePaste> = HashMap::new();
     let (finder_path_tx, mut finder_path_rx) = unbounded_channel::<(
         TransferId,
-        Result<Option<crate::platform::FinderDestination>, String>,
+        Result<Option<unidesk_platform_macos::FinderDestination>, String>,
     )>();
     let mut file_policy = match FilePolicy::new() {
         Ok(policy) => policy,
@@ -2738,7 +2739,7 @@ async fn run_worker(
             }
             captured = file_paste_requests.recv() => {
                 if let Some(captured) = captured {
-                    if crate::platform::is_finder_pid(captured.target_pid) {
+                    if unidesk_platform_macos::is_finder_pid(captured.target_pid) {
                         // Repeated presses during one lookup reuse its visible task.
                         let duplicate = finder_path_requests.values().any(|pending|
                             pending.target_pid == captured.target_pid
@@ -2758,7 +2759,7 @@ async fn run_worker(
                             let tx = finder_path_tx.clone();
                             tokio::spawn(async move {
                                 let result = tokio::task::spawn_blocking(move ||
-                                    crate::platform::capture_finder_destination(pid))
+                                    unidesk_platform_macos::capture_finder_destination(pid))
                                     .await.map_err(|_| "获取 Finder 路径的后台任务异常退出".to_owned())
                                     .and_then(|result| result);
                                 let _ = tx.send((id, result));

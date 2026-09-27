@@ -3,8 +3,8 @@ use super::{ApplyResult, AuthorizedFile, CapturedContent, ContentToApply, Native
 use crate::{BoundaryErrorCode, PlatformError, PlatformResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use unidesk_core::workflow::{Workflow, WorkflowStepKind};
+use std::{collections::BTreeSet, path::PathBuf, sync::atomic::AtomicBool};
+use unidesk_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
 
 /// Clipboard lifecycle owned by the common state machine.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -311,6 +311,37 @@ pub struct WorkflowExecutionResult {
     pub payload: WorkflowPayload,
     pub message: String,
 }
+/// Typed requests for host-owned workflow file and process operations. The
+/// engine owns workflow policy and image calculation; the host owns all OS
+/// filesystem/process effects.
+#[derive(Clone, Debug)]
+pub struct WorkflowWorkspaceRequest {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub budget: u64,
+}
+#[derive(Clone, Debug)]
+pub struct WorkflowArchiveRequest {
+    pub source: PathBuf,
+    pub archive: PathBuf,
+    pub root: PathBuf,
+    pub budget: u64,
+}
+#[derive(Clone, Debug)]
+pub struct WorkflowShortcutRequest {
+    pub id: String,
+    pub inputs: Vec<PathBuf>,
+    pub output: PathBuf,
+    pub output_type: WorkflowContentType,
+    pub input_type: WorkflowContentType,
+    pub root: PathBuf,
+    pub budget: u64,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowShortcut {
+    pub id: String,
+    pub name: String,
+}
 #[async_trait]
 pub trait WorkflowExecutionPort: Send + Sync {
     async fn execute(
@@ -319,6 +350,36 @@ pub trait WorkflowExecutionPort: Send + Sync {
         payload: WorkflowPayload,
     ) -> PlatformResult<WorkflowExecutionResult>;
     async fn capabilities(&self) -> PlatformResult<PlatformCapabilities>;
+
+    fn workflow_capabilities(&self) -> WorkflowCapabilities;
+    fn clipboard_revision(&self) -> PlatformResult<super::NativeRevision>;
+    fn modifiers_released(&self) -> bool;
+    fn paste_if_current(
+        &self,
+        target_pid: i32,
+        revision: super::NativeRevision,
+    ) -> PlatformResult<()>;
+    fn create_workspace(&self, path: &std::path::Path) -> PlatformResult<()>;
+    fn copy_workspace(
+        &self,
+        request: &WorkflowWorkspaceRequest,
+        cancel: &AtomicBool,
+    ) -> PlatformResult<u64>;
+    fn rename_path(&self, source: &std::path::Path, target: &std::path::Path)
+    -> PlatformResult<()>;
+    fn move_path(&self, source: &std::path::Path, target: &std::path::Path) -> PlatformResult<()>;
+    fn remove_path(&self, path: &std::path::Path) -> PlatformResult<()>;
+    fn archive_zip(
+        &self,
+        request: &WorkflowArchiveRequest,
+        cancel: &AtomicBool,
+    ) -> PlatformResult<()>;
+    fn list_shortcuts(&self) -> PlatformResult<Vec<WorkflowShortcut>>;
+    fn run_shortcut(
+        &self,
+        request: &WorkflowShortcutRequest,
+        cancel: &AtomicBool,
+    ) -> PlatformResult<()>;
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileDataObjectHandle {

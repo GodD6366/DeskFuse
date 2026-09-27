@@ -1,13 +1,12 @@
 //! Typed workflow execution. Owns immutable jobs, cancellation and cache leases;
 //! native clients only edit definitions and observe typed results.
-use crate::platform::image_processor::{self, ProcessedImage};
 use crate::tokio_bridge::TokioBridge;
+use crate::workflow_image::{self as image_processor, ProcessedImage};
 use std::{
     collections::BTreeMap,
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -17,7 +16,7 @@ use std::{
 };
 use unidesk_core::workflow::*;
 use unidesk_platform::{
-    PasteboardItem, PasteboardRepresentation, PasteboardSnapshot, WorkflowOutputPort,
+    PasteboardItem, PasteboardRepresentation, PasteboardSnapshot, WorkflowExecutionPort,
 };
 use unidesk_transfer::TransferId;
 
@@ -77,7 +76,7 @@ struct Lease {
 }
 pub struct WorkflowService {
     bridge: Arc<TokioBridge>,
-    output_port: Arc<dyn WorkflowOutputPort>,
+    execution: Arc<dyn WorkflowExecutionPort>,
     jobs: Mutex<BTreeMap<String, Job>>,
     handles: Mutex<Vec<thread::JoinHandle<()>>>,
     leases: Mutex<Vec<Lease>>,
@@ -86,12 +85,12 @@ pub struct WorkflowService {
 impl WorkflowService {
     pub fn new(
         bridge: Arc<TokioBridge>,
-        output_port: Arc<dyn WorkflowOutputPort>,
+        execution: Arc<dyn WorkflowExecutionPort>,
     ) -> Result<Arc<Self>, String> {
         crate::workflow_catalog::global()?;
         Ok(Arc::new(Self {
             bridge,
-            output_port,
+            execution,
             jobs: Mutex::new(BTreeMap::new()),
             handles: Mutex::new(Vec::new()),
             leases: Mutex::new(Vec::new()),
@@ -100,6 +99,20 @@ impl WorkflowService {
     }
     pub fn list(&self) -> Result<Vec<Workflow>, String> {
         crate::workflow_catalog::global()?.list()
+    }
+    pub fn system_shortcuts(&self) -> Result<Vec<SystemShortcut>, String> {
+        self.execution
+            .list_shortcuts()
+            .map_err(|error| error.to_string())
+            .map(|shortcuts| {
+                shortcuts
+                    .into_iter()
+                    .map(|shortcut| SystemShortcut {
+                        id: shortcut.id,
+                        name: shortcut.name,
+                    })
+                    .collect()
+            })
     }
     pub fn save(&self, workflow: Workflow) -> Result<(), String> {
         crate::workflow_catalog::global()?.save(workflow)
@@ -487,23 +500,4 @@ fn fit_target(
         edge = ((u64::from(edge) * 80 / 100) as u32).max(floor);
     }
     Err("在最低质量和尺寸限制内仍无法达到最终体积，请增大目标上限".into())
-}
-pub fn system_shortcuts() -> Result<Vec<SystemShortcut>, String> {
-    let output = Command::new("/usr/bin/shortcuts")
-        .args(["list", "--show-identifiers"])
-        .output()
-        .map_err(|_| "无法读取系统快捷指令")?;
-    if !output.status.success() {
-        return Err("读取快捷指令失败，请先打开系统快捷指令应用".into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (name, id) = line.rsplit_once(" (")?;
-            Some(SystemShortcut {
-                name: name.to_owned(),
-                id: id.strip_suffix(')')?.to_owned(),
-            })
-        })
-        .collect())
 }

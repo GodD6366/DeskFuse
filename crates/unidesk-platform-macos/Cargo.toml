@@ -17,6 +17,7 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
+async-trait = "=0.1.92"
 webp = { version = "0.3.1", default-features = false }
 foreign-types = "0.5"
 rustix = { version = "1.1.4", features = ["fs"] }

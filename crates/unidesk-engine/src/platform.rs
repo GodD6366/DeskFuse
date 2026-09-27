@@ -1,5 +1,6 @@
 //! Platform composition. Business workers use this factory rather than select
 //! AppKit/Win32 themselves. Tests never read or replace the user's clipboard.
+use std::sync::Arc;
 use unidesk_platform::PlatformResult;
 
 #[cfg(test)]
@@ -17,7 +18,6 @@ pub(crate) use unidesk_platform_macos::{
 pub fn host_ports(
     data_dir: &std::path::Path,
 ) -> PlatformResult<unidesk_platform::ports::HostPorts> {
-    use std::sync::Arc;
     use unidesk_platform::ports::{
         HostPorts, MemoryCredentialStore, MemoryFileAuthorization, MemoryInputExecution,
         PasteboardPort, PermissionServicePort,
@@ -42,6 +42,123 @@ pub(crate) fn create_worker_pasteboard() -> PlatformResult<WorkerPasteboard> {
     #[cfg(all(not(test), target_os = "windows"))]
     {
         WorkerPasteboard::new()
+    }
+}
+
+/// Composition boundary: all concrete workflow adapter choices live here.
+pub fn create_workflow_execution_port() -> Arc<dyn unidesk_platform::WorkflowExecutionPort> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(unidesk_platform_macos::MacOSWorkflowExecutionPort)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Arc::new(UnsupportedWorkflowExecutionPort)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct UnsupportedWorkflowExecutionPort;
+#[cfg(not(target_os = "macos"))]
+#[async_trait::async_trait]
+impl unidesk_platform::WorkflowExecutionPort for UnsupportedWorkflowExecutionPort {
+    async fn execute(
+        &self,
+        _plan: &unidesk_platform::AuthorizedWorkflowPlan,
+        _payload: unidesk_platform::WorkflowPayload,
+    ) -> unidesk_platform::PlatformResult<unidesk_platform::WorkflowExecutionResult> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow execution",
+        })
+    }
+    async fn capabilities(
+        &self,
+    ) -> unidesk_platform::PlatformResult<unidesk_platform::PlatformCapabilities> {
+        Ok(unidesk_platform::PlatformCapabilities::default())
+    }
+    fn workflow_capabilities(&self) -> unidesk_platform::WorkflowCapabilities {
+        Default::default()
+    }
+    fn clipboard_revision(
+        &self,
+    ) -> unidesk_platform::PlatformResult<unidesk_platform::NativeRevision> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow clipboard",
+        })
+    }
+    fn modifiers_released(&self) -> bool {
+        false
+    }
+    fn paste_if_current(
+        &self,
+        _target_pid: i32,
+        _revision: unidesk_platform::NativeRevision,
+    ) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow paste",
+        })
+    }
+    fn create_workspace(&self, _path: &std::path::Path) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow workspace",
+        })
+    }
+    fn copy_workspace(
+        &self,
+        _request: &unidesk_platform::WorkflowWorkspaceRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> unidesk_platform::PlatformResult<u64> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow workspace copy",
+        })
+    }
+    fn rename_path(
+        &self,
+        _source: &std::path::Path,
+        _target: &std::path::Path,
+    ) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow rename",
+        })
+    }
+    fn move_path(
+        &self,
+        _source: &std::path::Path,
+        _target: &std::path::Path,
+    ) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow move",
+        })
+    }
+    fn remove_path(&self, _path: &std::path::Path) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow remove",
+        })
+    }
+    fn archive_zip(
+        &self,
+        _request: &unidesk_platform::WorkflowArchiveRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "workflow zip",
+        })
+    }
+    fn list_shortcuts(
+        &self,
+    ) -> unidesk_platform::PlatformResult<Vec<unidesk_platform::WorkflowShortcut>> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "system shortcuts",
+        })
+    }
+    fn run_shortcut(
+        &self,
+        _request: &unidesk_platform::WorkflowShortcutRequest,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> unidesk_platform::PlatformResult<()> {
+        Err(unidesk_platform::PlatformError::Unsupported {
+            operation: "system shortcut",
+        })
     }
 }
 

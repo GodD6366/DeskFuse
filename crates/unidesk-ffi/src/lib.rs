@@ -126,7 +126,7 @@ impl Engine {
         };
         let workflows = unidesk_engine::workflow::WorkflowService::new(
             bridge.clone(),
-            host.ports().workflow_output.clone(),
+            host.workflow_execution(),
         )
         .map_err(|e| {
             bridge.shutdown();

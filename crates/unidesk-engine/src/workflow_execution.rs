@@ -1,7 +1,10 @@
 //! General workflow payloads. All file-changing steps operate on leased private copies.
 use super::*;
-use std::io::Write;
-use unidesk_platform::{WorkflowExecutionPlan, WorkflowOutputMode as PlatformWorkflowOutputMode};
+use unidesk_platform::{
+    WorkflowArchiveRequest, WorkflowExecutionPlan, WorkflowExecutionPort,
+    WorkflowOutputMode as PlatformWorkflowOutputMode, WorkflowShortcutRequest,
+    WorkflowWorkspaceRequest,
+};
 
 #[derive(Clone)]
 enum Payload {
@@ -81,7 +84,7 @@ impl WorkflowService {
         cancel: &Arc<AtomicBool>,
     ) -> Result<(), String> {
         check_cancel(cancel)?;
-        let output_port = &self.output_port;
+        let output_port = self.execution.as_ref();
         let planned_output = match output {
             WorkflowOutputMode::Configured => PlatformWorkflowOutputMode::Configured,
             WorkflowOutputMode::Copy => PlatformWorkflowOutputMode::Copy,
@@ -92,7 +95,7 @@ impl WorkflowService {
         // capability snapshot before any private copy or native action starts.
         let _authorized_plan = WorkflowExecutionPlan::new(workflow.clone(), planned_output)
             .map_err(|error| error.to_string())?
-            .authorize(&output_port.capabilities())
+            .authorize(&output_port.workflow_capabilities())
             .map_err(|error| error.to_string())?;
         let reads_clipboard = matches!(input, WorkflowInput::Clipboard | WorkflowInput::History(_));
         let expected = if matches!(
@@ -221,13 +224,28 @@ impl WorkflowService {
             keep: false,
         };
         let initial = destination.join("input");
-        fs::create_dir_all(&initial).map_err(|e| e.to_string())?;
+        output_port
+            .create_workspace(&initial)
+            .map_err(|error| error.to_string())?;
         let mut payload = if !sources.is_empty() {
             let mut paths = Vec::new();
-            let mut copied = 0;
+            let mut copied = 0u64;
             for path in &sources {
                 let target = unique_path(&initial, file_name(path)?, path.is_dir());
-                copy_tree(path, &target, cancel, &mut copied, budget)?;
+                copied = copied
+                    .checked_add(
+                        output_port
+                            .copy_workspace(
+                                &WorkflowWorkspaceRequest {
+                                    source: path.clone(),
+                                    target: target.clone(),
+                                    budget,
+                                },
+                                cancel,
+                            )
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .ok_or("内容容量过大")?;
                 paths.push(target);
             }
             Payload::Files {
@@ -302,14 +320,18 @@ impl WorkflowService {
                     if *image {
                         return Err("重命名步骤需要文件输入，不接受剪贴板图片".into());
                     }
-                    fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+                    output_port
+                        .create_workspace(&stage)
+                        .map_err(|error| error.to_string())?;
                     let mut renamed = Vec::new();
                     for path in paths.iter() {
                         check_cancel(cancel)?;
                         let directory = path.is_dir();
                         let name = rename_name(path, step, directory)?;
                         let target = unique_path(&stage, &name, directory);
-                        fs::rename(path, &target).map_err(|e| e.to_string())?;
+                        output_port
+                            .rename_path(path, &target)
+                            .map_err(|error| error.to_string())?;
                         renamed.push(target);
                     }
                     *paths = renamed;
@@ -321,21 +343,34 @@ impl WorkflowService {
                     if *image {
                         return Err("ZIP 步骤需要文件输入，不接受剪贴板图片".into());
                     }
-                    fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+                    output_port
+                        .create_workspace(&stage)
+                        .map_err(|error| error.to_string())?;
                     let archive_source = stage.join("contents");
-                    fs::create_dir(&archive_source).map_err(|e| e.to_string())?;
+                    output_port
+                        .create_workspace(&archive_source)
+                        .map_err(|error| error.to_string())?;
                     for path in paths.iter() {
                         let target = unique_path(&archive_source, file_name(path)?, path.is_dir());
-                        fs::rename(path, target).map_err(|e| e.to_string())?;
+                        output_port
+                            .move_path(path, &target)
+                            .map_err(|error| error.to_string())?;
                     }
                     let archive = stage.join("Archive.zip");
-                    let mut command = Command::new("/usr/bin/ditto");
-                    command
-                        .args(["-c", "-k", "--sequesterRsrc"])
-                        .arg(&archive_source)
-                        .arg(&archive);
-                    run_child(command, cancel, &destination, budget, "ZIP 打包")?;
-                    fs::remove_dir_all(archive_source).map_err(|e| e.to_string())?;
+                    output_port
+                        .archive_zip(
+                            &WorkflowArchiveRequest {
+                                source: archive_source.clone(),
+                                archive: archive.clone(),
+                                root: destination.clone(),
+                                budget,
+                            },
+                            cancel,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    output_port
+                        .remove_path(&archive_source)
+                        .map_err(|error| error.to_string())?;
                     *paths = vec![archive];
                     policy = ImagePolicy {
                         quality: 85,
@@ -345,11 +380,13 @@ impl WorkflowService {
                 WorkflowStepKind::Compress
                 | WorkflowStepKind::Resize
                 | WorkflowStepKind::Convert => {
-                    image_step(&mut payload, step, &mut policy, &stage, cancel)?;
+                    image_step(output_port, &mut payload, step, &mut policy, &stage, cancel)?;
                 }
                 WorkflowStepKind::SystemShortcut => {
                     // A shortcut only sees private copies. Its declared output controls decoding.
-                    fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+                    output_port
+                        .create_workspace(&stage)
+                        .map_err(|error| error.to_string())?;
                     let inputs = match &payload {
                         Payload::Text(text) => {
                             let file = stage.join("input.txt");
@@ -361,6 +398,7 @@ impl WorkflowService {
                     let result_path = stage.join("result");
                     self.external(id, true);
                     let result = shortcut(
+                        output_port,
                         step,
                         &inputs,
                         &result_path,
@@ -374,9 +412,13 @@ impl WorkflowService {
                     // Inputs are private and no longer needed once output has been collected.
                     for path in payload.paths() {
                         if path.is_dir() {
-                            fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+                            output_port
+                                .remove_path(&path)
+                                .map_err(|error| error.to_string())?;
                         } else if path.exists() {
-                            fs::remove_file(&path).map_err(|e| e.to_string())?;
+                            output_port
+                                .remove_path(&path)
+                                .map_err(|error| error.to_string())?;
                         }
                     }
                     if matches!(
@@ -396,6 +438,7 @@ impl WorkflowService {
         }
         if let Some(target) = policy.target {
             fit_payload_target(
+                output_port,
                 &mut payload,
                 &policy,
                 target,
@@ -642,52 +685,6 @@ fn check_budget(root: &Path, budget: u64, cancel: &AtomicBool) -> Result<(), Str
     }
     Ok(())
 }
-fn copy_tree(
-    source: &Path,
-    target: &Path,
-    cancel: &AtomicBool,
-    copied: &mut u64,
-    budget: u64,
-) -> Result<(), String> {
-    let mut pending = vec![(source.to_owned(), target.to_owned())];
-    while let Some((source, target)) = pending.pop() {
-        check_cancel(cancel)?;
-        let metadata = fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() {
-            return Err("工作流不处理符号链接".into());
-        }
-        if metadata.is_dir() {
-            fs::create_dir(&target).map_err(|e| e.to_string())?;
-            for entry in fs::read_dir(&source).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                pending.push((entry.path(), target.join(entry.file_name())));
-            }
-        } else if metadata.is_file() {
-            let mut reader = fs::File::open(&source).map_err(|e| e.to_string())?;
-            let mut writer = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)
-                .map_err(|e| e.to_string())?;
-            let mut buf = vec![0u8; 1024 * 1024];
-            loop {
-                check_cancel(cancel)?;
-                let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
-                }
-                *copied = copied.checked_add(n as u64).ok_or("内容容量过大")?;
-                if *copied > budget {
-                    return Err("文件副本超过缓存预留容量".into());
-                }
-                writer.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            }
-        } else {
-            return Err("工作流不处理特殊文件".into());
-        }
-    }
-    Ok(())
-}
 fn validate_input(kind: WorkflowContentType, payload: &Payload) -> Result<(), String> {
     if kind == WorkflowContentType::Any || kind == payload.kind() {
         return Ok(());
@@ -703,6 +700,7 @@ fn validate_input(kind: WorkflowContentType, payload: &Payload) -> Result<(), St
     Err("流程声明的输入类型与当前内容不兼容".into())
 }
 fn image_step(
+    port: &dyn WorkflowExecutionPort,
     payload: &mut Payload,
     step: &WorkflowStep,
     policy: &mut ImagePolicy,
@@ -712,7 +710,8 @@ fn image_step(
     let Payload::Files { paths, .. } = payload else {
         return Err("图片步骤需要图片输入".into());
     };
-    fs::create_dir_all(stage).map_err(|e| e.to_string())?;
+    port.create_workspace(stage)
+        .map_err(|error| error.to_string())?;
     if step.kind == WorkflowStepKind::Convert {
         policy.explicit_format = Some(step.format);
         policy.quality = step.quality;
@@ -785,12 +784,13 @@ fn image_step(
         next_paths.push(target);
     }
     for path in paths.iter() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
+        port.remove_path(path).map_err(|error| error.to_string())?;
     }
     *paths = next_paths;
     Ok(())
 }
 fn fit_payload_target(
+    port: &dyn WorkflowExecutionPort,
     payload: &mut Payload,
     policy: &ImagePolicy,
     target: u64,
@@ -800,7 +800,8 @@ fn fit_payload_target(
     let Payload::Files { paths, .. } = payload else {
         return Ok(());
     };
-    fs::create_dir_all(stage).map_err(|e| e.to_string())?;
+    port.create_workspace(stage)
+        .map_err(|error| error.to_string())?;
     let mut next_paths = Vec::new();
     for path in paths.iter() {
         let bytes = read_image_file(path)?;
@@ -824,7 +825,7 @@ fn fit_payload_target(
             false,
         );
         fs::write(&output, result.data).map_err(|e| e.to_string())?;
-        fs::remove_file(path).map_err(|e| e.to_string())?;
+        port.remove_path(path).map_err(|error| error.to_string())?;
         next_paths.push(output);
     }
     *paths = next_paths;
@@ -878,55 +879,8 @@ fn payload_snapshot(
         }
     }
 }
-fn run_child(
-    mut command: Command,
-    cancel: &AtomicBool,
-    root: &Path,
-    budget: u64,
-    label: &str,
-) -> Result<(), String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{label}无法启动：{e}"))?;
-    let started = Instant::now();
-    let mut checked = Instant::now();
-    loop {
-        let invalid = if cancel.load(Ordering::Acquire) {
-            Some("流程已取消".to_owned())
-        } else if started.elapsed() > Duration::from_secs(600) {
-            Some(format!("{label}等待超时"))
-        } else if checked.elapsed() > Duration::from_secs(1) {
-            checked = Instant::now();
-            check_budget(root, budget, cancel).err()
-        } else {
-            None
-        };
-        if let Some(error) = invalid {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("{label}执行失败或已取消"))
-                };
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error.to_string());
-            }
-        }
-    }
-}
 fn shortcut(
+    port: &dyn WorkflowExecutionPort,
     step: &WorkflowStep,
     inputs: &[PathBuf],
     output: &Path,
@@ -935,28 +889,24 @@ fn shortcut(
     budget: u64,
     input_kind: WorkflowContentType,
 ) -> Result<Payload, String> {
-    if !system_shortcuts()?.iter().any(|s| s.id == step.shortcut_id) {
-        return Err("系统快捷指令已删除或本机未绑定，请重新选择".into());
-    }
-    let mut command = Command::new("/usr/bin/shortcuts");
-    command
-        .arg("run")
-        .arg(&step.shortcut_id)
-        .arg("--input-path")
-        .args(inputs)
-        .arg("--output-path")
-        .arg(output);
     let kind = if step.shortcut_output == WorkflowContentType::Any {
         input_kind
     } else {
         step.shortcut_output
     };
-    if kind == WorkflowContentType::Text {
-        command.args(["--output-type", "public.utf8-plain-text"]);
-    } else if kind == WorkflowContentType::Files {
-        fs::create_dir(output).map_err(|e| e.to_string())?;
-    }
-    run_child(command, cancel, root, budget, "系统快捷指令")?;
+    port.run_shortcut(
+        &WorkflowShortcutRequest {
+            id: step.shortcut_id.clone(),
+            inputs: inputs.to_vec(),
+            output: output.to_owned(),
+            output_type: kind,
+            input_type: input_kind,
+            root: root.to_owned(),
+            budget,
+        },
+        cancel,
+    )
+    .map_err(|error| error.to_string())?;
     let metadata =
         fs::symlink_metadata(output).map_err(|_| "系统快捷指令没有返回声明类型的内容")?;
     if metadata.file_type().is_symlink() {
@@ -985,7 +935,8 @@ fn shortcut(
             };
             let named = output.with_extension(format.extension());
             fs::write(&named, bytes).map_err(|e| e.to_string())?;
-            fs::remove_file(output).map_err(|e| e.to_string())?;
+            port.remove_path(output)
+                .map_err(|error| error.to_string())?;
             Ok(Payload::Files {
                 paths: vec![named],
                 image: true,

@@ -16,6 +16,7 @@ pub mod state;
 pub mod history_search;
 
 pub mod workflow;
+pub(crate) mod workflow_image;
 pub mod workflow_catalog;
 pub mod workflow_sharing;
 
