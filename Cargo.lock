@@ -2541,6 +2541,7 @@ dependencies = [
  "unidesk-transfer",
  "unidesk-transport",
  "unidesk-update",
+ "unidesk-update-platform",
  "url",
  "uuid",
  "zip",
@@ -2753,6 +2754,7 @@ dependencies = [
  "bincode",
  "flate2",
  "futures",
+ "hex",
  "image",
  "serde",
  "serde_json",
@@ -2853,6 +2855,18 @@ dependencies = [
  "tempfile",
  "thiserror",
  "unidesk-core",
+ "uuid",
+]
+
+[[package]]
+name = "unidesk-update-platform"
+version = "0.3.3"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "unidesk-update",
  "uuid",
 ]
 

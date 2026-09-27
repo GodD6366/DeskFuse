@@ -6,7 +6,7 @@ use unidesk_runtime::{
 };
 #[cfg(not(test))]
 use unidesk_update::Target;
-use unidesk_update::installer;
+use unidesk_update_platform::installer;
 
 #[cfg(not(test))]
 pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {

@@ -8,10 +8,6 @@
 //! before any replacement until a signed transactional payload contract exists.
 //! A missing proof at any point is an error; there is deliberately no
 //! best-effort update path.
-use crate::{
-    SignedReleaseManifest, Target, UpdateError, UpdatePhase, UpdateStatus, WindowsSelfTest,
-    write_json_atomic,
-};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -20,6 +16,11 @@ use std::{
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
+};
+use unidesk_update::windows::WindowsSelfTest;
+use unidesk_update::{
+    PlatformInstaller, PlatformUpdateExecutor, SignedReleaseManifest, Target, UpdateError,
+    UpdatePhase, UpdateStatus, VerifiedRelease, write_json_atomic,
 };
 use uuid::Uuid;
 
@@ -158,7 +159,7 @@ fn run_machine_update(request: WindowsMachineRequest) -> Result<(), UpdateError>
     }
     let release = request
         .signed_release
-        .verify(&crate::pinned_release_key()?)?;
+        .verify(&unidesk_update::pinned_release_key()?)?;
     let descriptor = release
         .artifact(Target::WindowsX64)
         .ok_or(UpdateError::Incompatible)?;
@@ -168,7 +169,7 @@ fn run_machine_update(request: WindowsMachineRequest) -> Result<(), UpdateError>
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
-        || descriptor.kind != crate::PackageKind::WindowsNsisExe
+        || descriptor.kind != unidesk_update::PackageKind::WindowsNsisExe
     {
         return Err(UpdateError::Incompatible);
     }
@@ -179,11 +180,11 @@ fn run_machine_update(request: WindowsMachineRequest) -> Result<(), UpdateError>
     if !payload.starts_with(&paths.update_root) {
         return Err(UpdateError::Invalid("payload outside machine update cache"));
     }
-    crate::verify_artifact(&release, Target::WindowsX64, &payload)?;
+    unidesk_update::verify_artifact(&release, Target::WindowsX64, &payload)?;
     // The currently published Windows artifact is the first-install NSIS
     // package.  No signed transactional payload/activation contract exists
     // yet, so never turn this artifact into an updater by inference.
-    if descriptor.kind == crate::PackageKind::WindowsNsisExe {
+    if descriptor.kind == unidesk_update::PackageKind::WindowsNsisExe {
         return Err(UpdateError::Invalid(
             "transactional Windows payload unavailable; NSIS is first-install only",
         ));
@@ -322,7 +323,7 @@ fn restore_after_failure(
 fn startup_self_test(
     request: &WindowsMachineRequest,
     paths: &MachinePaths,
-    release: &crate::VerifiedRelease,
+    release: &unidesk_update::VerifiedRelease,
 ) -> Result<WindowsSelfTest, UpdateError> {
     let service_ready = ServiceController::open()?.is_running()?;
     let desktop_ready = paths.installation.join("uniDesk.exe").is_file();
@@ -605,11 +606,50 @@ struct MachineJournal {
     installation_backup: PathBuf,
     phase: MachinePhase,
 }
+/// Windows adapter for the common ports.  The currently published NSIS
+/// artifact is first-install-only, so every staging/execution path remains
+/// explicitly fail-closed until a signed transactional payload exists.
+pub struct WindowsInstaller;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WindowsUpdateExecutor;
+
+impl PlatformInstaller for WindowsInstaller {
+    fn stage(
+        &self,
+        _release: &VerifiedRelease,
+        _payload: &Path,
+        _status: &UpdateStatus,
+    ) -> Result<(), String> {
+        Err("transactional Windows payload unavailable; NSIS is first-install only".into())
+    }
+}
+
+impl PlatformUpdateExecutor for WindowsUpdateExecutor {
+    type Handle = ();
+
+    fn execute(&self, _status: &UpdateStatus) -> Result<Self::Handle, String> {
+        Err("Windows updater execution requires a signed machine request".into())
+    }
+
+    fn recover(&self) -> Result<(), String> {
+        Err("Windows updater recovery requires machine-owned checkpoint evidence".into())
+    }
+
+    fn self_test_status(&self, _transaction_id: &str) -> Result<UpdateStatus, String> {
+        Err("Windows updater self-test evidence is unavailable".into())
+    }
+
+    fn acknowledge_self_test(&self, _status: &UpdateStatus) -> Result<(), String> {
+        Err("Windows updater acknowledgement requires machine-owned evidence".into())
+    }
+}
+
 impl MachineJournal {
     fn new(
         request: &WindowsMachineRequest,
         paths: &MachinePaths,
-        release: &crate::VerifiedRelease,
+        release: &unidesk_update::VerifiedRelease,
     ) -> Result<Self, UpdateError> {
         let artifact = release
             .artifact(Target::WindowsX64)

@@ -10,6 +10,7 @@ members = [
     "crates/unidesk-runtime",
     "crates/unidesk-platform",
     "crates/unidesk-update",
+    "crates/unidesk-update-platform",
     "crates/unidesk-platform-macos",
     "crates/unidesk-platform-windows",
     "crates/unidesk-transfer",

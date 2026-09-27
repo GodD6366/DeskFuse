@@ -9,8 +9,9 @@ use std::{
 };
 use unidesk_runtime::updates::{GitHubUpdateView, LanUpdateView};
 use unidesk_update::{
-    ArtifactDescriptor, PackageKind, ReleaseVersion, Target, UpdatePhase, UpdateStatus, installer,
+    ArtifactDescriptor, PackageKind, ReleaseVersion, Target, UpdatePhase, UpdateStatus,
 };
+use unidesk_update_platform::installer;
 use uuid::Uuid;
 
 const API: &str = "https://api.github.com/repos/GodD6366/unidesk-release/releases?per_page=100";

@@ -18,6 +18,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid.workspace = true
 unidesk-update = { path = "../unidesk-update" }
+unidesk-update-platform = { path = "../unidesk-update-platform" }
 hex = "0.4"
 unidesk-platform = { path = "../unidesk-platform" }
 unidesk-collaboration = { path = "../unidesk-collaboration" }

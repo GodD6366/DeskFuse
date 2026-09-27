@@ -45,6 +45,14 @@ Rust 公共层只表达业务状态、协议和平台请求；Windows/macOS 原�
 - 放宽当前 fail-closed 更新策略。
 - 把 NSIS 首次安装包当事务更新包。
 
+当前交付：`unidesk-update` 仅保留 manifest、签名、版本选择、事务状态机和
+`PlatformInstaller`/`PlatformUpdateExecutor` 端口；`unidesk-update-platform`
+是过渡性的 Rust 执行适配层，承载现有 macOS bundle/helper/备份回滚和
+Windows UAC/SCM/进程/SQLite-WAL-SHM 实现。该适配层不代表原生 Swift/C# 实机
+能力已验收；后续迁移时必须保留 helper 名称/请求 ABI、签名校验和 NSIS
+fail-closed 约束。待迁移函数集中在该 crate 的 `macos.rs` 与 `windows.rs`，
+公共事务策略不得重新引入操作系统调用。
+
 ### Agent B：输入和权限平台端口
 
 范围：

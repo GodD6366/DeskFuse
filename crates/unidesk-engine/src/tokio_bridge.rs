@@ -1611,8 +1611,8 @@ async fn run_worker(
     let public_updates = crate::github_update::is_public_bundle();
     let manual_updates = crate::github_update::is_manual_bundle();
     let manual_update_view = unidesk_runtime::updates::LanUpdateView {
-        installed: unidesk_update::installer::current_bundle()
-            .and_then(|bundle| unidesk_update::installer::installed_release(&bundle))
+        installed: unidesk_update_platform::installer::current_bundle()
+            .and_then(|bundle| unidesk_update_platform::installer::installed_release(&bundle))
             .ok(),
         message: "此版本仅支持手动安装更新".into(),
         ..Default::default()
@@ -2633,7 +2633,7 @@ async fn run_worker(
                                     } else { false }
                                 };
                                 if admitted {
-                                    match unidesk_update::installer::launch_helper() {
+                                    match unidesk_update_platform::installer::launch_helper() {
                                         Ok(helper) => {
                                             install_helper = Some(helper);
                                             updater.installing();
@@ -2709,7 +2709,7 @@ async fn run_worker(
                                     // The handoff starts only once the helper exists. A helper
                                     // that cannot start leaves a usable app instead of a
                                     // pending restart that never happens.
-                                    match unidesk_update::installer::launch_helper() {
+                                    match unidesk_update_platform::installer::launch_helper() {
                                         Ok(helper) => {
                                             install_helper = Some(helper);
                                             updater.installing();

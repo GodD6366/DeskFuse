@@ -1,6 +1,6 @@
 fn main() {
     #[cfg(any(target_os = "macos", windows))]
-    if let Err(error) = unidesk_update::installer::run_helper() {
+    if let Err(error) = unidesk_update_platform::run_helper() {
         eprintln!("uniDesk update: {error}");
         std::process::exit(1);
     }

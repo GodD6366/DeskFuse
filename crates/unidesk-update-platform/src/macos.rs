@@ -1,9 +1,5 @@
 //! macOS replacement runs outside the application. Only authenticated release
 //! bytes enter staging; a durable journal precedes every destructive step.
-use crate::{
-    PackageKind, ReleaseVersion, SignedReleaseManifest, Target, UpdateStatus, VerifiedRelease,
-    pinned_release_key, verify_artifact, write_json_atomic,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,6 +10,10 @@ use std::{
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
+};
+use unidesk_update::{
+    PackageKind, PlatformInstaller, PlatformUpdateExecutor, ReleaseVersion, SignedReleaseManifest,
+    Target, UpdateStatus, VerifiedRelease, pinned_release_key, verify_artifact, write_json_atomic,
 };
 use uuid::Uuid;
 
@@ -194,7 +194,7 @@ pub fn prepare(release: &VerifiedRelease, payload: &Path, status: &UpdateStatus)
         parent_pid: std::process::id(),
         failure: None,
     };
-    journal.status.phase = crate::UpdatePhase::Staged;
+    journal.status.phase = unidesk_update::UpdatePhase::Staged;
     let (stage, _, candidate) = paths(&root, &journal)?;
     if stage.exists() || candidate.exists() {
         return Err("更新暂存目录已存在".into());
@@ -370,7 +370,7 @@ pub fn prepare_github(
         parent_pid: std::process::id(),
         failure: None,
     };
-    journal.status.phase = crate::UpdatePhase::Staged;
+    journal.status.phase = unidesk_update::UpdatePhase::Staged;
     let (stage, _, candidate) = paths(&root, &journal)?;
     if stage.exists() || candidate.exists() {
         return Err("更新暂存目录已存在".into());
@@ -507,9 +507,9 @@ fn rollback(root: &Path, journal: &mut InstallJournal, quarantine: bool) -> Resu
     }
     journal.phase = Phase::RolledBack;
     journal.status.phase = if quarantine {
-        crate::UpdatePhase::Quarantined
+        unidesk_update::UpdatePhase::Quarantined
     } else {
-        crate::UpdatePhase::Cancelled
+        unidesk_update::UpdatePhase::Cancelled
     };
     persist(root, journal)?;
     let _ = fs::remove_dir_all(candidate);
@@ -578,7 +578,7 @@ pub fn run_helper() -> Result<()> {
             .arg(journal.status.transaction_id.to_string())
             .spawn()
             .map_err(|e| e.to_string())?;
-        let timeout = Instant::now() + Duration::from_millis(crate::SELF_TEST_TIMEOUT_MS);
+        let timeout = Instant::now() + Duration::from_millis(unidesk_update::SELF_TEST_TIMEOUT_MS);
         loop {
             if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
                 if !status.success() {
@@ -598,7 +598,7 @@ pub fn run_helper() -> Result<()> {
             return Err("新版启动确认不匹配".into());
         }
         journal.phase = Phase::Committed;
-        journal.status.phase = crate::UpdatePhase::AwaitingReconnect;
+        journal.status.phase = unidesk_update::UpdatePhase::AwaitingReconnect;
         persist(&root, &journal)?;
         Ok(())
     })();
@@ -733,6 +733,44 @@ pub fn previous_failure() -> Result<Option<String>> {
     Ok(unresolved_failure(&journal, running_release().as_ref()))
 }
 /// Only a rollback the running bundle does not already cover is a current problem.
+/// macOS implementation of the common platform ports.  All destructive work
+/// remains in this adapter; the public policy crate only sees these methods.
+pub struct MacOSInstaller;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MacOSUpdateExecutor;
+
+impl PlatformInstaller for MacOSInstaller {
+    fn stage(
+        &self,
+        release: &VerifiedRelease,
+        payload: &Path,
+        status: &UpdateStatus,
+    ) -> Result<()> {
+        prepare(release, payload, status)
+    }
+}
+
+impl PlatformUpdateExecutor for MacOSUpdateExecutor {
+    type Handle = std::process::Child;
+
+    fn execute(&self, _status: &UpdateStatus) -> Result<Self::Handle> {
+        launch_helper()
+    }
+
+    fn recover(&self) -> Result<()> {
+        recover()
+    }
+
+    fn self_test_status(&self, transaction_id: &str) -> Result<UpdateStatus> {
+        self_test_status(transaction_id)
+    }
+
+    fn acknowledge_self_test(&self, status: &UpdateStatus) -> Result<()> {
+        acknowledge_self_test(status)
+    }
+}
+
 fn unresolved_failure(
     journal: &InstallJournal,
     installed: Option<&ReleaseVersion>,
@@ -766,15 +804,15 @@ mod tests {
         let status = UpdateStatus {
             transaction_id: Uuid::new_v4(),
             release,
-            artifact: crate::ArtifactDescriptor {
+            artifact: unidesk_update::ArtifactDescriptor {
                 target: Target::MacosArm64,
-                kind: crate::PackageKind::MacosAppZip,
+                kind: unidesk_update::PackageKind::MacosAppZip,
                 file_name: "uniDesk-update.zip".into(),
                 size: 4,
                 sha256: "0".repeat(64),
                 minimum_os: semver::Version::new(14, 0, 0),
             },
-            phase: crate::UpdatePhase::Installing,
+            phase: unidesk_update::UpdatePhase::Installing,
             received_bytes: 4,
             failure: None,
         };
@@ -871,14 +909,17 @@ mod tests {
         let (_dir, root, mut journal) = fixture(Phase::Prepared);
         rollback(&root, &mut journal, false).unwrap();
         assert_eq!(journal.phase, Phase::RolledBack);
-        assert_eq!(journal.status.phase, crate::UpdatePhase::Cancelled);
+        assert_eq!(journal.status.phase, unidesk_update::UpdatePhase::Cancelled);
         assert!(!root.join("quarantined.json").exists());
     }
     #[test]
     fn rollback_of_a_failed_artifact_stays_quarantined() {
         let (_dir, root, mut journal) = fixture(Phase::Prepared);
         rollback(&root, &mut journal, true).unwrap();
-        assert_eq!(journal.status.phase, crate::UpdatePhase::Quarantined);
+        assert_eq!(
+            journal.status.phase,
+            unidesk_update::UpdatePhase::Quarantined
+        );
         let isolated: BTreeSet<Uuid> = read_json(&root.join("quarantined.json")).unwrap();
         assert!(isolated.contains(&journal.status.release.release_id));
     }

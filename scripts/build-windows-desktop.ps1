@@ -49,7 +49,7 @@ try {
     if ($Offline) { $cargoArgs += '--offline' }
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'Service Release build failed' }
-    $helperArgs = @('build', '--locked', '--release', '--target', 'x86_64-pc-windows-msvc', '-p', 'unidesk-update', '--bin', 'unidesk-update-helper')
+    $helperArgs = @('build', '--locked', '--release', '--target', 'x86_64-pc-windows-msvc', '-p', 'unidesk-update-platform', '--bin', 'unidesk-update-helper')
     if ($Offline) { $helperArgs += '--offline' }
     & cargo @helperArgs
     if ($LASTEXITCODE -ne 0) { throw 'Windows updater helper build failed' }

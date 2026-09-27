@@ -249,7 +249,7 @@ fi
 echo "building $PACKAGE_NAME for $TARGET_TRIPLE"
 export UNIDESK_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
 "$ROOT_DIR/scripts/build-native-macos.sh" release
-"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package unidesk-update --bin unidesk-update-helper --target "$TARGET_TRIPLE"
+"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --package unidesk-update-platform --bin unidesk-update-helper --target "$TARGET_TRIPLE"
 
 CARGO_OUTPUT_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 BINARY_PATH="$CARGO_OUTPUT_DIR/native-macos/release/$BINARY_NAME"
