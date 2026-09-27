@@ -74,6 +74,29 @@ fn create_permission_service() -> Box<dyn PermissionService> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn create_input_environment() -> Box<dyn unidesk_platform::InputEnvironmentPort> {
+    Box::new(unidesk_platform_macos::sharing::MacOSInputEnvironment)
+}
+#[cfg(target_os = "windows")]
+pub fn create_input_environment() -> Box<dyn unidesk_platform::InputEnvironmentPort> {
+    Box::new(unidesk_platform_windows::WindowsInputEnvironment)
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn create_input_environment() -> Box<dyn unidesk_platform::InputEnvironmentPort> {
+    struct Unknown;
+    impl unidesk_platform::InputEnvironmentPort for Unknown {
+        fn snapshot(&self) -> unidesk_platform::InputEnvironmentSnapshot {
+            unidesk_platform::InputEnvironmentSnapshot::blocked(
+                unidesk_platform::DesktopState::Unavailable,
+                unidesk_platform::InputBlockerKind::Unavailable,
+                "input platform unavailable",
+            )
+        }
+    }
+    Box::new(Unknown)
+}
+
+#[cfg(target_os = "macos")]
 pub fn create_capture() -> Box<dyn unidesk_platform::SharedInputCapture> {
     Box::new(unidesk_platform_macos::sharing::MacOSSharingCapture::new())
 }

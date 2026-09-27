@@ -22,7 +22,10 @@ use unidesk_input::{
     Point, Vector2,
     sharing::{HotkeyBindings, HotkeyChord, SharingAction, SharingController, SharingDisplay},
 };
-use unidesk_platform::{CaptureEvent, SharedInputCapture, SharedInputInjector, timing};
+use unidesk_platform::{
+    CaptureEvent, InputCapability, InputEnvironmentSnapshot, SharedInputCapture,
+    SharedInputInjector, timing,
+};
 use unidesk_runtime::{RuntimeCommand, RuntimeEvent, RuntimeHandle};
 
 const LEASE_TTL: Duration = Duration::from_millis(1500);
@@ -764,6 +767,9 @@ const NATIVE_OBSERVATION_MAX_AGE: Duration = Duration::from_secs(1);
 struct NativeObservation {
     permission: PermissionSnapshot,
     session_active: bool,
+    /// Fresh native admission from the same helper/session that owns capture
+    /// and injection. Permission state alone never authorizes input.
+    input_environment: InputEnvironmentSnapshot,
     topology: Result<unidesk_core::DisplayTopology, String>,
     started_at: Instant,
     started_wall: SystemTime,
@@ -773,6 +779,10 @@ impl NativeObservation {
         self.fresh()
             && self.permission.accessibility() == PermissionStatus::Granted
             && self.session_active
+            && matches!(
+                (&self.input_environment.capture, &self.input_environment.inject),
+                (InputCapability::Allowed, InputCapability::Allowed)
+            )
             && self.topology.is_ok()
     }
     fn fresh(&self) -> bool {
@@ -818,9 +828,12 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
                         next
                     }
                 };
+                let input_environment = crate::platform::create_input_environment().snapshot();
                 let observation = NativeObservation {
                     permission: permissions.snapshot(),
-                    session_active: crate::platform::session_is_active(),
+                    session_active: input_environment.desktop
+                        == unidesk_platform::DesktopState::UserDesktop,
+                    input_environment,
                     topology,
                     started_at,
                     started_wall,
@@ -1189,8 +1202,16 @@ async fn run(
                     let permission = observation.as_ref().map(|sample| sample.permission).unwrap_or_default();
                     let session_active = observation.as_ref().is_some_and(|sample| sample.session_active);
                     let (initial_phase, _) = native_phase(permission,session_active,recording_active,false,None);
-                    let permitted = initial_phase == InputActivationStatus::Preparing;
-                    let mut adapter_error = None;
+                    let environment_ready = observation.as_ref().is_some_and(|sample| {
+                        matches!(
+                            (&sample.input_environment.capture, &sample.input_environment.inject),
+                            (InputCapability::Allowed, InputCapability::Allowed)
+                        )
+                    });
+                    let permitted = initial_phase == InputActivationStatus::Preparing && environment_ready;
+                    let mut adapter_error = observation.as_ref()
+                        .and_then(|sample| sample.input_environment.blocker())
+                        .map(|blocker| blocker.reason.clone());
                     match observation.map(|sample| sample.topology)
                         .unwrap_or_else(|| Err("原生输入状态检查未完成或已超时".into())) {
                         Ok(topology) => {
@@ -1377,6 +1398,11 @@ mod tests {
         let mut observation = NativeObservation {
             permission: PermissionSnapshot::all_unknown(),
             session_active: false,
+            input_environment: InputEnvironmentSnapshot::blocked(
+                unidesk_platform::DesktopState::Unavailable,
+                unidesk_platform::InputBlockerKind::Unavailable,
+                "not sampled",
+            ),
             topology: Err("not sampled".into()),
             started_at: Instant::now(),
             started_wall: SystemTime::now(),

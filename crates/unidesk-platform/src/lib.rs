@@ -16,6 +16,11 @@ pub use permissions::{PermissionKind, PermissionService, PermissionSnapshot, Per
 
 mod shared_input;
 pub use shared_input::*;
+mod input_environment;
+pub use input_environment::{
+    InputBlocker, InputBlockerKind, InputCapability, InputEnvironmentPort,
+    InputEnvironmentSnapshot,
+};
 pub mod timing;
 
 /// Host Ports injected by the application host. Collaboration depends only on these traits.
