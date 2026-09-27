@@ -1,5 +1,6 @@
 //! Typed workflow execution. Owns immutable jobs, cancellation and cache leases;
 //! native clients only edit definitions and observe typed results.
+use crate::platform::image_processor::{self, ProcessedImage};
 use crate::tokio_bridge::TokioBridge;
 use std::{
     collections::BTreeMap,
@@ -15,8 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 use unidesk_core::workflow::*;
-use unidesk_platform::{PasteboardItem, PasteboardRepresentation, PasteboardSnapshot};
-use unidesk_platform_macos::image_processor::{self, ProcessedImage};
+use unidesk_platform::{
+    PasteboardItem, PasteboardRepresentation, PasteboardSnapshot, WorkflowOutputPort,
+};
 use unidesk_transfer::TransferId;
 
 #[path = "workflow_execution.rs"]
@@ -75,16 +77,21 @@ struct Lease {
 }
 pub struct WorkflowService {
     bridge: Arc<TokioBridge>,
+    output_port: Arc<dyn WorkflowOutputPort>,
     jobs: Mutex<BTreeMap<String, Job>>,
     handles: Mutex<Vec<thread::JoinHandle<()>>>,
     leases: Mutex<Vec<Lease>>,
     stopped: AtomicBool,
 }
 impl WorkflowService {
-    pub fn new(bridge: Arc<TokioBridge>) -> Result<Arc<Self>, String> {
+    pub fn new(
+        bridge: Arc<TokioBridge>,
+        output_port: Arc<dyn WorkflowOutputPort>,
+    ) -> Result<Arc<Self>, String> {
         crate::workflow_catalog::global()?;
         Ok(Arc::new(Self {
             bridge,
+            output_port,
             jobs: Mutex::new(BTreeMap::new()),
             handles: Mutex::new(Vec::new()),
             leases: Mutex::new(Vec::new()),

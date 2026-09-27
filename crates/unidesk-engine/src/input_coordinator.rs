@@ -75,9 +75,7 @@ impl InputCoordinator {
                             .as_ref()
                             .is_some_and(|p| p.running && !native.running)
                         {
-                            let _ =
-                                unidesk_platform_macos::sharing::restore_pointer_after_service_exit(
-                                );
+                            let _ = crate::platform::restore_pointer_after_service_exit();
                         }
                         if previous.as_ref() != Some(&native) {
                             let _ = ui.unbounded_send(UiEvent::InputStatus {
@@ -780,7 +778,10 @@ impl NativeObservation {
             && self.permission.accessibility() == PermissionStatus::Granted
             && self.session_active
             && matches!(
-                (&self.input_environment.capture, &self.input_environment.inject),
+                (
+                    &self.input_environment.capture,
+                    &self.input_environment.inject
+                ),
                 (InputCapability::Allowed, InputCapability::Allowed)
             )
             && self.topology.is_ok()

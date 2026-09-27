@@ -124,12 +124,15 @@ impl Engine {
                 return Err(failure(e));
             }
         };
-        let workflows =
-            unidesk_engine::workflow::WorkflowService::new(bridge.clone()).map_err(|e| {
-                bridge.shutdown();
-                RUNNING.store(false, Ordering::Release);
-                failure(e)
-            })?;
+        let workflows = unidesk_engine::workflow::WorkflowService::new(
+            bridge.clone(),
+            host.ports().workflow_output.clone(),
+        )
+        .map_err(|e| {
+            bridge.shutdown();
+            RUNNING.store(false, Ordering::Release);
+            failure(e)
+        })?;
         unidesk_engine::workflow_sharing::attach(&workflows);
         let workflow_hotkeys = Arc::new(Mutex::new(
             unidesk_platform_macos::WorkflowHotkeys::default(),

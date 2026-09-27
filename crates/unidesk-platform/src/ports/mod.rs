@@ -5,6 +5,7 @@
 mod clipboard;
 mod credential;
 mod file;
+mod file_reference;
 mod input;
 mod pasteboard_adapter;
 mod permission;
@@ -13,6 +14,7 @@ mod workflow;
 pub use clipboard::*;
 pub use credential::*;
 pub use file::*;
+pub use file_reference::*;
 pub use input::*;
 pub use pasteboard_adapter::{PasteboardPort, apply_clipboard};
 pub use permission::*;
@@ -29,6 +31,7 @@ pub struct HostPorts {
     pub input_execution: Arc<dyn InputExecutionPort>,
     pub credential_store: Arc<dyn CredentialStorePort>,
     pub permission_observer: Arc<dyn PermissionObserverPort>,
+    pub workflow_output: Arc<dyn WorkflowOutputPort>,
 }
 
 impl HostPorts {
@@ -42,6 +45,7 @@ impl HostPorts {
             input_execution: Arc::new(MemoryInputExecution::new()),
             credential_store: Arc::new(MemoryCredentialStore::new(data_dir.join("identity.key"))),
             permission_observer: Arc::new(MemoryPermissionObserver::all_unknown()),
+            workflow_output: Arc::new(UnavailableWorkflowOutputPort),
         }
     }
 

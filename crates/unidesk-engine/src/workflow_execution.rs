@@ -1,10 +1,7 @@
 //! General workflow payloads. All file-changing steps operate on leased private copies.
 use super::*;
 use std::io::Write;
-use unidesk_platform::{
-    WorkflowExecutionPlan, WorkflowOutputMode as PlatformWorkflowOutputMode, WorkflowOutputPort,
-};
-use unidesk_platform_macos::MacOSWorkflowOutputPort;
+use unidesk_platform::{WorkflowExecutionPlan, WorkflowOutputMode as PlatformWorkflowOutputMode};
 
 #[derive(Clone)]
 enum Payload {
@@ -84,7 +81,7 @@ impl WorkflowService {
         cancel: &Arc<AtomicBool>,
     ) -> Result<(), String> {
         check_cancel(cancel)?;
-        let output_port = MacOSWorkflowOutputPort;
+        let output_port = &self.output_port;
         let planned_output = match output {
             WorkflowOutputMode::Configured => PlatformWorkflowOutputMode::Configured,
             WorkflowOutputMode::Copy => PlatformWorkflowOutputMode::Copy,

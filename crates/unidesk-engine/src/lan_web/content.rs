@@ -115,17 +115,17 @@ pub(super) async fn item(State(s): State<HttpState>, Path(id): Path<u64>) -> Res
 }
 fn render_image(snap: &PasteboardSnapshot, size: u32) -> Result<Vec<u8>> {
     if let Some(path) = snap.file_urls.first() {
-        return unidesk_platform_macos::lan_web::image_png(FilePath::new(path), size);
+        return crate::platform::lan_web::image_png(FilePath::new(path), size);
     }
     if let Some(bytes) = &snap.png {
-        return unidesk_platform_macos::lan_web::data_image_png(bytes, size);
+        return crate::platform::lan_web::data_image_png(bytes, size);
     }
     for rep in snap.items.iter().flat_map(|i| &i.representations) {
         if matches!(
             rep.type_name.as_str(),
             "public.png" | "public.jpeg" | "public.tiff" | "public.heic"
         ) {
-            return unidesk_platform_macos::lan_web::data_image_png(&rep.data, size);
+            return crate::platform::lan_web::data_image_png(&rep.data, size);
         }
     }
     Err("此记录没有可预览的图片".into())

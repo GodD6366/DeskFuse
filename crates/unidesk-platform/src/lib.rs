@@ -18,16 +18,16 @@ mod shared_input;
 pub use shared_input::*;
 mod input_environment;
 pub use input_environment::{
-    InputBlocker, InputBlockerKind, InputCapability, InputEnvironmentPort,
-    InputEnvironmentSnapshot,
+    InputBlocker, InputBlockerKind, InputCapability, InputEnvironmentPort, InputEnvironmentSnapshot,
 };
 pub mod timing;
 
 /// Host Ports injected by the application host. Collaboration depends only on these traits.
 pub mod ports;
 pub use ports::{
-    AuthorizedWorkflowPlan, ClipboardState, FileDataObjectHandle, FileDataObjectPort,
-    FileTransferState, HostPorts, NativeRevision, PlatformCapabilities, PlatformCapability,
-    PlatformCommand, PlatformEvent, WorkflowCapabilities, WorkflowExecutionPlan,
+    AuthorizedWorkflowPlan, CapturedFilePaste, ClipboardState, FileDataObjectHandle,
+    FileDataObjectPort, FilePasteCapture, FilePasteReference, FileTransferState, HostPorts,
+    NativeRevision, PlatformCapabilities, PlatformCapability, PlatformCommand, PlatformEvent,
+    UnavailableWorkflowOutputPort, WorkflowCapabilities, WorkflowExecutionPlan,
     WorkflowExecutionPort, WorkflowOutputMode, WorkflowOutputPort,
 };

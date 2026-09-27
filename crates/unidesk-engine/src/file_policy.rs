@@ -55,9 +55,9 @@ pub(super) struct FilePolicy {
     paste_leases: Vec<(Instant, Vec<TransferId>)>,
 }
 impl FilePolicy {
-    pub(super) fn capture_reference(&self) -> Option<unidesk_platform_macos::FilePasteReference> {
+    pub(super) fn capture_reference(&self) -> Option<unidesk_platform::FilePasteReference> {
         let offer = self.pending.as_ref()?;
-        Some(unidesk_platform_macos::FilePasteReference {
+        Some(unidesk_platform::FilePasteReference {
             transfer_id: offer.id.to_string(),
             peer_id: offer.peer.to_hex(),
             change_count: offer.change_count,
@@ -74,7 +74,7 @@ impl FilePolicy {
     }
     pub(super) async fn request_captured(
         &mut self,
-        reference: &unidesk_platform_macos::FilePasteReference,
+        reference: &unidesk_platform::FilePasteReference,
         runtime: &RuntimeHandle,
         sequence: &ClipboardSequence,
         ui: &UnboundedSender<UiEvent>,

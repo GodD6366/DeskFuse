@@ -304,7 +304,7 @@ async fn serve(shared: Arc<Shared>) {
     let mut live: Option<LiveServer> = None;
     loop {
         let mut seen_interfaces = std::collections::BTreeSet::new();
-        let interfaces = unidesk_platform_macos::lan_web::interfaces()
+        let interfaces = crate::platform::lan_web::interfaces()
             .unwrap_or_default()
             .into_iter()
             .filter(|i| seen_interfaces.insert(i.name.clone()))
@@ -320,7 +320,7 @@ async fn serve(shared: Arc<Shared>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             i.interfaces = interfaces;
-            i.local_addresses = unidesk_platform_macos::lan_web::all_ipv4_interfaces()
+            i.local_addresses = crate::platform::lan_web::all_ipv4_interfaces()
                 .unwrap_or_default()
                 .into_iter()
                 .map(|v| v.address)

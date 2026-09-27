@@ -530,7 +530,7 @@ END;").map_err(err)?;
         };
         #[cfg(target_os = "macos")]
         if local {
-            let (id, name) = unidesk_platform_macos::clipboard_source_application();
+            let (id, name) = crate::platform::clipboard_source_application();
             origin.app_id = id;
             origin.app_name = name;
         }

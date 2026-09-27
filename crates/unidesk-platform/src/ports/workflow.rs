@@ -376,3 +376,33 @@ pub trait WorkflowOutputPort: Send + Sync {
         revision: super::NativeRevision,
     ) -> PlatformResult<()>;
 }
+
+/// Safe default for hosts that do not expose a native workflow output.
+#[derive(Debug, Default)]
+pub struct UnavailableWorkflowOutputPort;
+
+impl WorkflowOutputPort for UnavailableWorkflowOutputPort {
+    fn capabilities(&self) -> WorkflowCapabilities {
+        WorkflowCapabilities::default()
+    }
+
+    fn clipboard_revision(&self) -> PlatformResult<super::NativeRevision> {
+        Err(PlatformError::Unsupported {
+            operation: "workflow clipboard revision",
+        })
+    }
+
+    fn modifiers_released(&self) -> bool {
+        false
+    }
+
+    fn paste_if_current(
+        &self,
+        _target_pid: i32,
+        _revision: super::NativeRevision,
+    ) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported {
+            operation: "workflow guarded paste",
+        })
+    }
+}

@@ -1,7 +1,7 @@
 //! Independent Finder delivery intentions. Only this Tokio owner mutates jobs;
 //! native copy workers return progress/receipts and hold cache leases until exit.
 use super::*;
-use unidesk_platform_macos::{
+use crate::platform::{
     CapturedFilePaste, DeliveryResult, FilePasteReference, FinderDestination, deliver_finder_files,
 };
 

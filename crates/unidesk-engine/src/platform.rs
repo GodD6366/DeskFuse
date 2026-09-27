@@ -9,6 +9,11 @@ pub(crate) use unidesk_platform_macos::MacOSPasteboard as WorkerPasteboard;
 #[cfg(all(not(test), target_os = "windows"))]
 pub(crate) use unidesk_platform_windows::WindowsPasteboard as WorkerPasteboard;
 
+pub(crate) use unidesk_platform_macos::{
+    CapturedFilePaste, DeliveryResult, FilePasteReference, FinderDestination,
+    capture_finder_destination, deliver_finder_files, is_finder_pid,
+};
+
 pub fn host_ports(
     data_dir: &std::path::Path,
 ) -> PlatformResult<unidesk_platform::ports::HostPorts> {
@@ -25,6 +30,7 @@ pub fn host_ports(
         input_execution: Arc::new(MemoryInputExecution::new()),
         credential_store: Arc::new(MemoryCredentialStore::new(data_dir.join("identity.key"))),
         permission_observer: Arc::new(PermissionServicePort::new(create_permission_service())),
+        workflow_output: create_workflow_output(),
     })
 }
 
@@ -45,9 +51,14 @@ pub use unidesk_platform::{PermissionService, PermissionSnapshot, PermissionStat
 #[cfg(target_os = "macos")]
 pub use unidesk_platform_macos::MacOSWakeObserver as WakeObserver;
 #[cfg(target_os = "macos")]
-pub use unidesk_platform_macos::sharing::{session_is_active, warp_pointer};
+pub use unidesk_platform_macos::sharing::{
+    can_post_input, frontmost_pid, restore_pointer_after_service_exit, session_is_active,
+    warp_pointer,
+};
 #[cfg(target_os = "macos")]
 pub use unidesk_platform_macos::wifi_environment::current_ssid;
+#[cfg(target_os = "macos")]
+pub(crate) use unidesk_platform_macos::{clipboard_source_application, image_processor, lan_web};
 #[cfg(target_os = "macos")]
 pub use unidesk_platform_macos::{create_permission_service, display_topology};
 
@@ -71,6 +82,16 @@ fn create_permission_service() -> Box<dyn PermissionService> {
         }
     }
     Box::new(Unknown)
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_workflow_output() -> std::sync::Arc<dyn unidesk_platform::WorkflowOutputPort> {
+    std::sync::Arc::new(unidesk_platform_macos::MacOSWorkflowOutputPort)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn create_workflow_output() -> std::sync::Arc<dyn unidesk_platform::WorkflowOutputPort> {
+    std::sync::Arc::new(unidesk_platform::UnavailableWorkflowOutputPort)
 }
 
 #[cfg(target_os = "macos")]
