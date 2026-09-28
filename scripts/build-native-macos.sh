@@ -78,14 +78,14 @@ if [[ "${UNIDESK_FORCE_RUST:-0}" != 1 \
   && "$(cat "$FINGERPRINT_FILE")" == "$RUST_FINGERPRINT" \
   && -f "$RUST_OUTPUT/libunidesk_ffi.dylib" \
   && -f "$RUST_OUTPUT/libunidesk_ffi.a" \
-  && -f "$RUST_OUTPUT/unidesk-input-service" \
+  && -f "$RUST_OUTPUT/unidesk-input-macos" \
   && -f "$ROOT_DIR/apps/unidesk-macos/Sources/UniDeskEngine/UniDeskEngine.swift" ]]; then
   SKIP_RUST=1
   echo "Rust SDK cache hit ($CONFIGURATION $TARGET_TRIPLE)"
 fi
 if [[ "$SKIP_RUST" -eq 0 ]]; then
   "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-ffi --lib --target "$TARGET_TRIPLE" $RELEASE_FLAG
-  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-engine --bin unidesk-input-service --target "$TARGET_TRIPLE" $RELEASE_FLAG
+  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p unidesk-input-macos --bin unidesk-input-macos --target "$TARGET_TRIPLE" $RELEASE_FLAG
   cargo run --locked -p unidesk-ffi --bin unidesk-bindgen -- generate --library "$RUST_OUTPUT/libunidesk_ffi.dylib" --language swift --out-dir "$ROOT_DIR/apps/unidesk-macos/Generated"
   cp apps/unidesk-macos/Generated/UniDeskEngine.swift apps/unidesk-macos/Sources/UniDeskEngine/
   cp apps/unidesk-macos/Generated/UniDeskEngineFFI.h apps/unidesk-macos/Sources/UniDeskEngineFFI/
@@ -98,7 +98,7 @@ SWIFT_OUTPUT="$(UNIDESK_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLA
 DESTINATION="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/native-macos/$CONFIGURATION"
 mkdir -p "$DESTINATION"
 cp "$SWIFT_OUTPUT/unidesk-app" "$DESTINATION/unidesk-app"
-cp "$RUST_OUTPUT/unidesk-input-service" "$DESTINATION/unidesk-input-service"
+cp "$RUST_OUTPUT/unidesk-input-macos" "$DESTINATION/unidesk-input-service"
 LINKED_SDK="$(xcrun vtool -show-build "$DESTINATION/unidesk-app" | awk '$1 == "sdk" { print $2; exit }')"
 [[ "${LINKED_SDK%%.*}" -ge 26 ]] || { echo "error: native client linked with unexpected SDK $LINKED_SDK" >&2; exit 1; }
 echo "native executable: $DESTINATION/unidesk-app (minimum macOS 14.0; linked SDK $LINKED_SDK)"

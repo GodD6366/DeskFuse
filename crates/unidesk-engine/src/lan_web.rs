@@ -26,6 +26,7 @@ use std::{
 };
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
+use unidesk_platform::ports::EnginePlatformPort;
 
 pub(super) type Result<T> = std::result::Result<T, String>;
 const MAX_PHOTO_BODY: usize = 256 * 1024 * 1024 + 64 * 1024;
@@ -80,6 +81,7 @@ type LiveServer = (
 struct Shared {
     inner: Mutex<Inner>,
     bridge: Weak<TokioBridge>,
+    platform: Arc<dyn EnginePlatformPort>,
     path: PathBuf,
     changed: Notify,
     stop: CancellationToken,
@@ -115,7 +117,7 @@ pub struct LanWebService {
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 impl LanWebService {
-    pub fn new(bridge: &Arc<TokioBridge>) -> Result<Self> {
+    pub fn new(bridge: &Arc<TokioBridge>, platform: Arc<dyn EnginePlatformPort>) -> Result<Self> {
         let path = unidesk_store::SQLiteStore::default_path()
             .map_err(|e| e.to_string())?
             .with_file_name("lan-web.json");
@@ -144,6 +146,7 @@ impl LanWebService {
                 tasks: VecDeque::new(),
             }),
             bridge: Arc::downgrade(bridge),
+            platform,
             path,
             changed: Notify::new(),
             stop: CancellationToken::new(),
@@ -304,7 +307,10 @@ async fn serve(shared: Arc<Shared>) {
     let mut live: Option<LiveServer> = None;
     loop {
         let mut seen_interfaces = std::collections::BTreeSet::new();
-        let interfaces = crate::platform::lan_web::interfaces()
+        let interfaces = shared
+            .platform
+            .lan_web()
+            .interfaces()
             .unwrap_or_default()
             .into_iter()
             .filter(|i| seen_interfaces.insert(i.name.clone()))
@@ -320,11 +326,11 @@ async fn serve(shared: Arc<Shared>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             i.interfaces = interfaces;
-            i.local_addresses = crate::platform::lan_web::all_ipv4_interfaces()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|v| v.address)
-                .collect();
+            i.local_addresses = shared
+                .platform
+                .lan_web()
+                .ipv4_addresses()
+                .unwrap_or_default();
             let desired = if i.settings.enabled {
                 match &i.settings.preferred_interface {
                     None => Some(("0.0.0.0".to_owned(), i.settings.port)),

@@ -16,6 +16,7 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["macros", "rt", "signal", "sync", "time"] }
 unidesk-collaboration = { path = "../../crates/unidesk-collaboration" }
 unidesk-platform = { path = "../../crates/unidesk-platform" }
+unidesk-engine = { path = "../../crates/unidesk-engine" }
 
 [lints]
 workspace = true

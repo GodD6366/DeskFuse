@@ -21,8 +21,7 @@ use crate::diagnostics::{DiagnosticLevel, Diagnostics};
 use crate::model::{
     ClipboardHistoryItem, DEFAULT_CLIPBOARD_SYNC_ENABLED, TransferDirection, TransferState,
 };
-use crate::platform::create_worker_pasteboard;
-use crate::platform::{PermissionService, PermissionSnapshot, create_permission_service};
+use crate::platform::memory_platform;
 use file_policy::{DeferredSources, FilePolicy};
 use file_receive_worker::*;
 use finder_paste_jobs::FinderPasteJobs;
@@ -57,8 +56,11 @@ use unidesk_identity::MemoryIdentityProvider;
 use unidesk_platform::ports::{
     ApplyResult, ContentData, ContentToApply, NativeRevision, apply_clipboard,
 };
+use unidesk_platform::ports::{
+    CapturedFilePaste, EnginePlatformPort, FilePasteCapture, FilePasteReference,
+};
 use unidesk_platform::{Pasteboard, PasteboardSnapshot, UNIVERSAL_CLIPBOARD_TYPE};
-use unidesk_platform_macos::{CapturedFilePaste, FilePasteCapture, FilePasteReference};
+use unidesk_platform::{PermissionService, PermissionSnapshot};
 #[cfg(test)]
 use unidesk_runtime::{ProviderFuture, TransportConnection, TransportProvider};
 use unidesk_runtime::{
@@ -410,13 +412,17 @@ fn clipboard_primary_image(
 }
 
 /// A display derivative only. History restoration retains the original bytes.
-pub(crate) fn clipboard_preview_png(snapshot: &PasteboardSnapshot) -> Option<Arc<Vec<u8>>> {
-    clipboard_preview_png_at_size(snapshot, 1600)
+pub(crate) fn clipboard_preview_png(
+    snapshot: &PasteboardSnapshot,
+    platform: Option<&dyn EnginePlatformPort>,
+) -> Option<Arc<Vec<u8>>> {
+    clipboard_preview_png_at_size(snapshot, 1600, platform)
 }
 
 pub(crate) fn clipboard_preview_png_at_size(
     snapshot: &PasteboardSnapshot,
     max_pixel_size: u32,
+    platform: Option<&dyn EnginePlatformPort>,
 ) -> Option<Arc<Vec<u8>>> {
     let max_pixel_size = max_pixel_size.clamp(64, 1600);
     if !snapshot.file_urls.is_empty() {
@@ -426,12 +432,11 @@ pub(crate) fn clipboard_preview_png_at_size(
         {
             // Decode only when a preview is requested; the clipboard poll and
             // summary query stay free of image IO. ImageIO bounds allocation.
-            return unidesk_platform_macos::lan_web::image_png(
-                std::path::Path::new(path),
-                max_pixel_size,
-            )
-            .ok()
-            .map(Arc::new);
+            return platform?
+                .lan_web()
+                .image_png(std::path::Path::new(path), max_pixel_size)
+                .ok()
+                .map(Arc::new);
         }
         return None;
     }
@@ -606,7 +611,8 @@ impl ClipboardHistoryStore {
                 .text
                 .as_ref()
                 .is_some_and(|text| text.chars().nth(32_000).is_some()),
-            image_png: cached_preview.or_else(|| clipboard_preview_png_at_size(&snapshot, 160)),
+            image_png: cached_preview
+                .or_else(|| clipboard_preview_png_at_size(&snapshot, 160, None)),
             file_paths: snapshot.file_urls.clone(),
             source: source.into(),
         };
@@ -640,7 +646,7 @@ impl ClipboardHistoryStore {
     }
 
     #[allow(dead_code)] // The UI restore path is migrating to the global library.
-    fn restore(&self, id: u64, pasteboard: &impl Pasteboard) -> Result<(), String> {
+    fn restore(&self, id: u64, pasteboard: &dyn Pasteboard) -> Result<(), String> {
         // SQLite membership/retention is authoritative; the UI cache can be stale.
         let stored = crate::clipboard_library::global()?.snapshot(id)?;
         let snapshot = &stored;
@@ -765,7 +771,7 @@ impl ClipboardPreparations {
     }
 }
 fn write_prepared_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     snapshot: &PasteboardSnapshot,
 ) -> Result<(), String> {
     if !snapshot.file_urls.is_empty() {
@@ -960,6 +966,13 @@ impl TokioBridge {
     pub fn start(
         diagnostics: Diagnostics,
     ) -> Result<(std::sync::Arc<Self>, UnboundedReceiver<UiEvent>), String> {
+        Self::start_with_platform(diagnostics, memory_platform())
+    }
+
+    pub fn start_with_platform(
+        diagnostics: Diagnostics,
+        platform: Arc<dyn EnginePlatformPort>,
+    ) -> Result<(std::sync::Arc<Self>, UnboundedReceiver<UiEvent>), String> {
         let (ui_sender, ui_receiver) = unbounded();
         let (command_sender, command_receiver) = unbounded_channel();
         let worker_diagnostics = diagnostics.clone();
@@ -984,6 +997,7 @@ impl TokioBridge {
         let paste_requested_for_worker = Arc::clone(&paste_requested);
         let paste_target_pid_for_worker = Arc::clone(&paste_target_pid);
         let worker_completion_for_thread = Arc::clone(&worker_completion);
+        let platform_worker = platform.clone();
         let worker = thread::Builder::new()
             .name("unidesk-tokio".to_owned())
             .spawn(move || {
@@ -999,6 +1013,7 @@ impl TokioBridge {
                         cache_leases_worker,
                         worker_file_paste_capture,
                         file_paste_requests,
+                        platform_worker,
                         InputSignals {
                             input_service: input_service_worker,
                             update_admission: update_admission_worker,
@@ -1467,6 +1482,7 @@ async fn run_worker(
     cache_leases: ExternalCacheLeases,
     file_paste_capture: Arc<FilePasteCapture>,
     mut file_paste_requests: TokioReceiver<CapturedFilePaste>,
+    platform: Arc<dyn EnginePlatformPort>,
     input_signals: InputSignals,
 ) {
     crate::diagnostics::record!(
@@ -1478,7 +1494,7 @@ async fn run_worker(
         None
     );
 
-    let permission_service = create_permission_service();
+    let permission_service = platform.permission_service();
     let mut last_permission = None;
     emit_permission_snapshot(
         &ui_sender,
@@ -1531,17 +1547,16 @@ async fn run_worker(
     // diagnostics; only mime/length/sequence metadata reach the UI.
     let wake_signal = Arc::new(tokio::sync::Notify::new());
     let wake_callback = wake_signal.clone();
-    let _wake_observer = crate::platform::WakeObserver::new(move || {
+    let _wake_observer = match platform.wake_observer(Box::new(move || {
         wake_callback.notify_one();
-    });
-    let pasteboard = match create_worker_pasteboard() {
-        Ok(pasteboard) => pasteboard,
+    })) {
+        Ok(observer) => observer,
         Err(error) => {
             emit_clipboard_error(&ui_sender, &diagnostics, error.to_string());
-            let _ = ui_sender.unbounded_send(UiEvent::BridgeError(error.to_string()));
             return;
         }
     };
+    let pasteboard = platform.pasteboard();
     let mut clipboard_enabled = DEFAULT_CLIPBOARD_SYNC_ENABLED;
     // Inspect the current pasteboard on startup. Finder may have populated it
     // before uniDesk launched, and treating that value as an unseen baseline
@@ -1573,7 +1588,7 @@ async fn run_worker(
     let mut finder_path_requests: HashMap<TransferId, CapturedFilePaste> = HashMap::new();
     let (finder_path_tx, mut finder_path_rx) = unbounded_channel::<(
         TransferId,
-        Result<Option<unidesk_platform_macos::FinderDestination>, String>,
+        Result<Option<Arc<dyn unidesk_platform::ports::FinderDestinationPort>>, String>,
     )>();
     let mut file_policy = match FilePolicy::new() {
         Ok(policy) => policy,
@@ -1584,13 +1599,13 @@ async fn run_worker(
     };
     file_policy.cache.set_external_leases(cache_leases.clone());
     file_policy.external_leases = cache_leases.clone();
-    let (cleanup, startup_error) = file_policy.initialize_cache(&pasteboard);
+    let (cleanup, startup_error) = file_policy.initialize_cache(pasteboard.as_ref());
     let cleanup_message =
         (!cleanup.removed_paths.is_empty() || cleanup.failed_transfers > 0).then(|| {
             file_policy::apply_cleanup(
                 cleanup,
                 &mut clipboard_history,
-                &pasteboard,
+                pasteboard.as_ref(),
                 &mut clipboard_last_change_count,
                 &ui_sender,
             )
@@ -1603,6 +1618,7 @@ async fn run_worker(
 
     let input_coordinator = crate::input_coordinator::InputCoordinator::start(
         runtime.clone(),
+        platform.clone(),
         ui_sender.clone(),
         input_signals.recording,
         input_signals.emergency,
@@ -1662,6 +1678,7 @@ async fn run_worker(
     #[cfg(target_os = "macos")]
     let _wifi_task = {
         let runtime = runtime.clone();
+        let wifi_platform = platform.clone();
         struct WifiTask(tokio::task::JoinHandle<()>);
         impl Drop for WifiTask {
             fn drop(&mut self) {
@@ -1675,9 +1692,12 @@ async fn run_worker(
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                let ssid = tokio::task::spawn_blocking(crate::platform::current_ssid)
-                    .await
-                    .unwrap_or_default();
+                let ssid = tokio::task::spawn_blocking({
+                    let platform = wifi_platform.clone();
+                    move || platform.current_ssid()
+                })
+                .await
+                .unwrap_or_default();
                 if runtime
                     .send(RuntimeCommand::ObserveWifiEnvironment { ssid })
                     .await
@@ -1726,7 +1746,7 @@ async fn run_worker(
                             total_bytes: incoming.manifest.total_bytes(),
                         })
                 })
-                .or_else(|| finder_pastes.ready_reference(&pasteboard)),
+                .or_else(|| finder_pastes.ready_reference(pasteboard.as_ref())),
         );
         if let Some(catalog) = &workflow_catalog {
             let peers = trusted_connected_peer_ids(&runtime.snapshot_view());
@@ -1772,7 +1792,7 @@ async fn run_worker(
         for peer in clipboard_sync.take_disconnected() {
             file_policy.connection_lost(
                 peer,
-                &pasteboard,
+                pasteboard.as_ref(),
                 &mut incoming_file_clipboards,
                 &pending_incoming_file,
                 &paste_requested,
@@ -1802,10 +1822,10 @@ async fn run_worker(
                                     if peer.is_none_or(|peer| !trusted_connected_peer_ids(&runtime.snapshot_view()).contains(&peer)) {
                                         Err("来源设备离线或未配对，请连接后重试".into())
                                     } else {
-                                        file_policy.protect_clipboard(&pasteboard);
+                                        file_policy.protect_clipboard(pasteboard.as_ref());
                                         match file_policy.cache.reserve(token,reference.total_bytes) {
                                             Ok(cleanup) => {
-                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);
+                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);
                                                 let destination=file_policy.cache.destination(token);
                                                 job.destination=Some(destination.clone());
                                                 let runtime=runtime.clone();let cancel=job.cancel.clone();let tx=preparations.tx.clone();
@@ -1818,7 +1838,7 @@ async fn run_worker(
                                             }
                                             Err(error) => {
                                                 let cleanup=file_policy.cache.take_partial_cleanup();
-                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);
+                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);
                                                 Err(error)
                                             }
                                         }
@@ -1833,12 +1853,12 @@ async fn run_worker(
                     let mut installed=false;
                     let result=outcome.and_then(|snapshot| {
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(job.baseline){return Err("本次剪贴板准备已失效".into())}
-                        write_prepared_clipboard(&pasteboard,&snapshot)?;
+                        write_prepared_clipboard(pasteboard.as_ref(),&snapshot)?;
                         installed=true;
                         let count=pasteboard.change_count().map_err(|e|e.to_string())?;
                         clipboard_last_change_count=Some(count);
                         clipboard_sync.invalidate_copy(&ui_sender);
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(count){return Err("剪贴板已被其他复制替换，未发出粘贴请求".into())}
                         crate::clipboard_library::global()?.mark_used(job.id)?;
                         Ok(count)
@@ -1956,7 +1976,7 @@ async fn run_worker(
                     }
                     Some(TokioCommand::PushClipboard) => {
                         command_error = push_local_clipboard(
-                            &pasteboard,
+                            pasteboard.as_ref(),
                             &mut ClipboardPushContext {
                                 runtime: &runtime,
                                 sync: &mut clipboard_sync,
@@ -2121,7 +2141,7 @@ async fn run_worker(
                                         Ok(count) => {
                                             snapshot.change_count = count;
                                             clipboard_last_change_count = Some(count);
-                                            file_policy.protect_clipboard(&pasteboard);
+                                            file_policy.protect_clipboard(pasteboard.as_ref());
                                             clipboard_sync.invalidate_copy(&ui_sender);
                                             if clipboard_enabled { clipboard_sync.publish(snapshot.clone(), false, &runtime, &ui_sender); }
                                             written = true;
@@ -2178,20 +2198,20 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::WorkflowCacheReserve { id, size, reply }) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         let result = file_policy.cache.reserve(id, size).map(|cleanup| {
-                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, &pasteboard, &mut clipboard_last_change_count, &ui_sender);
+                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, pasteboard.as_ref(), &mut clipboard_last_change_count, &ui_sender);
                             file_policy.cache.destination(id)
                         });
                         if result.is_err() {
                             let cleanup = file_policy.cache.take_partial_cleanup();
-                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, &pasteboard, &mut clipboard_last_change_count, &ui_sender);
+                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, pasteboard.as_ref(), &mut clipboard_last_change_count, &ui_sender);
                         }
                         file_policy.emit(&ui_sender, None);
                         if reply.send(result).is_err() { file_policy.cache.finish(id); }
                     }
                     Some(TokioCommand::WorkflowCacheFinish(id)) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         file_policy.cache.finish(id);
                         file_policy.emit(&ui_sender, None);
                     }
@@ -2218,7 +2238,7 @@ async fn run_worker(
                             let count = pasteboard.change_count().map_err(|e| e.to_string())?;
                             snapshot.change_count = count;
                             clipboard_history.record(snapshot, "工作流", &ui_sender);
-                            file_policy.protect_clipboard(&pasteboard);
+                            file_policy.protect_clipboard(pasteboard.as_ref());
                             clipboard_sync.invalidate_copy(&ui_sender);
                             // Do not advance clipboard_last_change_count: normal polling must
                             // still synchronize this new local copy when auto-sync is enabled.
@@ -2246,16 +2266,16 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::SetFileTransferSettings(settings)) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         match file_policy.update(settings) {
-                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
-                            Err(error) => {command_error = Some(error.clone()); let cleanup=file_policy.cache.take_partial_cleanup();let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);file_policy.emit(&ui_sender,Some(format!("{error}；{message}")));}
+                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
+                            Err(error) => {command_error = Some(error.clone()); let cleanup=file_policy.cache.take_partial_cleanup();let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);file_policy.emit(&ui_sender,Some(format!("{error}；{message}")));}
                         }
                     }
                     Some(TokioCommand::ClearTransferCache) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         match file_policy.cache.clear_completed() {
-                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
+                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
                             Err(error) => { command_error = Some(error.clone()); file_policy.emit(&ui_sender,Some(error)); }
                         }
                     }
@@ -2272,7 +2292,7 @@ async fn run_worker(
                         for state in incoming_file_clipboards.values_mut() { state.cancel(); }
                         while !incoming_file_clipboards.is_empty() {
                             let Some(event) = receive_event_rx.recv().await else { break; };
-                            let _ = handle_receive_event(event, &pasteboard, &mut RemoteClipboardState {
+                            let _ = handle_receive_event(event, pasteboard.as_ref(), &mut RemoteClipboardState {
                                 last_change_count: &mut clipboard_last_change_count,
                                 incoming_files: &mut incoming_file_clipboards,
                                 receive_events: &receive_events,
@@ -2360,7 +2380,7 @@ async fn run_worker(
                             continue;
                         }
                         if let ClipboardFileFrame::Cancel { transfer_id, .. } = &frame && let Some(cancelled)=outgoing_file_cancellations.get(transfer_id) { cancelled.store(true,Ordering::Release); }
-                        if file_policy.control(&frame,peer_id,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
+                        if file_policy.control(&frame,peer_id,pasteboard.as_ref(),&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
                         if let ClipboardFileFrame::Ack { transfer_id } = &frame {
                             if let Ok(mut acknowledgements) = file_clipboard_acknowledgements.lock()
                                 && let Some(acknowledge) = acknowledgements.remove(&(peer_id, *transfer_id)) {
@@ -2371,7 +2391,7 @@ async fn run_worker(
                         let file_id = frame.transfer_id();
                         let is_data_frame = matches!(frame, ClipboardFileFrame::Offer {..}|ClipboardFileFrame::RequestedOffer {..}|ClipboardFileFrame::Chunk {..}|ClipboardFileFrame::Complete {..});
                         if let Some(transfer_id) = apply_remote_clipboard_decoded(
-                            &pasteboard,
+                            pasteboard.as_ref(),
                             &payload,
                             &mut RemoteClipboardState {
                                 last_change_count: &mut clipboard_last_change_count,
@@ -2390,7 +2410,7 @@ async fn run_worker(
                             Some(frame),
                         ) {
                             file_policy.finished(transfer_id);
-                            file_policy.protect_clipboard(&pasteboard);
+                            file_policy.protect_clipboard(pasteboard.as_ref());
                             file_policy.emit(&ui_sender,None);
                             let runtime = runtime.clone();
                             let sequence = clipboard_sequence.clone();
@@ -2483,7 +2503,7 @@ async fn run_worker(
                             if let Ok(frame @ ClipboardFileFrame::Deferred {..})=ClipboardFileFrame::decode(&ready.payload.data) {
                                 let id=frame.transfer_id();
                                 remember_file_source(ready.peer, id, ready.metadata.clone());
-                                file_policy.control(&frame,ready.peer,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await;
+                                file_policy.control(&frame,ready.peer,pasteboard.as_ref(),&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await;
                                 file_policy.reference_installed(ready.peer,id)
                             } else {false}
                         } else {
@@ -2511,7 +2531,7 @@ async fn run_worker(
                             };
                             let result = match data.and_then(|data| {
                                 apply_clipboard(
-                                    &pasteboard,
+                                    pasteboard.as_ref(),
                                     ContentToApply {
                                         data,
                                         remote_origin_marker: None,
@@ -2527,7 +2547,7 @@ async fn run_worker(
                                 Ok(ApplyResult::Rejected { reason }) => Err(reason),
                                 Err(error) => Err(error),
                             };
-                            finish_native_clipboard(&pasteboard,&ready.payload,&mut RemoteClipboardState {
+                            finish_native_clipboard(pasteboard.as_ref(),&ready.payload,&mut RemoteClipboardState {
                                 last_change_count:&mut clipboard_last_change_count,incoming_files:&mut incoming_file_clipboards,receive_events:&receive_events,cache:&mut file_policy.cache,loop_guard:&mut clipboard_loop_guard,history:&mut clipboard_history,pending_incoming_file:&pending_incoming_file,paste_requested:&paste_requested,paste_target_pid:&paste_target_pid,
                             },&ui_sender,&diagnostics,ready.peer,result,Some(&ready.metadata))
                         };
@@ -2563,14 +2583,14 @@ async fn run_worker(
                     } else { waiting_sources.push(request); }
                 }
                 workflow_sources = waiting_sources;
-                file_policy.protect_clipboard(&pasteboard);
-                file_policy.tick(&pasteboard,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;
+                file_policy.protect_clipboard(pasteboard.as_ref());
+                file_policy.tick(pasteboard.as_ref(),&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;
                 match pasteboard.change_count() {
                     Ok(count) => {
                         if clipboard_last_change_count.is_none_or(|last| last != count) {
                             if !clipboard_enabled {clipboard_sync.invalidate_copy(&ui_sender);clipboard_last_change_count=Some(count);continue;}
                             let _ = push_local_clipboard(
-                                &pasteboard,
+                                pasteboard.as_ref(),
                                 &mut ClipboardPushContext {
                                     runtime: &runtime,
                                     sync: &mut clipboard_sync,
@@ -2734,12 +2754,12 @@ async fn run_worker(
                 }
             }
             _ = permission_tick.tick() => {
-                file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,&pasteboard,&pending_incoming_file,&paste_requested,&paste_target_pid).await;
+                file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,pasteboard.as_ref(),&pending_incoming_file,&paste_requested,&paste_target_pid).await;
                 emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
             }
             captured = file_paste_requests.recv() => {
                 if let Some(captured) = captured {
-                    if unidesk_platform_macos::is_finder_pid(captured.target_pid) {
+                    if platform.finder().is_finder_pid(captured.target_pid) {
                         // Repeated presses during one lookup reuse its visible task.
                         let duplicate = finder_path_requests.values().any(|pending|
                             pending.target_pid == captured.target_pid
@@ -2757,11 +2777,12 @@ async fn run_worker(
                                 Some(format!("paste={id} transfer={} pid={pid}", captured.reference.transfer_id)), None);
                             finder_path_requests.insert(id, captured);
                             let tx = finder_path_tx.clone();
+                            let finder_platform = platform.clone();
                             tokio::spawn(async move {
                                 let result = tokio::task::spawn_blocking(move ||
-                                    unidesk_platform_macos::capture_finder_destination(pid))
+                                    finder_platform.finder().capture_destination(pid))
                                     .await.map_err(|_| "获取 Finder 路径的后台任务异常退出".to_owned())
-                                    .and_then(|result| result);
+                                    .and_then(|result| result.map_err(|e| e.to_string()));
                                 let _ = tx.send((id, result));
                             });
                         }
@@ -2823,7 +2844,7 @@ async fn run_worker(
                     let completed_source = terminal_key.and_then(|key| incoming_file_clipboards.get(&key).map(|incoming| (
                         FilePasteReference { transfer_id: key.1.to_string(), peer_id: key.0.to_hex(), change_count: incoming.pasteboard_change_count, name: incoming.name.clone(), total_bytes: incoming.manifest.total_bytes() }, incoming.root_paths.clone()
                     )));
-                    let acknowledged = handle_receive_event(event, &pasteboard, &mut RemoteClipboardState {
+                    let acknowledged = handle_receive_event(event, pasteboard.as_ref(), &mut RemoteClipboardState {
                         last_change_count: &mut clipboard_last_change_count,
                         incoming_files: &mut incoming_file_clipboards,
                         receive_events: &receive_events,
@@ -2846,7 +2867,7 @@ async fn run_worker(
                             if let Some((reference, paths)) = completed_source { finder_pastes.received(reference, paths, &ui_sender, &diagnostics); }
                         } else { finder_pastes.source_failed(key.1, &ui_sender); }
                         file_policy.finished(key.1);
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         file_policy.emit(&ui_sender, None);
                         let frame = if acknowledged == Some(key) { ClipboardFileFrame::Ack { transfer_id: key.1 } }
                         else { ClipboardFileFrame::Cancel { transfer_id: key.1, reason: "接收已取消或文件校验失败".into() } };
@@ -2999,7 +3020,7 @@ impl ClipboardLoopGuard {
 
     fn should_suppress(
         &mut self,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         snapshot: &PasteboardSnapshot,
     ) -> bool {
         // Universal Clipboard is Apple's own cross-device copy. uniDesk's
@@ -3163,7 +3184,7 @@ struct FileClipboardStreamContext<'a> {
 }
 
 async fn push_local_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     context: &mut ClipboardPushContext<'_>,
 ) -> Result<(), String> {
     let mut snapshot = match pasteboard.read() {
@@ -3362,7 +3383,7 @@ fn start_local_file_clipboard(
         let prepared = match tokio::task::spawn_blocking(move || {
             let check_copy = || -> Result<(), String> {
                 if let Some(expected) = expected_change_count {
-                    let pasteboard = create_worker_pasteboard().map_err(|e| e.to_string())?;
+                    let pasteboard = memory_platform().pasteboard();
                     if pasteboard.change_count().map_err(|e| e.to_string())? != expected {
                         preparation_cancel.store(true, Ordering::Release);
                         return Err("源剪贴板已被新复制替换".into());
@@ -4169,7 +4190,7 @@ struct RemoteClipboardState<'a> {
 
 #[cfg(test)]
 fn apply_remote_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4191,7 +4212,7 @@ fn apply_remote_clipboard(
 }
 
 fn apply_remote_clipboard_decoded(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4327,7 +4348,7 @@ fn apply_remote_clipboard_decoded(
 
 #[allow(clippy::too_many_arguments)] // Shared remote-clipboard context, threaded explicitly.
 fn finish_native_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4759,7 +4780,7 @@ mod tests {
         assert_eq!((preview.width(), preview.height()), (8, 4));
         assert_eq!(restored.items, snapshot.items);
         snapshot.file_urls.push("/tmp/file-priority".into());
-        assert!(clipboard_preview_png(&snapshot).is_none());
+        assert!(clipboard_preview_png(&snapshot, None).is_none());
     }
 
     #[test]
@@ -4777,7 +4798,7 @@ mod tests {
         let (ui_sender, _ui_receiver) = unbounded();
 
         apply_remote_clipboard(
-            &pasteboard,
+            pasteboard.as_ref(),
             &payload,
             &mut RemoteClipboardState {
                 last_change_count: &mut last_change_count,
@@ -4801,13 +4822,13 @@ mod tests {
             pasteboard.read_remote_origin_marker().expect("read marker"),
             Some(clipboard_fingerprint("text/plain", b"from peer"))
         );
-        assert!(loop_guard.should_suppress(&pasteboard, &received));
+        assert!(loop_guard.should_suppress(pasteboard.as_ref(), &received));
 
         pasteboard
             .write_text("new local copy")
             .expect("write local copy");
         let local = pasteboard.read().expect("read local clipboard");
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(pasteboard.as_ref(), &local));
 
         // 10 秒账本窗口内，同一段文字的再次出现视为回声（含接力改写）。
         pasteboard
@@ -4815,7 +4836,7 @@ mod tests {
             .expect("recopy old remote text");
         let recopied = pasteboard.read().unwrap();
         assert!(recopied.change_count > received.change_count);
-        assert!(loop_guard.should_suppress(&pasteboard, &recopied));
+        assert!(loop_guard.should_suppress(pasteboard.as_ref(), &recopied));
     }
 
     #[test]
@@ -4824,20 +4845,22 @@ mod tests {
         let mut loop_guard = ClipboardLoopGuard::default();
         pasteboard.write_text("帮我安装 kimi code\n").unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(pasteboard.as_ref(), &local));
 
         pasteboard.write_text("帮我安装 kimi code\r\n").unwrap();
         let echoed = pasteboard.read().unwrap();
         assert!(echoed.change_count > local.change_count);
-        assert!(loop_guard.should_suppress(&pasteboard, &echoed));
+        assert!(loop_guard.should_suppress(pasteboard.as_ref(), &echoed));
 
         // 接力回写常去掉或补上尾随换行，10 秒窗口内仍视为同一条。
         pasteboard.write_text("帮我安装 kimi code").unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        assert!(
+            loop_guard.should_suppress(pasteboard.as_ref(), pasteboard.as_ref().read().unwrap())
+        );
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &incoming));
+        assert!(!loop_guard.should_suppress(pasteboard.as_ref(), &incoming));
     }
 
     #[test]
@@ -4847,14 +4870,16 @@ mod tests {
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         pasteboard.mark_universal_clipboard().unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &handoff));
+        assert!(loop_guard.should_suppress(pasteboard.as_ref(), &handoff));
 
         // 去掉标记后的接力改写仍是回声。不同内容的新复制不受影响。
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        assert!(
+            loop_guard.should_suppress(pasteboard.as_ref(), pasteboard.as_ref().read().unwrap())
+        );
         pasteboard.write_png(&[4, 5, 6]).unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local));
+        assert!(!loop_guard.should_suppress(pasteboard.as_ref(), &local));
     }
 
     #[test]
@@ -4869,7 +4894,7 @@ mod tests {
         }];
         pasteboard.write_items(&items).unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &handoff));
+        assert!(!loop_guard.should_suppress(pasteboard.as_ref(), &handoff));
 
         // Native rich images travel through the clipboard bundle MIME, so
         // payload-only matching is insufficient. The applied native snapshot
@@ -4906,19 +4931,19 @@ mod tests {
             clipboard_snapshot_fingerprint(&snapshot).unwrap(),
             snapshot.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &snapshot));
+        assert!(guard.should_suppress(pasteboard.as_ref(), &snapshot));
         pasteboard.write_text("same text").unwrap();
         let copied_again = pasteboard.read().unwrap();
-        assert!(!guard.should_suppress(&pasteboard, &copied_again));
+        assert!(!guard.should_suppress(pasteboard.as_ref(), &copied_again));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         let png = pasteboard.read().unwrap();
         guard.remember(
             clipboard_snapshot_fingerprint(&png).unwrap(),
             png.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &png));
+        assert!(guard.should_suppress(pasteboard.as_ref(), &png));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(!guard.should_suppress(&pasteboard, &pasteboard.read().unwrap()));
+        assert!(!guard.should_suppress(pasteboard.as_ref(), pasteboard.as_ref().read().unwrap()));
     }
 
     // Deleted 2026-09-15: this case expected a payload without source metadata

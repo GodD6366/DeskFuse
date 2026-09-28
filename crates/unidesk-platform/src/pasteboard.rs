@@ -43,7 +43,7 @@ pub struct PasteboardSnapshot {
 }
 
 /// Pasteboard boundary shared by the app worker and deterministic tests.
-pub trait Pasteboard: Send {
+pub trait Pasteboard: Send + Sync {
     /// Return the current change count.
     ///
     /// # Errors

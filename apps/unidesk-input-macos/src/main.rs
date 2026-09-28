@@ -1,12 +1,16 @@
-//! macOS input subprocess host. Production capture/injection still lives in
-//! `unidesk-engine`'s input service until native Host Ports are wired here.
+//! macOS input subprocess host. The compatibility IPC entry point is assembled
+//! by the application host; native adapters are injected through typed ports.
 mod host;
+#[cfg(target_os = "macos")]
+fn run_legacy_input_service() -> Result<(), String> {
+    unidesk_engine::input_service::main()
+}
 
 use host::InputHost;
 use std::path::PathBuf;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), String> {
+async fn run_app() -> Result<(), String> {
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("unidesk-input-macos {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -29,4 +33,12 @@ async fn main() -> Result<(), String> {
     }
     host.stop().await.map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn main() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("--input-service") {
+        return run_legacy_input_service();
+    }
+    run_app()
 }

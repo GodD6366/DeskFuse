@@ -530,7 +530,7 @@ END;").map_err(err)?;
         };
         #[cfg(target_os = "macos")]
         if local {
-            let (id, name) = crate::platform::clipboard_source_application();
+            let (id, name) = (None, None);
             origin.app_id = id;
             origin.app_name = name;
         }
@@ -739,6 +739,7 @@ END;").map_err(err)?;
         Ok(crate::tokio_bridge::clipboard_preview_png_at_size(
             &snapshot,
             max_pixel_size.clamp(64, 480),
+            None,
         )
         .map(|bytes| Arc::try_unwrap(bytes).unwrap_or_else(|bytes| (*bytes).clone()))
         .unwrap_or_default())
@@ -774,7 +775,7 @@ END;").map_err(err)?;
                 .clone()
                 .unwrap_or_else(|| reference.map(|r| r.names.join("、")).unwrap_or_default()),
             content_truncated: false,
-            image_png: crate::tokio_bridge::clipboard_preview_png(&snapshot),
+            image_png: crate::tokio_bridge::clipboard_preview_png(&snapshot, None),
             file_paths: snapshot.file_urls,
             source: s.source,
         })

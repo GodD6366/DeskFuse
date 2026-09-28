@@ -23,7 +23,7 @@ BUILD_BINARY="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/native-macos/debug/$BINARY_N
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_BINARY" "$APP_BINARY"
-cp "$(dirname "$BUILD_BINARY")/unidesk-input-service" "$MACOS_DIR/unidesk-input-service"
+cp "$(dirname "$BUILD_BINARY")/unidesk-input-macos" "$MACOS_DIR/unidesk-input-service"
 codesign --force --strict --timestamp=none --identifier com.unidesk.app.input-service --sign "$CODESIGN_IDENTITY" "$MACOS_DIR/unidesk-input-service"
 ditto "$(dirname "$BUILD_BINARY")/Metadata.appintents" "$RESOURCES_DIR/Metadata.appintents"
 chmod 0755 "$APP_BINARY"

@@ -157,7 +157,7 @@ impl FilePolicy {
     pub(super) fn connection_lost(
         &mut self,
         peer: DeviceId,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         incoming: &mut HashMap<(DeviceId, TransferId), IncomingFileClipboard>,
         flag: &AtomicBool,
         requested: &AtomicBool,
@@ -283,7 +283,7 @@ impl FilePolicy {
     }
     pub fn initialize_cache(
         &mut self,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
     ) -> (CacheCleanup, Option<String>) {
         self.protect_clipboard(pasteboard);
         match self.cache.set_limit(self.settings.cache_max_bytes) {
@@ -321,7 +321,7 @@ impl FilePolicy {
         &mut self,
         frame: &ClipboardFileFrame,
         peer: DeviceId,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         last_change: &mut Option<i64>,
         pending_flag: &AtomicBool,
         requested_flag: &AtomicBool,
@@ -549,7 +549,7 @@ impl FilePolicy {
     #[allow(clippy::too_many_arguments)]
     pub async fn tick(
         &mut self,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         flag: &AtomicBool,
         requested: &AtomicBool,
         target: &AtomicI32,
@@ -720,7 +720,7 @@ impl FilePolicy {
         sequence: &ClipboardSequence,
         ui: &UnboundedSender<UiEvent>,
         incoming: &mut HashMap<(DeviceId, TransferId), IncomingFileClipboard>,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         flag: &AtomicBool,
         requested: &AtomicBool,
         target: &AtomicI32,
@@ -812,7 +812,7 @@ impl FilePolicy {
     /// Keep current clipboard files and a bounded grace period for Finder's
     /// asynchronous copy. This is conservative retention, not a Finder-complete
     /// signal; native paste completion still requires physical acceptance.
-    pub fn protect_clipboard(&mut self, pasteboard: &impl Pasteboard) {
+    pub fn protect_clipboard(&mut self, pasteboard: &dyn Pasteboard) {
         self.protect_offers();
         let count = pasteboard.change_count().ok();
         if count != self.clipboard_change_count {
@@ -1009,7 +1009,7 @@ pub(super) fn register_workflow_offers(
 pub(super) fn apply_cleanup(
     cleanup: CacheCleanup,
     history: &mut ClipboardHistoryStore,
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     last_change: &mut Option<i64>,
     ui: &UnboundedSender<UiEvent>,
 ) -> String {

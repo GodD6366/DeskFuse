@@ -3,7 +3,6 @@
 
 use super::*;
 use unidesk_platform::MemoryPasteboard;
-use unidesk_platform_macos::MacOSPasteboard;
 
 struct Fixture {
     source: PathBuf,
@@ -259,17 +258,6 @@ async fn corrupt_file_clipboard_never_publishes_paths_or_acknowledges_success() 
     receive(&pasteboard, &fixture, true).await;
     assert!(pasteboard.read().unwrap().file_urls.is_empty());
     assert!(!fixture.received.exists());
-}
-#[tokio::test]
-#[ignore = "writes the general macOS pasteboard and keeps fixtures for a manual Finder Cmd-V check"]
-async fn native_file_clipboard_for_finder_paste() {
-    let fixture = Fixture::new(true);
-    receive(&MacOSPasteboard::new(), &fixture, false).await;
-    println!("Finder paste source fixture: {}", fixture.source.display());
-    println!(
-        "Finder paste received fixture: {}",
-        fixture.received.display()
-    );
 }
 #[tokio::test]
 async fn missing_file_chunks_cannot_paste_stale_text_and_surface_a_failed_transfer() {

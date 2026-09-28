@@ -1,14 +1,14 @@
 //! Independent Finder delivery intentions. Only this Tokio owner mutates jobs;
 //! native copy workers return progress/receipts and hold cache leases until exit.
 use super::*;
-use crate::platform::{
-    CapturedFilePaste, DeliveryResult, FilePasteReference, FinderDestination, deliver_finder_files,
+use unidesk_platform::ports::{
+    CapturedFilePaste, FilePasteReference, FinderDeliveryResult, FinderDestinationPort,
 };
 
 struct Job {
     id: TransferId,
     reference: FilePasteReference,
-    destination: FinderDestination,
+    destination: Arc<dyn FinderDestinationPort>,
     remaining: Option<Vec<PathBuf>>,
     cancel: Arc<AtomicBool>,
     running: bool,
@@ -29,7 +29,7 @@ pub(super) enum DeliveryEvent {
     },
     Finished {
         id: TransferId,
-        result: Result<DeliveryResult, String>,
+        result: Result<FinderDeliveryResult, String>,
     },
 }
 pub(super) struct FinderPasteJobs {
@@ -52,7 +52,7 @@ impl FinderPasteJobs {
             leases,
         }
     }
-    pub fn ready_reference(&self, pasteboard: &impl Pasteboard) -> Option<FilePasteReference> {
+    pub fn ready_reference(&self, pasteboard: &dyn Pasteboard) -> Option<FilePasteReference> {
         let marker = pasteboard.read_remote_origin_marker().ok().flatten()?;
         let ready = self
             .ready
@@ -83,7 +83,7 @@ impl FinderPasteJobs {
         &mut self,
         id: TransferId,
         captured: CapturedFilePaste,
-        destination: FinderDestination,
+        destination: Arc<dyn FinderDestinationPort>,
         ui: &UnboundedSender<UiEvent>,
         diagnostics: &Diagnostics,
     ) -> Result<(), String> {
@@ -284,7 +284,7 @@ impl FinderPasteJobs {
             let result = tokio::task::spawn_blocking(move || {
                 let _worker_lease = worker_lease;
                 let last = Mutex::new(std::time::Instant::now() - Duration::from_secs(1));
-                deliver_finder_files(&destination, &paths, &cancelled, |saved, total| {
+                destination.deliver(&paths, &cancelled, &|saved, total| {
                     if let Ok(mut last) = last.lock()
                         && (saved == total || last.elapsed() >= Duration::from_millis(100))
                     {
@@ -295,7 +295,7 @@ impl FinderPasteJobs {
             })
             .await
             .map_err(|_| "保存文件的后台任务异常退出；请检查目标目录后重试".to_owned())
-            .and_then(|r| r);
+            .and_then(|r| r.map_err(|e| e.to_string()));
             let _ = tx.send(DeliveryEvent::Finished { id, result });
         });
     }

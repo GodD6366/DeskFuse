@@ -360,7 +360,7 @@ pub(super) async fn photo(
                 .to_string()
                 .into_bytes(),
         }];
-        let preview_ok = crate::platform::lan_web::image_png(&path, 320).is_ok();
+        let preview_ok = s.shared.platform.lan_web().image_png(&path, 320).is_ok();
         if preview_ok
             && let (Some(kind), Ok(data)) =
                 (super::content::image_kind(&string), std::fs::read(&path))

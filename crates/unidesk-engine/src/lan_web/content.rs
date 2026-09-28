@@ -113,19 +113,29 @@ pub(super) async fn item(State(s): State<HttpState>, Path(id): Path<u64>) -> Res
         Ok(json!({"id":id.to_string(),"text":if snap.file_urls.is_empty(){snap.text}else{None},"has_image":image,"file_count":files.len(),"files":files,"available":available,"image_url":(image&&available).then(||format!("/api/items/{id}/image")),"download_url":(available&&(image||!snap.file_urls.is_empty())).then(||format!("/api/items/{id}/download"))}))
     }).await{Ok(v)=>axum::Json(v).into_response(),Err(e)=>error(StatusCode::NOT_FOUND,e)}
 }
-fn render_image(snap: &PasteboardSnapshot, size: u32) -> Result<Vec<u8>> {
+fn render_image(
+    snap: &PasteboardSnapshot,
+    size: u32,
+    platform: &dyn unidesk_platform::ports::LanWebPort,
+) -> Result<Vec<u8>> {
     if let Some(path) = snap.file_urls.first() {
-        return crate::platform::lan_web::image_png(FilePath::new(path), size);
+        return platform
+            .image_png(FilePath::new(path), size)
+            .map_err(|e| e.to_string());
     }
     if let Some(bytes) = &snap.png {
-        return crate::platform::lan_web::data_image_png(bytes, size);
+        return platform
+            .data_image_png(bytes, size)
+            .map_err(|e| e.to_string());
     }
     for rep in snap.items.iter().flat_map(|i| &i.representations) {
         if matches!(
             rep.type_name.as_str(),
             "public.png" | "public.jpeg" | "public.tiff" | "public.heic"
         ) {
-            return crate::platform::lan_web::data_image_png(&rep.data, size);
+            return platform
+                .data_image_png(&rep.data, size)
+                .map_err(|e| e.to_string());
         }
     }
     Err("此记录没有可预览的图片".into())
@@ -151,7 +161,7 @@ pub(super) async fn image(
         let _permit = _permit;
         let snap = snapshot(id, &b)?;
         let _lease = Export::new(b, snap.file_urls.clone())?;
-        render_image(&snap, size)
+        render_image(&snap, size, s.shared.platform.lan_web().as_ref())
     })
     .await
     {

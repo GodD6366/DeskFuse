@@ -2545,7 +2545,6 @@ dependencies = [
  "unidesk-identity",
  "unidesk-input",
  "unidesk-platform",
- "unidesk-platform-macos",
  "unidesk-platform-windows",
  "unidesk-protocol",
  "unidesk-runtime",
@@ -2580,6 +2579,7 @@ dependencies = [
  "unidesk-platform",
  "unidesk-platform-macos",
  "unidesk-runtime",
+ "unidesk-store",
  "unidesk-transfer",
  "unidesk-transport",
  "unidesk-update",
@@ -2617,6 +2617,7 @@ version = "0.3.3"
 dependencies = [
  "tokio",
  "unidesk-collaboration",
+ "unidesk-engine",
  "unidesk-platform",
 ]
 

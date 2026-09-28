@@ -3,6 +3,8 @@
 // UniFFI exports require owned arguments across the native language boundary.
 #![allow(clippy::needless_pass_by_value)]
 mod clipboard_paste;
+#[cfg(target_os = "macos")]
+mod platform;
 mod remote_application;
 mod workflow;
 pub use clipboard_paste::*;
@@ -103,20 +105,49 @@ impl Engine {
             return Err(failure("本进程已有 uniDesk 引擎"));
         }
         unidesk_engine::diagnostics::install_panic_recorder();
-        let (bridge, mut events) = match TokioBridge::start(Diagnostics::new(1024)) {
-            Ok(value) => value,
-            Err(e) => {
-                RUNNING.store(false, Ordering::Release);
-                return Err(failure(e));
-            }
-        };
         #[cfg(target_os = "macos")]
-        let lan_web = unidesk_engine::lan_web::LanWebService::new(&bridge).map_err(|e| {
-            bridge.shutdown();
-            RUNNING.store(false, Ordering::Release);
-            failure(e)
-        })?;
-        let host = match unidesk_engine::host::EngineHost::assemble() {
+        let native_platform = crate::platform::platform();
+        #[cfg(not(target_os = "macos"))]
+        let native_platform = unidesk_engine::platform::memory_platform();
+        let (bridge, mut events) =
+            match TokioBridge::start_with_platform(Diagnostics::new(1024), native_platform.clone())
+            {
+                Ok(value) => value,
+                Err(e) => {
+                    RUNNING.store(false, Ordering::Release);
+                    return Err(failure(e));
+                }
+            };
+        #[cfg(target_os = "macos")]
+        let lan_web = unidesk_engine::lan_web::LanWebService::new(&bridge, native_platform.clone())
+            .map_err(|e| {
+                bridge.shutdown();
+                RUNNING.store(false, Ordering::Release);
+                failure(e)
+            })?;
+        let host = match unidesk_engine::host::EngineHost::assemble_with(
+            unidesk_store::SQLiteStore::default_path()
+                .map_err(failure)?
+                .parent()
+                .ok_or_else(|| failure("state directory is missing"))?
+                .to_path_buf(),
+            #[cfg(target_os = "macos")]
+            crate::platform::host_ports(
+                unidesk_store::SQLiteStore::default_path()
+                    .map_err(failure)?
+                    .parent()
+                    .ok_or_else(|| failure("state directory is missing"))?,
+            )
+            .map_err(failure)?,
+            #[cfg(not(target_os = "macos"))]
+            unidesk_platform::ports::HostPorts::memory(
+                unidesk_store::SQLiteStore::default_path()
+                    .map_err(failure)?
+                    .parent()
+                    .ok_or_else(|| failure("state directory is missing"))?,
+            ),
+            native_platform.clone(),
+        ) {
             Ok(host) => host,
             Err(e) => {
                 bridge.shutdown();

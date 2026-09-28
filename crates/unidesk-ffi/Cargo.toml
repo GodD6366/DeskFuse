@@ -24,6 +24,7 @@ unidesk-platform = { path = "../unidesk-platform" }
 unidesk-platform-macos = { path = "../unidesk-platform-macos" }
 unidesk-transport = { path = "../unidesk-transport" }
 unidesk-transfer = { path = "../unidesk-transfer" }
+unidesk-store = { path = "../unidesk-store" }
 unidesk-update = { path = "../unidesk-update" }
 
 [[bin]]

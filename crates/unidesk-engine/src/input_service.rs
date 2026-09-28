@@ -125,6 +125,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
     let (ui, mut ui_events) = futures::channel::mpsc::unbounded();
     let native = InputCoordinator::start_local(
         runtime.handle.clone(),
+        crate::platform::memory_platform(),
         ui,
         child.recording.clone(),
         child.emergency.clone(),
@@ -158,7 +159,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
         .name("unidesk-input-wifi".into())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                let ssid = crate::platform::current_ssid();
+                let ssid = None;
                 let _ = wifi_runtime
                     .try_send(unidesk_runtime::RuntimeCommand::ObserveWifiEnvironment { ssid });
                 for _ in 0..50 {
@@ -170,7 +171,10 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let mut remote_input = crate::remote_application_input::Owner::new(child.pause.clone());
+    let mut remote_input = crate::remote_application_input::Owner::new(
+        child.pause.clone(),
+        crate::platform::memory_platform(),
+    );
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
     let mut tick = tokio::time::interval(Duration::from_millis(50));

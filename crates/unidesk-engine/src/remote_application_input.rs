@@ -10,12 +10,14 @@ use std::{
 };
 use unidesk_core::*;
 use unidesk_platform::SharedInputInjector;
+use unidesk_platform::ports::EnginePlatformPort;
 use unidesk_runtime::{
     input_service::Authority, input_service_types::RemoteApplicationInput as Packet,
 };
 const TTL: Duration = Duration::from_secs(1);
 pub struct Owner {
     pause: Arc<AtomicU8>,
+    platform: Arc<dyn EnginePlatformPort>,
     pending: Option<(Packet, Instant)>,
     buffered: VecDeque<Packet>,
     active: Option<(
@@ -33,9 +35,10 @@ pub struct Owner {
     pub error: Option<String>,
 }
 impl Owner {
-    pub fn new(pause: Arc<AtomicU8>) -> Self {
+    pub fn new(pause: Arc<AtomicU8>, platform: Arc<dyn EnginePlatformPort>) -> Self {
         Self {
             pause,
+            platform,
             pending: None,
             buffered: VecDeque::new(),
             active: None,
@@ -136,18 +139,18 @@ impl Owner {
                 Some("heartbeat_timeout")
             } else if !Self::allowed(packet, authority) {
                 Some("authority_revoked")
-            } else if !crate::platform::session_is_active() {
+            } else if !self.platform.session_is_active() {
                 Some("system_session_inactive")
-            } else if !crate::platform::can_post_input() {
+            } else if !self.platform.can_post_input() {
                 Some("permission_denied")
-            } else if crate::platform::frontmost_pid() != packet.pid {
+            } else if self.platform.frontmost_pid() != packet.pid {
                 unidesk_platform::timing::record(
                     "remote_foreground",
                     Duration::ZERO,
                     format!(
                         "target_pid={} foreground_pid={}",
                         packet.pid,
-                        crate::platform::frontmost_pid()
+                        self.platform.frontmost_pid()
                     ),
                 );
                 Some("foreground_changed")
@@ -173,14 +176,14 @@ impl Owner {
                 self.pending = Some((packet, since));
                 return;
             }
-            if !crate::platform::can_post_input() {
+            if !self.platform.can_post_input() {
                 self.diagnostic("permission_denied");
                 self.release();
                 return;
             }
             let result = (|| {
                 let id = InputSessionId(uuid::Uuid::parse_str(&packet.session).ok()?);
-                let injector = crate::platform::create_injector().ok()?;
+                let injector = self.platform.input_injector().ok()?;
                 if !injector.arm_session(id, TTL) {
                     return None;
                 }
@@ -375,20 +378,20 @@ mod tests {
     fn remote_release_never_unpauses_viewer_or_update() {
         for value in [1, 2, 3, 6, 7] {
             let pause = Arc::new(AtomicU8::new(value));
-            let mut owner = Owner::new(pause.clone());
+            let mut owner = Owner::new(pause.clone(), crate::platform::memory_platform());
             owner.release();
             assert_eq!(pause.load(Ordering::Acquire), value);
         }
         for value in [4, 5] {
             let pause = Arc::new(AtomicU8::new(value));
-            Owner::new(pause.clone()).release();
+            Owner::new(pause.clone(), crate::platform::memory_platform()).release();
             assert_eq!(pause.load(Ordering::Acquire), 0);
         }
     }
     #[test]
     fn emergency_cancels_pending_handshake_and_buffered_input() {
         let pause = Arc::new(AtomicU8::new(4));
-        let mut owner = Owner::new(pause.clone());
+        let mut owner = Owner::new(pause.clone(), crate::platform::memory_platform());
         owner.pending = Some((packet(1), Instant::now()));
         owner.buffered.push_back(packet(1));
         let authority = Authority {

@@ -25,11 +25,13 @@ pub mod timing;
 /// Host Ports injected by the application host. Collaboration depends only on these traits.
 pub mod ports;
 pub use ports::{
-    AuthorizedWorkflowPlan, CapturedFilePaste, ClipboardState, FileDataObjectHandle,
-    FileDataObjectPort, FilePasteCapture, FilePasteReference, FileTransferState, HostPorts,
-    NativeRevision, PlatformCapabilities, PlatformCapability, PlatformCommand, PlatformEvent,
-    UnavailableWorkflowOutputPort, WorkflowArchiveRequest, WorkflowCapabilities,
-    WorkflowExecutionPlan, WorkflowExecutionPort, WorkflowExecutionResult, WorkflowInput,
-    WorkflowOutputMode, WorkflowOutputPort, WorkflowPayload, WorkflowShortcut,
-    WorkflowShortcutRequest, WorkflowWorkspaceRequest,
+    AuthorizedWorkflowPlan, CapturedFilePaste, ClipboardState, EnginePlatformPort,
+    FileDataObjectHandle, FileDataObjectPort, FilePasteCapture, FilePasteReference,
+    FileTransferState, FinderDeliveryItem, FinderDeliveryResult, FinderDestinationPort, FinderPort,
+    HostPorts, LanInterface, LanWebPort, NativeCancellation, NativeGeneration, NativeRevision,
+    PlatformCapabilities, PlatformCapability, PlatformCommand, PlatformEvent,
+    UnavailableWorkflowOutputPort, WakeObserverPort, WorkflowArchiveRequest, WorkflowCapabilities,
+    WorkflowExecutionPlan, WorkflowExecutionPort, WorkflowExecutionResult, WorkflowInput, WorkflowOutputMode,
+    WorkflowOutputPort, WorkflowPayload, WorkflowShortcut, WorkflowShortcutRequest,
+    WorkflowWorkspaceRequest,
 };

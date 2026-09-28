@@ -1,8 +1,5 @@
 //! Dedicated input orchestration. File reads and clipboard delivery cannot stall
 //! this thread; native capture and injection also own fail-safe lease timers.
-use crate::platform::{
-    PermissionSnapshot, PermissionStatus, create_permission_service, display_topology,
-};
 use crate::tokio_bridge::UiEvent;
 use futures::{StreamExt, channel::mpsc::UnboundedSender};
 use std::{
@@ -22,10 +19,12 @@ use unidesk_input::{
     Point, Vector2,
     sharing::{HotkeyBindings, HotkeyChord, SharingAction, SharingController, SharingDisplay},
 };
+use unidesk_platform::ports::EnginePlatformPort;
 use unidesk_platform::{
     CaptureEvent, InputCapability, InputEnvironmentSnapshot, SharedInputCapture,
     SharedInputInjector, timing,
 };
+use unidesk_platform::{PermissionSnapshot, PermissionStatus};
 use unidesk_runtime::{RuntimeCommand, RuntimeEvent, RuntimeHandle};
 
 const LEASE_TTL: Duration = Duration::from_millis(1500);
@@ -39,6 +38,7 @@ pub struct InputCoordinator {
 impl InputCoordinator {
     pub fn start(
         runtime: RuntimeHandle,
+        platform: Arc<dyn EnginePlatformPort>,
         ui: UnboundedSender<UiEvent>,
         recording: Arc<AtomicBool>,
         emergency: Arc<AtomicBool>,
@@ -47,6 +47,7 @@ impl InputCoordinator {
             let stopping = Arc::new(AtomicBool::new(false));
             let stop = stopping.clone();
             let channel = remote.clone();
+            let remote_platform = platform.clone();
             let worker = thread::Builder::new()
                 .name("unidesk-input-ui".into())
                 .spawn(move || {
@@ -75,7 +76,7 @@ impl InputCoordinator {
                             .as_ref()
                             .is_some_and(|p| p.running && !native.running)
                         {
-                            let _ = crate::platform::restore_pointer_after_service_exit();
+                            let _ = remote_platform.restore_pointer_after_service_exit();
                         }
                         if previous.as_ref() != Some(&native) {
                             let _ = ui.unbounded_send(UiEvent::InputStatus {
@@ -87,7 +88,10 @@ impl InputCoordinator {
                             ));
                             let permissions = helper_permissions(
                                 &native,
-                                create_permission_service().snapshot().full_disk_access,
+                                remote_platform
+                                    .permission_service()
+                                    .snapshot()
+                                    .full_disk_access,
                             );
                             let _ = ui.unbounded_send(UiEvent::PermissionSnapshot(permissions));
                             previous = Some(native);
@@ -111,6 +115,7 @@ impl InputCoordinator {
         }
         Self::start_local(
             runtime,
+            platform,
             ui,
             recording,
             emergency,
@@ -120,6 +125,7 @@ impl InputCoordinator {
     }
     pub(crate) fn start_local(
         runtime: RuntimeHandle,
+        platform: Arc<dyn EnginePlatformPort>,
         ui: UnboundedSender<UiEvent>,
         recording: Arc<AtomicBool>,
         emergency: Arc<AtomicBool>,
@@ -136,7 +142,15 @@ impl InputCoordinator {
                     .enable_all()
                     .build()
                 {
-                    executor.block_on(run(runtime, ui, signal, recording, emergency, pause_signal));
+                    executor.block_on(run(
+                        runtime,
+                        platform,
+                        ui,
+                        signal,
+                        recording,
+                        emergency,
+                        pause_signal,
+                    ));
                 }
             })
             .ok();
@@ -243,6 +257,7 @@ struct State {
     available: bool,
     last_error: Option<String>,
     observer_thread: Option<Arc<thread::Thread>>,
+    platform: Arc<dyn EnginePlatformPort>,
     /// Positions this machine forwarded to a peer, and positions it injected for a
     /// peer. Motion is forwarded as absolute positions and every stage keeps only
     /// the newest one, so the *update rate and its regularity* is what a user
@@ -481,7 +496,7 @@ impl State {
                         if changing_device {
                             self.capture.exit_remote(restore).map_err(|e| e.to_string())
                         } else if let Some((x, y)) = restore {
-                            crate::platform::warp_pointer(x, y).map_err(|e| e.to_string())
+                            self.platform.warp_pointer(x, y).map_err(|e| e.to_string())
                         } else {
                             Ok(())
                         }
@@ -804,12 +819,15 @@ type NativeObserver = (
 /// Native permission/session/display queries may block in macOS. Keep them on
 /// their own thread and publish only the latest observation, never an input
 /// work item. A stalled observer fails closed through the freshness check.
-fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
+fn native_observer(
+    stopping: Arc<AtomicBool>,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> NativeObserver {
     let (tx, rx) = tokio::sync::watch::channel(None);
     let worker = thread::Builder::new()
         .name("unidesk-input-observer".into())
         .spawn(move || {
-            let permissions = create_permission_service();
+            let permissions = platform.permission_service();
             let mut last_topology: Option<(
                 Instant,
                 Result<unidesk_core::DisplayTopology, String>,
@@ -824,12 +842,14 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
                         value.clone()
                     }
                     _ => {
-                        let next = display_topology().map_err(|error| error.to_string());
+                        let next = platform
+                            .display_topology()
+                            .map_err(|error| error.to_string());
                         last_topology = Some((started_at, next.clone()));
                         next
                     }
                 };
-                let input_environment = crate::platform::create_input_environment().snapshot();
+                let input_environment = platform.input_environment().snapshot();
                 let observation = NativeObservation {
                     permission: permissions.snapshot(),
                     session_active: input_environment.desktop
@@ -865,6 +885,7 @@ fn finish_native_observer(observer: Option<thread::JoinHandle<()>>) {
 
 async fn run(
     runtime: RuntimeHandle,
+    platform: Arc<dyn EnginePlatformPort>,
     ui: UnboundedSender<UiEvent>,
     stopping: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
@@ -878,9 +899,10 @@ async fn run(
         crossing_started: None,
         last_slow_capture: None,
         ui: ui.clone(),
+        platform: platform.clone(),
         local,
         policy: SharingController::new(local),
-        capture: crate::platform::create_capture(),
+        capture: platform.input_capture(),
         capture_started: false,
         injector: None,
         snapshot: Default::default(),
@@ -900,7 +922,8 @@ async fn run(
         in_motion: MotionCadence::default(),
         cadence_at: Instant::now(),
     };
-    let (mut observations, observer, observer_thread) = native_observer(stopping.clone());
+    let (mut observations, observer, observer_thread) =
+        native_observer(stopping.clone(), platform.clone());
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1242,7 +1265,7 @@ async fn run(
                             }
                         }
                         if state.injector.is_none() && adapter_error.is_none() {
-                            match crate::platform::create_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
+                            match platform.input_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
                         }
                     }
                     if let Some(error)=&adapter_error {state.error(&ui,error.clone());}
