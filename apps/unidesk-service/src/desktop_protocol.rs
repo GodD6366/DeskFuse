@@ -282,6 +282,20 @@ impl Reply {
             message: "queued; observe snapshot for completion".into(),
         }
     }
+
+    /// Construct new rejection responses from the typed boundary code. The
+    /// legacy `code` field is only a canonical compatibility projection; new
+    /// command paths must not add string-to-error mappings at the call site.
+    pub fn rejected_typed(code: BoundaryErrorCode, message: impl Into<String>) -> Self {
+        Self::Rejected {
+            code: code.as_str().into(),
+            message: message.into(),
+            boundary_error: code,
+        }
+    }
+
+    /// Compatibility constructor for pre-typed v2 commands. Keep all legacy
+    /// string interpretation here so new boundary code cannot copy the map.
     pub fn rejected(code: &str, message: &str) -> Self {
         Self::Rejected {
             code: code.into(),

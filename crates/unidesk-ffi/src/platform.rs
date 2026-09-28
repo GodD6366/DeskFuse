@@ -186,6 +186,8 @@ pub fn host_ports(data_dir: &Path) -> PlatformResult<HostPorts> {
         permission_observer: Arc::new(unidesk_platform::ports::PermissionServicePort::new(
             platform.permission_service(),
         )),
-        workflow_output: Arc::new(unidesk_platform::UnavailableWorkflowOutputPort),
+        // The output port is a real macOS adapter; keep it typed even though
+        // the legacy workflow worker still receives the execution port above.
+        workflow_output: Arc::new(unidesk_platform_macos::MacOSWorkflowOutputPort),
     })
 }

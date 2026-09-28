@@ -205,10 +205,13 @@
   ports 是当前 host assembly 的过渡实现。`unidesk-engine` 的旧 update/LAN/file
   worker 与 `unidesk-transport` 的 macOS 网络探测仍是未迁移项，不要在没有
   host adapter 和实机回归前移动或删除。
-- `FileDataObjectPort`、`PlatformCommand` 和 `PlatformEvent` 是已定义但尚未
-  全链路接通的 typed seams。它们不能被字符串 IPC 的局部替换冒充完成，也不能
-  因为暂未使用而删除；接通时必须同时更新 native host、协议消费者和 capability
-  矩阵。
+- `PlatformCommand`/`PlatformEvent` 已接入 Windows 的 authenticated host payload
+  和 typed receipt；`FileDataObjectPort` 由 WPF `DesktopClipboardController` 实现，
+  但 Rust collaboration 尚无 file-object consumer。`WorkflowExecutionPort` 由
+  engine 注入真实 macOS adapter，`WorkflowOutputPort` 已由 macOS `host_ports`
+  注入 `MacOSWorkflowOutputPort`，但 extracted workflow service 尚未消费它。
+  这些未使用路径不能被字符串 IPC 的局部替换冒充完成，也不能因为暂未消费而
+  删除；接通时必须同时更新 native host、协议消费者和 capability 矩阵。
 
 交接检查清单：
 

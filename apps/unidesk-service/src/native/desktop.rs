@@ -991,8 +991,8 @@ impl State {
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
-            ipc::Command::Rename { .. } => ipc::Reply::rejected(
-                "unsupported",
+            ipc::Command::Rename { .. } => ipc::Reply::rejected_typed(
+                BoundaryErrorCode::Unsupported,
                 "authoritative runtime rename is not yet available",
             ),
             ipc::Command::ListRemoteApps => {
