@@ -160,12 +160,31 @@ pub enum PlatformCapability {
     WorkflowFiles,
     SystemShortcut,
     FinderPaste,
+    GuardedPaste,
     OleDataObject,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlatformCapabilities {
     enabled: BTreeSet<PlatformCapability>,
 }
+impl PlatformCapability {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClipboardRead => "clipboard-read",
+            Self::ClipboardWrite => "clipboard-write",
+            Self::FileDataObject => "file-data-object",
+            Self::WorkflowText => "workflow-text",
+            Self::WorkflowImage => "workflow-image",
+            Self::WorkflowFiles => "workflow-files",
+            Self::SystemShortcut => "system-shortcut",
+            Self::FinderPaste => "finder-paste",
+            Self::GuardedPaste => "guarded-paste",
+            Self::OleDataObject => "ole-data-object",
+        }
+    }
+}
+
 impl PlatformCapabilities {
     #[must_use]
     pub fn new(capabilities: impl IntoIterator<Item = PlatformCapability>) -> Self {
@@ -181,17 +200,7 @@ impl PlatformCapabilities {
         self.supports(capability)
             .then_some(())
             .ok_or(PlatformError::CapabilityUnavailable {
-                capability: match capability {
-                    PlatformCapability::ClipboardRead => "clipboard-read",
-                    PlatformCapability::ClipboardWrite => "clipboard-write",
-                    PlatformCapability::FileDataObject => "file-data-object",
-                    PlatformCapability::WorkflowText => "workflow-text",
-                    PlatformCapability::WorkflowImage => "workflow-image",
-                    PlatformCapability::WorkflowFiles => "workflow-files",
-                    PlatformCapability::SystemShortcut => "system-shortcut",
-                    PlatformCapability::FinderPaste => "finder-paste",
-                    PlatformCapability::OleDataObject => "ole-data-object",
-                },
+                capability: capability.as_str(),
             })
     }
 }
@@ -450,6 +459,13 @@ pub enum PlatformEvent {
     WorkflowFailed {
         workflow_id: String,
         code: BoundaryErrorCode,
+    },
+    /// Typed completion for command bridges. Legacy string responses may
+    /// remain at an outer IPC adapter, but new consumers use this code.
+    CommandFailed {
+        request_id: u64,
+        code: BoundaryErrorCode,
+        message: String,
     },
 }
 

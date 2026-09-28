@@ -111,3 +111,18 @@ fail-closed 约束。待迁移函数集中在该 crate 的 `macos.rs` 与 `windo
 - Rust 只负责协议、状态机、策略、计划和可序列化事件。
 - 两个平台的 capability、错误和回执模型一致。
 - Windows/macOS 可以分别构建平台层而不改变公共业务协议。
+
+## 收尾审计（平台边界）
+
+本轮只做可证明不改变旧协议语义的收尾映射；不删除仍在生产路径上的
+兼容字段、命令或旧输入通道。
+
+| 审计项 | 结果 | 后续边界 |
+| --- | --- | --- |
+| legacy string IPC | Windows v2 `Rejected.code` 继续保留；新增 `boundary_error: BoundaryErrorCode`，由旧 code 单向映射，旧 WPF 客户端仍可读取原字段 | 后续客户端稳定消费 typed 字段后，才可评估收紧字符串消息 |
+| 重复平台逻辑 | 统一 `PlatformError::code`、`BoundaryErrorCode::from_legacy_code` 和 `PlatformCapability::as_str`；macOS workflow 宣告 `GuardedPaste` | Windows snapshot capability、workflow capability snapshot 仍需由各自真实 adapter 汇总，不能简单合并 |
+| 公共 crate OS API | `unidesk-platform` 仍仅含端口和 memory/test 实现，没有 AppKit/Win32 依赖；engine 的文件、LAN、旧更新 worker 仍在生产路径，未冒险搬迁 | 以 host port 替换 engine worker 后再删除残余 `std::fs`/process 调用 |
+| 未使用 typed ports | `FileDataObjectPort`、`PlatformCommand`/`PlatformEvent` 已保留为 typed seam；新增失败事件类型，未伪造接入 | 需同时改 native host 和协议消费者后再接通，禁止只删声明 |
+
+交接时必须列出：未迁移文件、兼容字段、能力来源、以及下一次删除的前置
+条件。`git diff --check` 是本轮最低验证；本轮不运行测试。

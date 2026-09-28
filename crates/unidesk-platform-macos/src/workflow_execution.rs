@@ -187,6 +187,7 @@ impl WorkflowExecutionPort for MacOSWorkflowExecutionPort {
             PlatformCapability::WorkflowFiles,
             PlatformCapability::SystemShortcut,
             PlatformCapability::FinderPaste,
+            PlatformCapability::GuardedPaste,
         ]))
     }
 

@@ -56,7 +56,7 @@ Always `{"version":2,"request_id":<echo>,"result":...}`. `result` is one of:
 - `{"Snapshot":<snapshot>}`
 - `{"Poll":{"snapshot":<snapshot>,"clipboard":null,"clipboard_sequence":0}}` (`clipboard` when present has `sequence`, `peer_id`, `formats:[{mime,data_base64}]`).
 - `{"Queued":{"message":"queued; observe snapshot for completion"}}` means local command admission only, never remote success.
-- `{"Rejected":{"code":"invalid_request","message":"..."}}`, `UnsupportedVersion`.
+- `{"Rejected":{"code":"invalid_request","message":"...","boundary_error":"invalid_request"}}`, `UnsupportedVersion`. `code` is the retained v2 string compatibility field; new clients should consume the additive `boundary_error` (`BoundaryErrorCode`).
 
 Snapshot shape (all keys always present):
 

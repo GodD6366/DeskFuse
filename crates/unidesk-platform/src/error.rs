@@ -3,6 +3,7 @@ use std::fmt;
 
 /// Stable error classes shared by FFI and desktop IPC adapters.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BoundaryErrorCode {
     InvalidRequest,
     Unsupported,
@@ -55,6 +56,51 @@ pub enum PlatformError {
     IpcFailed { operation: &'static str },
     /// A command failed at an FFI bridge.
     FfiFailed { operation: &'static str },
+}
+
+impl Default for BoundaryErrorCode {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+impl BoundaryErrorCode {
+    /// Translate the stable string used by the v2 desktop protocol without
+    /// removing that legacy field from the wire response.
+    #[must_use]
+    pub const fn from_legacy_code(code: &str) -> Self {
+        match code {
+            "invalid_input" | "invalid_request" | "invalid_workflow" | "invalid_workflow_rule" => {
+                Self::InvalidRequest
+            }
+            "session_expired" | "stale_clipboard" | "stale_transfer" | "busy" => {
+                Self::Conflict
+            }
+            "clipboard_unavailable" | "files_unavailable" | "storage_unavailable"
+            | "workflow_failed" => Self::Native,
+            "remote_app_unavailable" | "desktop_unavailable" | "session_unavailable" => {
+                Self::Unsupported
+            }
+            "not_found" => Self::InvalidRequest,
+            _ => Self::Native,
+        }
+    }
+
+    /// Canonical capability/error spelling for new typed boundary fields.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::Unsupported => "unsupported",
+            Self::CapabilityDenied => "capability_denied",
+            Self::AuthorizationRequired => "authorization_required",
+            Self::Native => "native",
+            Self::Ipc => "ipc",
+            Self::Ffi => "ffi",
+            Self::Conflict => "conflict",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 impl PlatformError {

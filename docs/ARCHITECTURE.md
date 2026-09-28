@@ -76,6 +76,26 @@ never hand-code Rust layouts, share locks or obtain raw runtime/credential handl
 The native binary statically links the engine. The additional Rust dylib is only
 used by the binding generator and is not shipped.
 
+### Platform-boundary closure audit
+
+The platform crate is a contract and memory-double crate: it has no AppKit,
+Win32, GPUI, or platform dependency. Concrete OS calls remain in
+`unidesk-platform-macos`, `unidesk-platform-windows`, `unidesk-update-platform`,
+and the native service/UI adapters. The audit found three deliberate residuals
+that are not safe to delete in this pass: filesystem-backed memory ports in
+`unidesk-platform`, engine-owned legacy update/LAN/file workers, and the
+Windows v2 string `Rejected.code` field. The latter now carries additive
+`Rejected.boundary_error` (`BoundaryErrorCode`) while old clients continue to
+read `code`.
+
+New boundary code must use `BoundaryErrorCode`, `PlatformCapability`, and typed
+`PlatformEvent`; string codes are compatibility projections only. The existing
+`PlatformCommand`/`PlatformEvent` and `FileDataObjectPort` declarations are
+still not wired through every host, so they remain an explicit follow-up rather
+than being removed. Capability booleans in the Windows snapshot and the
+workflow-specific capability snapshot are observations of existing adapters,
+not a second authorization model.
+
 A single event dispatcher serializes initial snapshots, monotonically revised
 updates, command outcomes and host actions. Ordinary snapshots are coalesced at
 100 ms; terminal states and host actions flush immediately. Swift callbacks keep

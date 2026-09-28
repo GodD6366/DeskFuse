@@ -193,7 +193,32 @@
 | workflow-layout | 处理中：工作流/快捷键与布局编辑 |
 | remoteapp-installer | 处理中：RemoteApp 和安装器生命周期 |
 
-## 6. 明确不应直接承诺的能力
+## 6. 平台边界收尾审计（2026-09）
+
+- Windows v2 `Rejected.code` 是仍在使用的兼容字段，不能删除。服务现在同时
+  输出 `boundary_error` typed `BoundaryErrorCode`；旧 WPF 客户端忽略新增字段，
+  新客户端应优先使用 typed code。
+- 平台错误统一入口是 `BoundaryErrorCode`，能力名称统一入口是
+  `PlatformCapability`。未知 legacy code 仍 fail-closed 为 `native`，不能按
+  成功处理。`GuardedPaste` 已纳入 macOS workflow capability 声明。
+- `unidesk-platform` 不引入 AppKit/Win32；其中的 filesystem-backed memory
+  ports 是当前 host assembly 的过渡实现。`unidesk-engine` 的旧 update/LAN/file
+  worker 与 `unidesk-transport` 的 macOS 网络探测仍是未迁移项，不要在没有
+  host adapter 和实机回归前移动或删除。
+- `FileDataObjectPort`、`PlatformCommand` 和 `PlatformEvent` 是已定义但尚未
+  全链路接通的 typed seams。它们不能被字符串 IPC 的局部替换冒充完成，也不能
+  因为暂未使用而删除；接通时必须同时更新 native host、协议消费者和 capability
+  矩阵。
+
+交接检查清单：
+
+- [ ] 列出保留的 legacy 命令/字段及兼容客户端。
+- [ ] 为每个 capability 标明真实 adapter、权限和 session 来源。
+- [ ] 为每个未迁移 OS API 标明 owner 和删除前置条件。
+- [ ] 只在 typed event 消费者上线后删除字符串投影。
+- [ ] 执行 `git diff --check`；本轮按计划不运行测试。
+
+## 7. 明确不应直接承诺的能力
 
 以下能力除非新增专用 SYSTEM session agent、明确授权和完整安全设计，否则不得标记为已支持：
 

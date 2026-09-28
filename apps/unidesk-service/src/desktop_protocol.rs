@@ -1,6 +1,6 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
 use serde::{Deserialize, Serialize};
-use unidesk_platform::{PlatformCommand, PlatformEvent};
+use unidesk_platform::{BoundaryErrorCode, PlatformCommand, PlatformEvent};
 
 #[cfg(windows)]
 pub use unidesk_transfer::{DeferredEntryKind, DeferredFileEntry, FileTransferView};
@@ -267,8 +267,12 @@ pub enum Reply {
         event: PlatformEvent,
     },
     Rejected {
+        /// Stable legacy string retained for v2 desktop clients.
         code: String,
         message: String,
+        /// New typed mapping; old clients ignore this additive field.
+        #[serde(default)]
+        boundary_error: BoundaryErrorCode,
     },
     UnsupportedVersion,
 }
@@ -282,6 +286,7 @@ impl Reply {
         Self::Rejected {
             code: code.into(),
             message: message.into(),
+            boundary_error: BoundaryErrorCode::from_legacy_code(code),
         }
     }
 }
