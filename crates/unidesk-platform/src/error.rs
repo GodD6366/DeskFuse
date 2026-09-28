@@ -68,7 +68,7 @@ impl BoundaryErrorCode {
     /// Translate the stable string used by the v2 desktop protocol without
     /// removing that legacy field from the wire response.
     #[must_use]
-    pub const fn from_legacy_code(code: &str) -> Self {
+    pub fn from_legacy_code(code: &str) -> Self {
         match code {
             "invalid_input" | "invalid_request" | "invalid_workflow" | "invalid_workflow_rule" => {
                 Self::InvalidRequest
