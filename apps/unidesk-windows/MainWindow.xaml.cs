@@ -25,6 +25,7 @@ public partial class MainWindow : Window
 {
     private readonly ServiceClient service;
     private readonly DesktopClipboardController clipboard;
+    private readonly WorkflowExecutionPort workflowExecution;
     private SettingsWindow? settings;
     private List<DeviceRow> devices = [];
     private bool updatingHistory;
@@ -50,6 +51,7 @@ public partial class MainWindow : Window
     {
         this.service = service;
         this.clipboard = clipboard;
+        workflowExecution = new WindowsWorkflowExecutionPort(service, clipboard);
         InitializeComponent();
         SourceInitialized += (_, _) => InstallWorkflowHotkeys();
         clipboard.Entries.CollectionChanged += HistoryChanged;
@@ -643,13 +645,8 @@ public partial class MainWindow : Window
         }
         try
         {
-            string text = Clipboard.ContainsText() ? Clipboard.GetText() : "";
-            var bytes = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text));
-            var reply = await service.SendAsync(ServiceClient.Command("RunWorkflow", new { workflow_id = workflow.Id, input = new[] { new { mime = "text/plain", data_base64 = bytes } } }));
-            if (!reply.TryGetProperty("WorkflowResult", out var result)) return;
-            var formats = result.Array("formats").FirstOrDefault(f => f.String("mime") == "text/plain");
-            string output = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(formats.String("data_base64")));
-            Clipboard.SetText(output);
+            long epoch = snapshot.Number("session_epoch");
+            await workflowExecution.ExecuteAsync(workflow.Id, epoch, DateTime.UtcNow.Ticks, CancellationToken.None);
             ShowNotice($"已执行工作流：{workflow.Name}");
         }
         catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "工作流未执行，剪贴板保持不变。"); }

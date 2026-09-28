@@ -7,6 +7,7 @@ use crate::{
     policy::{ClientSession, same_session},
     protocol,
 };
+use base64::Engine;
 use std::{
     collections::VecDeque,
     io,
@@ -17,6 +18,10 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, net::windows::named_pipe::NamedPipeServer};
 use unidesk_core::Endpoint;
+use unidesk_platform::{
+    ApplyResult, BoundaryErrorCode, CapturedContent, ContentData, NativeRevision, PlatformCommand,
+    PlatformEvent,
+};
 use unidesk_runtime::{RuntimeCommand, RuntimeEvent};
 use unidesk_transfer::FileBridge;
 #[derive(Default)]
@@ -41,6 +46,9 @@ pub(super) struct State {
     session_agent: session_agent::SessionAgent,
     file_bridge: Option<FileBridge>,
     workflow_sync_at: Option<Instant>,
+    /// Last host-reported capture. This is metadata for typed receipts only;
+    /// native clipboard access remains in the interactive WPF process.
+    platform_capture: Option<CapturedContent>,
 }
 impl State {
     pub(super) fn clear(&mut self) {
@@ -485,6 +493,131 @@ impl State {
             }),
         }
     }
+    fn platform_command(
+        &mut self,
+        command: PlatformCommand,
+        network: &Network,
+    ) -> ipc::Reply {
+        let failed = |code: BoundaryErrorCode, message: &str| ipc::Reply::Platform {
+            event: PlatformEvent::Failed {
+                code,
+                message: message.into(),
+            },
+        };
+        match command {
+            // These variants predate the host payload protocol. Do not let a
+            // Session-0 process infer or access interactive clipboard state.
+            PlatformCommand::ReadClipboard
+            | PlatformCommand::WriteClipboard { .. }
+            | PlatformCommand::ExecuteWorkflow { .. } => failed(
+                BoundaryErrorCode::InvalidRequest,
+                "typed Windows host payload required",
+            ),
+            PlatformCommand::CreateFileDataObject { paths } => {
+                if paths.is_empty() || paths.len() > 512 {
+                    return failed(BoundaryErrorCode::InvalidRequest, "invalid file list");
+                }
+                match self.publish_file_data_object(network, paths) {
+                    Ok(id) => ipc::Reply::Platform {
+                        event: PlatformEvent::FileDataObjectCreated { id },
+                    },
+                    Err(message) => failed(BoundaryErrorCode::Native, &message),
+                }
+            }
+            PlatformCommand::ReadClipboardHost { content } => {
+                if content.revision.value() < 0
+                    || content.data.bytes.len() > ipc::MAX_CONTENT
+                    || content.data.file_urls.len() > 512
+                {
+                    return failed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "invalid clipboard capture",
+                    );
+                }
+                self.platform_capture = Some(content.clone());
+                ipc::Reply::Platform {
+                    event: PlatformEvent::ClipboardCaptured(content),
+                }
+            }
+            PlatformCommand::WriteClipboardHost {
+                content,
+                expected_revision,
+            } => {
+                if expected_revision.value() < 0
+                    || content.data.bytes.len() > ipc::MAX_CONTENT
+                    || content.data.file_urls.len() > 512
+                {
+                    return failed(BoundaryErrorCode::InvalidRequest, "invalid clipboard write");
+                }
+                let Some(next) = expected_revision.value().checked_add(1) else {
+                    return failed(BoundaryErrorCode::Conflict, "clipboard revision exhausted");
+                };
+                ipc::Reply::Platform {
+                    event: PlatformEvent::ClipboardApplied(ApplyResult::Applied {
+                        new_revision: NativeRevision::new(next),
+                    }),
+                }
+            }
+            PlatformCommand::ExecuteWorkflowHost { workflow_id, input } => {
+                let input_bytes = input
+                    .iter()
+                    .try_fold(0usize, |total, item| total.checked_add(item.bytes.len()));
+                if input.is_empty()
+                    || input_bytes.is_none_or(|total| total > ipc::MAX_CONTENT)
+                {
+                    return failed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "workflow input is empty or oversized",
+                    );
+                }
+                let workflow = match network.workflow_catalog.list() {
+                    Ok(workflows) => workflows.into_iter().find(|item| item.id == workflow_id),
+                    Err(_) => {
+                        return failed(BoundaryErrorCode::Ipc, "cannot read workflow catalog");
+                    }
+                };
+                let Some(workflow) = workflow else {
+                    return failed(BoundaryErrorCode::InvalidRequest, "workflow does not exist");
+                };
+                let wire_input = input
+                    .into_iter()
+                    .map(|item| ipc::WorkflowInput {
+                        mime: item.mime,
+                        data_base64: base64::engine::general_purpose::STANDARD.encode(item.bytes),
+                    })
+                    .collect::<Vec<_>>();
+                match workflow::execute(&workflow, &wire_input) {
+                    Ok(result) => {
+                        let output = result
+                            .formats
+                            .iter()
+                            .find(|format| format.mime == "text/plain")
+                            .or_else(|| result.formats.first())
+                            .and_then(|format| {
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(&format.data_base64)
+                                    .ok()
+                                    .map(|bytes| ContentData {
+                                        mime: format.mime.clone(),
+                                        bytes,
+                                        file_urls: Vec::new(),
+                                        items: Vec::new(),
+                                    })
+                            });
+                        ipc::Reply::Platform {
+                            event: PlatformEvent::WorkflowCompleted {
+                                workflow_id,
+                                message: result.message,
+                                content: output,
+                            },
+                        }
+                    }
+                    Err(message) => failed(BoundaryErrorCode::CapabilityDenied, &message),
+                }
+            }
+        }
+    }
+
     fn command(
         &mut self,
         command: ipc::Command,
@@ -515,6 +648,21 @@ impl State {
             self.heartbeat = Some(Instant::now());
         }
         match command {
+            ipc::Command::Platform {
+                session_epoch,
+                sequence,
+                command,
+            } => {
+                if session_epoch != epoch || sequence == 0 {
+                    return ipc::Reply::Platform {
+                        event: PlatformEvent::Failed {
+                            code: BoundaryErrorCode::Conflict,
+                            message: "desktop session or request sequence is stale".into(),
+                        },
+                    };
+                }
+                self.platform_command(command, network)
+            }
             ipc::Command::Poll {
                 session_epoch,
                 after_sequence,

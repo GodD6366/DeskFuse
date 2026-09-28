@@ -29,7 +29,7 @@ pub use ports::{
     FileDataObjectPort, FilePasteCapture, FilePasteReference, FileTransferState, HostPorts,
     NativeRevision, PlatformCapabilities, PlatformCapability, PlatformCommand, PlatformEvent,
     UnavailableWorkflowOutputPort, WorkflowArchiveRequest, WorkflowCapabilities,
-    WorkflowExecutionPlan, WorkflowExecutionPort, WorkflowExecutionResult, WorkflowOutputMode,
-    WorkflowOutputPort, WorkflowPayload, WorkflowShortcut, WorkflowShortcutRequest,
-    WorkflowWorkspaceRequest,
+    WorkflowExecutionPlan, WorkflowExecutionPort, WorkflowExecutionResult, WorkflowInput,
+    WorkflowOutputMode, WorkflowOutputPort, WorkflowPayload, WorkflowShortcut,
+    WorkflowShortcutRequest, WorkflowWorkspaceRequest,
 };

@@ -8,7 +8,7 @@ namespace UniDesk.Windows;
 
 // Local history belongs to the user process; transport and identity belong only
 // to the authenticated service. Neither reconnect nor startup republishes history.
-public sealed class DesktopClipboardController : IDisposable
+public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePort, ClipboardApplyPort, FileDataObjectPort
 {
     private readonly NativeClipboard native = new();
     private readonly ClipboardHistory history = new();
@@ -55,6 +55,44 @@ public sealed class DesktopClipboardController : IDisposable
         try { native.Start(window); observedNativeSequence = native.SequenceNumber; if (history.StorageError is string error) Error?.Invoke(error); if (preferencesError is string warning) Error?.Invoke(warning); }
         catch (Exception) { Error?.Invoke("无法启动 Windows 剪贴板监听。请重新打开客户端。"); }
     }
+
+    internal long NativeRevision => native.SequenceNumber;
+
+    async Task<ClipboardContent> ClipboardCapturePort.CaptureAsync(long sessionEpoch, long sequence, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var content = native.Read() ?? throw new InvalidOperationException("当前剪贴板没有可用于工作流的内容。");
+        var reply = await service.SendPlatformAsync(sessionEpoch, sequence, PlatformBoundary.ReadClipboardHost(content, native.SequenceNumber), token);
+        _ = PlatformBoundary.ReadContent(PlatformBoundary.Event(reply));
+        return content;
+    }
+
+    async Task<ClipboardContent> ClipboardApplyPort.ApplyAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (expectedRevision < 0 || expectedRevision > uint.MaxValue || !native.TryWrite(content, (uint)expectedRevision))
+            throw new IOException("剪贴板已变化或被占用，请重试。");
+        var reply = await service.SendPlatformAsync(sessionEpoch, sequence, PlatformBoundary.WriteClipboardHost(content, expectedRevision), token);
+        var eventValue = PlatformBoundary.Event(reply);
+        if (!eventValue.TryGetProperty("ClipboardApplied", out var applied) || !applied.TryGetProperty("Applied", out _))
+            throw new IOException("服务未确认 typed 剪贴板写入。");
+        observedNativeSequence = native.SequenceNumber;
+        return content;
+    }
+
+    public async Task<string> CreateFileDataObjectAsync(IReadOnlyList<string> paths, long sessionEpoch, long sequence)
+    {
+        NativeClipboard.ValidateLocalFiles(paths);
+        var reply = await service.SendPlatformAsync(sessionEpoch, sequence, PlatformBoundary.CreateFileDataObject(paths));
+        if (PlatformBoundary.TryGetFileDataObjectCreated(reply, out var id, out var error)) return id;
+        throw new IOException(error);
+    }
+
+    internal async Task<ClipboardContent> CaptureTypedAsync(long sessionEpoch, long sequence, CancellationToken token = default) =>
+        await ((ClipboardCapturePort)this).CaptureAsync(sessionEpoch, sequence, token);
+
+    internal async Task<ClipboardContent> ApplyTypedAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token = default) =>
+        await ((ClipboardApplyPort)this).ApplyAsync(content, expectedRevision, sessionEpoch, sequence, token);
     private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false);
     private void LoadPreferences()
     {
@@ -351,7 +389,7 @@ public sealed class DesktopClipboardController : IDisposable
             if (!FilesEnabled) { Error?.Invoke("对端设备尚未支持跨设备文件传输。"); return false; }
             long epoch = generation.Value;
             await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
-            await service.SendAsync(ServiceClient.Command("PublishFileClipboard", new { session_epoch = epoch, sequence = ++publishSequence, paths = paths }));
+            await CreateFileDataObjectAsync(paths, epoch, ++publishSequence);
             return true;
         }
         catch (Exception ex) { Error?.Invoke(ex is IOException or InvalidOperationException ? ex.Message : "文件发送未完成，请稍后重试。"); return false; }

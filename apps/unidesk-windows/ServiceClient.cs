@@ -29,6 +29,10 @@ public sealed class ServiceClient(Dispatcher dispatcher) : IDisposable
     private static string lastStartMessage = "后台组件暂未就绪，稍后自动重试。";
     public event Action<bool, string>? ConnectionChanged;
     public static object Command(string name, object args) => new Dictionary<string, object> { [name] = args };
+    /// <summary>Send a typed platform request without changing the legacy v2
+    /// command shapes used by older desktop clients.</summary>
+    public Task<JsonElement> SendPlatformAsync(long sessionEpoch, long sequence, object command, CancellationToken token = default) =>
+        SendAsync(Command("Platform", new { session_epoch = sessionEpoch, sequence, command }), token);
     public void Start() => poll ??= Task.Run(PollAsync);
     private async Task PollAsync()
     {

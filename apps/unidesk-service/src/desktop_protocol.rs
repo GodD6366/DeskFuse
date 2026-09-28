@@ -1,5 +1,6 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
 use serde::{Deserialize, Serialize};
+use unidesk_platform::{PlatformCommand, PlatformEvent};
 
 #[cfg(windows)]
 pub use unidesk_transfer::{DeferredEntryKind, DeferredFileEntry, FileTransferView};
@@ -82,6 +83,13 @@ pub enum Command {
         session_epoch: u64,
         sequence: u64,
         paths: Vec<String>,
+    },
+    /// Typed platform boundary. Legacy clipboard/file commands remain
+    /// wire-compatible; native host payloads stay on this authenticated pipe.
+    Platform {
+        session_epoch: u64,
+        sequence: u64,
+        command: PlatformCommand,
     },
     RequestFileClipboard {
         session_epoch: u64,
@@ -254,6 +262,9 @@ pub enum Reply {
     },
     Queued {
         message: String,
+    },
+    Platform {
+        event: PlatformEvent,
     },
     Rejected {
         code: String,

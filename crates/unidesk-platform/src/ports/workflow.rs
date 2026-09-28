@@ -1,5 +1,7 @@
 //! Local workflow admission. Sync transports definitions/rules, never authorization.
-use super::{ApplyResult, AuthorizedFile, CapturedContent, ContentToApply, NativeRevision};
+use super::{
+    ApplyResult, AuthorizedFile, CapturedContent, ContentData, ContentToApply, NativeRevision,
+};
 use crate::{BoundaryErrorCode, PlatformError, PlatformResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -394,7 +396,14 @@ pub trait FileDataObjectPort: Send + Sync {
     ) -> PlatformResult<FileDataObjectHandle>;
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkflowInput {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PlatformCommand {
+    /// Legacy request retained for older clients. Hosts must use the host
+    /// request variants below when native clipboard data is required.
     ReadClipboard,
     WriteClipboard {
         content: ContentToApply,
@@ -406,6 +415,21 @@ pub enum PlatformCommand {
     ExecuteWorkflow {
         workflow_id: String,
     },
+    /// Authenticated WPF host report containing the bounded native capture.
+    ReadClipboardHost {
+        content: CapturedContent,
+    },
+    /// Authenticated WPF host receipt after the native write has completed.
+    WriteClipboardHost {
+        content: ContentToApply,
+        expected_revision: NativeRevision,
+    },
+    /// Workflow input is supplied by the interactive host; the service owns
+    /// model validation and execution but never touches the user clipboard.
+    ExecuteWorkflowHost {
+        workflow_id: String,
+        input: Vec<WorkflowInput>,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PlatformEvent {
@@ -414,9 +438,14 @@ pub enum PlatformEvent {
     FileDataObjectCreated {
         id: String,
     },
+    Failed {
+        code: BoundaryErrorCode,
+        message: String,
+    },
     WorkflowCompleted {
         workflow_id: String,
         message: String,
+        content: Option<ContentData>,
     },
     WorkflowFailed {
         workflow_id: String,
