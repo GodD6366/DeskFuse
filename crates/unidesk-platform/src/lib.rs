@@ -26,9 +26,10 @@ pub mod timing;
 pub mod ports;
 pub use ports::{
     AuthorizedWorkflowPlan, CapturedFilePaste, ClipboardState, EnginePlatformPort,
+    FailClosedLanPort,
     FileDataObjectHandle, FileDataObjectPort, FilePasteCapture, FilePasteReference,
     FileTransferState, FinderDeliveryItem, FinderDeliveryResult, FinderDestinationPort, FinderPort,
-    HostPorts, LanInterface, LanWebPort, NativeCancellation, NativeGeneration, NativeRevision,
+    HostPorts, HostRuntimePort, LanInterface, LanWebPort, NativeCancellation, NativeGeneration, NativeRevision, SystemHostRuntime,
     PlatformCapabilities, PlatformCapability, PlatformCommand, PlatformEvent,
     UnavailableWorkflowOutputPort, WakeObserverPort, WorkflowArchiveRequest, WorkflowCapabilities,
     WorkflowExecutionPlan, WorkflowExecutionPort, WorkflowExecutionResult, WorkflowInput, WorkflowOutputMode,

@@ -941,6 +941,7 @@ pub struct TokioBridge {
     paste_target_pid: Arc<AtomicI32>,
     cache_leases: ExternalCacheLeases,
     file_paste_capture: Arc<FilePasteCapture>,
+    runtime: Arc<dyn unidesk_platform::ports::HostRuntimePort>,
 }
 
 impl TokioBridge {
@@ -998,6 +999,7 @@ impl TokioBridge {
         let paste_target_pid_for_worker = Arc::clone(&paste_target_pid);
         let worker_completion_for_thread = Arc::clone(&worker_completion);
         let platform_worker = platform.clone();
+        let runtime_port = platform.runtime();
         let worker = thread::Builder::new()
             .name("unidesk-tokio".to_owned())
             .spawn(move || {
@@ -1054,6 +1056,7 @@ impl TokioBridge {
                 paste_target_pid,
                 cache_leases,
                 file_paste_capture,
+                runtime: runtime_port,
             }),
             ui_receiver,
         ))
@@ -1356,7 +1359,7 @@ impl TokioBridge {
             "debug_enabled": unidesk_core::debug_logging::enabled(),
             "scope": "current_process",
             "version": env!("CARGO_PKG_VERSION"),
-            "pid": std::process::id(),
+            "pid": self.runtime.process_id(),
             "note": "Debug collection is on by default; hourly files retain at most seven days. Disabling retains prior samples; absent samples do not prove absence of stalls."
         }).to_string();
         contents.push('\n');
@@ -1415,7 +1418,9 @@ impl TokioBridge {
         {
             contents.push_str(&diagnostics);
         }
-        std::fs::write(path, contents).map_err(|error| format!("诊断导出失败：{error}"))
+        self.runtime
+            .write_file(path, contents.as_bytes())
+            .map_err(|error| format!("诊断导出失败：{error}"))
     }
 
     pub fn shutdown(&self) {
@@ -1504,7 +1509,7 @@ async fn run_worker(
         &mut last_permission,
     );
 
-    let runtime = match build_runtime(&diagnostics).await {
+    let runtime = match build_runtime(&diagnostics, platform.clone()).await {
         Ok(runtime) => runtime,
         Err(error) => {
             let message = error.to_string();
@@ -1523,7 +1528,7 @@ async fn run_worker(
     };
 
     #[cfg(target_os = "macos")]
-    let lan_display_name = local_display_name();
+    let lan_display_name = local_display_name(&*platform.runtime());
     let input_service = runtime.input_service_control();
     *input_signals
         .input_service
@@ -4547,12 +4552,12 @@ fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
     }
 }
 
-fn runtime_config() -> RuntimeConfig {
+fn runtime_config(runtime: &dyn unidesk_platform::ports::HostRuntimePort) -> RuntimeConfig {
     RuntimeConfig {
         network: unidesk_core::NetworkConfig::new()
             .with_mdns_enabled(true)
             .with_public_network_enabled(false),
-        display_name: local_display_name(),
+        display_name: local_display_name(runtime),
         capabilities: Capabilities::NETWORK
             | Capabilities::CLIPBOARD
             | Capabilities::TRANSFER
@@ -4564,22 +4569,18 @@ fn runtime_config() -> RuntimeConfig {
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
-            | motion_mode_capabilities(std::env::var("UNIDESK_INPUT_MOTION_MODE").ok().as_deref()),
+            | motion_mode_capabilities(runtime.environment("UNIDESK_INPUT_MOTION_MODE").as_deref()),
         ..RuntimeConfig::default()
     }
 }
 
 /// Human-readable device name shown during discovery and pairing.
-fn local_display_name() -> String {
+fn local_display_name(runtime: &dyn unidesk_platform::ports::HostRuntimePort) -> String {
     #[cfg(not(test))]
     {
         // `hostname` is a stable macOS baseline utility; never use its output
         // as identity, only as the display label.
-        let name = std::process::Command::new("/bin/hostname")
-            .output()
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|name| {
+        let name = runtime.hostname().map(|name| {
                 let trimmed = name.trim();
                 trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()
             });
@@ -4594,7 +4595,10 @@ fn local_display_name() -> String {
     "uniDesk".to_owned()
 }
 
-async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, RuntimeError> {
+async fn build_runtime(
+    diagnostics: &Diagnostics,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> Result<RuntimeHandle, RuntimeError> {
     // Production persists identity beside the state database. Tests stay isolated.
     #[cfg(not(test))]
     let identity_provider = FileIdentityProvider::new(
@@ -4611,7 +4615,7 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     #[cfg(test)]
     let store =
         SQLiteStore::open_in_memory().map_err(|error| RuntimeError::Store(error.to_string()))?;
-    let config = runtime_config();
+    let config = runtime_config(&*platform.runtime());
 
     #[cfg(not(test))]
     let (transport, control_port) = {
@@ -4640,7 +4644,8 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
             CERTIFICATE_DER.to_vec(),
             PRIVATE_KEY_DER.to_vec(),
             CERTIFICATE_DER.to_vec(),
-        );
+        )
+        .with_lan_port(platform.lan_web());
         let transport = QuinnTransport::bind(local_hello, config)
             .await
             .map_err(|error| RuntimeError::Transport(error.to_string()))?;
@@ -4695,7 +4700,9 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     let builder = builder.with_transport(UnavailableControlTransport);
     #[cfg(all(target_os = "macos", not(test)))]
     let builder = builder.with_input_service(unidesk_runtime::input_service::ServiceOptions {
-        executable: std::env::current_exe()
+        executable: platform
+            .runtime()
+            .current_executable()
             .map_err(|e| RuntimeError::ThreadStart(e.to_string()))?
             .with_file_name("unidesk-input-service"),
         identity_path: SQLiteStore::default_path()
@@ -5001,7 +5008,7 @@ mod tests {
 
     #[test]
     fn runtime_config_keeps_public_network_disabled() {
-        let config = runtime_config();
+        let config = runtime_config(&*crate::platform::memory_platform().runtime());
         assert!(config.network.mdns_enabled);
         assert!(!config.network.public_network_enabled);
         assert_eq!(config.display_name, "uniDesk");

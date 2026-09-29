@@ -248,9 +248,16 @@ pub(crate) struct InputHub {
     tx: mpsc::Sender<InputTransportEvent>,
     motion_inbox: Arc<MotionInbox>,
     rx: Arc<Mutex<Option<mpsc::Receiver<InputTransportEvent>>>>,
+    lan_port: Option<Arc<dyn unidesk_platform::ports::LanWebPort>>,
 }
 impl InputHub {
     pub fn new() -> Self {
+        Self::with_lan_port(None)
+    }
+
+    pub fn with_lan_port(
+        lan_port: Option<Arc<dyn unidesk_platform::ports::LanWebPort>>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(512);
         let (update_tx, update_rx) = mpsc::channel(32);
         Self {
@@ -264,6 +271,7 @@ impl InputHub {
             updates_enabled: true,
             motion_inbox: Arc::default(),
             rx: Arc::new(Mutex::new(Some(rx))),
+            lan_port,
         }
     }
     pub fn disable_updates(&mut self) {
@@ -352,9 +360,11 @@ impl InputHub {
         }
         let remote = connection.remote_address();
         let id = TransportSessionId::new();
-        let Ok(context) =
-            crate::input_executor::inspect_blocking(move || crate::lan::inspect(id, local, remote))
-                .await
+        let lan_port = self.lan_port.clone();
+        let Ok(context) = crate::input_executor::inspect_blocking(move || {
+            crate::lan::inspect(lan_port.as_deref(), id, local, remote)
+        })
+        .await
         else {
             return false;
         };
@@ -393,8 +403,10 @@ impl InputHub {
                     break;
                 }
                 let original = watched.context.clone();
+                let lan_port = hub.lan_port.clone();
                 let Ok(current) = crate::input_executor::inspect_blocking(move || {
                     crate::lan::inspect(
+                        lan_port.as_deref(),
                         original.session_id,
                         original.local_addr,
                         original.remote_addr,

@@ -1288,7 +1288,7 @@ impl ControlTransport for InMemoryTransport {
 /// pinning), and the signed protocol hello additionally checks the expected
 /// [`DeviceId`].  Empty certificate/key material intentionally yields
 /// [`TransportError::ConfigurationRequired`] rather than insecure TLS.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct QuinnTransportConfig {
     input_service: bool,
     bind_addr: SocketAddr,
@@ -1298,6 +1298,7 @@ pub struct QuinnTransportConfig {
     private_key_der: Vec<u8>,
     trusted_certificate_der: Vec<u8>,
     transport: TransportConfig,
+    lan_port: Option<Arc<dyn unidesk_platform::ports::LanWebPort>>,
 }
 
 impl QuinnTransportConfig {
@@ -1320,7 +1321,18 @@ impl QuinnTransportConfig {
             private_key_der,
             trusted_certificate_der,
             transport: TransportConfig::default(),
+            lan_port: None,
         }
+    }
+
+    /// Inject host-owned route inspection and physical listener APIs.
+    #[must_use]
+    pub fn with_lan_port(
+        mut self,
+        lan_port: Arc<dyn unidesk_platform::ports::LanWebPort>,
+    ) -> Self {
+        self.lan_port = Some(lan_port);
+        self
     }
 
     /// Dedicated helper listener; it never accepts application RPC or updates.
@@ -1451,6 +1463,7 @@ struct QuinnShared {
     sessions: Arc<Mutex<BTreeMap<DeviceId, Vec<quinn::Connection>>>>,
     counters: Arc<Counters>,
     config: TransportConfig,
+    lan_port: Option<Arc<dyn unidesk_platform::ports::LanWebPort>>,
     shutdown: Arc<Notify>,
     inbound: broadcast::Sender<(DeviceId, Message)>,
     control_peers: broadcast::Sender<ControlPeerConnected>,
@@ -1567,6 +1580,7 @@ impl QuinnTransport {
             sessions: self.sessions.clone(),
             counters: self.counters.clone(),
             config: self.config.transport,
+            lan_port: self.config.lan_port.clone(),
             shutdown: self.shutdown.clone(),
             inbound: self.inbound.clone(),
             control_peers: self.control_peers.clone(),
@@ -1652,8 +1666,14 @@ impl QuinnTransport {
                     continue;
                 }
                 let local = *local;
+                let lan_port = self.config.lan_port.clone();
                 let context = input_executor::inspect_blocking(move || {
-                    lan::inspect(unidesk_core::TransportSessionId::new(), local, remote)
+                    lan::inspect(
+                        lan_port.as_deref(),
+                        unidesk_core::TransportSessionId::new(),
+                        local,
+                        remote,
+                    )
                 })
                 .await;
                 let Ok(context) = context else {
@@ -1739,7 +1759,7 @@ impl QuinnTransport {
         let shutdown = Arc::new(Notify::new());
         let (inbound, _) = broadcast::channel(256);
         let (control_peers, _) = broadcast::channel(64);
-        let mut input = input::InputHub::new();
+        let mut input = input::InputHub::with_lan_port(config.lan_port.clone());
         if config.input_service {
             input.disable_updates();
         }
@@ -1755,7 +1775,10 @@ impl QuinnTransport {
             .contains(Capabilities::INPUT_SHARING)
         {
             let port = if config.input_service { 42425 } else { 0 };
-            let sockets = tokio::task::spawn_blocking(move || lan::listener_sockets_on(port))
+            let lan_port = config.lan_port.clone();
+            let sockets = tokio::task::spawn_blocking(move || {
+                lan::listener_sockets_on(lan_port.as_deref(), port)
+            })
                 .await
                 .unwrap_or_default();
             for (interface, socket) in sockets {
@@ -1795,6 +1818,7 @@ impl QuinnTransport {
             sessions: Arc::clone(&sessions),
             counters: Arc::clone(&counters),
             config: config.transport,
+            lan_port: config.lan_port.clone(),
             shutdown: Arc::clone(&shutdown),
             inbound: inbound.clone(),
             control_peers: control_peers.clone(),
@@ -2180,8 +2204,14 @@ impl ControlTransport for QuinnTransport {
                     continue;
                 }
                 let local = *local;
+                let lan_port = self.config.lan_port.clone();
                 let Ok(context) = input_executor::inspect_blocking(move || {
-                    lan::inspect(unidesk_core::TransportSessionId::new(), local, remote)
+                    lan::inspect(
+                        lan_port.as_deref(),
+                        unidesk_core::TransportSessionId::new(),
+                        local,
+                        remote,
+                    )
                 })
                 .await
                 else {
@@ -2787,7 +2817,11 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
             break;
         }
         tokio::select! {_=shared.shutdown.notified()=>break,_=interval.tick()=>{}}
-        let sockets = tokio::select! {_=shared.shutdown.notified()=>break,sockets=tokio::task::spawn_blocking(lan::listener_sockets)=>sockets.unwrap_or_default()};
+        let lan_port = shared.lan_port.clone();
+        let sockets = tokio::select! {
+            _=shared.shutdown.notified()=>break,
+            sockets=tokio::task::spawn_blocking(move || lan::listener_sockets(lan_port.as_deref()))=>sockets.unwrap_or_default()
+        };
         if shared.stopping.load(Ordering::Acquire) {
             break;
         }
@@ -2805,7 +2839,10 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
             });
         }
         let sockets = if config.input_service {
-            tokio::task::spawn_blocking(|| lan::listener_sockets_on(42425))
+            let lan_port = shared.lan_port.clone();
+            tokio::task::spawn_blocking(move || {
+                lan::listener_sockets_on(lan_port.as_deref(), 42425)
+            })
                 .await
                 .unwrap_or_default()
         } else {

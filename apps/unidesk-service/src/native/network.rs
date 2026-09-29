@@ -1,6 +1,6 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
 use super::{file_transfer, remote_app};
-use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
+use std::{collections::BTreeSet, io, net::SocketAddr, sync::{Arc, Mutex}};
 use unidesk_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
 };
@@ -242,7 +242,8 @@ async fn bind_transport(
         include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
         include_bytes!("../../../../resources/unidesk-transport-key.der").to_vec(),
         include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
-    );
+    )
+    .with_lan_port(Arc::new(unidesk_platform::ports::FailClosedLanPort));
     QuinnTransport::bind(
         hello,
         if input {

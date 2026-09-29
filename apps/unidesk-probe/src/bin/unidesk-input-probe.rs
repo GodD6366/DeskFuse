@@ -4,6 +4,7 @@ use futures::{StreamExt, stream::BoxStream};
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 use unidesk_core::{
@@ -18,6 +19,13 @@ use unidesk_runtime::{
     RuntimeConfig, RuntimeEvent, RuntimeHandle,
 };
 use unidesk_transport::{PeerHello, QuinnTransport, QuinnTransportConfig};
+
+fn lan_port() -> Arc<dyn unidesk_platform::ports::LanWebPort> {
+    #[cfg(target_os = "macos")]
+    { Arc::new(unidesk_platform_macos::lan_web::MacOSLanWebPort) }
+    #[cfg(not(target_os = "macos"))]
+    { Arc::new(unidesk_platform::ports::FailClosedLanPort) }
+}
 
 const ACK_MIME: &str = "application/x-unidesk-input-probe-ack";
 const CAPABILITIES: Capabilities = Capabilities::from_bits(
@@ -1138,7 +1146,8 @@ async fn execute(args: &Args) -> Result<(), String> {
             include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
             include_bytes!("../../../../resources/unidesk-transport-key.der").to_vec(),
             include_bytes!("../../../../resources/unidesk-transport-cert.der").to_vec(),
-        ),
+        )
+        .with_lan_port(lan_port()),
     )
     .await
     .map_err(|e| e.to_string())?;

@@ -47,6 +47,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSString",
     "NSURL",
 ] }
+if-addrs = "=0.15.0"
+socket2 = { version = "=0.6.5", features = ["all"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "libc",

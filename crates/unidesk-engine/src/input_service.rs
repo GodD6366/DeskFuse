@@ -16,9 +16,14 @@ use unidesk_runtime::{
     input_service::{Authority, ChildConnection},
 };
 use unidesk_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
+use unidesk_platform::ports::EnginePlatformPort;
 
 pub fn main() -> std::result::Result<(), String> {
-    if std::env::args().nth(1).as_deref() != Some("--input-service") {
+    main_with_platform(crate::platform::memory_platform())
+}
+
+pub fn main_with_platform(platform: Arc<dyn EnginePlatformPort>) -> std::result::Result<(), String> {
+    if platform.runtime().arguments().get(1).map(String::as_str) != Some("--input-service") {
         return Err("input service requires inherited parent channels".into());
     }
     let connection = ChildConnection::open()?;
@@ -26,7 +31,7 @@ pub fn main() -> std::result::Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    executor.block_on(run(connection))
+    executor.block_on(run(connection, platform))
 }
 fn view(
     authority: &Authority,
@@ -57,7 +62,7 @@ fn view(
         discovered_peers: vec![],
     }
 }
-async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
+async fn run(mut child: ChildConnection, platform: Arc<dyn EnginePlatformPort>) -> std::result::Result<(), String> {
     let identity = Arc::new(
         unidesk_identity::FileIdentityProvider::new(&child.bootstrap.identity_path)
             .load_existing()
@@ -82,7 +87,8 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
         PRIVATE_KEY_DER.to_vec(),
         CERTIFICATE_DER.to_vec(),
     )
-    .for_input_service();
+    .for_input_service()
+    .with_lan_port(platform.lan_web());
     let transport = QuinnTransport::bind(hello, config)
         .await
         .map_err(|e| e.to_string())?;
@@ -134,11 +140,12 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
     );
     let diagnostics = Arc::new(std::sync::Mutex::new(String::new()));
     let diagnostic_output = diagnostics.clone();
+    let runtime_port = platform.runtime();
     let stop = child.stopping.clone();
     std::thread::Builder::new().name("unidesk-input-diagnostics".into()).spawn(move || {
         while !stop.load(Ordering::Acquire) {
             if unidesk_core::debug_logging::enabled() {
-                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":std::process::id(), "build":unidesk_runtime::input_service::BUILD}).to_string(); lines.push('\n');
+                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":runtime_port.process_id(), "build":unidesk_runtime::input_service::BUILD}).to_string(); lines.push('\n');
                 for record in unidesk_platform::timing::snapshot().records.into_iter().rev().take(256) {
                     if let Ok(line) = serde_json::to_string(&record) { lines.push_str(&line); lines.push('\n'); }
                 }

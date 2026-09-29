@@ -5,7 +5,7 @@
 //! intentionally small and deterministic enough to drive two real Macs through
 //! the first-time mDNS-to-QUIC bootstrap and pairing approval flow.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{net::{Ipv4Addr, SocketAddr}, sync::Arc};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -28,6 +28,13 @@ const CONTROL_PORT: u16 = 42424;
 const SERVER_NAME: &str = "unidesk.local";
 const CERTIFICATE_DER: &[u8] = include_bytes!("../../../resources/unidesk-transport-cert.der");
 const PRIVATE_KEY_DER: &[u8] = include_bytes!("../../../resources/unidesk-transport-key.der");
+
+fn lan_port() -> Arc<dyn unidesk_platform::ports::LanWebPort> {
+    #[cfg(target_os = "macos")]
+    { Arc::new(unidesk_platform_macos::lan_web::MacOSLanWebPort) }
+    #[cfg(not(target_os = "macos"))]
+    { Arc::new(unidesk_platform::ports::FailClosedLanPort) }
+}
 
 #[derive(Debug)]
 struct Args {
@@ -303,7 +310,8 @@ async fn main() -> Result<(), String> {
         CERTIFICATE_DER.to_vec(),
         PRIVATE_KEY_DER.to_vec(),
         CERTIFICATE_DER.to_vec(),
-    );
+    )
+    .with_lan_port(lan_port());
     let transport = QuinnTransport::bind(local_hello, quic_config)
         .await
         .map_err(|error| error.to_string())?;

@@ -1,10 +1,12 @@
 use std::{
+    net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 use unidesk_platform::ports::{
     EnginePlatformPort, FinderDeliveryItem, FinderDeliveryResult, FinderDestinationPort,
-    FinderPort, HostPorts, LanInterface, LanWebPort, WakeObserverPort, WorkflowExecutionPort,
+    FinderPort, HostPorts, HostRuntimePort, LanInterface, LanWebPort, WakeObserverPort,
+    WorkflowExecutionPort,
 };
 use unidesk_platform::{
     InputEnvironmentPort, Pasteboard, PermissionService, PlatformResult, SharedInputCapture,
@@ -97,9 +99,50 @@ impl LanWebPort for Lan {
             }
         })
     }
+    fn transport_context(
+        &self,
+        session_id: unidesk_core::TransportSessionId,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> PlatformResult<unidesk_core::ConnectionContext> {
+        unidesk_platform_macos::lan_web::transport_context(session_id, local_addr, remote_addr)
+            .map_err(|message| unidesk_platform::PlatformError::InvalidRequest { message })
+    }
+    fn transport_listener_sockets(
+        &self,
+        port: u16,
+    ) -> PlatformResult<Vec<(String, UdpSocket)>> {
+        unidesk_platform_macos::lan_web::transport_listener_sockets(port)
+            .map_err(|message| unidesk_platform::PlatformError::InvalidRequest { message })
+    }
 }
 struct Wake(unidesk_platform_macos::MacOSWakeObserver);
 impl WakeObserverPort for Wake {}
+struct MacRuntime;
+impl HostRuntimePort for MacRuntime {
+    fn arguments(&self) -> Vec<String> { std::env::args().collect() }
+    fn process_id(&self) -> u32 { std::process::id() }
+    fn environment(&self, name: &str) -> Option<String> { std::env::var(name).ok() }
+    fn hostname(&self) -> Option<String> {
+        std::process::Command::new("/bin/hostname").output().ok().and_then(|output| {
+            output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        })
+    }
+    fn current_executable(&self) -> PlatformResult<PathBuf> {
+        std::env::current_exe().map_err(|error| unidesk_platform::PlatformError::InvalidRequest {
+            message: format!("current executable: {error}"),
+        })
+    }
+    fn write_file(&self, path: &Path, contents: &[u8]) -> PlatformResult<()> {
+        std::fs::write(path, contents).map_err(|error| unidesk_platform::PlatformError::InvalidRequest { message: error.to_string() })
+    }
+    fn create_dir_all(&self, path: &Path) -> PlatformResult<()> {
+        std::fs::create_dir_all(path).map_err(|error| unidesk_platform::PlatformError::InvalidRequest { message: error.to_string() })
+    }
+    fn remove_dir_all(&self, path: &Path) -> PlatformResult<()> {
+        std::fs::remove_dir_all(path).map_err(|error| unidesk_platform::PlatformError::InvalidRequest { message: error.to_string() })
+    }
+}
 pub struct MacPlatform;
 impl EnginePlatformPort for MacPlatform {
     fn pasteboard(&self) -> Arc<dyn Pasteboard + Sync> {
@@ -160,6 +203,9 @@ impl EnginePlatformPort for MacPlatform {
         Ok(Box::new(Wake(
             unidesk_platform_macos::MacOSWakeObserver::new(callback),
         )))
+    }
+    fn runtime(&self) -> Arc<dyn HostRuntimePort> {
+        Arc::new(MacRuntime)
     }
     fn workflow_execution(&self) -> Arc<dyn WorkflowExecutionPort> {
         Arc::new(MacOSWorkflowExecutionPort)

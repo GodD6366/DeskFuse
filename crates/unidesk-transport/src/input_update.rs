@@ -36,14 +36,20 @@ impl InputHub {
         }
     }
 
-    async fn update_session_current(session: &Session) -> bool {
+    async fn update_session_current(&self, session: &Session) -> bool {
         if !session.live() || !session.negotiated.contains(Capabilities::LAN_UPDATES) {
             return false;
         }
         let context = session.context.clone();
         let expected = context.clone();
+        let lan_port = self.lan_port.clone();
         crate::input_executor::inspect_blocking(move || {
-            crate::lan::inspect(context.session_id, context.local_addr, context.remote_addr)
+            crate::lan::inspect(
+                lan_port.as_deref(),
+                context.session_id,
+                context.local_addr,
+                context.remote_addr,
+            )
         })
         .await
         .is_ok_and(|current| current == expected && current.input_eligible())
@@ -66,7 +72,7 @@ impl InputHub {
             .filter(|s| s.peer == peer)
             .cloned()
             .ok_or(TransportError::Closed)?;
-        if !Self::update_session_current(&session).await {
+        if !self.update_session_current(&session).await {
             return Err(TransportError::Closed);
         }
         let operation = async {
@@ -80,7 +86,7 @@ impl InputHub {
             send.finish().map_err(|_| TransportError::Closed)?;
             let reply =
                 crate::read_frame_limited(&mut recv, Duration::from_secs(10), 1100 * 1024).await?;
-            if !Self::update_session_current(&session).await
+            if !self.update_session_current(&session).await
                 || crate::request_id_or_zero(&reply) != request_id
             {
                 return Err(TransportError::Closed);
@@ -120,7 +126,7 @@ impl InputHub {
                         crate::read_frame_limited(&mut recv, Duration::from_secs(3), 1100 * 1024)
                             .await
                             .ok()?;
-                    if !Self::update_session_current(&session).await {
+                    if !hub.update_session_current(&session).await {
                         return None;
                     }
                     let request_id = crate::request_id_or_zero(&request);
@@ -136,7 +142,7 @@ impl InputHub {
                         .ok()?;
                     let response = result.await.ok()?;
                     if !is_update_message(&response)
-                        || !Self::update_session_current(&session).await
+                        || !hub.update_session_current(&session).await
                     {
                         return None;
                     }

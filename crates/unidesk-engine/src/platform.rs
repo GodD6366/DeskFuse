@@ -4,8 +4,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use unidesk_platform::ports::{
-    EnginePlatformPort, FinderDestinationPort, FinderPort, LanInterface, LanWebPort,
-    WakeObserverPort, WorkflowExecutionPort,
+    EnginePlatformPort, FinderDestinationPort, FinderPort, HostRuntimePort, LanInterface,
+    LanWebPort, WakeObserverPort, WorkflowExecutionPort,
 };
 use unidesk_platform::{
     InputEnvironmentPort, InputEnvironmentSnapshot, Pasteboard, PermissionService,
@@ -75,6 +75,9 @@ impl EnginePlatformPort for MemoryPlatform {
         _callback: Box<dyn Fn() + Send + Sync>,
     ) -> PlatformResult<Box<dyn WakeObserverPort>> {
         Ok(Box::new(NoopWakeObserver))
+    }
+    fn runtime(&self) -> Arc<dyn HostRuntimePort> {
+        Arc::new(unidesk_platform::ports::SystemHostRuntime)
     }
     fn workflow_execution(&self) -> Arc<dyn WorkflowExecutionPort> {
         Arc::new(UnsupportedWorkflowExecutionPort)
