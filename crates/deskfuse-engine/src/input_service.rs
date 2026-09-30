@@ -3,26 +3,28 @@ use crate::{
     input_coordinator::InputCoordinator,
     tokio_bridge::{UiEvent, production_transport::*},
 };
+use deskfuse_core::*;
+use deskfuse_discovery::{DiscoveryEvent, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
+use deskfuse_platform::ports::EnginePlatformPort;
+use deskfuse_runtime::{
+    ControlTransportAdapter, SnapshotView,
+    input_service::{Authority, ChildConnection},
+};
+use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
 use futures::StreamExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
-use deskfuse_core::*;
-use deskfuse_discovery::{DiscoveryEvent, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
-use deskfuse_runtime::{
-    ControlTransportAdapter, SnapshotView,
-    input_service::{Authority, ChildConnection},
-};
-use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
-use deskfuse_platform::ports::EnginePlatformPort;
 
 pub fn main() -> std::result::Result<(), String> {
     main_with_platform(crate::platform::memory_platform())
 }
 
-pub fn main_with_platform(platform: Arc<dyn EnginePlatformPort>) -> std::result::Result<(), String> {
+pub fn main_with_platform(
+    platform: Arc<dyn EnginePlatformPort>,
+) -> std::result::Result<(), String> {
     if platform.runtime().arguments().get(1).map(String::as_str) != Some("--input-service") {
         return Err("input service requires inherited parent channels".into());
     }
@@ -62,7 +64,10 @@ fn view(
         discovered_peers: vec![],
     }
 }
-async fn run(mut child: ChildConnection, platform: Arc<dyn EnginePlatformPort>) -> std::result::Result<(), String> {
+async fn run(
+    mut child: ChildConnection,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> std::result::Result<(), String> {
     let identity = Arc::new(
         deskfuse_identity::FileIdentityProvider::new(&child.bootstrap.identity_path)
             .load_existing()

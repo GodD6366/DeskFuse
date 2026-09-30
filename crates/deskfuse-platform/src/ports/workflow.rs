@@ -4,25 +4,31 @@ use super::{
 };
 use crate::{BoundaryErrorCode, PlatformError, PlatformResult};
 use async_trait::async_trait;
+use deskfuse_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::PathBuf, sync::atomic::AtomicBool};
-use deskfuse_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
 
 /// Clipboard lifecycle owned by the common state machine.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ClipboardState {
+    #[default]
     Idle,
     Monitoring,
-    Captured { revision: NativeRevision },
-    Applying { expected_revision: NativeRevision },
-    Applied { revision: NativeRevision },
-    Superseded { current_revision: NativeRevision },
-    Failed { code: BoundaryErrorCode },
-}
-impl Default for ClipboardState {
-    fn default() -> Self {
-        Self::Idle
-    }
+    Captured {
+        revision: NativeRevision,
+    },
+    Applying {
+        expected_revision: NativeRevision,
+    },
+    Applied {
+        revision: NativeRevision,
+    },
+    Superseded {
+        current_revision: NativeRevision,
+    },
+    Failed {
+        code: BoundaryErrorCode,
+    },
 }
 impl ClipboardState {
     pub fn start_monitoring(&mut self) -> PlatformResult<()> {
@@ -89,19 +95,21 @@ impl ClipboardState {
 
 /// File transfer lifecycle. Materialization and publication are separate so a
 /// partially received file can never be exposed as a pasteable object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum FileTransferState {
+    #[default]
     Idle,
     AwaitingAuthorization,
-    Receiving { received_bytes: u64 },
-    Materialized { paths: Vec<std::path::PathBuf> },
+    Receiving {
+        received_bytes: u64,
+    },
+    Materialized {
+        paths: Vec<std::path::PathBuf>,
+    },
     Published,
-    Failed { code: BoundaryErrorCode },
-}
-impl Default for FileTransferState {
-    fn default() -> Self {
-        Self::Idle
-    }
+    Failed {
+        code: BoundaryErrorCode,
+    },
 }
 impl FileTransferState {
     pub fn authorize(&mut self) -> PlatformResult<()> {

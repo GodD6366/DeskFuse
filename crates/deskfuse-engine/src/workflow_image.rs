@@ -2,8 +2,8 @@
 //! No pasteboard, filesystem, or host-framework operation belongs here.
 use std::io::Cursor;
 
-use image::{DynamicImage, GenericImageView, ImageReader, imageops::FilterType};
 use deskfuse_core::workflow::ImageFormat;
+use image::{DynamicImage, GenericImageView, ImageReader, imageops::FilterType};
 
 pub const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
@@ -20,7 +20,9 @@ pub struct ImageInfo {
 pub struct ProcessedImage {
     pub data: Vec<u8>,
     pub tiff: Vec<u8>,
+    #[allow(dead_code)]
     pub width: u32,
+    #[allow(dead_code)]
     pub height: u32,
     pub format: ImageFormat,
 }

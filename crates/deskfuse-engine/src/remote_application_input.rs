@@ -1,5 +1,11 @@
 //! Runs inside the existing signed input service. Cross-screen capture/injection
 //! must acknowledge a pause before this independent lease may arm the adapter.
+use deskfuse_core::*;
+use deskfuse_platform::SharedInputInjector;
+use deskfuse_platform::ports::EnginePlatformPort;
+use deskfuse_runtime::{
+    input_service::Authority, input_service_types::RemoteApplicationInput as Packet,
+};
 use std::{
     collections::VecDeque,
     sync::{
@@ -7,12 +13,6 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
     time::{Duration, Instant},
-};
-use deskfuse_core::*;
-use deskfuse_platform::SharedInputInjector;
-use deskfuse_platform::ports::EnginePlatformPort;
-use deskfuse_runtime::{
-    input_service::Authority, input_service_types::RemoteApplicationInput as Packet,
 };
 const TTL: Duration = Duration::from_secs(1);
 pub struct Owner {

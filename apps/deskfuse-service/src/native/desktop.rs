@@ -8,6 +8,13 @@ use crate::{
     protocol,
 };
 use base64::Engine;
+use deskfuse_core::Endpoint;
+use deskfuse_platform::{
+    ApplyResult, BoundaryErrorCode, CapturedContent, ContentData, NativeRevision, PlatformCommand,
+    PlatformEvent,
+};
+use deskfuse_runtime::{RuntimeCommand, RuntimeEvent};
+use deskfuse_transfer::FileBridge;
 use std::{
     collections::VecDeque,
     io,
@@ -17,13 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{io::AsyncReadExt, net::windows::named_pipe::NamedPipeServer};
-use deskfuse_core::Endpoint;
-use deskfuse_platform::{
-    ApplyResult, BoundaryErrorCode, CapturedContent, ContentData, NativeRevision, PlatformCommand,
-    PlatformEvent,
-};
-use deskfuse_runtime::{RuntimeCommand, RuntimeEvent};
-use deskfuse_transfer::FileBridge;
 #[derive(Default)]
 pub(super) struct State {
     owner: Option<ClientSession>,
@@ -449,9 +449,7 @@ impl State {
                     && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
                 secure_desktop_input: self.session_agent.secure_desktop_input_available(),
                 login_input: self.session_agent.login_input_available(),
-                secure_attention_sequence: self
-                    .session_agent
-                    .secure_attention_sequence_available(),
+                secure_attention_sequence: self.session_agent.secure_attention_sequence_available(),
                 updater: false,
                 remote_app: matches!(
                     remote_app::availability(),
@@ -493,11 +491,7 @@ impl State {
             }),
         }
     }
-    fn platform_command(
-        &mut self,
-        command: PlatformCommand,
-        network: &Network,
-    ) -> ipc::Reply {
+    fn platform_command(&mut self, command: PlatformCommand, network: &Network) -> ipc::Reply {
         let failed = |code: BoundaryErrorCode, message: &str| ipc::Reply::Platform {
             event: PlatformEvent::Failed {
                 code,
@@ -562,9 +556,7 @@ impl State {
                 let input_bytes = input
                     .iter()
                     .try_fold(0usize, |total, item| total.checked_add(item.bytes.len()));
-                if input.is_empty()
-                    || input_bytes.is_none_or(|total| total > ipc::MAX_CONTENT)
-                {
+                if input.is_empty() || input_bytes.is_none_or(|total| total > ipc::MAX_CONTENT) {
                     return failed(
                         BoundaryErrorCode::InvalidRequest,
                         "workflow input is empty or oversized",

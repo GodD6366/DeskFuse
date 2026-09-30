@@ -5,8 +5,11 @@
 //! intentionally small and deterministic enough to drive two real Macs through
 //! the first-time mDNS-to-QUIC bootstrap and pairing approval flow.
 
-use std::{net::{Ipv4Addr, SocketAddr}, sync::Arc};
 use std::time::Duration;
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use deskfuse_core::{
     Capabilities, ClipboardPayload, ConnectionState, DeviceId, DisplayInfo, Endpoint,
@@ -31,9 +34,13 @@ const PRIVATE_KEY_DER: &[u8] = include_bytes!("../../../resources/deskfuse-trans
 
 fn lan_port() -> Arc<dyn deskfuse_platform::ports::LanWebPort> {
     #[cfg(target_os = "macos")]
-    { Arc::new(deskfuse_platform_macos::lan_web::MacOSLanWebPort) }
+    {
+        Arc::new(deskfuse_platform_macos::lan_web::MacOSLanWebPort)
+    }
     #[cfg(not(target_os = "macos"))]
-    { Arc::new(deskfuse_platform::ports::FailClosedLanPort) }
+    {
+        Arc::new(deskfuse_platform::ports::FailClosedLanPort)
+    }
 }
 
 #[derive(Debug)]

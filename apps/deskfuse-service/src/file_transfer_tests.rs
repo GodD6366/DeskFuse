@@ -4,16 +4,16 @@
 
 #![cfg(windows)]
 use crate::native::file_transfer;
+use deskfuse_core::DeviceId;
+use deskfuse_transfer::{
+    ChunkDescriptor, ClipboardFileFrame, FileBridge, FileFrameSink, IncomingStore, Limits,
+    RelativePath, StoreFactory, TransferId, TransferManifest,
+};
 use std::{
     fs,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
-};
-use deskfuse_core::DeviceId;
-use deskfuse_transfer::{
-    ChunkDescriptor, ClipboardFileFrame, FileBridge, FileFrameSink, IncomingStore, Limits,
-    RelativePath, StoreFactory, TransferId, TransferManifest,
 };
 
 const PEER_A: DeviceId = DeviceId::from_bytes([7; 32]);

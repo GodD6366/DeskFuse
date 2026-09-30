@@ -80,8 +80,8 @@ public final class RemoteRdpBridge: @unchecked Sendable {
         let stride = width * 4
         var bytes = Data(count: Int(stride) * Int(height))
         let count = bytes.count
-        let copied = bytes.withUnsafeMutableBytes { raw in
-            guard let base = raw.baseAddress else { return -1 }
+        let copied: Int32 = bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return Int32(-1) }
             return rdp_bridge_copy_frame(handle, base, stride, count, width, height)
         }
         guard copied == 0 else { return nil }

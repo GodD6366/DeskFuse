@@ -14,9 +14,9 @@
 #![allow(unsafe_code)]
 
 use super::security;
+use deskfuse_transport::remote_application::RemoteSession;
 use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
-use deskfuse_transport::remote_application::RemoteSession;
 use windows_sys::Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
     System::Registry::{
@@ -117,13 +117,20 @@ pub fn register_app(app: &RemoteAppEntry) -> io::Result<()> {
     // Registry subkey names and RDP's `||program` token are not a shell
     // command line. Reject control characters, separators and oversized values
     // before they reach HKLM, and require an absolute executable path.
-    if app.name.is_empty() || app.name.len() > 128
-        || app.name.chars().any(|c| c.is_control() || matches!(c, '\\' | '/' | ':' | '"'))
+    if app.name.is_empty()
+        || app.name.len() > 128
+        || app
+            .name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\\' | '/' | ':' | '"'))
         || app.path.len() > 32767
         || !std::path::Path::new(&app.path).is_absolute()
         || !app.path.to_ascii_lowercase().ends_with(".exe")
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid RemoteApp registration"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid RemoteApp registration",
+        ));
     }
     let parent = open_allow_list(true)?;
     let key = create_subkey(parent, &app.name)?;

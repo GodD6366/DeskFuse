@@ -4,11 +4,11 @@
 
 #![cfg(windows)]
 use crate::desktop_protocol as ipc;
-use std::collections::BTreeMap;
 use deskfuse_core::{
     Capabilities, DeviceId, DisplayDescriptor, DisplayId, DisplayTopology, InputSessionId,
     InputShareRole, InputSharingSettings, SharedInputEvent,
 };
+use std::collections::BTreeMap;
 
 fn session() -> String {
     InputSessionId::new().to_string()

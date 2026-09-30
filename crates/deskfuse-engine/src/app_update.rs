@@ -136,7 +136,6 @@ pub fn stage_github_zip(
     tokio::task::spawn_blocking(move || installer::prepare_github_zip(&payload, &release, &status))
 }
 
-
 #[cfg(all(not(test), windows))]
 use deskfuse_runtime::RuntimeHandle;
 
@@ -167,7 +166,6 @@ pub fn prepare_startup(
 pub fn acknowledge_startup(_status: &deskfuse_update::UpdateStatus) -> Result<(), String> {
     Err("Windows updater acknowledgement requires machine-owned evidence".into())
 }
-
 
 #[cfg(windows)]
 pub fn stage(

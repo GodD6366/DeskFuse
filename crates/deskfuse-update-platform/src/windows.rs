@@ -8,6 +8,11 @@
 //! before any replacement until a signed transactional payload contract exists.
 //! A missing proof at any point is an error; there is deliberately no
 //! best-effort update path.
+use deskfuse_update::windows::WindowsSelfTest;
+use deskfuse_update::{
+    PlatformInstaller, PlatformUpdateExecutor, SignedReleaseManifest, Target, UpdateError,
+    UpdatePhase, UpdateStatus, VerifiedRelease, write_json_atomic,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -16,11 +21,6 @@ use std::{
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
-};
-use deskfuse_update::windows::WindowsSelfTest;
-use deskfuse_update::{
-    PlatformInstaller, PlatformUpdateExecutor, SignedReleaseManifest, Target, UpdateError,
-    UpdatePhase, UpdateStatus, VerifiedRelease, write_json_atomic,
 };
 use uuid::Uuid;
 

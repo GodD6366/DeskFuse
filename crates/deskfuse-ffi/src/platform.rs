@@ -1,8 +1,3 @@
-use std::{
-    net::{SocketAddr, UdpSocket},
-    path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
-};
 use deskfuse_platform::ports::{
     EnginePlatformPort, FinderDeliveryItem, FinderDeliveryResult, FinderDestinationPort,
     FinderPort, HostPorts, HostRuntimePort, LanInterface, LanWebPort, WakeObserverPort,
@@ -13,6 +8,11 @@ use deskfuse_platform::{
     SharedInputInjector,
 };
 use deskfuse_platform_macos::{MacOSPasteboard, MacOSWorkflowExecutionPort};
+use std::{
+    net::{SocketAddr, UdpSocket},
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+};
 
 struct FinderDestination(deskfuse_platform_macos::FinderDestination);
 impl FinderDestinationPort for FinderDestination {
@@ -108,25 +108,36 @@ impl LanWebPort for Lan {
         deskfuse_platform_macos::lan_web::transport_context(session_id, local_addr, remote_addr)
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
-    fn transport_listener_sockets(
-        &self,
-        port: u16,
-    ) -> PlatformResult<Vec<(String, UdpSocket)>> {
+    fn transport_listener_sockets(&self, port: u16) -> PlatformResult<Vec<(String, UdpSocket)>> {
         deskfuse_platform_macos::lan_web::transport_listener_sockets(port)
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
 }
+// The observer field is intentionally retained for its Drop-based unregister behavior.
+#[allow(dead_code)]
 struct Wake(deskfuse_platform_macos::MacOSWakeObserver);
 impl WakeObserverPort for Wake {}
 struct MacRuntime;
 impl HostRuntimePort for MacRuntime {
-    fn arguments(&self) -> Vec<String> { std::env::args().collect() }
-    fn process_id(&self) -> u32 { std::process::id() }
-    fn environment(&self, name: &str) -> Option<String> { std::env::var(name).ok() }
+    fn arguments(&self) -> Vec<String> {
+        std::env::args().collect()
+    }
+    fn process_id(&self) -> u32 {
+        std::process::id()
+    }
+    fn environment(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
     fn hostname(&self) -> Option<String> {
-        std::process::Command::new("/bin/hostname").output().ok().and_then(|output| {
-            output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        })
+        std::process::Command::new("/bin/hostname")
+            .output()
+            .ok()
+            .and_then(|output| {
+                output
+                    .status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            })
     }
     fn current_executable(&self) -> PlatformResult<PathBuf> {
         std::env::current_exe().map_err(|error| deskfuse_platform::PlatformError::InvalidRequest {
@@ -134,13 +145,25 @@ impl HostRuntimePort for MacRuntime {
         })
     }
     fn write_file(&self, path: &Path, contents: &[u8]) -> PlatformResult<()> {
-        std::fs::write(path, contents).map_err(|error| deskfuse_platform::PlatformError::InvalidRequest { message: error.to_string() })
+        std::fs::write(path, contents).map_err(|error| {
+            deskfuse_platform::PlatformError::InvalidRequest {
+                message: error.to_string(),
+            }
+        })
     }
     fn create_dir_all(&self, path: &Path) -> PlatformResult<()> {
-        std::fs::create_dir_all(path).map_err(|error| deskfuse_platform::PlatformError::InvalidRequest { message: error.to_string() })
+        std::fs::create_dir_all(path).map_err(|error| {
+            deskfuse_platform::PlatformError::InvalidRequest {
+                message: error.to_string(),
+            }
+        })
     }
     fn remove_dir_all(&self, path: &Path) -> PlatformResult<()> {
-        std::fs::remove_dir_all(path).map_err(|error| deskfuse_platform::PlatformError::InvalidRequest { message: error.to_string() })
+        std::fs::remove_dir_all(path).map_err(|error| {
+            deskfuse_platform::PlatformError::InvalidRequest {
+                message: error.to_string(),
+            }
+        })
     }
 }
 pub struct MacPlatform;

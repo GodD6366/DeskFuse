@@ -22,25 +22,6 @@ use crate::model::{
     ClipboardHistoryItem, DEFAULT_CLIPBOARD_SYNC_ENABLED, TransferDirection, TransferState,
 };
 use crate::platform::memory_platform;
-use file_policy::{DeferredSources, FilePolicy};
-use file_receive_worker::*;
-use finder_paste_jobs::FinderPasteJobs;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use futures::{StreamExt, stream::BoxStream};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::path::PathBuf;
-use std::sync::{
-    Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
-};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-use tokio::runtime::Builder;
-use tokio::sync::mpsc::{
-    UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender, unbounded_channel,
-};
-use tokio::sync::oneshot::{self, Sender as OneShotSender};
 #[cfg(test)]
 use deskfuse_core::RouteCandidate;
 use deskfuse_core::{
@@ -75,6 +56,25 @@ use deskfuse_transfer::{
 };
 #[cfg(not(test))]
 use deskfuse_transport::{PeerHello, QuinnTransport, QuinnTransportConfig};
+use file_policy::{DeferredSources, FilePolicy};
+use file_receive_worker::*;
+use finder_paste_jobs::FinderPasteJobs;
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures::{StreamExt, stream::BoxStream};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use tokio::runtime::Builder;
+use tokio::sync::mpsc::{
+    UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender, unbounded_channel,
+};
+use tokio::sync::oneshot::{self, Sender as OneShotSender};
 
 /// How long the app may take to exit after the update helper was launched. The
 /// helper itself gives up on a parent that has not exited well before this, so a
@@ -4609,21 +4609,23 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
-            | motion_mode_capabilities(runtime.environment("DESKFUSE_INPUT_MOTION_MODE").as_deref()),
+            | motion_mode_capabilities(
+                runtime.environment("DESKFUSE_INPUT_MOTION_MODE").as_deref(),
+            ),
         ..RuntimeConfig::default()
     }
 }
 
 /// Human-readable device name shown during discovery and pairing.
-fn local_display_name(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> String {
+fn local_display_name(_runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> String {
     #[cfg(not(test))]
     {
         // `hostname` is a stable macOS baseline utility; never use its output
         // as identity, only as the display label.
-        let name = runtime.hostname().map(|name| {
-                let trimmed = name.trim();
-                trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()
-            });
+        let name = _runtime.hostname().map(|name| {
+            let trimmed = name.trim();
+            trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()
+        });
         if let Some(name) = name
             && !name.is_empty()
             && name.chars().count() <= 256
@@ -4797,8 +4799,8 @@ mod file_clipboard_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{StreamExt, stream::BoxStream};
     use deskfuse_platform::MemoryPasteboard;
+    use futures::{StreamExt, stream::BoxStream};
 
     fn suppress(
         guard: &mut ClipboardLoopGuard,
@@ -4910,9 +4912,11 @@ mod tests {
 
         // 接力回写常去掉或补上尾随换行，10 秒窗口内仍视为同一条。
         pasteboard.write_text("帮我安装 kimi code").unwrap();
-        assert!(
-            !suppress(&mut loop_guard, &pasteboard, &pasteboard.read().unwrap())
-        );
+        assert!(!suppress(
+            &mut loop_guard,
+            &pasteboard,
+            &pasteboard.read().unwrap()
+        ));
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
@@ -4930,9 +4934,11 @@ mod tests {
 
         // 去掉标记后的接力改写仍是回声。不同内容的新复制不受影响。
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(
-            suppress(&mut loop_guard, &pasteboard, &pasteboard.read().unwrap())
-        );
+        assert!(suppress(
+            &mut loop_guard,
+            &pasteboard,
+            &pasteboard.read().unwrap()
+        ));
         pasteboard.write_png(&[4, 5, 6]).unwrap();
         let local = pasteboard.read().unwrap();
         assert!(!suppress(&mut loop_guard, &pasteboard, &local));
@@ -4999,7 +5005,11 @@ mod tests {
         );
         assert!(suppress(&mut guard, &pasteboard, &png));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        assert!(!suppress(&mut guard, &pasteboard, &pasteboard.read().unwrap()));
+        assert!(!suppress(
+            &mut guard,
+            &pasteboard,
+            &pasteboard.read().unwrap()
+        ));
     }
 
     // Deleted 2026-09-15: this case expected a payload without source metadata

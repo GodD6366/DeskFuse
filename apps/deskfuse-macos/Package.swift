@@ -20,6 +20,66 @@ let systemLibDirectories = [
     homebrewPrefix + "/opt/libusb/lib",
 ]
 
+let remoteApplicationLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags(["-L", freerdpLibDirectory] + systemLibDirectories.flatMap { ["-L", $0] }),
+    .linkedLibrary("ssl"),
+    .linkedLibrary("crypto"),
+    .linkedLibrary("usb-1.0"),
+    .linkedLibrary("json-c"),
+    .linkedFramework("Foundation"),
+    .linkedFramework("CoreServices"),
+    .linkedFramework("Security"),
+    .linkedFramework("ScreenCaptureKit"),
+    .linkedFramework("VideoToolbox"),
+    .linkedFramework("MetalKit"),
+    .linkedFramework("CoreImage"),
+]
+
+let applicationDependencies: [Target.Dependency] = [
+    "DeskFuseEngine",
+    "DeskFuseHost",
+    "DeskFuseRemoteApplication",
+    .product(name: "PermissionFlow", package: "PermissionFlow"),
+    .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow"),
+]
+
+let applicationLinkerSettings: [LinkerSetting] = [
+    .linkedFramework("AppKit"),
+    .linkedFramework("OSAKit"),
+    .linkedFramework("CoreGraphics"),
+    .linkedFramework("CoreFoundation"),
+    .linkedFramework("Security"),
+    .linkedFramework("SystemConfiguration"),
+    .linkedFramework("CoreWLAN"),
+    .linkedFramework("CoreLocation"),
+    .linkedLibrary("sqlite3"),
+    .linkedLibrary("resolv"),
+    .linkedLibrary("iconv"),
+]
+
+let deskfuseTargets: [Target] = [
+    .systemLibrary(name: "CDeskFuseRdp", path: "RemoteApplication/Vendor/FreeRDP"),
+    .target(
+        name: "DeskFuseRemoteApplication",
+        dependencies: ["CDeskFuseRdp"],
+        path: "RemoteApplication/Sources/DeskFuseRemoteApplication",
+        exclude: ["RemoteTransport.swift", "RemoteTLSIdentity.swift", "RdpBridge"],
+        linkerSettings: remoteApplicationLinkerSettings
+    ),
+    .systemLibrary(name: "DeskFuseEngineFFI", path: "Sources/DeskFuseEngineFFI"),
+    .target(
+        name: "DeskFuseEngine",
+        dependencies: ["DeskFuseEngineFFI"],
+        linkerSettings: [.unsafeFlags([libraryDirectory + "/libdeskfuse_ffi.a"])]
+    ),
+    .target(name: "DeskFuseHost", dependencies: [], path: "Host"),
+    .executableTarget(
+        name: "DeskFuse",
+        dependencies: applicationDependencies,
+        linkerSettings: applicationLinkerSettings
+    ),
+]
+
 let package = Package(
     name: "DeskFuse",
     platforms: [.macOS(.v14)],
@@ -27,57 +87,5 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/jaywcjlove/PermissionFlow.git", from: "2.11.2"),
     ],
-    targets: [
-        .systemLibrary(name: "CDeskFuseRdp", path: "RemoteApplication/Vendor/FreeRDP"),
-        .target(
-            name: "DeskFuseRemoteApplication",
-            path: "RemoteApplication/Sources/DeskFuseRemoteApplication",
-            dependencies: ["CDeskFuseRdp"],
-            exclude: ["RemoteTransport.swift", "RemoteTLSIdentity.swift", "RdpBridge"],
-            linkerSettings: [
-                .unsafeFlags(["-L", freerdpLibDirectory] + systemLibDirectories.flatMap { ["-L", $0] }),
-                .linkedLibrary("ssl"),
-                .linkedLibrary("crypto"),
-                .linkedLibrary("usb-1.0"),
-                .linkedLibrary("json-c"),
-                .linkedFramework("Foundation"),
-                .linkedFramework("CoreServices"),
-                .linkedFramework("Security"),
-                .linkedFramework("ScreenCaptureKit"),
-                .linkedFramework("VideoToolbox"),
-                .linkedFramework("MetalKit"),
-                .linkedFramework("CoreImage"),
-            ]
-        ),
-        .systemLibrary(name: "DeskFuseEngineFFI", path: "Sources/DeskFuseEngineFFI"),
-        .target(
-            name: "DeskFuseEngine",
-            dependencies: ["DeskFuseEngineFFI"],
-            linkerSettings: [.unsafeFlags([libraryDirectory + "/libdeskfuse_ffi.a"])]
-        ),
-        .target(name: "DeskFuseHost", dependencies: [], path: "Host"),
-        .executableTarget(
-            name: "DeskFuse",
-            dependencies: [
-                "DeskFuseEngine",
-                "DeskFuseHost",
-                "DeskFuseRemoteApplication",
-                .product(name: "PermissionFlow", package: "PermissionFlow"),
-                .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow"),
-            ],
-            linkerSettings: [
-                .linkedFramework("AppKit"),
-                .linkedFramework("OSAKit"),
-                .linkedFramework("CoreGraphics"),
-                .linkedFramework("CoreFoundation"),
-                .linkedFramework("Security"),
-                .linkedFramework("SystemConfiguration"),
-                .linkedFramework("CoreWLAN"),
-                .linkedFramework("CoreLocation"),
-                .linkedLibrary("sqlite3"),
-                .linkedLibrary("resolv"),
-                .linkedLibrary("iconv"),
-            ]
-        ),
-    ]
+    targets: deskfuseTargets
 )

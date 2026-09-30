@@ -141,8 +141,7 @@ impl InputHub {
                         })
                         .ok()?;
                     let response = result.await.ok()?;
-                    if !is_update_message(&response)
-                        || !hub.update_session_current(&session).await
+                    if !is_update_message(&response) || !hub.update_session_current(&session).await
                     {
                         return None;
                     }

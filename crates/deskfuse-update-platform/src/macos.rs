@@ -1,5 +1,9 @@
 //! macOS replacement runs outside the application. Only authenticated release
 //! bytes enter staging; a durable journal precedes every destructive step.
+use deskfuse_update::{
+    PackageKind, PlatformInstaller, PlatformUpdateExecutor, ReleaseVersion, SignedReleaseManifest,
+    Target, UpdateStatus, VerifiedRelease, pinned_release_key, verify_artifact, write_json_atomic,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,10 +14,6 @@ use std::{
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
-};
-use deskfuse_update::{
-    PackageKind, PlatformInstaller, PlatformUpdateExecutor, ReleaseVersion, SignedReleaseManifest,
-    Target, UpdateStatus, VerifiedRelease, pinned_release_key, verify_artifact, write_json_atomic,
 };
 use uuid::Uuid;
 
@@ -909,7 +909,10 @@ mod tests {
         let (_dir, root, mut journal) = fixture(Phase::Prepared);
         rollback(&root, &mut journal, false).unwrap();
         assert_eq!(journal.phase, Phase::RolledBack);
-        assert_eq!(journal.status.phase, deskfuse_update::UpdatePhase::Cancelled);
+        assert_eq!(
+            journal.status.phase,
+            deskfuse_update::UpdatePhase::Cancelled
+        );
         assert!(!root.join("quarantined.json").exists());
     }
     #[test]

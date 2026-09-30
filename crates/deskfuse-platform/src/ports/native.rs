@@ -4,6 +4,7 @@ use crate::{
     InputEnvironmentPort, Pasteboard, PermissionService, PlatformResult, SharedInputCapture,
     SharedInputInjector,
 };
+use deskfuse_core::{ConnectionContext, TransportSessionId};
 use std::{
     net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
@@ -12,7 +13,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64},
     },
 };
-use deskfuse_core::{ConnectionContext, TransportSessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinderDeliveryItem {
@@ -78,10 +78,7 @@ pub trait LanWebPort: Send + Sync {
     }
 
     /// Open listeners bound to host-verified physical interfaces.
-    fn transport_listener_sockets(
-        &self,
-        _port: u16,
-    ) -> PlatformResult<Vec<(String, UdpSocket)>> {
+    fn transport_listener_sockets(&self, _port: u16) -> PlatformResult<Vec<(String, UdpSocket)>> {
         Ok(Vec::new())
     }
 }
@@ -91,13 +88,21 @@ pub trait LanWebPort: Send + Sync {
 /// evidence cannot be mistaken for an implicit physical route.
 pub struct FailClosedLanPort;
 impl LanWebPort for FailClosedLanPort {
-    fn interfaces(&self) -> PlatformResult<Vec<LanInterface>> { Ok(Vec::new()) }
-    fn ipv4_addresses(&self) -> PlatformResult<Vec<String>> { Ok(Vec::new()) }
+    fn interfaces(&self) -> PlatformResult<Vec<LanInterface>> {
+        Ok(Vec::new())
+    }
+    fn ipv4_addresses(&self) -> PlatformResult<Vec<String>> {
+        Ok(Vec::new())
+    }
     fn image_png(&self, _path: &Path, _max_pixel_size: u32) -> PlatformResult<Vec<u8>> {
-        Err(crate::PlatformError::Unsupported { operation: "LAN image preview" })
+        Err(crate::PlatformError::Unsupported {
+            operation: "LAN image preview",
+        })
     }
     fn data_image_png(&self, _data: &[u8], _max_pixel_size: u32) -> PlatformResult<Vec<u8>> {
-        Err(crate::PlatformError::Unsupported { operation: "LAN image preview" })
+        Err(crate::PlatformError::Unsupported {
+            operation: "LAN image preview",
+        })
     }
 }
 
@@ -120,10 +125,18 @@ pub trait HostRuntimePort: Send + Sync {
 /// Safe fallback for non-native hosts. It never supplies network evidence.
 pub struct SystemHostRuntime;
 impl HostRuntimePort for SystemHostRuntime {
-    fn arguments(&self) -> Vec<String> { std::env::args().collect() }
-    fn process_id(&self) -> u32 { std::process::id() }
-    fn environment(&self, name: &str) -> Option<String> { std::env::var(name).ok() }
-    fn hostname(&self) -> Option<String> { None }
+    fn arguments(&self) -> Vec<String> {
+        std::env::args().collect()
+    }
+    fn process_id(&self) -> u32 {
+        std::process::id()
+    }
+    fn environment(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+    fn hostname(&self) -> Option<String> {
+        None
+    }
     fn current_executable(&self) -> PlatformResult<PathBuf> {
         std::env::current_exe().map_err(|error| crate::PlatformError::InvalidRequest {
             message: format!("current executable: {error}"),

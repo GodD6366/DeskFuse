@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Stable error classes shared by FFI and desktop IPC adapters.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryErrorCode {
     InvalidRequest,
     Unsupported,
     CapabilityDenied,
     AuthorizationRequired,
+    #[default]
     Native,
     Ipc,
     Ffi,
@@ -58,12 +59,6 @@ pub enum PlatformError {
     FfiFailed { operation: &'static str },
 }
 
-impl Default for BoundaryErrorCode {
-    fn default() -> Self {
-        Self::Native
-    }
-}
-
 impl BoundaryErrorCode {
     /// Translate the stable string used by the v2 desktop protocol without
     /// removing that legacy field from the wire response.
@@ -73,10 +68,10 @@ impl BoundaryErrorCode {
             "invalid_input" | "invalid_request" | "invalid_workflow" | "invalid_workflow_rule" => {
                 Self::InvalidRequest
             }
-            "session_expired" | "stale_clipboard" | "stale_transfer" | "busy" => {
-                Self::Conflict
-            }
-            "clipboard_unavailable" | "files_unavailable" | "storage_unavailable"
+            "session_expired" | "stale_clipboard" | "stale_transfer" | "busy" => Self::Conflict,
+            "clipboard_unavailable"
+            | "files_unavailable"
+            | "storage_unavailable"
             | "workflow_failed" => Self::Native,
             "remote_app_unavailable" | "desktop_unavailable" | "session_unavailable" => {
                 Self::Unsupported

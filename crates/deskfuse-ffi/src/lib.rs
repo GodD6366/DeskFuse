@@ -12,6 +12,14 @@ mod clipboard_library;
 #[cfg(target_os = "macos")]
 mod lan_web;
 mod types;
+use deskfuse_core::{DeviceId, RequestId};
+use deskfuse_engine::{
+    diagnostics::Diagnostics,
+    state::EngineState,
+    tokio_bridge::{TokioBridge, TokioCommand, UiEvent},
+};
+use deskfuse_runtime::RuntimeCommand;
+use deskfuse_transfer::TransferId;
 use futures::{
     StreamExt,
     channel::mpsc::{UnboundedSender, unbounded},
@@ -26,14 +34,6 @@ use std::{
     thread,
 };
 pub use types::*;
-use deskfuse_core::{DeviceId, RequestId};
-use deskfuse_engine::{
-    diagnostics::Diagnostics,
-    state::EngineState,
-    tokio_bridge::{TokioBridge, TokioCommand, UiEvent},
-};
-use deskfuse_runtime::RuntimeCommand;
-use deskfuse_transfer::TransferId;
 pub use workflow::*;
 uniffi::setup_scaffolding!();
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -119,12 +119,11 @@ impl Engine {
                 }
             };
         #[cfg(target_os = "macos")]
-        let lan_web = deskfuse_engine::lan_web::LanWebService::new(&bridge)
-            .map_err(|e| {
-                bridge.shutdown();
-                RUNNING.store(false, Ordering::Release);
-                failure(e)
-            })?;
+        let lan_web = deskfuse_engine::lan_web::LanWebService::new(&bridge).map_err(|e| {
+            bridge.shutdown();
+            RUNNING.store(false, Ordering::Release);
+            failure(e)
+        })?;
         let host = match deskfuse_engine::host::EngineHost::assemble_with(
             deskfuse_store::SQLiteStore::default_path()
                 .map_err(failure)?
@@ -510,7 +509,11 @@ impl Engine {
             .clipboard_history
             .iter()
             .filter(|item| {
-                deskfuse_engine::history_search::clipboard_matches(item, &query, usize::from(filter))
+                deskfuse_engine::history_search::clipboard_matches(
+                    item,
+                    &query,
+                    usize::from(filter),
+                )
             })
             .map(|item| item.id)
             .collect())

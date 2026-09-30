@@ -1,7 +1,7 @@
 //! Desktop host assembly. Collaboration owns policy; this crate injects Host Ports.
-use std::{path::PathBuf, sync::Arc};
 use deskfuse_collaboration::{CollaborationCore, MemoryTransport};
 use deskfuse_platform::ports::{EnginePlatformPort, HostPorts};
+use std::{path::PathBuf, sync::Arc};
 
 /// Application-process host. Input capture/injection stays in the input subprocess.
 pub struct EngineHost {

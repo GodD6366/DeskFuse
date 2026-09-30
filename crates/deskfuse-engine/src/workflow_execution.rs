@@ -879,6 +879,7 @@ fn payload_snapshot(
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn shortcut(
     port: &dyn WorkflowExecutionPort,
     step: &WorkflowStep,

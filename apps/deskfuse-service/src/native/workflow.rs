@@ -3,11 +3,11 @@
 //! session-local input/output boundary and never treats JSON as execution.
 use super::super::desktop_protocol::{Format, WorkflowInput};
 use base64::Engine;
-use serde::Deserialize;
-use sha2::Digest;
 use deskfuse_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
 use deskfuse_platform::{WorkflowCapabilities, WorkflowExecutionPlan, WorkflowOutputMode};
 use deskfuse_store::SettingsStore;
+use serde::Deserialize;
+use sha2::Digest;
 
 const MAX_INPUT: usize = 16 * 1024 * 1024;
 

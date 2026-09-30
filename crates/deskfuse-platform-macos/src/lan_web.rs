@@ -19,6 +19,8 @@ use core_foundation_sys::{
     string::CFStringRef,
     url::CFURLRef,
 };
+use deskfuse_core::{ConnectionContext, InterfaceKind, LinkScope, TransportSessionId};
+use deskfuse_platform::ports::LanWebPort;
 use std::{
     collections::BTreeSet,
     ffi::{CStr, c_char, c_int, c_uint, c_void},
@@ -27,8 +29,6 @@ use std::{
     process::Command,
     ptr,
 };
-use deskfuse_core::{ConnectionContext, InterfaceKind, LinkScope, TransportSessionId};
-use deskfuse_platform::ports::LanWebPort;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LanInterface {
@@ -210,8 +210,20 @@ fn classify_route(
         return result(InterfaceKind::Loopback, LinkScope::Unknown);
     }
     if [
-        "utun", "tun", "tap", "ppp", "ipsec", "tailscale", "wg", "awdl", "llw", "vmnet",
-        "vmenet", "veth", "gif", "stf",
+        "utun",
+        "tun",
+        "tap",
+        "ppp",
+        "ipsec",
+        "tailscale",
+        "wg",
+        "awdl",
+        "llw",
+        "vmnet",
+        "vmenet",
+        "veth",
+        "gif",
+        "stf",
     ]
     .iter()
     .any(|prefix| name.starts_with(prefix))
@@ -227,7 +239,9 @@ fn classify_route(
     });
     let kind = match hardware_port {
         Some(port) if port.contains("Wi-Fi") || port.contains("AirPort") => InterfaceKind::WiFi,
-        Some(port) if port.contains("Thunderbolt") || port.contains("雷雳") || port.contains("雷電") => {
+        Some(port)
+            if port.contains("Thunderbolt") || port.contains("雷雳") || port.contains("雷電") =>
+        {
             InterfaceKind::Thunderbolt
         }
         Some(port)
@@ -263,8 +277,12 @@ fn classify_route(
             || members.iter().any(|member| {
                 !hardware.split("Hardware Port: ").any(|block| {
                     block.lines().next().is_some_and(|port| {
-                        port.contains("Thunderbolt") || port.contains("雷雳") || port.contains("雷電")
-                    }) && block.lines().any(|line| line.trim() == format!("Device: {member}"))
+                        port.contains("Thunderbolt")
+                            || port.contains("雷雳")
+                            || port.contains("雷電")
+                    }) && block
+                        .lines()
+                        .any(|line| line.trim() == format!("Device: {member}"))
                 })
             })
         {
@@ -275,7 +293,10 @@ fn classify_route(
         (IpAddr::V4(local), IpAddr::V4(remote)) => section.lines().any(|line| {
             let words = line.split_whitespace().collect::<Vec<_>>();
             if words.first() != Some(&"inet")
-                || words.get(1).and_then(|value| value.parse::<Ipv4Addr>().ok()) != Some(local)
+                || words
+                    .get(1)
+                    .and_then(|value| value.parse::<Ipv4Addr>().ok())
+                    != Some(local)
             {
                 return false;
             }
@@ -358,14 +379,22 @@ pub fn transport_listener_sockets(port: u16) -> Result<Vec<(String, UdpSocket)>,
             continue;
         };
         let physical = hardware.split("Hardware Port: ").any(|block| {
-            block.lines().any(|line| line.trim() == format!("Device: {}", interface.name))
+            block
+                .lines()
+                .any(|line| line.trim() == format!("Device: {}", interface.name))
                 && block.lines().next().is_some_and(|port| {
-                    port.contains("Wi-Fi") || port.contains("AirPort") || port.contains("Ethernet")
-                        || port.contains("LAN") || port.contains("以太网")
-                        || port.contains("Thunderbolt") || port.contains("雷雳") || port.contains("雷電")
+                    port.contains("Wi-Fi")
+                        || port.contains("AirPort")
+                        || port.contains("Ethernet")
+                        || port.contains("LAN")
+                        || port.contains("以太网")
+                        || port.contains("Thunderbolt")
+                        || port.contains("雷雳")
+                        || port.contains("雷電")
                 })
         });
-        if !physical || (!interface.name.starts_with("en") && !interface.name.starts_with("bridge")) {
+        if !physical || (!interface.name.starts_with("en") && !interface.name.starts_with("bridge"))
+        {
             continue;
         }
         if matches!(interface.ip(), IpAddr::V6(ip) if ip.is_unicast_link_local()) {
@@ -376,11 +405,9 @@ pub fn transport_listener_sockets(port: u16) -> Result<Vec<(String, UdpSocket)>,
         } else {
             socket2::Domain::IPV6
         };
-        let Ok(socket) = socket2::Socket::new(
-            domain,
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        ) else {
+        let Ok(socket) =
+            socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
+        else {
             continue;
         };
         let bound = if interface.ip().is_ipv4() {
@@ -389,7 +416,9 @@ pub fn transport_listener_sockets(port: u16) -> Result<Vec<(String, UdpSocket)>,
             socket.bind_device_by_index_v6(Some(index))
         };
         if bound.is_err()
-            || socket.bind(&SocketAddr::new(interface.ip(), port).into()).is_err()
+            || socket
+                .bind(&SocketAddr::new(interface.ip(), port).into())
+                .is_err()
             || socket.set_nonblocking(true).is_err()
         {
             continue;
@@ -403,30 +432,56 @@ pub fn transport_listener_sockets(port: u16) -> Result<Vec<(String, UdpSocket)>,
 /// same host-owned implementation.
 pub struct MacOSLanWebPort;
 impl LanWebPort for MacOSLanWebPort {
-    fn interfaces(&self) -> deskfuse_platform::PlatformResult<Vec<deskfuse_platform::ports::LanInterface>> {
+    fn interfaces(
+        &self,
+    ) -> deskfuse_platform::PlatformResult<Vec<deskfuse_platform::ports::LanInterface>> {
         interfaces()
-            .map(|items| items.into_iter().map(|item| deskfuse_platform::ports::LanInterface {
-                name: item.name, address: item.address, label: item.label,
-            }).collect())
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| deskfuse_platform::ports::LanInterface {
+                        name: item.name,
+                        address: item.address,
+                        label: item.label,
+                    })
+                    .collect()
+            })
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
     fn ipv4_addresses(&self) -> deskfuse_platform::PlatformResult<Vec<String>> {
-        all_ipv4_interfaces().map(|items| items.into_iter().map(|item| item.address).collect())
+        all_ipv4_interfaces()
+            .map(|items| items.into_iter().map(|item| item.address).collect())
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
-    fn image_png(&self, path: &Path, max_pixel_size: u32) -> deskfuse_platform::PlatformResult<Vec<u8>> {
-        image_png(path, max_pixel_size).map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    fn image_png(
+        &self,
+        path: &Path,
+        max_pixel_size: u32,
+    ) -> deskfuse_platform::PlatformResult<Vec<u8>> {
+        image_png(path, max_pixel_size)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
-    fn data_image_png(&self, data: &[u8], max_pixel_size: u32) -> deskfuse_platform::PlatformResult<Vec<u8>> {
-        data_image_png(data, max_pixel_size).map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    fn data_image_png(
+        &self,
+        data: &[u8],
+        max_pixel_size: u32,
+    ) -> deskfuse_platform::PlatformResult<Vec<u8>> {
+        data_image_png(data, max_pixel_size)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
     fn transport_context(
-        &self, session_id: TransportSessionId, local_addr: SocketAddr, remote_addr: SocketAddr,
+        &self,
+        session_id: TransportSessionId,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
     ) -> deskfuse_platform::PlatformResult<ConnectionContext> {
         transport_context(session_id, local_addr, remote_addr)
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }
-    fn transport_listener_sockets(&self, port: u16) -> deskfuse_platform::PlatformResult<Vec<(String, UdpSocket)>> {
+    fn transport_listener_sockets(
+        &self,
+        port: u16,
+    ) -> deskfuse_platform::PlatformResult<Vec<(String, UdpSocket)>> {
         transport_listener_sockets(port)
             .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
     }

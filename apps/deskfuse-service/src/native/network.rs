@@ -1,6 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
 use super::{file_transfer, remote_app};
-use std::{collections::BTreeSet, io, net::SocketAddr, sync::{Arc, Mutex}};
 use deskfuse_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
 };
@@ -12,6 +11,12 @@ use deskfuse_runtime::{
 };
 use deskfuse_store::{PeerStore, SQLiteStore, SettingsStore};
 use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
+use std::{
+    collections::BTreeSet,
+    io,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 const CONTROL_PORT: u16 = 42424;
 const INPUT_PORT: u16 = 42425;

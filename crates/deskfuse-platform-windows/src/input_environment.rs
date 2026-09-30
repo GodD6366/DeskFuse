@@ -1,7 +1,6 @@
 //! Ordinary Default-desktop admission, independent of macOS TCC vocabulary.
 use deskfuse_platform::{
-    DesktopState, InputBlockerKind, InputCapability, InputEnvironmentPort,
-    InputEnvironmentSnapshot,
+    DesktopState, InputBlockerKind, InputCapability, InputEnvironmentPort, InputEnvironmentSnapshot,
 };
 
 pub struct WindowsInputEnvironment;
@@ -12,8 +11,10 @@ impl InputEnvironmentPort for WindowsInputEnvironment {
             return InputEnvironmentSnapshot::blocked(
                 session.desktop,
                 InputBlockerKind::InactiveDesktop,
-                format!("Windows input desktop unavailable: {:?} (native error: {:?})",
-                    session.blockers, session.native_error),
+                format!(
+                    "Windows input desktop unavailable: {:?} (native error: {:?})",
+                    session.blockers, session.native_error
+                ),
             );
         }
         // This only permits trying ordinary capture/SendInput. It does not

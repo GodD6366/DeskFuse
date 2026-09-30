@@ -3,13 +3,6 @@ use crate::{
     desktop_protocol::{self as ipc, InputDelivery, InputState},
     protocol,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    os::windows::io::AsRawHandle,
-    time::{Duration, Instant},
-};
-use tokio::time::{sleep, timeout};
 use deskfuse_core::{
     DeviceId, InputSessionId, InputShareRole, InputSharingSettings, InputSharingSnapshot,
     SharedInputEvent,
@@ -25,6 +18,13 @@ use deskfuse_platform_windows::{
     capture::{CaptureFault, CapturePoll, WindowsInputCapture},
     display_topology,
 };
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    os::windows::io::AsRawHandle,
+    time::{Duration, Instant},
+};
+use tokio::time::{sleep, timeout};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},

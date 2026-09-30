@@ -2,12 +2,12 @@
 //! over the runtime clipboard session, plus the local computer display name
 //! shared with macOS (hostname, never used as identity).
 
-use std::io;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::mpsc;
 use deskfuse_core::DeviceId;
 use deskfuse_runtime::RuntimeHandle;
 use deskfuse_transfer::{ClipboardFileFrame, FileBridge, FileFrameSink};
+use std::io;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc;
 
 const MAX_PENDING_FRAMES: usize = 256;
 
@@ -93,9 +93,11 @@ pub fn spawn_consumer(
     tokio::spawn(async move {
         while let Some((peer, frame)) = consumer.recv().await {
             let Ok(data) = frame.encode() else { continue };
-            let Ok(payload) =
-                deskfuse_core::ClipboardPayload::new(deskfuse_transfer::CLIPBOARD_FILE_MIME, data, 0)
-            else {
+            let Ok(payload) = deskfuse_core::ClipboardPayload::new(
+                deskfuse_transfer::CLIPBOARD_FILE_MIME,
+                data,
+                0,
+            ) else {
                 continue;
             };
             let Some(generation) = runtime.control_generation(peer) else {

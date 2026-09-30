@@ -1,18 +1,18 @@
 //! Session-bound mac-compatible clipboard epochs and actual desktop-apply receipts.
 use super::clipboard_codec;
 use crate::desktop_protocol::{Clipboard, Format, MAX_CONTENT};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
-use tokio::task::JoinHandle;
 use deskfuse_core::{
     Capabilities, ClipboardPayload, ConnectionState, DeviceId, RequestId, TrustState,
 };
 use deskfuse_protocol::clipboard_sync as wire;
 use deskfuse_runtime::RuntimeHandle;
 use deskfuse_transfer::{ClipboardFileFrame, FileBridge};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+use tokio::task::JoinHandle;
 use wire::SyncMessage;
 fn epoch() -> Vec<u8> {
     RequestId::new().as_uuid().as_bytes().to_vec()

@@ -1,6 +1,6 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
-use serde::{Deserialize, Serialize};
 use deskfuse_platform::{BoundaryErrorCode, PlatformCommand, PlatformEvent};
+use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
 pub use deskfuse_transfer::{DeferredEntryKind, DeferredFileEntry, FileTransferView};

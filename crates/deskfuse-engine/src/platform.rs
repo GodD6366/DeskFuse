@@ -1,8 +1,4 @@
 //! Platform-neutral fallback adapters. Production composition is injected by the host.
-use std::{
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-};
 use deskfuse_platform::ports::{
     EnginePlatformPort, FinderDestinationPort, FinderPort, HostRuntimePort, LanInterface,
     LanWebPort, WakeObserverPort, WorkflowExecutionPort,
@@ -10,6 +6,10 @@ use deskfuse_platform::ports::{
 use deskfuse_platform::{
     InputEnvironmentPort, InputEnvironmentSnapshot, Pasteboard, PermissionService,
     PermissionSnapshot, PlatformError, PlatformResult, SharedInputCapture, SharedInputInjector,
+};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 pub fn memory_platform() -> Arc<dyn EnginePlatformPort> {

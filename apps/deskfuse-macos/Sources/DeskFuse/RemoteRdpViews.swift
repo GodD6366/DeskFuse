@@ -186,7 +186,7 @@ private struct RemoteRdpCanvas: NSViewRepresentable {
         guard let provider = CGDataProvider(data: frame.bytes as CFData),
               let cgImage = CGImage(width: frame.width, height: frame.height, bitsPerComponent: 8,
                 bitsPerPixel: 32, bytesPerRow: frame.width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGImageByteOrder32Little.rawValue),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return }
         image = NSImage(cgImage: cgImage, size: NSSize(width: frame.width, height: frame.height)); needsDisplay = true
     }

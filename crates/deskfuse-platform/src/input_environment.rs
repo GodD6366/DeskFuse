@@ -40,9 +40,20 @@ impl InputEnvironmentSnapshot {
         }
     }
 
-    pub fn blocked(desktop: DesktopState, kind: InputBlockerKind, reason: impl Into<String>) -> Self {
-        let capability = InputCapability::Blocked(InputBlocker { kind, reason: reason.into() });
-        Self { desktop, capture: capability.clone(), inject: capability }
+    pub fn blocked(
+        desktop: DesktopState,
+        kind: InputBlockerKind,
+        reason: impl Into<String>,
+    ) -> Self {
+        let capability = InputCapability::Blocked(InputBlocker {
+            kind,
+            reason: reason.into(),
+        });
+        Self {
+            desktop,
+            capture: capability.clone(),
+            inject: capability,
+        }
     }
 }
 

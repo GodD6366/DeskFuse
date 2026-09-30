@@ -255,9 +255,7 @@ impl InputHub {
         Self::with_lan_port(None)
     }
 
-    pub fn with_lan_port(
-        lan_port: Option<Arc<dyn deskfuse_platform::ports::LanWebPort>>,
-    ) -> Self {
+    pub fn with_lan_port(lan_port: Option<Arc<dyn deskfuse_platform::ports::LanWebPort>>) -> Self {
         let (tx, rx) = mpsc::channel(512);
         let (update_tx, update_rx) = mpsc::channel(32);
         Self {

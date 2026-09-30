@@ -1,16 +1,6 @@
 //! Dedicated input orchestration. File reads and clipboard delivery cannot stall
 //! this thread; native capture and injection also own fail-safe lease timers.
 use crate::tokio_bridge::UiEvent;
-use futures::{StreamExt, channel::mpsc::UnboundedSender};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::{Duration, Instant, SystemTime},
-};
 use deskfuse_core::{
     DeviceId, DisplayKey, InputActivationId, InputActivationStatus, InputSessionId, InputShareRole,
     InputSharingSettings, InputSharingSnapshot, SharedInputEvent,
@@ -26,6 +16,16 @@ use deskfuse_platform::{
 };
 use deskfuse_platform::{PermissionSnapshot, PermissionStatus};
 use deskfuse_runtime::{RuntimeCommand, RuntimeEvent, RuntimeHandle};
+use futures::{StreamExt, channel::mpsc::UnboundedSender};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
 
 const LEASE_TTL: Duration = Duration::from_millis(1500);
 

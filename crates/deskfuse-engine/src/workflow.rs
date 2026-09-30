@@ -2,6 +2,11 @@
 //! native clients only edit definitions and observe typed results.
 use crate::tokio_bridge::TokioBridge;
 use crate::workflow_image::{self as image_processor, ProcessedImage};
+use deskfuse_core::workflow::*;
+use deskfuse_platform::{
+    PasteboardItem, PasteboardRepresentation, PasteboardSnapshot, WorkflowExecutionPort,
+};
+use deskfuse_transfer::TransferId;
 use std::{
     collections::BTreeMap,
     fs,
@@ -14,11 +19,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use deskfuse_core::workflow::*;
-use deskfuse_platform::{
-    PasteboardItem, PasteboardRepresentation, PasteboardSnapshot, WorkflowExecutionPort,
-};
-use deskfuse_transfer::TransferId;
 
 #[path = "workflow_execution.rs"]
 mod execution;

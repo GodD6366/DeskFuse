@@ -674,7 +674,9 @@ impl From<&EngineState> for EngineSnapshot {
                         input_restart_required: m.input_restart_required(&d.id),
                         remote_app_rdp: d.routes.iter().any(|route| {
                             Some(route.id) == d.selected_route_id
-                                && route.capabilities.contains(core::Capabilities::REMOTE_APPLICATION_RDP)
+                                && route
+                                    .capabilities
+                                    .contains(core::Capabilities::REMOTE_APPLICATION_RDP)
                         }),
                     });
                 }

@@ -29,6 +29,7 @@ use crate::{
     ChunkDescriptor, ClipboardFileFrame, ClipboardFilePlan, DeferredClipboardSource,
     DeferredEntryKind, DeferredFileEntry, RelativePath, TransferId, TransferManifest,
 };
+use deskfuse_core::DeviceId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -40,7 +41,6 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use deskfuse_core::DeviceId;
 
 #[cfg(windows)]
 use crate::Sha256Digest;

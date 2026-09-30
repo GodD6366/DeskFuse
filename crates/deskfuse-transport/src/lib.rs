@@ -41,13 +41,13 @@ use std::{
 };
 
 use async_trait::async_trait;
+use deskfuse_core::{Capabilities, DeviceId, Endpoint};
+use deskfuse_identity::{IdentityError, LocalIdentity};
+use deskfuse_protocol::{self as protocol, Envelope, Message, PeerInfo, Ping, Pong, ProtocolError};
 use futures::stream::{self, Stream};
 use thiserror::Error;
 use tokio::sync::{Notify, broadcast};
 use tokio::{task::JoinHandle, time};
-use deskfuse_core::{Capabilities, DeviceId, Endpoint};
-use deskfuse_identity::{IdentityError, LocalIdentity};
-use deskfuse_protocol::{self as protocol, Envelope, Message, PeerInfo, Ping, Pong, ProtocolError};
 
 const HELLO_REQUEST_ID: [u8; protocol::REQUEST_ID_SIZE] = [0; protocol::REQUEST_ID_SIZE];
 const MAX_RPC_FRAME: usize = protocol::MAX_FRAME_SIZE;
@@ -1779,8 +1779,8 @@ impl QuinnTransport {
             let sockets = tokio::task::spawn_blocking(move || {
                 lan::listener_sockets_on(lan_port.as_deref(), port)
             })
-                .await
-                .unwrap_or_default();
+            .await
+            .unwrap_or_default();
             for (interface, socket) in sockets {
                 let (lan_server, lan_client) = build_input_quic_configs(&config)?;
                 if let Ok(mut endpoint) = quinn::Endpoint::new(
@@ -2843,8 +2843,8 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
             tokio::task::spawn_blocking(move || {
                 lan::listener_sockets_on(lan_port.as_deref(), 42425)
             })
-                .await
-                .unwrap_or_default()
+            .await
+            .unwrap_or_default()
         } else {
             sockets
         };

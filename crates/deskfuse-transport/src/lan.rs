@@ -2,11 +2,15 @@
 //!
 //! Transport never executes platform commands. A host supplies the typed LAN
 //! port; absent or failed evidence is deliberately fail-closed.
-use std::net::{SocketAddr, UdpSocket};
 use deskfuse_core::{ConnectionContext, InterfaceKind, LinkScope, TransportSessionId};
 use deskfuse_platform::ports::LanWebPort;
+use std::net::{SocketAddr, UdpSocket};
 
-fn unknown(session_id: TransportSessionId, local_addr: SocketAddr, remote_addr: SocketAddr) -> ConnectionContext {
+fn unknown(
+    session_id: TransportSessionId,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+) -> ConnectionContext {
     ConnectionContext {
         session_id,
         local_addr,
@@ -27,8 +31,11 @@ pub(crate) fn inspect(
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
 ) -> ConnectionContext {
-    port.and_then(|port| port.transport_context(session_id, local_addr, remote_addr).ok())
-        .unwrap_or_else(|| unknown(session_id, local_addr, remote_addr))
+    port.and_then(|port| {
+        port.transport_context(session_id, local_addr, remote_addr)
+            .ok()
+    })
+    .unwrap_or_else(|| unknown(session_id, local_addr, remote_addr))
 }
 
 pub(crate) fn listener_sockets_on(
