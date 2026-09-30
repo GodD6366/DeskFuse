@@ -1010,8 +1010,16 @@ impl InputActor {
                         intent_id,
                         ttl_ms: _,
                         sequence,
+                        force,
                     } => {
-                        self.receive_activate(peer_id, context, activation_id, intent_id, sequence);
+                        self.receive_activate(
+                            peer_id,
+                            context,
+                            activation_id,
+                            intent_id,
+                            sequence,
+                            force,
+                        );
                     }
                     InputShareMessage::Activated {
                         activation_id,

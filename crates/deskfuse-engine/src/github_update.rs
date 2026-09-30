@@ -80,7 +80,7 @@ impl GitHubUpdater {
             view: LanUpdateView {
                 installed: Some(installed),
                 github: Some(GitHubUpdateView::default()),
-                message: "公开发行版依次检查 GitHub、Homebrew 和独立更新站点".into(),
+                message: "公开发行版优先从 GitHub 检查，失败时使用独立更新站点".into(),
                 ..Default::default()
             },
             task: None,
@@ -99,7 +99,7 @@ impl GitHubUpdater {
         }
         self.view.checking = true;
         self.view.error = None;
-        self.view.message = "正在依次检查 GitHub、Homebrew 和独立更新站点…".into();
+        self.view.message = "正在从 GitHub 检查发布版本，失败时自动使用独立站点…".into();
         self.last_check = Instant::now();
         self.task = Some(Task::Check(tokio::spawn(fetch_offer())));
     }
@@ -619,76 +619,31 @@ async fn fetch_release_list(url: &str) -> Result<Vec<Release>, String> {
         .map_err(|_| "发布列表格式无效".into())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReleaseSource {
-    Github,
-    Homebrew,
-    Site,
-}
-
-impl ReleaseSource {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Github => "GitHub",
-            Self::Homebrew => "Homebrew Formula API",
-            Self::Site => "独立域名",
-        }
-    }
-}
-
-/// GitHub、Homebrew、独立域名按固定顺序尝试；第一个返回非空完整发布列表
-/// 的来源胜出，避免旧站点快照覆盖 canonical release source。
+/// GitHub 是 canonical release source；只有 GitHub 请求失败或返回空列表时，
+/// 才访问独立域名，避免一个旧站点快照覆盖 GitHub 上的新版本。
 async fn release_candidates_with<F, Fut>(fetch: F) -> Result<Vec<Release>, String>
 where
-    F: Fn(ReleaseSource) -> Fut,
+    F: Fn(&'static str) -> Fut,
     Fut: Future<Output = Result<Vec<Release>, String>>,
 {
-    let mut errors = Vec::new();
-    for source in [
-        ReleaseSource::Github,
-        ReleaseSource::Homebrew,
-        ReleaseSource::Site,
-    ] {
-        match fetch(source).await {
-            Ok(releases) if !releases.is_empty() => return Ok(releases),
-            Ok(_) => errors.push(format!("{} 返回空发布列表", source.label())),
-            Err(error) => errors.push(format!("{}：{error}", source.label())),
-        }
+    let github_error = match fetch(API).await {
+        Ok(releases) if !releases.is_empty() => return Ok(releases),
+        Ok(_) => "GitHub 返回空发布列表".to_owned(),
+        Err(error) => error,
+    };
+    match fetch(FEED).await {
+        Ok(releases) if !releases.is_empty() => Ok(releases),
+        Ok(_) => Err(format!(
+            "更新检查失败：GitHub 返回空发布列表，独立域名也返回空发布列表"
+        )),
+        Err(site_error) => Err(format!(
+            "更新检查失败：GitHub（{github_error}）；独立域名（{site_error}）"
+        )),
     }
-    Err(format!("更新检查失败：{}", errors.join("；")))
-}
-
-#[derive(Deserialize)]
-struct HomebrewCask {
-    token: Option<String>,
-    version: Option<String>,
-}
-
-/// Homebrew Formula API 的 cask 响应只有版本与安装信息，不是 GitHub Release
-/// 列表；只有服务端恰好返回兼容的发布列表时才接受，否则继续到独立域名。
-async fn fetch_homebrew_release_list() -> Result<Vec<Release>, String> {
-    let bytes = fetch_json(HOMEBREW, 256 * 1024).await?;
-    if let Ok(releases) = serde_json::from_slice::<Vec<Release>>(&bytes) {
-        return Ok(releases);
-    }
-    let cask: HomebrewCask = serde_json::from_slice(&bytes)
-        .map_err(|_| "Homebrew Formula API 响应格式无效".to_owned())?;
-    Err(format!(
-        "Homebrew Formula API 仅提供 cask {} {}，缺少完整 Release 元数据",
-        cask.token.as_deref().unwrap_or("deskfuse"),
-        cask.version.as_deref().unwrap_or("未知版本")
-    ))
 }
 
 async fn release_candidates() -> Result<Vec<Release>, String> {
-    release_candidates_with(|source| async move {
-        match source {
-            ReleaseSource::Github => fetch_release_list(API).await,
-            ReleaseSource::Homebrew => fetch_homebrew_release_list().await,
-            ReleaseSource::Site => fetch_release_list(FEED).await,
-        }
-    })
-    .await
+    release_candidates_with(fetch_release_list).await
 }
 
 /// 版本元数据也优先读取 GitHub 资产；只有 canonical 资产不可用时才读取站点镜像。
@@ -824,11 +779,10 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
             let seen = Arc::clone(&seen);
             async move {
                 seen.lock().unwrap().push(url);
-                match url {
-                    ReleaseSource::Github | ReleaseSource::Homebrew => Ok(Vec::new()),
-                    ReleaseSource::Site => {
-                        Ok(vec![release("v0.4.5", &[("DeskFuse-arm64.dmg", 10)])])
-                    }
+                if url == API {
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![release("v0.4.5", &[("DeskFuse-arm64.dmg", 10)])])
                 }
             }
         })
@@ -836,14 +790,7 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
         .expect("site fallback");
 
         assert_eq!(releases[0].tag_name, "v0.4.5");
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![
-                ReleaseSource::Github,
-                ReleaseSource::Homebrew,
-                ReleaseSource::Site
-            ]
-        );
+        assert_eq!(*calls.lock().unwrap(), vec![API, FEED]);
     }
 
     #[tokio::test]
@@ -863,7 +810,7 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
         .expect("github release list");
 
         assert_eq!(releases[0].tag_name, "v0.4.5");
-        assert_eq!(*calls.lock().unwrap(), vec![ReleaseSource::Github]);
+        assert_eq!(*calls.lock().unwrap(), vec![API]);
     }
 
     #[test]
@@ -890,19 +837,6 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
     async fn live_github_release_list_is_reachable() {
         let releases = fetch_release_list(API).await.expect("github release list");
         assert!(releases.iter().any(|release| release.tag_name == "v0.4.5"));
-    }
-
-    #[tokio::test]
-    #[ignore = "live network verification"]
-    async fn live_homebrew_formula_api_is_checked_before_site() {
-        let result = fetch_homebrew_release_list().await;
-        match result {
-            Ok(releases) => println!(
-                "homebrew formula source returned {} releases",
-                releases.len()
-            ),
-            Err(error) => println!("homebrew formula source unavailable: {error}"),
-        }
     }
 
     #[tokio::test]

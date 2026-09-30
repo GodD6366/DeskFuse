@@ -1114,6 +1114,7 @@ mod tests {
                     intent_id,
                     ttl_ms: 1500,
                     sequence,
+                    force: false,
                 })
                 .unwrap();
             }

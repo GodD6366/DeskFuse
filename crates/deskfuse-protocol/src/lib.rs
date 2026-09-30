@@ -438,6 +438,7 @@ mod input_sharing_tests {
                 intent_id: InputActivationId::new(),
                 ttl_ms: 1500,
                 sequence: 1,
+                force: false,
             },
             InputShareMessage::Activated {
                 activation_id,
@@ -466,7 +467,8 @@ mod input_sharing_tests {
                 activation_id,
                 intent_id: InputActivationId::new(),
                 ttl_ms: 1500,
-                sequence: 0
+                sequence: 0,
+                force: false,
             })
             .is_err()
         );

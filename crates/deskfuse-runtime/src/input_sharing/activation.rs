@@ -300,6 +300,7 @@ impl InputActor {
         id: InputActivationId,
         intent_id: InputActivationId,
         sequence: u64,
+        force: bool,
     ) {
         if !self.activation_capable(peer, &context) {
             return;
@@ -365,7 +366,9 @@ impl InputActor {
         // from another controller should make it a receiver automatically.
         // Do not displace an active controller with selected participants or
         // outgoing activations, which could otherwise create mutual control.
-        if self.snapshot.settings.enabled
+        // However, if force is true, allow the incoming activation to take over.
+        if !force
+            && self.snapshot.settings.enabled
             && self.snapshot.settings.role == InputShareRole::Controller
             && !self.snapshot.environment.local_suspended
             && (!self.snapshot.settings.participants.is_empty() || !self.outgoing.is_empty())
@@ -379,6 +382,16 @@ impl InputActor {
                 Some("This device is already a controller".into()),
             );
             return;
+        }
+        // 强制模式：停止所有出站激活，变成被控设备
+        if force
+            && self.snapshot.settings.enabled
+            && self.snapshot.settings.role == InputShareRole::Controller
+            && (!self.snapshot.settings.participants.is_empty() || !self.outgoing.is_empty())
+        {
+            for peer_id in self.outgoing.keys().copied().collect::<Vec<_>>() {
+                self.stop_outgoing(peer_id, "被远程设备强制接管控制权", true, true);
+            }
         }
         if let Some(current) = &self.incoming {
             if current.id == id
@@ -707,6 +720,7 @@ impl InputActor {
                 intent_id: activation.intent_id,
                 ttl_ms: 1500,
                 sequence: activation.sequence,
+                force: false,
             };
             if !self.send(peer, &context, message) {
                 self.stop_outgoing(peer, "activation send failed", false, false);
@@ -903,6 +917,7 @@ mod tests {
                 intent_id: intent,
                 ttl_ms: 1500,
                 sequence,
+                force: false,
             },
         );
     }
@@ -1601,5 +1616,78 @@ mod tests {
             sender.tick_activations();
             assert_ne!(sender.outgoing[&peer].intent_id, intent);
         }
+    }
+    #[test]
+    fn force_activate_overrides_local_controller() {
+        let (mut controller, _peer, context, transport, _) = setup(true);
+        // 验证A是主控且有选中的参与者
+        assert!(controller.snapshot.settings.enabled);
+        assert_eq!(
+            controller.snapshot.settings.role,
+            InputShareRole::Controller
+        );
+        assert!(!controller.snapshot.settings.participants.is_empty());
+        assert!(!controller.outgoing.is_empty());
+
+        // 添加另一个peer到网络中
+        let other_peer = add_peer(&mut controller);
+
+        // B设备尝试非强制控制，应该被拒绝
+        let id = InputActivationId::new();
+        let intent = InputActivationId::new();
+        receive(
+            &mut controller,
+            other_peer,
+            &context,
+            InputShareMessage::Activate {
+                activation_id: id,
+                intent_id: intent,
+                ttl_ms: 1500,
+                sequence: 1,
+                force: false,
+            },
+        );
+        assert!(controller.incoming.is_none());
+        assert!(matches!(
+            transport.sent.lock().unwrap().last().unwrap().2,
+            InputShareMessage::Activated {
+                status: InputActivationStatus::BusyLocalController,
+                ..
+            }
+        ));
+
+        // B设备发送强制控制请求
+        let force_id = InputActivationId::new();
+        let force_intent = InputActivationId::new();
+        receive(
+            &mut controller,
+            other_peer,
+            &context,
+            InputShareMessage::Activate {
+                activation_id: force_id,
+                intent_id: force_intent,
+                ttl_ms: 1500,
+                sequence: 1,
+                force: true,
+            },
+        );
+
+        // 验证A已变成被控设备
+        assert!(controller.incoming.is_some());
+        assert_eq!(controller.incoming.as_ref().unwrap().id, force_id);
+        assert_eq!(controller.incoming.as_ref().unwrap().peer, other_peer);
+        // 所有出站激活应该被停止
+        assert!(
+            controller.outgoing.is_empty() || controller.outgoing.values().all(|a| a.suppressed)
+        );
+        // 验证发送了成功的激活确认
+        assert!(matches!(
+            transport.sent.lock().unwrap().last().unwrap().2,
+            InputShareMessage::Activated {
+                activation_id,
+                status: InputActivationStatus::Preparing,
+                ..
+            } if activation_id == force_id
+        ));
     }
 }

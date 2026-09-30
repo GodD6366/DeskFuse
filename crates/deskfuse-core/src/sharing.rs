@@ -512,6 +512,8 @@ pub enum InputShareMessage {
         intent_id: InputActivationId,
         ttl_ms: u32,
         sequence: u64,
+        #[serde(default)]
+        force: bool,
     },
     Activated {
         activation_id: InputActivationId,

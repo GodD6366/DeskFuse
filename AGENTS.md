@@ -50,6 +50,6 @@
 
 ## 更新源优先级（2026-09-24）
 
-- 公开发行版更新检查必须按 GitHub Releases API → Homebrew Formula API → `release_feed_url` 独立域名的顺序执行；第一个返回非空完整发布列表的来源胜出。
+- 公开发行版更新检查必须先读取 GitHub Releases canonical source；只有 GitHub 请求失败或返回空列表时，才读取 `release_feed_url` 的独立域名镜像。
 - `SHA256SUMS`、`release.json`、`build-info.json` 同样遵守 GitHub 资产优先、独立域名回退；最终仍必须通过哈希、版本描述、build-info、签名和公证校验。
-- Homebrew Formula API 的 cask 响应通常只提供版本号和安装信息，不提供完整 Release 元数据；解析不到完整发布列表时必须继续回退到独立域名。发布或更新检查改动后要分别验证 GitHub Releases API、Homebrew Formula API、独立 feed、元数据镜像和 Homebrew cask endpoint。
+- Homebrew tap 的 raw cask 只提供版本号和 arm64 SHA-256，不提供完整 Release 元数据，不能单独作为更新源。发布或更新检查改动后要分别验证 GitHub Releases API、独立 feed、元数据镜像和 Homebrew cask endpoint。
