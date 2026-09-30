@@ -16,4 +16,4 @@ build236 截图显示 A 本地标题栏仍占一整行，视频的应用圆角�
 
 依照既有交包要求不运行本机应用或交互测试，仅做必要构建、原有固定签名和 DMG 完整性检查。待双机检查：冷启动 Xcode/Chrome 等较慢应用；首次画面与当前屏幕的比例；四角透明和浮层拖动；主动释放、移出画布、切换本地应用后立即恢复原有鼠标共享。恢复延迟和具体远端应用圆角外观尚未实测。
 
-交付 `0.2.3 build238`：`dist/0.2.3-build238/uniDesk-arm64.dmg`。官方打包脚本退出 0，构建、嵌套签名、`verify-dmg.sh` 与差异检查通过。签名保持 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`919f87e42fa8c504f86a0344030bb80bbb89fe68d3850f5b22c271aeecc52bd8`。日志：`artifacts/remote-application/canvas-startup-sharing-package.log`。
+交付 `0.2.3 build238`：`dist/0.2.3-build238/DeskFuse-arm64.dmg`。官方打包脚本退出 0，构建、嵌套签名、`verify-dmg.sh` 与差异检查通过。签名保持 Apple Development: changchun.dcc@gmail.com (5GM2LLJFA6)，Team UNZ234UP68，未公证。SHA-256：`919f87e42fa8c504f86a0344030bb80bbb89fe68d3850f5b22c271aeecc52bd8`。日志：`artifacts/remote-application/canvas-startup-sharing-package.log`。

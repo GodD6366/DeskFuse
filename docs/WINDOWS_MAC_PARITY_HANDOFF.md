@@ -6,7 +6,7 @@
 
 ## 1. 当前基线
 
-工作区：`/Users/godd/.worktrees/uniDesk/windows`
+工作区：`/Users/godd/.worktrees/DeskFuse/windows`
 分支：`windows`
 
 已完成或已有源码链路：
@@ -44,12 +44,12 @@
 
 涉及：
 
-- `apps/unidesk-service/src/native/input_helper.rs`
-- `apps/unidesk-service/src/native/desktop.rs`
-- `crates/unidesk-platform-windows/src/session.rs`
-- `crates/unidesk-platform-windows/src/input.rs`
-- `apps/unidesk-windows/InputHelperProcess.cs`
-- `apps/unidesk-windows/app.manifest`
+- `apps/deskfuse-service/src/native/input_helper.rs`
+- `apps/deskfuse-service/src/native/desktop.rs`
+- `crates/deskfuse-platform-windows/src/session.rs`
+- `crates/deskfuse-platform-windows/src/input.rs`
+- `apps/deskfuse-windows/InputHelperProcess.cs`
+- `apps/deskfuse-windows/app.manifest`
 - `installer/windows/`
 
 ### P0：Explorer OLE 延迟文件
@@ -68,12 +68,12 @@
 
 涉及：
 
-- `apps/unidesk-windows/DesktopClipboardController.cs`
-- `apps/unidesk-windows/NativeClipboard.cs`
-- `apps/unidesk-service/src/native/file_transfer.rs`
-- `apps/unidesk-service/src/desktop.rs`
-- `crates/unidesk-transfer/`
-- `apps/unidesk-service/Cargo.toml`
+- `apps/deskfuse-windows/DesktopClipboardController.cs`
+- `apps/deskfuse-windows/NativeClipboard.cs`
+- `apps/deskfuse-service/src/native/file_transfer.rs`
+- `apps/deskfuse-service/src/desktop.rs`
+- `crates/deskfuse-transfer/`
+- `apps/deskfuse-service/Cargo.toml`
 
 ### P1：Windows 自动更新、签名和回滚
 
@@ -92,9 +92,9 @@
 
 涉及：
 
-- `crates/unidesk-update/`
-- `crates/unidesk-engine/src/app_update.rs`
-- `apps/unidesk-service/`
+- `crates/deskfuse-update/`
+- `crates/deskfuse-engine/src/app_update.rs`
+- `apps/deskfuse-service/`
 - `installer/windows/`
 - `scripts/package-windows.ps1`
 - `scripts/build-client-windows.ps1`
@@ -105,7 +105,7 @@
 
 任务：
 
-1. 复用 `unidesk-core::workflow`、`unidesk-engine::workflow_catalog` 和共享协议，不在 WPF 重写模型。
+1. 复用 `deskfuse-core::workflow`、`deskfuse-engine::workflow_catalog` 和共享协议，不在 WPF 重写模型。
 2. 为桌面 IPC 增加 workflow 列表、保存、删除、规则绑定、运行、取消和冲突恢复命令。
 3. 增加 Windows 快捷键注册/监听层，执行前复用 Rust workflow service 的冲突检查。
 4. 对文件、文本、图片和转换步骤做 Windows capability 检查。
@@ -114,12 +114,12 @@
 
 涉及：
 
-- `apps/unidesk-service/src/desktop_protocol.rs`
-- `apps/unidesk-service/src/native/desktop.rs`
-- `crates/unidesk-core/src/workflow.rs`
-- `crates/unidesk-engine/src/workflow_catalog.rs`
-- `crates/unidesk-engine/src/workflow_sharing.rs`
-- `apps/unidesk-windows/`
+- `apps/deskfuse-service/src/desktop_protocol.rs`
+- `apps/deskfuse-service/src/native/desktop.rs`
+- `crates/deskfuse-core/src/workflow.rs`
+- `crates/deskfuse-engine/src/workflow_catalog.rs`
+- `crates/deskfuse-engine/src/workflow_sharing.rs`
+- `apps/deskfuse-windows/`
 
 ### P1：多屏布局编辑
 
@@ -136,12 +136,12 @@
 
 涉及：
 
-- `apps/unidesk-windows/MainWindow.xaml`
-- `apps/unidesk-windows/MainWindow.xaml.cs`
-- `apps/unidesk-service/src/desktop_protocol.rs`
-- `apps/unidesk-service/src/native/desktop.rs`
-- `crates/unidesk-input/src/layout/`
-- `crates/unidesk-core/src/sharing.rs`
+- `apps/deskfuse-windows/MainWindow.xaml`
+- `apps/deskfuse-windows/MainWindow.xaml.cs`
+- `apps/deskfuse-service/src/desktop_protocol.rs`
+- `apps/deskfuse-service/src/native/desktop.rs`
+- `crates/deskfuse-input/src/layout/`
+- `crates/deskfuse-core/src/sharing.rs`
 
 ### P1：RemoteApp 和安装器对齐
 
@@ -157,9 +157,9 @@
 
 涉及：
 
-- `apps/unidesk-service/src/native/remote_app.rs`
-- `apps/unidesk-windows/`
-- `apps/unidesk-macos/RemoteApplication/`
+- `apps/deskfuse-service/src/native/remote_app.rs`
+- `apps/deskfuse-windows/`
+- `apps/deskfuse-macos/RemoteApplication/`
 - `docs/remote-application/`
 - `installer/windows/`
 
@@ -201,9 +201,9 @@
 - 平台错误统一入口是 `BoundaryErrorCode`，能力名称统一入口是
   `PlatformCapability`。未知 legacy code 仍 fail-closed 为 `native`，不能按
   成功处理。`GuardedPaste` 已纳入 macOS workflow capability 声明。
-- `unidesk-platform` 不引入 AppKit/Win32；其中的 filesystem-backed memory
-  ports 是当前 host assembly 的过渡实现。`unidesk-engine` 的旧 update/LAN/file
-  worker 与 `unidesk-transport` 的 macOS 网络探测仍是未迁移项，不要在没有
+- `deskfuse-platform` 不引入 AppKit/Win32；其中的 filesystem-backed memory
+  ports 是当前 host assembly 的过渡实现。`deskfuse-engine` 的旧 update/LAN/file
+  worker 与 `deskfuse-transport` 的 macOS 网络探测仍是未迁移项，不要在没有
   host adapter 和实机回归前移动或删除。
 - `PlatformCommand`/`PlatformEvent` 已接入 Windows 的 authenticated host payload
   和 typed receipt；`FileDataObjectPort` 由 WPF `DesktopClipboardController` 实现，

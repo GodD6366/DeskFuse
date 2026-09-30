@@ -5,7 +5,7 @@ Windows 服务把应用注册为原生 **RDP RemoteApp**（`TSAppAllowList`）�
 
 ## 能力宣告
 
-Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`（`unidesk_core::Capabilities`，`1 << 12`）。Mac 端据此判断对端是「RDP RemoteApp 主机」而非「媒体帧主机」。
+Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`（`deskfuse_core::Capabilities`，`1 << 12`）。Mac 端据此判断对端是「RDP RemoteApp 主机」而非「媒体帧主机」。
 
 ## 连接与授权
 
@@ -43,9 +43,9 @@ Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`�
 
 ## 服务端实现位置
 
-- 注册表/目录/`.rdp`：`apps/unidesk-service/src/native/remote_app.rs`（`register_app` / `list_remote_apps` / `rdp_file` / `serve`）。
-- 能力宣告与授权：`apps/unidesk-service/src/native/network.rs`（`serve_remote_applications` / `remote_app_authorized`）。
-- 会话轮询：`apps/unidesk-service/src/native/mod.rs` 服务主循环的 `desktop_tick` 分支。
+- 注册表/目录/`.rdp`：`apps/deskfuse-service/src/native/remote_app.rs`（`register_app` / `list_remote_apps` / `rdp_file` / `serve`）。
+- 能力宣告与授权：`apps/deskfuse-service/src/native/network.rs`（`serve_remote_applications` / `remote_app_authorized`）。
+- 会话轮询：`apps/deskfuse-service/src/native/mod.rs` 服务主循环的 `desktop_tick` 分支。
 
 ## 边界
 

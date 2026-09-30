@@ -1,0 +1,22 @@
+[package]
+name = "deskfuse-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+async-trait = "=0.1.92"
+deskfuse-core = { path = "../deskfuse-core" }
+deskfuse-input = { path = "../deskfuse-input" }
+tokio = { version = "1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
+[lints]
+workspace = true

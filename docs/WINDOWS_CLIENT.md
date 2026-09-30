@@ -5,8 +5,8 @@
 
 ## 组成
 
-- `apps/unidesk-windows/`：.NET 8 / WPF，普通用户 `asInvoker` 进程。原生窗口、单实例、托盘、当前用户剪贴板与本地历史、暂存区、设置。关闭主窗口不退出；托盘退出才结束客户端。
-- `apps/unidesk-service/`：Rust，SCM LocalSystem 服务；仍然唯一持有身份、信任、QUIC 和 mDNS，不在 GUI 中启动备用网络或生成第二套身份。独立 input-only runtime 使用 `_unidesk-input._udp` / UDP 42425；`unidesk-input-helper.exe` 是普通用户桌面的固定注入进程，不持有身份或网络运行时。
+- `apps/deskfuse-windows/`：.NET 8 / WPF，普通用户 `asInvoker` 进程。原生窗口、单实例、托盘、当前用户剪贴板与本地历史、暂存区、设置。关闭主窗口不退出；托盘退出才结束客户端。
+- `apps/deskfuse-service/`：Rust，SCM LocalSystem 服务；仍然唯一持有身份、信任、QUIC 和 mDNS，不在 GUI 中启动备用网络或生成第二套身份。独立 input-only runtime 使用 `_deskfuse-input._udp` / UDP 42425；`deskfuse-input-helper.exe` 是普通用户桌面的固定注入进程，不持有身份或网络运行时。
 - `docs/WINDOWS_DESKTOP_IPC.md`：桌面 v2 pipe 的精确 JSON 契约。旧 v1 Status 工具保留。
 - `installer/windows/` 与 `scripts/package-windows.ps1`：首次手动安装的离线 EXE；固定 Program Files 安装，注册服务；普通用户 GUI 不由提权安装器直接启动。
 
@@ -50,8 +50,8 @@
 Windows MSVC x64 / .NET 8 / NSIS 3：
 
 ```powershell
-.\scripts\snapshot-windows-source.ps1 -OutputPath "$env:TEMP\unidesk-source.json"
-.\scripts\package-windows.ps1 -SourceSnapshot "$env:TEMP\unidesk-source.json"
+.\scripts\snapshot-windows-source.ps1 -OutputPath "$env:TEMP\deskfuse-source.json"
+.\scripts\package-windows.ps1 -SourceSnapshot "$env:TEMP\deskfuse-source.json"
 ```
 
 脚本默认不运行测试、不安装服务、不启动应用。安装器实际执行时按安装说明注册服务和仅 Private / LocalSubnet 的程序端口规则。移除只处理本安装器的载荷和规则，保留身份、配对和用户数据。

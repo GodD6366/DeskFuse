@@ -1,4 +1,0 @@
-[bindings.swift]
-module_name = "UniDeskEngine"
-ffi_module_name = "UniDeskEngineFFI"
-generate_module_map = true

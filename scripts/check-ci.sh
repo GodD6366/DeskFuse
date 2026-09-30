@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 python3 scripts/check-repository.py --worktree
-TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unidesk-ci-check.XXXXXX")"
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-ci-check.XXXXXX")"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)

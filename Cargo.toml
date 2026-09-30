@@ -1,44 +1,44 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/unidesk-core",
-    "crates/unidesk-protocol",
-    "crates/unidesk-store",
-    "crates/unidesk-identity",
-    "crates/unidesk-discovery",
-    "crates/unidesk-transport",
-    "crates/unidesk-runtime",
-    "crates/unidesk-platform",
-    "crates/unidesk-update",
-    "crates/unidesk-update-platform",
-    "crates/unidesk-platform-macos",
-    "crates/unidesk-platform-windows",
-    "crates/unidesk-transfer",
-    "crates/unidesk-input",
-    "crates/unidesk-engine",
-    "crates/unidesk-ffi",
-    "crates/unidesk-collaboration",
-    "crates/unidesk-store-core",
-    "crates/unidesk-store-library",
-    "extensions/unidesk-content-library",
-    "extensions/unidesk-workflow",
-    "extensions/unidesk-lan-web",
-    "extensions/unidesk-update",
-    "tools/unidesk-bindgen",
-    "tools/unidesk-sdk",
-    "apps/unidesk-service",
-    "apps/unidesk-probe",
-    "apps/unidesk-input-macos",
-    "apps/unidesk-input-windows",
+    "crates/deskfuse-core",
+    "crates/deskfuse-protocol",
+    "crates/deskfuse-store",
+    "crates/deskfuse-identity",
+    "crates/deskfuse-discovery",
+    "crates/deskfuse-transport",
+    "crates/deskfuse-runtime",
+    "crates/deskfuse-platform",
+    "crates/deskfuse-update",
+    "crates/deskfuse-update-platform",
+    "crates/deskfuse-platform-macos",
+    "crates/deskfuse-platform-windows",
+    "crates/deskfuse-transfer",
+    "crates/deskfuse-input",
+    "crates/deskfuse-engine",
+    "crates/deskfuse-ffi",
+    "crates/deskfuse-collaboration",
+    "crates/deskfuse-store-core",
+    "crates/deskfuse-store-library",
+    "extensions/deskfuse-content-library",
+    "extensions/deskfuse-workflow",
+    "extensions/deskfuse-lan-web",
+    "extensions/deskfuse-update",
+    "tools/deskfuse-bindgen",
+    "tools/deskfuse-sdk",
+    "apps/deskfuse-service",
+    "apps/deskfuse-probe",
+    "apps/deskfuse-input-macos",
+    "apps/deskfuse-input-windows",
 ]
-default-members = ["crates/unidesk-ffi"]
+default-members = ["crates/deskfuse-ffi"]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.4.5"
 edition = "2024"
 rust-version = "1.97.1"
 license = "LicenseRef-Proprietary"
-repository = "https://github.com/GodD6366/uniDesk"
+repository = "https://github.com/GodD6366/DeskFuse"
 publish = false
 
 [workspace.lints.rust]
@@ -63,11 +63,11 @@ quinn = { version = "=0.11.11", default-features = false, features = ["runtime-t
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 security-framework = "=3.7.0"
-serde = { version = "=1.0.228", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.149"
 sha2 = "=0.11.0"
-thiserror = "=2.0.18"
-tokio = { version = "=1.49.0", features = ["full"] }
+thiserror = "=2.0.20"
+tokio = { version = "=1.53.1", features = ["full"] }
 tokio-util = { version = "=0.7.18", features = ["codec", "io", "io-util", "net", "rt", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "fmt"] }

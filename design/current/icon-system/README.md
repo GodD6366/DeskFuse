@@ -1,4 +1,4 @@
-# uniDesk · 相连双窗
+# DeskFuse · 相连双窗
 
 2026-09-12 按用户「重新设计软件图标和状态栏图标」要求实现。本方案已接入应用，尚未经过用户视觉确认。
 
@@ -14,13 +14,13 @@
 
 | 用途 | 文件 |
 | --- | --- |
-| 应用 SVG 源文件 | `resources/uniDesk-icon.svg` |
-| 菜单栏 SVG 源文件 | `resources/unidesk-status-icon.svg` |
-| 应用 1024 px PNG | `resources/generated/uniDesk-icon-1024.png` |
-| 原生 macOS ICNS | `resources/generated/uniDesk.icns` |
-| 菜单栏 36 px PNG | `resources/generated/unidesk-status-icon.png` |
+| 应用 SVG 源文件 | `resources/DeskFuse-icon.svg` |
+| 菜单栏 SVG 源文件 | `resources/deskfuse-status-icon.svg` |
+| 应用 1024 px PNG | `resources/generated/DeskFuse-icon-1024.png` |
+| 原生 macOS ICNS | `resources/generated/DeskFuse.icns` |
+| 菜单栏 36 px PNG | `resources/generated/deskfuse-status-icon.png` |
 | 派生透明中心标识 | `resources/macos_center_icon.svg` |
-| 原生菜单栏接入 | `apps/unidesk-macos/Sources/UniDesk/UniDeskApp.swift` |
+| 原生菜单栏接入 | `apps/deskfuse-macos/Sources/DeskFuse/DeskFuseApp.swift` |
 
 仓库根目录执行 `./scripts/generate-assets.sh` 可重建全部图标。打包与开发运行脚本已复制这些资源；本次不改变包标识、签名选择或配对身份。
 

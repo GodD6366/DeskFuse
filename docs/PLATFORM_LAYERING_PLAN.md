@@ -33,7 +33,7 @@ Rust 公共层只表达业务状态、协议和平台请求；Windows/macOS 原�
 
 范围：
 
-- 从 `unidesk-update` 抽取平台无关的 manifest、签名、版本选择、事务状态机和恢复策略。
+- 从 `deskfuse-update` 抽取平台无关的 manifest、签名、版本选择、事务状态机和恢复策略。
 - 定义 `PlatformInstaller` / `PlatformUpdateExecutor` 接口。
 - 将 Windows UAC、SCM、进程停止、文件替换、SQLite/WAL/SHM 备份恢复留在 Windows 实现。
 - 将 macOS 安装、helper、备份和回滚适配到同一接口。
@@ -45,8 +45,8 @@ Rust 公共层只表达业务状态、协议和平台请求；Windows/macOS 原�
 - 放宽当前 fail-closed 更新策略。
 - 把 NSIS 首次安装包当事务更新包。
 
-当前交付：`unidesk-update` 仅保留 manifest、签名、版本选择、事务状态机和
-`PlatformInstaller`/`PlatformUpdateExecutor` 端口；`unidesk-update-platform`
+当前交付：`deskfuse-update` 仅保留 manifest、签名、版本选择、事务状态机和
+`PlatformInstaller`/`PlatformUpdateExecutor` 端口；`deskfuse-update-platform`
 是过渡性的 Rust 执行适配层，承载现有 macOS bundle/helper/备份回滚和
 Windows UAC/SCM/进程/SQLite-WAL-SHM 实现。该适配层不代表原生 Swift/C# 实机
 能力已验收；后续迁移时必须保留 helper 名称/请求 ABI、签名校验和 NSIS
@@ -121,7 +121,7 @@ fail-closed 约束。待迁移函数集中在该 crate 的 `macos.rs` 与 `windo
 | --- | --- | --- |
 | legacy string IPC | Windows v2 `Rejected.code` 继续保留；新增 `boundary_error: BoundaryErrorCode`，由旧 code 单向映射，旧 WPF 客户端仍可读取原字段 | 后续客户端稳定消费 typed 字段后，才可评估收紧字符串消息 |
 | 重复平台逻辑 | 统一 `PlatformError::code`、`BoundaryErrorCode::from_legacy_code` 和 `PlatformCapability::as_str`；macOS workflow 宣告 `GuardedPaste` | Windows snapshot capability、workflow capability snapshot 仍需由各自真实 adapter 汇总，不能简单合并 |
-| 公共 crate OS API | `unidesk-platform` 仍仅含端口和 memory/test 实现，没有 AppKit/Win32 依赖；engine 的文件、LAN、旧更新 worker 仍在生产路径，未冒险搬迁 | 以 host port 替换 engine worker 后再删除残余 `std::fs`/process 调用 |
+| 公共 crate OS API | `deskfuse-platform` 仍仅含端口和 memory/test 实现，没有 AppKit/Win32 依赖；engine 的文件、LAN、旧更新 worker 仍在生产路径，未冒险搬迁 | 以 host port 替换 engine worker 后再删除残余 `std::fs`/process 调用 |
 | 未使用 typed ports | `FileDataObjectPort`、`PlatformCommand`/`PlatformEvent` 已保留为 typed seam；新增失败事件类型，未伪造接入 | 需同时改 native host 和协议消费者后再接通，禁止只删声明 |
 
 交接时必须列出：未迁移文件、兼容字段、能力来源、以及下一次删除的前置

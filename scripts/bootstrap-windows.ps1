@@ -1,7 +1,7 @@
 # Run over SSH on the Windows x64 build host. Never auto-reboot the host.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$root = Join-Path $env:LOCALAPPDATA 'uniDesk-build-tools'
+$root = Join-Path $env:LOCALAPPDATA 'DeskFuse-build-tools'
 New-Item -ItemType Directory -Force $root | Out-Null
 Start-Transcript -Path (Join-Path $root 'bootstrap.log') -Append
 try {

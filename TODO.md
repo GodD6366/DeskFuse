@@ -1,4 +1,4 @@
-# uniDesk TODO
+# DeskFuse TODO
 
 > 用可勾选项跟踪公开发布与后续交付。勾选只表示动作完成，不表示真实设备或视觉验收通过；功能契约以 `docs/` 与 `design/current/` 为准。
 
@@ -7,12 +7,12 @@
 - [x] 清理 Git 历史中的设计稿、迭代产物与本机私有引用
 - [x] 仓库设为 public，并确认漏洞报告入口
 - [x] 移除 `scripts/probe-finder-*.{sh,py}` 本机诊断脚本并加入忽略清单
-- [x] 明确并恢复被删除的测试前，先删单测保证产物：4 个剪贴板历史用例 + 2 个 `unidesk-runtime` 用例已移除
+- [x] 明确并恢复被删除的测试前，先删单测保证产物：4 个剪贴板历史用例 + 2 个 `deskfuse-runtime` 用例已移除
 - [x] 发布 `v0.1.0` GitHub 预发行，`cask` job 已固定 DMG 校验和
 - [x] 按 README 用 `brew trust` / `tap` / `install --cask` 从公开 Release 安装成功；app 仍带隔离属性，需执行 `xattr`
 - [ ] 恢复被删除的 4 个剪贴板历史用例（先确认「库 id 是否即历史 id」「未知远程来源是否入库」）
-- [ ] 恢复被删除的 2 个 `unidesk-runtime` 用例（先确认路由失败回退与禁用控制器的元数据链语义）
-- [ ] 重新启用 workspace `pedantic` 并清理 `unidesk-service` 与 `unidesk-engine` 的实验性 allow
+- [ ] 恢复被删除的 2 个 `deskfuse-runtime` 用例（先确认路由失败回退与禁用控制器的元数据链语义）
+- [ ] 重新启用 workspace `pedantic` 并清理 `deskfuse-service` 与 `deskfuse-engine` 的实验性 allow
 - [ ] 补充真实界面截图到 README，替换“待补”说明
 
 ## 分发与签名

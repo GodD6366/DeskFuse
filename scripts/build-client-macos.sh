@@ -13,7 +13,7 @@ for arg in "$@"; do
   esac
 done
 if [[ "$USE_SDK" -eq 0 ]]; then
-  UNIDESK_FORCE_RUST=1 "$ROOT_DIR/scripts/build-native-macos.sh" "$CONFIGURATION"
+  DESKFUSE_FORCE_RUST=1 "$ROOT_DIR/scripts/build-native-macos.sh" "$CONFIGURATION"
 else
   "$ROOT_DIR/scripts/build-native-macos.sh" "$CONFIGURATION"
 fi

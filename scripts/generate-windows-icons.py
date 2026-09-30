@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert uniDesk's existing app PNG into a multi-resolution Windows ICO.
+"""Convert DeskFuse's existing app PNG into a multi-resolution Windows ICO.
 
 No artwork is generated or redrawn. Uses Pillow for Lanczos downsampling; the
 ICO stores each RGBA size as PNG so transparent edges remain intact. Windows
@@ -15,8 +15,8 @@ import struct
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "resources/generated/uniDesk-icon-1024.png"
-ASSETS = ROOT / "apps/unidesk-windows/Assets"
+SOURCE = ROOT / "resources/generated/DeskFuse-icon-1024.png"
+ASSETS = ROOT / "apps/deskfuse-windows/Assets"
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 
@@ -47,7 +47,7 @@ def main() -> None:
             if decoded.ico.getimage((size, size)).size != (size, size):
                 raise SystemExit("ICO representation failed decoding")
     ASSETS.mkdir(parents=True, exist_ok=True)
-    icon = ASSETS / "uniDesk.ico"
+    icon = ASSETS / "DeskFuse.ico"
     temporary = icon.with_suffix(".ico.tmp")
     temporary.write_bytes(payload)
     temporary.replace(icon)

@@ -17,17 +17,17 @@ class UpdateCaskTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.0"\n')
-        self.dmg = self.root / "uniDesk-arm64.dmg"
+        self.dmg = self.root / "DeskFuse-arm64.dmg"
         self.dmg.write_bytes(b"test fixture, not a DMG")
-        self.cask = self.root / "Casks" / "unidesk.rb"
+        self.cask = self.root / "Casks" / "deskfuse.rb"
 
     def test_render_contract(self):
         rendered = update_cask.render("0.1.0", DIGEST)
-        self.assertIn('cask "unidesk" do', rendered)
+        self.assertIn('cask "deskfuse" do', rendered)
         self.assertIn('version "0.1.0"', rendered)
         self.assertIn(f'sha256 "{DIGEST}"', rendered)
-        self.assertIn("/releases/download/v#{version}/uniDesk-arm64.dmg", rendered)
-        self.assertIn('app "uniDesk.app"', rendered)
+        self.assertIn("/releases/download/v#{version}/DeskFuse-arm64.dmg", rendered)
+        self.assertIn('app "DeskFuse.app"', rendered)
         self.assertIn("depends_on arch: :arm64", rendered)
         self.assertIn("depends_on macos: :sonoma", rendered)
         self.assertNotIn("xattr", rendered)

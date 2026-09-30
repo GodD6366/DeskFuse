@@ -1,0 +1,19 @@
+{
+  "source": "resources/generated/DeskFuse-icon-1024.png",
+  "source_sha256": "6b22ca77737a7edff2e1530ed83c033391d9f97edc3f9a062243df9af5c337fc",
+  "output": "apps/deskfuse-windows/Assets/DeskFuse.ico",
+  "output_sha256": "0e048c52478bcac4e917240bff070e63aa900a2bbf7cdbb0525e7033a6477829",
+  "sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    128,
+    256
+  ],
+  "encoding": "PNG-backed 32-bit RGBA ICO",
+  "tray": "Existing colored app mark; not the macOS monochrome template"
+}

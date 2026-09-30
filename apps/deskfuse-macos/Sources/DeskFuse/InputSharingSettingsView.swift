@@ -1,0 +1,235 @@
+import SwiftUI
+import DeskFuseEngine
+
+/// Full-page keyboard/mouse sharing editor. The page replaces the old modal
+/// sheet, so the same controls live in 设置 → 键鼠共享 and are one click away
+/// from the 鼠标共享 header.
+struct InputSharingSettingsView: View {
+    @Bindable var store: AppStore
+    @State private var draft: InputSettings
+    @State private var saved: InputSettings
+    @State private var saving = false
+    @State private var status: String?
+    @State private var failure: String?
+    @State private var sceneName = ""
+    @State private var renameID: String?
+    @State private var remember = true
+    @State private var selectedController = ""
+
+    init(store: AppStore, initial: InputSettings) {
+        self.store = store
+        _draft = State(initialValue: initial)
+        _saved = State(initialValue: initial)
+    }
+
+    private var snapshot: EngineSnapshot? { store.snapshot }
+    private var dirty: Bool { draft != saved }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                controllerSection
+                switchSection
+                shortcutSection
+                if snapshot?.input.canConfigure == true {
+                    layoutSection
+                    environmentSection
+                }
+            }
+            .formStyle(.grouped)
+            SettingsSaveFooter(dirty: dirty, saving: saving, canSave: dirty, canRevert: dirty,
+                status: status, error: failure,
+                revert: { draft = saved; failure = nil; status = nil }, save: save)
+        }
+        .onChange(of: snapshot?.input.settings, initial: true) { _, current in
+            guard let current else { return }
+            saved = current
+            if !dirty { draft = current }
+        }
+    }
+
+    // MARK: - 主控
+
+    private var controllerSection: some View {
+        Section("主控") {
+            Toggle("此设备作为主控", isOn: Binding(get: { draft.controller }, set: setController))
+            Toggle("共享键鼠", isOn: Binding(get: { draft.enabled }, set: setSharingEnabled))
+                .disabled(!draft.controller)
+            Text("作为主控时，可以在「鼠标共享」页面添加设备屏幕并分享键鼠。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var switchSection: some View {
+        Section("跨屏方式") {
+            Picker("触发方式", selection: $draft.switchMode) {
+                Text("立即穿越").tag(SwitchMode.instant)
+                Text("停留 250 毫秒").tag(SwitchMode.dwell)
+                Text("双触边缘").tag(SwitchMode.doubleTap)
+            }
+            ForEach(0..<4) { index in
+                Toggle(["禁用左上角", "禁用右上角", "禁用左下角", "禁用右下角"][index],
+                       isOn: cornerBinding(index))
+            }
+            Stepper("边角范围：\(draft.cornerSize) pt", value: $draft.cornerSize, in: 0...256)
+        }
+    }
+
+    private var shortcutSection: some View {
+        Section("快捷键") {
+            ShortcutEditor(store: store, shortcuts: $draft.shortcuts)
+        }
+    }
+
+    // MARK: - 布局与 Wi-Fi
+
+    private var layoutSection: some View {
+        Section("布局") {
+            if let ssid = snapshot?.input.ssid {
+                LabeledContent("当前网络", value: ssid)
+                Button(boundScene == nil ? "保存布局到「\(ssid)」" : "更新「\(ssid)」布局") {
+                    store.error = nil
+                    store.send(.saveEnvironmentLayout(name: nil))
+                }
+                Text("同一 Wi-Fi 下的屏幕排布会自动保存并在回到该网络时恢复；只恢复排布，不会自动开启共享。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("读取到唯一的 Wi-Fi 名称后，可以按网络保存布局；也可以直接创建独立布局。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("前往权限设置") { store.openSettings(tab: SettingsCategory.permissions.rawValue) }
+                    .buttonStyle(.link)
+            }
+            HStack {
+                TextField("布局名称", text: $sceneName)
+                Button(renameID == nil ? "保存为新布局" : "重命名") { commitSceneName() }
+                    .disabled(sceneName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Text("布局保存已应用的屏幕排布；主控与跨屏设置请使用页面底部的保存按钮。")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(snapshot?.input.scenes ?? [], id: \.id) { scene in
+                sceneRow(scene)
+            }
+        }
+    }
+
+    private var environmentSection: some View {
+        Section("按 Wi-Fi 自动选择主控") {
+            Text(snapshot?.input.environmentMessage ?? "等待网络状态")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("主控", selection: $selectedController) {
+                Text("选择设备").tag("")
+                if let snapshot {
+                    Text(snapshot.localName).tag(snapshot.localId)
+                    ForEach(snapshot.devices.filter(\.member), id: \.id) { Text($0.name).tag($0.id) }
+                }
+            }
+            Toggle("记住当前 Wi-Fi", isOn: $remember)
+            Button("使用此主控") {
+                store.error = nil
+                store.send(.chooseController(id: selectedController, remember: remember))
+            }
+            .disabled(selectedController.isEmpty)
+            ForEach(snapshot?.input.rules ?? [], id: \.ssid) { rule in
+                HStack {
+                    Text(rule.ssid)
+                    Spacer()
+                    Text(controllerName(rule.controller)).foregroundStyle(.secondary)
+                    Button("删除") { store.send(.forgetEnvironment(ssid: rule.ssid)) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sceneRow(_ scene: DeskFuseEngine.Scene) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(scene.name)
+                if let ssid = scene.ssid {
+                    Text("自动恢复于 \(ssid)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button("应用") {
+                store.send(.applyScene(id: scene.id))
+                failure = nil
+                status = nil
+            }
+            .disabled(dirty)
+            .help(dirty ? "请先保存或撤销上方修改" : "应用该布局")
+            Button("重命名") { renameID = scene.id; sceneName = scene.name }
+            Button("删除", role: .destructive) { store.send(.deleteScene(id: scene.id)) }
+        }
+    }
+
+    private var boundScene: DeskFuseEngine.Scene? {
+        guard let ssid = snapshot?.input.ssid else { return nil }
+        return snapshot?.input.scenes.first { $0.ssid == ssid }
+    }
+
+    // MARK: - Actions
+
+    private func setController(_ enabled: Bool) {
+        draft.controller = enabled
+        if !enabled { draft.enabled = false }
+    }
+
+    private func setSharingEnabled(_ enabled: Bool) {
+        draft.enabled = enabled
+        if enabled { draft.controller = true }
+    }
+
+    private func cornerBinding(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { draft.disabledCorners & (1 << index) != 0 },
+            set: { on in
+                if on { draft.disabledCorners |= 1 << index }
+                else { draft.disabledCorners &= ~(1 << index) }
+            }
+        )
+    }
+
+    private func commitSceneName() {
+        let name = sceneName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if let id = renameID {
+            store.send(.renameScene(id: id, name: name))
+            renameID = nil
+        } else {
+            guard snapshot?.input.canConfigure == true else {
+                store.error = "只能保留为布局操作；请先在主控设备上开启共享"
+                return
+            }
+            store.error = nil
+            store.send(.saveScene(name: name))
+        }
+        sceneName = ""
+    }
+
+    private func controllerName(_ id: String) -> String {
+        if id == snapshot?.localId { return snapshot?.localName ?? "本机" }
+        return snapshot?.devices.first { $0.id == id }?.name ?? "离线设备"
+    }
+
+    private func save() {
+        guard !saving else { return }
+        var submitted = draft
+        // Display arrangement belongs to the layout page; keep what is live so
+        // a stale form can never rewind a drag that happened meanwhile.
+        if let live = snapshot?.input.settings.placements { submitted.placements = live }
+        saving = true
+        failure = nil
+        status = nil
+        store.error = nil
+        store.send(.setInput(settings: submitted), applied: {
+            draft = submitted
+            saved = submitted
+            saving = false
+            status = "已保存"
+        }, failed: { message in
+            saving = false
+            failure = message
+        })
+    }
+}

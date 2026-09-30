@@ -3,7 +3,7 @@
 # scripts/import-developer-id.sh. Safe to run when import never happened.
 set -euo pipefail
 
-STATE_DIR="${UNIDESK_SIGNING_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/unidesk-codesign}"
+STATE_DIR="${DESKFUSE_SIGNING_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/deskfuse-codesign}"
 if [[ ! -d "$STATE_DIR" ]]; then
   echo "signing cleanup: no imported Developer ID state"
   exit 0

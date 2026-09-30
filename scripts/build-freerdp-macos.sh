@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build FreeRDP (headless client, static) and the uniDesk RDP bridge into a
+# Build FreeRDP (headless client, static) and the DeskFuse RDP bridge into a
 # single static library consumed by the macOS app's Swift Package.
 #
-# Output: apps/unidesk-macos/RemoteApplication/Vendor/FreeRDP/
-#   RdpBridge.h            bridge header (imported by Swift via CUniDeskRdp)
+# Output: apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/
+#   RdpBridge.h            bridge header (imported by Swift via CDeskFuseRdp)
 #   module.modulemap       Swift Package system-library descriptor
-#   lib/libunidesk-rdp.a   FreeRDP + WinPR + client + RdpBridge combined
+#   lib/libdeskfuse-rdp.a   FreeRDP + WinPR + client + RdpBridge combined
 #
 # The combined archive still needs these system libraries at final link time:
 #   ssl, crypto (openssl@3), usb-1.0 (libusb), json-c
@@ -13,10 +13,10 @@
 set -euo pipefail
 
 FREERDP_VERSION="3.14.1"
-CACHE_DIR="${FREERDP_CACHE_DIR:-$HOME/.cache/unidesk-freerdp}"
+CACHE_DIR="${FREERDP_CACHE_DIR:-$HOME/.cache/deskfuse-freerdp}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REMOTE_APP="$ROOT/apps/unidesk-macos/RemoteApplication"
-BRIDGE_SRC="$REMOTE_APP/Sources/UniDeskRemoteApplication/RdpBridge"
+REMOTE_APP="$ROOT/apps/deskfuse-macos/RemoteApplication"
+BRIDGE_SRC="$REMOTE_APP/Sources/DeskFuseRemoteApplication/RdpBridge"
 VENDOR="$REMOTE_APP/Vendor/FreeRDP"
 
 CLANG="${CLANG:-clang}"
@@ -76,9 +76,9 @@ COMMON_FLAGS=(
 )
 "$CLANG" -c "$BRIDGE_SRC/RdpBridge.c" -o "$BUILD/RdpBridge.o" "${COMMON_FLAGS[@]}"
 
-echo "==> Combining into libunidesk-rdp.a"
+echo "==> Combining into libdeskfuse-rdp.a"
 mkdir -p "$VENDOR/lib"
-libtool -static -o "$VENDOR/lib/libunidesk-rdp.a" \
+libtool -static -o "$VENDOR/lib/libdeskfuse-rdp.a" \
   "$BUILD/RdpBridge.o" \
   "$BUILD/libfreerdp/libfreerdp3.a" \
   "$BUILD/winpr/libwinpr/libwinpr3.a" \
@@ -87,9 +87,9 @@ libtool -static -o "$VENDOR/lib/libunidesk-rdp.a" \
 echo "==> Installing header and module map"
 cp "$BRIDGE_SRC/RdpBridge.h" "$VENDOR/RdpBridge.h"
 cat > "$VENDOR/module.modulemap" <<'EOF'
-module CUniDeskRdp {
+module CDeskFuseRdp {
     header "RdpBridge.h"
-    link "unidesk-rdp"
+    link "deskfuse-rdp"
     export *
 }
 EOF

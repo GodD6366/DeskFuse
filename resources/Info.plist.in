@@ -5,17 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>uniDesk</string>
+	<string>DeskFuse</string>
 	<key>CFBundleExecutable</key>
-	<string>unidesk-app</string>
+	<string>deskfuse-app</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.unidesk.app</string>
+	<string>com.deskfuse.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleIconFile</key>
-	<string>uniDesk.icns</string>
+	<string>DeskFuse.icns</string>
 	<key>CFBundleName</key>
-	<string>uniDesk</string>
+	<string>DeskFuse</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -26,17 +26,17 @@
 	<string>14.0</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_unidesk._udp</string>
-		<string>_unidesk-input._udp</string>
+		<string>_deskfuse._udp</string>
+		<string>_deskfuse-input._udp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>uniDesk uses the local network to discover and connect trusted Macs.</string>
+	<string>DeskFuse uses the local network to discover and connect trusted Macs.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>uniDesk 需要读取当前 Wi-Fi 名称，以应用你保存的家里或公司主控规则；不会收集地理位置。</string>
+	<string>DeskFuse 需要读取当前 Wi-Fi 名称，以应用你保存的家里或公司主控规则；不会收集地理位置。</string>
 	<key>NSLocationUsageDescription</key>
 	<string>读取当前 Wi-Fi 名称以选择键鼠主控，不收集地理位置。</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>uniDesk 需要向 Finder 读取粘贴目标文件夹，以便文件接收完成后自动保存到你首次粘贴的位置。</string>
+	<string>DeskFuse 需要向 Finder 读取粘贴目标文件夹，以便文件接收完成后自动保存到你首次粘贴的位置。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>

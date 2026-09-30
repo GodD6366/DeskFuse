@@ -532,6 +532,445 @@ dependencies = [
 ]
 
 [[package]]
+name = "deskfuse-bindgen"
+version = "0.4.5"
+dependencies = [
+ "uniffi",
+]
+
+[[package]]
+name = "deskfuse-collaboration"
+version = "0.4.5"
+dependencies = [
+ "async-trait",
+ "deskfuse-core",
+ "deskfuse-platform",
+ "deskfuse-transfer",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-content-library"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-collaboration",
+ "deskfuse-store-library",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-core"
+version = "0.4.5"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-discovery"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "libc",
+ "mdns-sd",
+ "thiserror",
+]
+
+[[package]]
+name = "deskfuse-engine"
+version = "0.4.5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bincode",
+ "bytes",
+ "deskfuse-collaboration",
+ "deskfuse-core",
+ "deskfuse-discovery",
+ "deskfuse-identity",
+ "deskfuse-input",
+ "deskfuse-platform",
+ "deskfuse-platform-macos",
+ "deskfuse-platform-windows",
+ "deskfuse-protocol",
+ "deskfuse-runtime",
+ "deskfuse-store",
+ "deskfuse-transfer",
+ "deskfuse-transport",
+ "deskfuse-update",
+ "deskfuse-update-platform",
+ "dirs",
+ "flate2",
+ "futures",
+ "hex",
+ "image",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "zip",
+]
+
+[[package]]
+name = "deskfuse-extension-update"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-collaboration",
+ "deskfuse-update",
+]
+
+[[package]]
+name = "deskfuse-ffi"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "deskfuse-engine",
+ "deskfuse-input",
+ "deskfuse-platform",
+ "deskfuse-platform-macos",
+ "deskfuse-runtime",
+ "deskfuse-store",
+ "deskfuse-transfer",
+ "deskfuse-transport",
+ "deskfuse-update",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "uniffi",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-identity"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "ed25519-dalek",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "deskfuse-input"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "getrandom 0.4.3",
+ "serde",
+]
+
+[[package]]
+name = "deskfuse-input-macos"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-collaboration",
+ "deskfuse-platform",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-input-windows"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-collaboration",
+ "deskfuse-platform",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-lan-web"
+version = "0.4.5"
+dependencies = [
+ "axum",
+ "deskfuse-collaboration",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-platform"
+version = "0.4.5"
+dependencies = [
+ "async-trait",
+ "deskfuse-core",
+ "deskfuse-input",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-platform-macos"
+version = "0.4.5"
+dependencies = [
+ "async-trait",
+ "block2",
+ "core-foundation",
+ "core-foundation-sys",
+ "core-graphics",
+ "deskfuse-core",
+ "deskfuse-input",
+ "deskfuse-platform",
+ "foreign-types",
+ "if-addrs",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "rustix",
+ "serde",
+ "socket2",
+ "tokio",
+ "webp",
+]
+
+[[package]]
+name = "deskfuse-platform-windows"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "deskfuse-input",
+ "deskfuse-platform",
+ "png",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "deskfuse-probe"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "deskfuse-discovery",
+ "deskfuse-identity",
+ "deskfuse-platform",
+ "deskfuse-platform-macos",
+ "deskfuse-protocol",
+ "deskfuse-runtime",
+ "deskfuse-transport",
+ "futures",
+ "prost",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-protocol"
+version = "0.4.5"
+dependencies = [
+ "bytes",
+ "deskfuse-core",
+ "ed25519-dalek",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-runtime"
+version = "0.4.5"
+dependencies = [
+ "async-trait",
+ "base64",
+ "deskfuse-core",
+ "deskfuse-discovery",
+ "deskfuse-identity",
+ "deskfuse-input",
+ "deskfuse-protocol",
+ "deskfuse-store",
+ "deskfuse-transport",
+ "deskfuse-update",
+ "ed25519-dalek",
+ "fs2",
+ "futures",
+ "hex",
+ "nix",
+ "rcgen",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-sdk"
+version = "0.4.5"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "deskfuse-service"
+version = "0.4.5"
+dependencies = [
+ "base64",
+ "bincode",
+ "deskfuse-core",
+ "deskfuse-discovery",
+ "deskfuse-identity",
+ "deskfuse-platform",
+ "deskfuse-platform-windows",
+ "deskfuse-protocol",
+ "deskfuse-runtime",
+ "deskfuse-store",
+ "deskfuse-transport",
+ "flate2",
+ "futures",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "deskfuse-store"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "deskfuse-identity",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "deskfuse-store-core"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "deskfuse-store-library"
+version = "0.4.5"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "deskfuse-transfer"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "deskfuse-platform-windows",
+ "flate2",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-transport"
+version = "0.4.5"
+dependencies = [
+ "async-trait",
+ "deskfuse-core",
+ "deskfuse-identity",
+ "deskfuse-platform",
+ "deskfuse-protocol",
+ "futures",
+ "if-addrs",
+ "objc2-foundation",
+ "prost",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "socket2",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "deskfuse-update"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-core",
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-update-platform"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-update",
+ "hex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-workflow"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-collaboration",
+ "deskfuse-platform",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1939,9 +2378,9 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.228"
+version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
@@ -1949,22 +2388,22 @@ dependencies = [
 
 [[package]]
 name = "serde_core"
-version = "1.0.228"
+version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.228"
+version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2217,22 +2656,22 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.18"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.18"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2295,9 +2734,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.49.0"
+version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
  "bytes",
  "libc",
@@ -2312,13 +2751,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.6.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2461,443 +2900,6 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
-
-[[package]]
-name = "unidesk-bindgen"
-version = "0.3.3"
-dependencies = [
- "uniffi",
-]
-
-[[package]]
-name = "unidesk-collaboration"
-version = "0.3.3"
-dependencies = [
- "async-trait",
- "serde",
- "sha2 0.11.0",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "unidesk-core",
- "unidesk-platform",
- "unidesk-transfer",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-content-library"
-version = "0.3.3"
-dependencies = [
- "tempfile",
- "tokio",
- "unidesk-collaboration",
- "unidesk-store-library",
-]
-
-[[package]]
-name = "unidesk-core"
-version = "0.3.3"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-discovery"
-version = "0.3.3"
-dependencies = [
- "libc",
- "mdns-sd",
- "thiserror",
- "unidesk-core",
-]
-
-[[package]]
-name = "unidesk-engine"
-version = "0.3.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bincode",
- "bytes",
- "dirs",
- "flate2",
- "futures",
- "hex",
- "image",
- "rusqlite",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tokio",
- "tokio-util",
- "unicode-normalization",
- "unidesk-collaboration",
- "unidesk-core",
- "unidesk-discovery",
- "unidesk-identity",
- "unidesk-input",
- "unidesk-platform",
- "unidesk-platform-windows",
- "unidesk-protocol",
- "unidesk-runtime",
- "unidesk-store",
- "unidesk-transfer",
- "unidesk-transport",
- "unidesk-update",
- "unidesk-update-platform",
- "url",
- "uuid",
- "zip",
-]
-
-[[package]]
-name = "unidesk-extension-update"
-version = "0.3.3"
-dependencies = [
- "unidesk-collaboration",
- "unidesk-update",
-]
-
-[[package]]
-name = "unidesk-ffi"
-version = "0.3.3"
-dependencies = [
- "futures",
- "serde_json",
- "thiserror",
- "unidesk-core",
- "unidesk-engine",
- "unidesk-input",
- "unidesk-platform",
- "unidesk-platform-macos",
- "unidesk-runtime",
- "unidesk-store",
- "unidesk-transfer",
- "unidesk-transport",
- "unidesk-update",
- "uniffi",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-identity"
-version = "0.3.3"
-dependencies = [
- "ed25519-dalek",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "unidesk-core",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "unidesk-input"
-version = "0.3.3"
-dependencies = [
- "getrandom 0.4.3",
- "serde",
- "unidesk-core",
-]
-
-[[package]]
-name = "unidesk-input-macos"
-version = "0.3.3"
-dependencies = [
- "tokio",
- "unidesk-collaboration",
- "unidesk-engine",
- "unidesk-platform",
-]
-
-[[package]]
-name = "unidesk-input-windows"
-version = "0.3.3"
-dependencies = [
- "tokio",
- "unidesk-collaboration",
- "unidesk-platform",
-]
-
-[[package]]
-name = "unidesk-lan-web"
-version = "0.3.3"
-dependencies = [
- "axum",
- "tokio",
- "unidesk-collaboration",
-]
-
-[[package]]
-name = "unidesk-platform"
-version = "0.3.3"
-dependencies = [
- "async-trait",
- "serde",
- "tokio",
- "unidesk-core",
- "unidesk-input",
-]
-
-[[package]]
-name = "unidesk-platform-macos"
-version = "0.3.3"
-dependencies = [
- "async-trait",
- "block2",
- "core-foundation",
- "core-foundation-sys",
- "core-graphics",
- "foreign-types",
- "if-addrs",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "rustix",
- "serde",
- "socket2",
- "tokio",
- "unidesk-core",
- "unidesk-input",
- "unidesk-platform",
- "webp",
-]
-
-[[package]]
-name = "unidesk-platform-windows"
-version = "0.3.3"
-dependencies = [
- "png",
- "serde",
- "serde_json",
- "tokio",
- "unidesk-core",
- "unidesk-input",
- "unidesk-platform",
- "url",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "unidesk-probe"
-version = "0.3.3"
-dependencies = [
- "futures",
- "prost",
- "quinn",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "tokio",
- "unidesk-core",
- "unidesk-discovery",
- "unidesk-identity",
- "unidesk-platform",
- "unidesk-platform-macos",
- "unidesk-protocol",
- "unidesk-runtime",
- "unidesk-transport",
-]
-
-[[package]]
-name = "unidesk-protocol"
-version = "0.3.3"
-dependencies = [
- "bytes",
- "ed25519-dalek",
- "prost",
- "serde_json",
- "sha2 0.10.9",
- "thiserror",
- "tokio-util",
- "unidesk-core",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-runtime"
-version = "0.3.3"
-dependencies = [
- "async-trait",
- "ed25519-dalek",
- "fs2",
- "futures",
- "hex",
- "nix",
- "rcgen",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "tokio",
- "unidesk-core",
- "unidesk-discovery",
- "unidesk-identity",
- "unidesk-input",
- "unidesk-protocol",
- "unidesk-store",
- "unidesk-transport",
- "unidesk-update",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-sdk"
-version = "0.3.3"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "unidesk-service"
-version = "0.3.3"
-dependencies = [
- "base64",
- "bincode",
- "flate2",
- "futures",
- "hex",
- "image",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tokio",
- "unidesk-core",
- "unidesk-discovery",
- "unidesk-identity",
- "unidesk-input",
- "unidesk-platform",
- "unidesk-platform-windows",
- "unidesk-protocol",
- "unidesk-runtime",
- "unidesk-store",
- "unidesk-transfer",
- "unidesk-transport",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "unidesk-store"
-version = "0.3.3"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror",
- "unidesk-core",
- "unidesk-identity",
-]
-
-[[package]]
-name = "unidesk-store-core"
-version = "0.3.3"
-dependencies = [
- "rusqlite",
- "tempfile",
- "thiserror",
- "unidesk-core",
-]
-
-[[package]]
-name = "unidesk-store-library"
-version = "0.3.3"
-dependencies = [
- "rusqlite",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "unidesk-transfer"
-version = "0.3.3"
-dependencies = [
- "flate2",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "unidesk-core",
- "unidesk-platform-windows",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-transport"
-version = "0.3.3"
-dependencies = [
- "async-trait",
- "futures",
- "if-addrs",
- "objc2-foundation",
- "prost",
- "quinn",
- "rcgen",
- "rustls",
- "socket2",
- "thiserror",
- "tokio",
- "unidesk-core",
- "unidesk-identity",
- "unidesk-platform",
- "unidesk-protocol",
-]
-
-[[package]]
-name = "unidesk-update"
-version = "0.3.3"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "rand_core 0.6.4",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "unidesk-core",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-update-platform"
-version = "0.3.3"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "unidesk-update",
- "uuid",
-]
-
-[[package]]
-name = "unidesk-workflow"
-version = "0.3.3"
-dependencies = [
- "thiserror",
- "unidesk-collaboration",
- "unidesk-platform",
- "uuid",
-]
 
 [[package]]
 name = "uniffi"

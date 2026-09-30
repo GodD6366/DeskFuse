@@ -1,0 +1,20 @@
+[package]
+name = "deskfuse-content-library"
+description = "Content-library product extension. Depends on collaboration API, not on axum or platform adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+deskfuse-collaboration = { path = "../../crates/deskfuse-collaboration" }
+deskfuse-store-library = { path = "../../crates/deskfuse-store-library" }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

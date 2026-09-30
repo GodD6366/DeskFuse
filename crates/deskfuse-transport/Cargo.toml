@@ -1,0 +1,38 @@
+[package]
+name = "deskfuse-transport"
+description = "Authenticated, transport-independent control sessions for DeskFuse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+if-addrs = "=0.15.0"
+socket2 = { version = "=0.6.5", features = ["all"] }
+async-trait = "=0.1.92"
+futures = "0.3"
+prost = "=0.14.4"
+quinn.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
+tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+deskfuse-core = { path = "../deskfuse-core" }
+deskfuse-identity = { path = "../deskfuse-identity" }
+deskfuse-protocol = { path = "../deskfuse-protocol" }
+deskfuse-platform = { path = "../deskfuse-platform" }
+
+[dev-dependencies]
+rcgen = "=0.13.2"
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSThread", "NSObjCRuntime", "NSObject"] }
