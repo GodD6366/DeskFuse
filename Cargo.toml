@@ -10,6 +10,7 @@ members = [
     "crates/deskfuse-runtime",
     "crates/deskfuse-platform",
     "crates/deskfuse-update",
+    "crates/deskfuse-update-platform",
     "crates/deskfuse-platform-macos",
     "crates/deskfuse-platform-windows",
     "crates/deskfuse-transfer",

@@ -238,12 +238,12 @@ struct DevicesView: View {
                                 )
                             )
                             .frame(width: 40, height: 40)
-                        
+
                         Image(systemName: "person.crop.circle.badge.plus")
                             .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(Color.orange)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text(request.name)
                             .font(.system(size: 14, weight: .semibold))
@@ -256,9 +256,9 @@ struct DevicesView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    
+
                     Spacer(minLength: 4)
-                    
+
                     if request.incoming {
                         if store.pairingDecisions.contains(request.id) {
                             ProgressView()
@@ -278,7 +278,7 @@ struct DevicesView: View {
                                 .buttonStyle(.plain)
                                 .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
                                 .clipShape(Capsule())
-                                
+
                                 Button {
                                     store.send(.approve(requestId: request.id), pairing: request.id)
                                 } label: {
@@ -737,7 +737,7 @@ struct PairingRow: View {
                         )
                     )
                     .frame(width: 56, height: 56)
-                
+
                 Image(systemName: "person.crop.circle.badge.plus")
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(
@@ -748,13 +748,13 @@ struct PairingRow: View {
                         )
                     )
             }
-            
+
             // Content
             VStack(alignment: .leading, spacing: 6) {
                 Text(request.name)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
-                
+
                 HStack(spacing: 6) {
                     Circle()
                         .fill(Color.orange)
@@ -765,7 +765,7 @@ struct PairingRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             // Actions
             if request.incoming {
                 if store.pairingDecisions.contains(request.id) {
@@ -798,7 +798,7 @@ struct PairingRow: View {
                             Capsule()
                                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
                         }
-                        
+
                         Button {
                             store.send(.approve(requestId: request.id), pairing: request.id)
                         } label: {

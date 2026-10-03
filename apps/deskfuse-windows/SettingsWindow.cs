@@ -32,7 +32,7 @@ public sealed class SettingsWindow : Window
         };
         content.Children.Add(clear); content.Children.Add(historyStatus);
         content.Children.Add(Heading("文件与缓存"));
-        content.Children.Add(new TextBlock { Text = "本地暂存只保存引用，不预读文件正文。跨设备文件传输、提前下载与远端缓存清理尚未接入；此处不提供虚假的容量开关。", Margin = new Thickness(0, 10, 0, 24), Foreground = Brushes.SlateGray });
+        content.Children.Add(new TextBlock { Text = "本地暂存只保存引用，不预读文件正文。跨设备文件按需传输已接入：远端文件完整下载并逐文件校验后落地，缓存位于服务保护目录；接收的文件在传输页选择目标位置。Explorer OLE 按完整目录 manifest 延迟下载，首次粘贴请求时才读取并校验文件正文。", Margin = new Thickness(0, 10, 0, 24), Foreground = Brushes.SlateGray });
         content.Children.Add(Heading("版本与更新"));
         var fileVersion = System.Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
             .Cast<System.Reflection.AssemblyFileVersionAttribute>().Single().Version;

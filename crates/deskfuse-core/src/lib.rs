@@ -385,8 +385,13 @@ impl Capabilities {
     /// Epoch-barriered mouse positions carried by bounded QUIC datagrams.
     pub const INPUT_MOTION_DATAGRAM_V1: Self = Self(1 << 9);
 
+    /// Synchronized workflow definitions and sender-side rules.
+    pub const WORKFLOW_SYNC: Self = Self(1 << 14);
+
     /// Native remote applications over an admitted, paired control connection.
     pub const REMOTE_APPLICATION: Self = Self(1 << 12);
+    /// JSON catalog plus native RDP/NLA, not the macOS media protocol.
+    pub const REMOTE_APPLICATION_RDP: Self = Self(1 << 13);
 
     /// No capabilities.
     pub const NONE: Self = Self(0);

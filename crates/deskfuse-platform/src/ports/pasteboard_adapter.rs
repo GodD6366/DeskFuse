@@ -69,7 +69,7 @@ fn content_from_snapshot(snapshot: &crate::PasteboardSnapshot) -> ContentData {
 /// instead of calling `write_*` directly, so revision checks and remote-origin
 /// marking stay in one place.
 pub fn apply_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     content: ContentToApply,
     expected_revision: NativeRevision,
 ) -> PlatformResult<ApplyResult> {

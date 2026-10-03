@@ -3,6 +3,8 @@
 // UniFFI exports require owned arguments across the native language boundary.
 #![allow(clippy::needless_pass_by_value)]
 mod clipboard_paste;
+#[cfg(target_os = "macos")]
+mod platform;
 mod remote_application;
 mod workflow;
 pub use clipboard_paste::*;
@@ -103,20 +105,48 @@ impl Engine {
             return Err(failure("本进程已有 DeskFuse 引擎"));
         }
         deskfuse_engine::diagnostics::install_panic_recorder();
-        let (bridge, mut events) = match TokioBridge::start(Diagnostics::new(1024)) {
-            Ok(value) => value,
-            Err(e) => {
-                RUNNING.store(false, Ordering::Release);
-                return Err(failure(e));
-            }
-        };
+        #[cfg(target_os = "macos")]
+        let native_platform = crate::platform::platform();
+        #[cfg(not(target_os = "macos"))]
+        let native_platform = deskfuse_engine::platform::memory_platform();
+        let (bridge, mut events) =
+            match TokioBridge::start_with_platform(Diagnostics::new(1024), native_platform.clone())
+            {
+                Ok(value) => value,
+                Err(e) => {
+                    RUNNING.store(false, Ordering::Release);
+                    return Err(failure(e));
+                }
+            };
         #[cfg(target_os = "macos")]
         let lan_web = deskfuse_engine::lan_web::LanWebService::new(&bridge).map_err(|e| {
             bridge.shutdown();
             RUNNING.store(false, Ordering::Release);
             failure(e)
         })?;
-        let host = match deskfuse_engine::host::EngineHost::assemble() {
+        let host = match deskfuse_engine::host::EngineHost::assemble_with(
+            deskfuse_store::SQLiteStore::default_path()
+                .map_err(failure)?
+                .parent()
+                .ok_or_else(|| failure("state directory is missing"))?
+                .to_path_buf(),
+            #[cfg(target_os = "macos")]
+            crate::platform::host_ports(
+                deskfuse_store::SQLiteStore::default_path()
+                    .map_err(failure)?
+                    .parent()
+                    .ok_or_else(|| failure("state directory is missing"))?,
+            )
+            .map_err(failure)?,
+            #[cfg(not(target_os = "macos"))]
+            deskfuse_platform::ports::HostPorts::memory(
+                deskfuse_store::SQLiteStore::default_path()
+                    .map_err(failure)?
+                    .parent()
+                    .ok_or_else(|| failure("state directory is missing"))?,
+            ),
+            native_platform.clone(),
+        ) {
             Ok(host) => host,
             Err(e) => {
                 bridge.shutdown();
@@ -124,12 +154,15 @@ impl Engine {
                 return Err(failure(e));
             }
         };
-        let workflows =
-            deskfuse_engine::workflow::WorkflowService::new(bridge.clone()).map_err(|e| {
-                bridge.shutdown();
-                RUNNING.store(false, Ordering::Release);
-                failure(e)
-            })?;
+        let workflows = deskfuse_engine::workflow::WorkflowService::new(
+            bridge.clone(),
+            host.workflow_execution(),
+        )
+        .map_err(|e| {
+            bridge.shutdown();
+            RUNNING.store(false, Ordering::Release);
+            failure(e)
+        })?;
         deskfuse_engine::workflow_sharing::attach(&workflows);
         let workflow_hotkeys = Arc::new(Mutex::new(
             deskfuse_platform_macos::WorkflowHotkeys::default(),
@@ -275,6 +308,12 @@ impl Engine {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut transfer_id = None;
         let command = match command {
+            EngineCommand::PublishDisplayWallpaper { display_id, jpeg } => {
+                TokioCommand::Runtime(RuntimeCommand::PublishDisplayWallpaper {
+                    display_id: deskfuse_core::DisplayId::new(display_id),
+                    jpeg,
+                })
+            }
             EngineCommand::RefreshDevices => TokioCommand::Runtime(RuntimeCommand::RefreshPeers),
             EngineCommand::Pair { peer_id } => {
                 TokioCommand::Runtime(RuntimeCommand::RequestPairing {
@@ -361,18 +400,6 @@ impl Engine {
             }
             EngineCommand::ClearCache => TokioCommand::ClearTransferCache,
             EngineCommand::RefreshCache => TokioCommand::RefreshTransferCache,
-            EngineCommand::PublishDisplayWallpaper { display_id, jpeg } => {
-                deskfuse_core::InputShareMessage::DisplayWallpaper {
-                    display_id: deskfuse_core::DisplayId::new(&display_id),
-                    jpeg: jpeg.clone(),
-                }
-                .validate()
-                .map_err(failure)?;
-                TokioCommand::Runtime(RuntimeCommand::PublishDisplayWallpaper {
-                    display_id: deskfuse_core::DisplayId::new(display_id),
-                    jpeg,
-                })
-            }
             EngineCommand::MoveInputDevice {
                 device_id,
                 display_id,

@@ -111,7 +111,7 @@ try {
     if (!$?) { throw 'Desktop build failed' }
     Assert-Snapshot
     $executableImports = [ordered]@{}
-    foreach ($name in @('DeskFuse.Windows.exe', 'deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe')) {
+    foreach ($name in @('DeskFuse.Windows.exe', 'deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe', 'deskfuse-update-helper.exe')) {
         Assert-X64PE (Join-Path $payload $name)
         $executableImports[$name] = Assert-ExecutableImports (Join-Path $payload $name) $payload
     }
@@ -139,7 +139,10 @@ try {
     Assert-Snapshot
     $installerSignature = (Get-AuthenticodeSignature -LiteralPath $installer).Status.ToString()
     $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
-    $manifest = [ordered]@{ schema_version=1; kind='windows-desktop-offline-installer'; version=$release.version; build_number=$release.build_number; release_id=$release.release_id; target='win-x64'; source_snapshot_sha256=$sourceBytesHash.ToLowerInvariant(); source_file_count=$source.Count; created_at=[DateTime]::UtcNow.ToString('o'); is_installer=$true; release_signed=$false; lan_update_eligible=$false; authenticode=$installerSignature; installer_sha256=$installerHash; installer_bytes=(Get-Item -LiteralPath $installer).Length; payload=$artifacts; executable_imports=$executableImports; verification=@{ build=$true; pe_x64=$true; executable_imports=$true; installation=$false; functional_tests=$false; two_machine=$false } }
+    # This metadata is descriptive only. LAN eligibility remains false until an
+    # external release manifest signs the installer and the service-owned helper
+    # admission/self-test protocol is enabled.
+    $manifest = [ordered]@{ schema_version=1; kind='windows-desktop-offline-installer'; version=$release.version; build_number=$release.build_number; release_id=$release.release_id; target='win-x64'; source_snapshot_sha256=$sourceBytesHash.ToLowerInvariant(); source_file_count=$source.Count; created_at=[DateTime]::UtcNow.ToString('o'); is_installer=$true; release_signed=$false; lan_update_eligible=$false; updater_helper_present=$true; updater_helper_enabled=$false; authenticode=$installerSignature; installer_sha256=$installerHash; installer_bytes=(Get-Item -LiteralPath $installer).Length; payload=$artifacts; executable_imports=$executableImports; verification=@{ build=$true; pe_x64=$true; executable_imports=$true; installation=$false; functional_tests=$false; two_machine=$false; updater_admission=$false; updater_self_test=$false; updater_rollback=$false } }
     [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
     $destination = Join-Path $OutputDirectory ([IO.Path]::GetFileName($installer))
     Copy-Item -LiteralPath $installer -Destination $destination -Force

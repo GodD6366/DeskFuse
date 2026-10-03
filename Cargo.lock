@@ -591,6 +591,7 @@ name = "deskfuse-engine"
 version = "0.4.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bincode",
  "bytes",
@@ -608,6 +609,7 @@ dependencies = [
  "deskfuse-transfer",
  "deskfuse-transport",
  "deskfuse-update",
+ "deskfuse-update-platform",
  "dirs",
  "flate2",
  "futures",
@@ -645,6 +647,7 @@ dependencies = [
  "deskfuse-platform",
  "deskfuse-platform-macos",
  "deskfuse-runtime",
+ "deskfuse-store",
  "deskfuse-transfer",
  "deskfuse-transport",
  "deskfuse-update",
@@ -721,6 +724,7 @@ dependencies = [
 name = "deskfuse-platform-macos"
 version = "0.4.5"
 dependencies = [
+ "async-trait",
  "block2",
  "core-foundation",
  "core-foundation-sys",
@@ -729,11 +733,13 @@ dependencies = [
  "deskfuse-input",
  "deskfuse-platform",
  "foreign-types",
+ "if-addrs",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "rustix",
  "serde",
+ "socket2",
  "tokio",
  "webp",
 ]
@@ -760,6 +766,8 @@ dependencies = [
  "deskfuse-core",
  "deskfuse-discovery",
  "deskfuse-identity",
+ "deskfuse-platform",
+ "deskfuse-platform-macos",
  "deskfuse-protocol",
  "deskfuse-runtime",
  "deskfuse-transport",
@@ -907,6 +915,7 @@ dependencies = [
  "async-trait",
  "deskfuse-core",
  "deskfuse-identity",
+ "deskfuse-platform",
  "deskfuse-protocol",
  "futures",
  "if-addrs",
@@ -934,6 +943,20 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "deskfuse-update-platform"
+version = "0.4.5"
+dependencies = [
+ "deskfuse-update",
+ "hex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "uuid",
 ]
 
@@ -1598,12 +1621,23 @@ checksum = "e6506c6c10786659413faa717ceebcb8f70731c0a60cbae39795fdf114519c1a"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "tiff",
  "zune-core 0.5.3",
  "zune-jpeg 0.5.15",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]

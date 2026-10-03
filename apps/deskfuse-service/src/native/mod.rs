@@ -2,10 +2,15 @@
 #![allow(unsafe_code)]
 mod clipboard_codec;
 mod clipboard_sync;
-mod desktop;
-mod input_helper;
+pub(crate) mod desktop;
+pub(super) mod file_transfer;
+pub(crate) mod input_helper;
+mod input_security;
 mod network;
+mod remote_app;
 mod security;
+mod session_agent;
+mod workflow;
 use crate::{
     policy::same_session,
     protocol::{self, Command, Reply, Request, Response, Status},
@@ -40,12 +45,18 @@ use windows_sys::Win32::{
 };
 
 #[derive(Default)]
-struct Control {
+pub(super) struct Control {
     stopping: AtomicBool,
     epoch: AtomicU64,
     desktop: Mutex<desktop::State>,
 }
 static CONTROL: OnceLock<Arc<Control>> = OnceLock::new();
+
+/// Process-wide handle for async desktop-state updates (file publication
+/// results). Returns `None` before SCM dispatch started.
+pub(super) fn desktop_control() -> Option<&'static Arc<Control>> {
+    CONTROL.get()
+}
 pub use input_helper::run_input_helper;
 
 /// Enter SCM dispatch; running this directly never silently starts a console service.
@@ -248,6 +259,7 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                 _ = clients.join_next(), if !clients.is_empty() => {},
                 _ = desktop_tick.tick() => {
                     if let Ok(mut state) = control.desktop.lock() { state.tick(&network, &control); }
+                    network.serve_remote_applications();
                 },
             }
         }

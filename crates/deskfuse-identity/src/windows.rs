@@ -114,6 +114,12 @@ impl WindowsServiceDataDirectory {
     pub fn database_path(&self) -> PathBuf {
         self.path.join("network.sqlite")
     }
+    /// Per-transfer staging cache beneath the protected service directory.
+    /// The bridge creates and removes per-transfer subdirectories here.
+    #[must_use]
+    pub fn transfer_cache_path(&self) -> PathBuf {
+        self.path.join("transfer-cache")
+    }
 }
 fn protected_directory() -> Result<(PathBuf, Vec<OwnedHandle>), IdentityError> {
     let base = program_data()?;

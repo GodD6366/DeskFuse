@@ -17,6 +17,7 @@ pub mod history_search;
 
 pub mod workflow;
 pub mod workflow_catalog;
+pub(crate) mod workflow_image;
 pub mod workflow_sharing;
 
 mod clipboard_echo;

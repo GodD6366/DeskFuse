@@ -19,11 +19,14 @@ use core_foundation_sys::{
     string::CFStringRef,
     url::CFURLRef,
 };
+use deskfuse_core::{ConnectionContext, InterfaceKind, LinkScope, TransportSessionId};
+use deskfuse_platform::ports::LanWebPort;
 use std::{
     collections::BTreeSet,
     ffi::{CStr, c_char, c_int, c_uint, c_void},
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::Path,
+    process::Command,
     ptr,
 };
 
@@ -133,6 +136,355 @@ pub fn interfaces() -> Result<Vec<LanInterface>, String> {
 /// for validating requests to a wildcard listener.
 pub fn all_ipv4_interfaces() -> Result<Vec<LanInterface>, String> {
     collect_interfaces(true)
+}
+
+/// Route attestation kept in the macOS adapter. Interface names and private
+/// address classes are never used as physical evidence: route, flags,
+/// ifconfig address/prefix, and SystemConfiguration hardware records must all
+/// agree before a LAN result is returned.
+pub fn transport_context(
+    session_id: TransportSessionId,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+) -> Result<ConnectionContext, String> {
+    let mut context = ConnectionContext {
+        session_id,
+        local_addr,
+        remote_addr,
+        interface_name: None,
+        interface_kind: InterfaceKind::Other,
+        scope: LinkScope::Unknown,
+    };
+    if local_addr.ip().is_loopback() || remote_addr.ip().is_loopback() {
+        context.interface_kind = InterfaceKind::Loopback;
+        return Ok(context);
+    }
+    let route = Command::new("/sbin/route")
+        .args(["-n", "get", &remote_addr.ip().to_string()])
+        .output()
+        .map_err(|error| format!("route: {error}"))?;
+    let interfaces = Command::new("/sbin/ifconfig")
+        .arg("-a")
+        .output()
+        .map_err(|error| format!("ifconfig: {error}"))?;
+    let hardware = Command::new("/usr/sbin/networksetup")
+        .arg("-listallhardwareports")
+        .output()
+        .map_err(|error| format!("networksetup: {error}"))?;
+    if !route.status.success() || !interfaces.status.success() || !hardware.status.success() {
+        return Ok(context);
+    }
+    let route = String::from_utf8_lossy(&route.stdout);
+    let interfaces = String::from_utf8_lossy(&interfaces.stdout);
+    let hardware = String::from_utf8_lossy(&hardware.stdout);
+    let (name, kind, scope) = classify_route(
+        &route,
+        &interfaces,
+        &hardware,
+        local_addr.ip(),
+        remote_addr.ip(),
+    );
+    context.interface_name = name;
+    context.interface_kind = kind;
+    context.scope = scope;
+    Ok(context)
+}
+
+fn classify_route(
+    route: &str,
+    interfaces: &str,
+    hardware: &str,
+    local: IpAddr,
+    remote: IpAddr,
+) -> (Option<String>, InterfaceKind, LinkScope) {
+    let value = |name: &str| {
+        route
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(name).map(str::trim))
+    };
+    let Some(name) = value("interface:") else {
+        return (None, InterfaceKind::Other, LinkScope::Unknown);
+    };
+    let result = |kind, scope| (Some(name.to_owned()), kind, scope);
+    if local.is_loopback() || remote.is_loopback() || name.starts_with("lo") {
+        return result(InterfaceKind::Loopback, LinkScope::Unknown);
+    }
+    if [
+        "utun",
+        "tun",
+        "tap",
+        "ppp",
+        "ipsec",
+        "tailscale",
+        "wg",
+        "awdl",
+        "llw",
+        "vmnet",
+        "vmenet",
+        "veth",
+        "gif",
+        "stf",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+    {
+        return result(InterfaceKind::Vpn, LinkScope::Overlay);
+    }
+    let hardware_port = hardware.split("Hardware Port: ").find_map(|block| {
+        block
+            .lines()
+            .any(|line| line.trim() == format!("Device: {name}"))
+            .then(|| block.lines().next())
+            .flatten()
+    });
+    let kind = match hardware_port {
+        Some(port) if port.contains("Wi-Fi") || port.contains("AirPort") => InterfaceKind::WiFi,
+        Some(port)
+            if port.contains("Thunderbolt") || port.contains("雷雳") || port.contains("雷電") =>
+        {
+            InterfaceKind::Thunderbolt
+        }
+        Some(port)
+            if port.contains("Ethernet") || port.contains("LAN") || port.contains("以太网") =>
+        {
+            InterfaceKind::Ethernet
+        }
+        _ => InterfaceKind::Other,
+    };
+    if kind == InterfaceKind::Other
+        || (name.starts_with("bridge") && kind != InterfaceKind::Thunderbolt)
+    {
+        return result(InterfaceKind::Other, LinkScope::Unknown);
+    }
+    let flags = value("flags:").unwrap_or("");
+    if flags.contains("GATEWAY") || flags.contains("REJECT") || flags.contains("BLACKHOLE") {
+        return result(kind, LinkScope::Public);
+    }
+    let section = interfaces
+        .split('\n')
+        .skip_while(|line| !line.starts_with(&format!("{name}:")))
+        .take_while_with_header();
+    if kind == InterfaceKind::Thunderbolt && name.starts_with("bridge") {
+        let members = section
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("member:")
+                    .and_then(|value| value.split_whitespace().next())
+            })
+            .collect::<Vec<_>>();
+        if members.is_empty()
+            || members.iter().any(|member| {
+                !hardware.split("Hardware Port: ").any(|block| {
+                    block.lines().next().is_some_and(|port| {
+                        port.contains("Thunderbolt")
+                            || port.contains("雷雳")
+                            || port.contains("雷電")
+                    }) && block
+                        .lines()
+                        .any(|line| line.trim() == format!("Device: {member}"))
+                })
+            })
+        {
+            return result(InterfaceKind::Other, LinkScope::Unknown);
+        }
+    }
+    let same_subnet = match (local, remote) {
+        (IpAddr::V4(local), IpAddr::V4(remote)) => section.lines().any(|line| {
+            let words = line.split_whitespace().collect::<Vec<_>>();
+            if words.first() != Some(&"inet")
+                || words
+                    .get(1)
+                    .and_then(|value| value.parse::<Ipv4Addr>().ok())
+                    != Some(local)
+            {
+                return false;
+            }
+            let Some(index) = words.iter().position(|value| *value == "netmask") else {
+                return false;
+            };
+            let Some(mask) = words
+                .get(index + 1)
+                .and_then(|value| u32::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+            else {
+                return false;
+            };
+            mask != 0 && (u32::from(local) & mask) == (u32::from(remote) & mask)
+        }),
+        (IpAddr::V6(local), IpAddr::V6(remote)) => section.lines().any(|line| {
+            let words = line.split_whitespace().collect::<Vec<_>>();
+            if words.first() != Some(&"inet6")
+                || words
+                    .get(1)
+                    .and_then(|value| value.split('%').next())
+                    .and_then(|value| value.parse::<std::net::Ipv6Addr>().ok())
+                    != Some(local)
+            {
+                return false;
+            }
+            let Some(index) = words.iter().position(|value| *value == "prefixlen") else {
+                return false;
+            };
+            let Some(prefix) = words
+                .get(index + 1)
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|prefix| *prefix > 0 && *prefix <= 128)
+            else {
+                return false;
+            };
+            let mask = u128::MAX << (128 - prefix);
+            u128::from(local) & mask == u128::from(remote) & mask
+        }),
+        _ => false,
+    };
+    if same_subnet && local != remote && flags.contains("UP") {
+        result(kind, LinkScope::Lan)
+    } else {
+        result(kind, LinkScope::Unknown)
+    }
+}
+
+trait Section<'a>: Iterator<Item = &'a str> + Sized {
+    fn take_while_with_header(self) -> String {
+        let mut result = String::new();
+        for (index, line) in self.enumerate() {
+            if index > 0 && !line.starts_with(char::is_whitespace) {
+                break;
+            }
+            result.push_str(line);
+            result.push('\n');
+        }
+        result
+    }
+}
+impl<'a, T: Iterator<Item = &'a str>> Section<'a> for T {}
+
+/// Bind only to interfaces whose SystemConfiguration hardware record and
+/// operational address both identify a physical LAN port.
+pub fn transport_listener_sockets(port: u16) -> Result<Vec<(String, UdpSocket)>, String> {
+    let hardware = Command::new("/usr/sbin/networksetup")
+        .arg("-listallhardwareports")
+        .output()
+        .map_err(|error| format!("networksetup: {error}"))?;
+    if !hardware.status.success() {
+        return Ok(Vec::new());
+    }
+    let hardware = String::from_utf8_lossy(&hardware.stdout);
+    let mut sockets = Vec::new();
+    for interface in if_addrs::get_if_addrs().map_err(|error| error.to_string())? {
+        if interface.is_loopback() || interface.is_p2p || !interface.is_oper_up() {
+            continue;
+        }
+        let Some(index) = interface.index.and_then(std::num::NonZeroU32::new) else {
+            continue;
+        };
+        let physical = hardware.split("Hardware Port: ").any(|block| {
+            block
+                .lines()
+                .any(|line| line.trim() == format!("Device: {}", interface.name))
+                && block.lines().next().is_some_and(|port| {
+                    port.contains("Wi-Fi")
+                        || port.contains("AirPort")
+                        || port.contains("Ethernet")
+                        || port.contains("LAN")
+                        || port.contains("以太网")
+                        || port.contains("Thunderbolt")
+                        || port.contains("雷雳")
+                        || port.contains("雷電")
+                })
+        });
+        if !physical || (!interface.name.starts_with("en") && !interface.name.starts_with("bridge"))
+        {
+            continue;
+        }
+        if matches!(interface.ip(), IpAddr::V6(ip) if ip.is_unicast_link_local()) {
+            continue;
+        }
+        let domain = if interface.ip().is_ipv4() {
+            socket2::Domain::IPV4
+        } else {
+            socket2::Domain::IPV6
+        };
+        let Ok(socket) =
+            socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
+        else {
+            continue;
+        };
+        let bound = if interface.ip().is_ipv4() {
+            socket.bind_device_by_index_v4(Some(index))
+        } else {
+            socket.bind_device_by_index_v6(Some(index))
+        };
+        if bound.is_err()
+            || socket
+                .bind(&SocketAddr::new(interface.ip(), port).into())
+                .is_err()
+            || socket.set_nonblocking(true).is_err()
+        {
+            continue;
+        }
+        sockets.push((interface.name, socket.into()));
+    }
+    Ok(sockets)
+}
+
+/// Complete adapter for transport callers; web and transport APIs share the
+/// same host-owned implementation.
+pub struct MacOSLanWebPort;
+impl LanWebPort for MacOSLanWebPort {
+    fn interfaces(
+        &self,
+    ) -> deskfuse_platform::PlatformResult<Vec<deskfuse_platform::ports::LanInterface>> {
+        interfaces()
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| deskfuse_platform::ports::LanInterface {
+                        name: item.name,
+                        address: item.address,
+                        label: item.label,
+                    })
+                    .collect()
+            })
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
+    fn ipv4_addresses(&self) -> deskfuse_platform::PlatformResult<Vec<String>> {
+        all_ipv4_interfaces()
+            .map(|items| items.into_iter().map(|item| item.address).collect())
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
+    fn image_png(
+        &self,
+        path: &Path,
+        max_pixel_size: u32,
+    ) -> deskfuse_platform::PlatformResult<Vec<u8>> {
+        image_png(path, max_pixel_size)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
+    fn data_image_png(
+        &self,
+        data: &[u8],
+        max_pixel_size: u32,
+    ) -> deskfuse_platform::PlatformResult<Vec<u8>> {
+        data_image_png(data, max_pixel_size)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
+    fn transport_context(
+        &self,
+        session_id: TransportSessionId,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> deskfuse_platform::PlatformResult<ConnectionContext> {
+        transport_context(session_id, local_addr, remote_addr)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
+    fn transport_listener_sockets(
+        &self,
+        port: u16,
+    ) -> deskfuse_platform::PlatformResult<Vec<(String, UdpSocket)>> {
+        transport_listener_sockets(port)
+            .map_err(|message| deskfuse_platform::PlatformError::InvalidRequest { message })
+    }
 }
 
 fn collect_interfaces(all: bool) -> Result<Vec<LanInterface>, String> {

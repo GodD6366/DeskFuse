@@ -164,6 +164,16 @@ public sealed class NativeClipboard : IDisposable
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
         using var output = new MemoryStream(); encoder.Save(output); return Bounded(output.ToArray());
     }
+    public void WriteOle(object dataObject)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (paused) throw new InvalidOperationException("当前会话不能写入剪贴板");
+        Clipboard.SetDataObject(dataObject, true);
+        sequence = GetClipboardSequenceNumber();
+        lastInvalidatedSequence = sequence;
+        ownClipboardOwner = source?.Handle ?? IntPtr.Zero;
+    }
+
     public void Write(ClipboardContent content)
     {
         ObjectDisposedException.ThrowIf(disposed, this);

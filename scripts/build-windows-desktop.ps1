@@ -49,12 +49,16 @@ try {
     if ($Offline) { $cargoArgs += '--offline' }
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'Service Release build failed' }
+    $helperArgs = @('build', '--locked', '--release', '--target', 'x86_64-pc-windows-msvc', '-p', 'deskfuse-update-platform', '--bin', 'deskfuse-update-helper')
+    if ($Offline) { $helperArgs += '--offline' }
+    & cargo @helperArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Windows updater helper build failed' }
     $publishArgs = @('publish', 'apps\deskfuse-windows\DeskFuse.Windows.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $OutputDirectory, '-p:PublishSingleFile=false', '-p:PublishTrimmed=false', "-p:Version=$($release.version)", "-p:FileVersion=$($release.version).$($release.build_number)", "-p:InformationalVersion=$($release.version)+build.$($release.build_number)")
     # Offline builds require a prior restore of the exact project/runtime on this host.
     if ($Offline) { $publishArgs += '--no-restore' }
     & dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw 'Windows desktop publish failed' }
-    foreach ($name in @('deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe')) {
+    foreach ($name in @('deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe', 'deskfuse-update-helper.exe')) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name") -Destination $OutputDirectory -Force
     }
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $ReleaseMetadata).Hash -ne $releaseHash) { throw 'Shared release descriptor changed during build' }

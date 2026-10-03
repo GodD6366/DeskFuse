@@ -11,6 +11,10 @@ pub mod hid;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
+mod input_environment;
+#[cfg(windows)]
+pub use input_environment::WindowsInputEnvironment;
+#[cfg(windows)]
 pub mod session;
 #[cfg(windows)]
 pub mod sharing;

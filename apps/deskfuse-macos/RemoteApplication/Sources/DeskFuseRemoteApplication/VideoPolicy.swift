@@ -207,7 +207,7 @@ public struct VideoAdaptation: Sendable {
         func lowerSize() -> VideoProfile? {
             // 定义降级分辨率阶梯，最低到 720p (1280x720)
             let minResolution = PixelSize(width: 1280, height: 720)
-            
+
             // 尝试按比例降低
             for scale in [0.75, 0.5] {
                 let size = preferred.pixels.scaled(scale)
@@ -216,13 +216,13 @@ public struct VideoAdaptation: Sendable {
                                         bitrate: current.bitrate, reason: "持续性能压力，已降低分辨率")
                 }
             }
-            
+
             // 如果当前分辨率大于 720p，降到 720p
             if current.pixels.area > minResolution.area {
                 return VideoProfile(codec: current.codec, pixels: minResolution, framesPerSecond: current.framesPerSecond,
                                     bitrate: current.bitrate, reason: "持续性能压力，已降低到最低分辨率 720p")
             }
-            
+
             return nil
         }
         // Clarity reduces >60 Hz first; both automatic modes preserve 60 Hz

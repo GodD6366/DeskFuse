@@ -3,7 +3,7 @@ import DeskFuseEngine
 
 private struct WorkflowSyncCard: View {
     @Bindable private var workflows = WorkflowStore.shared
-    
+
     var body: some View {
         Button {
             AppStore.shared.openSettings(tab: "workflows")

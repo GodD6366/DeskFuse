@@ -15,13 +15,14 @@ socket2 = { version = "=0.6.5", features = ["all"] }
 async-trait = "=0.1.92"
 futures = "0.3"
 prost = "=0.14.4"
-quinn = { version = "=0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
-thiserror = "=2.0.20"
+quinn.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 deskfuse-core = { path = "../deskfuse-core" }
 deskfuse-identity = { path = "../deskfuse-identity" }
 deskfuse-protocol = { path = "../deskfuse-protocol" }
+deskfuse-platform = { path = "../deskfuse-platform" }
 
 [dev-dependencies]
 rcgen = "=0.13.2"

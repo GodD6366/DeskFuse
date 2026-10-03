@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+use deskfuse_platform::Pasteboard;
+
 use core_foundation::{
     base::TCFType,
     mach_port::CFMachPort,
@@ -131,6 +133,53 @@ pub fn workflow_paste_if_current(
         }
         other => format!("无法自动粘贴：{other}"),
     })
+}
+
+/// Platform-owned output port for the guarded workflow paste action. The
+/// engine supplies the validated plan and remains unaware of CoreGraphics.
+pub struct MacOSWorkflowOutputPort;
+
+impl deskfuse_platform::ports::WorkflowOutputPort for MacOSWorkflowOutputPort {
+    fn capabilities(&self) -> deskfuse_platform::ports::WorkflowCapabilities {
+        deskfuse_platform::ports::WorkflowCapabilities {
+            steps: vec![
+                deskfuse_core::workflow::WorkflowStepKind::Compress,
+                deskfuse_core::workflow::WorkflowStepKind::Resize,
+                deskfuse_core::workflow::WorkflowStepKind::Convert,
+                deskfuse_core::workflow::WorkflowStepKind::SystemShortcut,
+                deskfuse_core::workflow::WorkflowStepKind::TextReplace,
+                deskfuse_core::workflow::WorkflowStepKind::TextTrim,
+                deskfuse_core::workflow::WorkflowStepKind::Rename,
+                deskfuse_core::workflow::WorkflowStepKind::Zip,
+            ],
+            clipboard_write: true,
+            guarded_paste: true,
+        }
+    }
+
+    fn clipboard_revision(
+        &self,
+    ) -> deskfuse_platform::PlatformResult<deskfuse_platform::NativeRevision> {
+        crate::MacOSPasteboard::new()
+            .change_count()
+            .map(deskfuse_platform::NativeRevision::new)
+    }
+
+    fn modifiers_released(&self) -> bool {
+        workflow_modifiers_released()
+    }
+
+    fn paste_if_current(
+        &self,
+        target_pid: i32,
+        revision: deskfuse_platform::NativeRevision,
+    ) -> deskfuse_platform::PlatformResult<()> {
+        workflow_paste_if_current(target_pid, revision.value()).map_err(|_| {
+            deskfuse_platform::PlatformError::FfiFailed {
+                operation: "macos guarded workflow paste",
+            }
+        })
+    }
 }
 
 struct TapContext {

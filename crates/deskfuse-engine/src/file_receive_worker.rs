@@ -215,7 +215,7 @@ fn run_receive_disk_worker(
 }
 #[cfg(test)]
 pub(super) fn apply_remote_file_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     bytes: &[u8],
     incoming: &mut HashMap<ReceiveKey, IncomingFileClipboard>,
     cache: &mut TransferCache,
@@ -228,7 +228,7 @@ pub(super) fn apply_remote_file_clipboard(
 }
 
 pub(super) fn apply_remote_file_clipboard_frame(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     frame: ClipboardFileFrame,
     incoming: &mut HashMap<ReceiveKey, IncomingFileClipboard>,
     cache: &mut TransferCache,
@@ -413,7 +413,7 @@ pub(super) fn apply_remote_file_clipboard_frame(
 }
 pub(super) fn handle_receive_event(
     event: ReceiveEvent,
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     state: &mut RemoteClipboardState<'_>,
     ui: &UnboundedSender<UiEvent>,
     diagnostics: &Diagnostics,

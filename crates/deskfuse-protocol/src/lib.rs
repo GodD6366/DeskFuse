@@ -36,7 +36,7 @@ pub use wire::envelope::Message;
 pub use wire::{
     ClipboardUpdate, DisplayInfo, Envelope, Error, Goodbye, Hello, HelloAck, InputEndpoints,
     InputEvent, InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest,
-    PeerInfo, Ping, Pong, RemoteApplicationOpen, SessionProof, envelope, input_event,
+    PeerInfo, Ping, Pong, RemoteApplicationOpen, SessionProof, WorkflowSync, envelope, input_event,
 };
 
 /// ALPN protocol identifier.
@@ -224,6 +224,13 @@ fn validate_message(message: &Message) -> Result<(), ProtocolError> {
                 validate_input_event(event)?;
             }
             Ok(())
+        }
+        Message::WorkflowSync(sync) => {
+            if sync.payload.is_empty() || sync.payload.len() > 128 * 1024 {
+                Err(ProtocolError::InvalidPayload("workflow frame bounds"))
+            } else {
+                Ok(())
+            }
         }
         Message::DisplayInfo(display) => {
             if display.width == 0

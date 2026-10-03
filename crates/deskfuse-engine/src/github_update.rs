@@ -633,9 +633,7 @@ where
     };
     match fetch(FEED).await {
         Ok(releases) if !releases.is_empty() => Ok(releases),
-        Ok(_) => Err(format!(
-            "更新检查失败：GitHub 返回空发布列表，独立域名也返回空发布列表"
-        )),
+        Ok(_) => Err("更新检查失败：GitHub 返回空发布列表，独立域名也返回空发布列表".to_owned()),
         Err(site_error) => Err(format!(
             "更新检查失败：GitHub（{github_error}）；独立域名（{site_error}）"
         )),
