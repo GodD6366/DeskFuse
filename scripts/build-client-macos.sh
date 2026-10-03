@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the macOS client. --use-sdk (default) skips Rust when the fingerprint matches.
+# Build the macOS client. Rust is always built through Cargo incremental
+# invalidation; --rebuild-rust additionally drops the production artifacts.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"

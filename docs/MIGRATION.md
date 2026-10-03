@@ -24,9 +24,12 @@ check, remote-origin mark, superseded-by-local-copy). File clipboard frames and
 the wire protocol still live in the engine worker until they call
 `CollaborationCore`.
 
-`scripts/build-native-macos.sh` skips Rust and UniFFI generation when the
-crate fingerprint in `apps/deskfuse-macos/SDK/.rust-fingerprint` matches.
-Force a rebuild with `DESKFUSE_FORCE_RUST=1` or
+`scripts/build-rust-macos.sh` builds the FFI library, the input service and the
+Swift bindings without compiling Swift. Cargo owns Rust incrementality, and the
+bindings are cached in
+`apps/deskfuse-macos/SDK/.swift-bindings-fingerprint.json` by hashing the built
+library, the bindgen binary, the configuration and the generated files. Force
+recompilation and regeneration with `DESKFUSE_FORCE_RUST=1` or
 `./scripts/build-client-macos.sh --rebuild-rust`.
 
 The new input binaries (`deskfuse-input-macos`, `deskfuse-input-windows`) compile
