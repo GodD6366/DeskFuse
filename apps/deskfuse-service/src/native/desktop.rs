@@ -1,12 +1,20 @@
 //! Authenticated desktop coordinator; shared state never contains private keys.
-use super::{Control, Network, clipboard_sync, security};
+use super::{
+    Control, Network, clipboard_sync, input_security, remote_app, security, session_agent,
+};
 use crate::{
     desktop_protocol as ipc,
     policy::{ClientSession, same_session},
     protocol,
 };
+use base64::Engine;
 use deskfuse_core::Endpoint;
+use deskfuse_platform::{
+    ApplyResult, BoundaryErrorCode, CapturedContent, ContentData, NativeRevision, PlatformCommand,
+    PlatformEvent,
+};
 use deskfuse_runtime::{RuntimeCommand, RuntimeEvent};
+use deskfuse_transfer::FileBridge;
 use std::{
     collections::VecDeque,
     io,
@@ -28,14 +36,25 @@ pub(super) struct State {
     pairing_status: Option<String>,
     last_error: Option<String>,
     input_heartbeat: Option<Instant>,
+    input_helper: Option<input_security::HelperIdentity>,
+    input_desktop: ipc::InputDesktop,
     input_topology: Option<deskfuse_core::DisplayTopology>,
     input_deliveries: VecDeque<ipc::InputDelivery>,
     input_sequence: u64,
     input_reported_activation: Option<String>,
     input_last_lease: Option<(String, u64)>,
+    session_agent: session_agent::SessionAgent,
+    file_bridge: Option<FileBridge>,
+    workflow_sync_at: Option<Instant>,
+    /// Last host-reported capture. This is metadata for typed receipts only;
+    /// native clipboard access remains in the interactive WPF process.
+    platform_capture: Option<CapturedContent>,
 }
 impl State {
     pub(super) fn clear(&mut self) {
+        if let Some(files) = self.file_bridge.take() {
+            files.reset(true);
+        }
         *self = Self::default();
     }
     fn active(&self, control: &Control) -> bool {
@@ -48,11 +67,18 @@ impl State {
                 .owner
                 .is_some_and(|owner| security::session_still_active(owner))
     }
-    fn input_active(&self, control: &Control) -> bool {
-        self.active(control)
+    fn helper_available(&self) -> bool {
+        self.input_helper
+            .as_ref()
+            .is_some_and(|helper| helper.alive())
+            && self.input_desktop == ipc::InputDesktop::Default
             && self
                 .input_heartbeat
                 .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1))
+            && self.owner.is_some_and(security::session_still_active)
+    }
+    fn input_active(&self, control: &Control) -> bool {
+        self.active(control) && self.helper_available()
     }
     fn push_input(&mut self, delivery: impl FnOnce(u64) -> ipc::InputDelivery) {
         self.input_sequence = self.input_sequence.saturating_add(1).max(1);
@@ -76,20 +102,74 @@ impl State {
         self.input_last_lease = None;
     }
     fn input_state(&self, network: &Network) -> ipc::InputState {
-        let snapshot = network.input_runtime.handle.input_snapshot();
-        let managed = snapshot.managed_control.as_ref();
+        let input = network.input_runtime.handle.input_snapshot();
+        let managed = input.managed_control.as_ref();
+        let runtime_snapshot = network.runtime.snapshot_view().snapshot;
+        let activations = input
+            .activations
+            .iter()
+            .map(|(peer_id, activation)| ipc::ActivationView {
+                peer_id: peer_id.to_string(),
+                status: enum_string(&activation.status),
+                reason: activation.reason.clone(),
+            })
+            .collect();
+        let remote_topologies = input
+            .remote_topologies
+            .iter()
+            .map(|(peer_id, topology)| ipc::RemoteTopologyView {
+                peer_id: peer_id.to_string(),
+                topology: topology.clone(),
+            })
+            .collect();
+        let links = input
+            .links
+            .iter()
+            .map(|link| ipc::LinkView {
+                peer_id: link.peer_id.to_string(),
+                ready: link.ready,
+                control_session: link.control_session.map(|id| id.to_string()),
+                lease_revision: link.lease_revision,
+                motion_mode: link.motion_mode.clone(),
+            })
+            .collect();
+        let session_agent = self.session_agent.snapshot();
         ipc::InputState {
-            helper_connected: self
-                .input_heartbeat
-                .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+            helper_connected: self.helper_available(),
+            security: ipc::InputSecurityState {
+                session_bound: self.helper_available(),
+                ui_access: self
+                    .helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
+                elevated: self
+                    .helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.elevated),
+                desktop: if self.helper_available() {
+                    self.input_desktop
+                } else {
+                    ipc::InputDesktop::Unavailable
+                },
+                reason: Some(if self.helper_available() {
+                    "UIAccess verified; Default desktop only; secure/login desktops and SAS unsupported"
+                } else {
+                    "No live authenticated UIAccess helper on the unlocked Default desktop"
+                }.into()),
+                session_agent,
+            },
             managed: managed.is_some(),
             status: managed.map_or_else(|| "standby".into(), |value| enum_string(&value.status)),
             reason: managed.and_then(|value| value.reason.clone()),
             controller_id: managed.map(|value| value.controller.to_string()),
-            display_count: snapshot
+            display_count: input
                 .local_topology
                 .as_ref()
                 .map_or(0, |topology| topology.displays.len()),
+            local_device_id: runtime_snapshot.local_device_id.to_string(),
+            settings: Some(input.settings.clone()),
+            controlling: None,
+            activations,
+            remote_topologies,
+            links,
         }
     }
     pub(super) fn input_event(
@@ -148,6 +228,34 @@ impl State {
             return;
         }
         self.sync.tick(&network.runtime);
+        if self
+            .workflow_sync_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(5))
+        {
+            if let Ok(frames) = network.workflow_catalog.frames() {
+                let peers = network.runtime.snapshot_view().snapshot.peers;
+                for peer in peers.into_iter().filter(|peer| {
+                    peer.connection == deskfuse_core::ConnectionState::Connected
+                        && peer.routes.iter().any(|route| {
+                            route
+                                .capabilities
+                                .contains(deskfuse_core::Capabilities::WORKFLOW_SYNC)
+                        })
+                }) {
+                    for frame in &frames {
+                        let _ = network.runtime.try_send(RuntimeCommand::SendWorkflowSync {
+                            peer_id: peer.id,
+                            payload: frame.clone(),
+                        });
+                    }
+                }
+            }
+            self.workflow_sync_at = Some(Instant::now());
+        }
+        if let Some(files) = self.file_bridge.as_ref() {
+            let connected = self.sync.file_peers(&network.runtime);
+            files.tick(&connected);
+        }
         let input_active = self.input_active(control);
         let snapshot = network.input_runtime.handle.input_snapshot();
         if input_active {
@@ -216,7 +324,22 @@ impl State {
         }
         match event {
             RuntimeEvent::ClipboardReceived { peer_id, payload } => {
-                self.sync.receive(&network.runtime, peer_id, payload)
+                if let Some(files) = self.file_bridge.as_ref() {
+                    self.sync.receive(&network.runtime, peer_id, payload, files)
+                }
+            }
+            RuntimeEvent::WorkflowSyncReceived { peer_id, payload } => {
+                match network.workflow_catalog.receive(&payload) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            let _ = network.runtime.try_send(RuntimeCommand::SendWorkflowSync {
+                                peer_id,
+                                payload: frame,
+                            });
+                        }
+                    }
+                    Err(error) => self.last_error = Some(error.chars().take(256).collect()),
+                }
             }
             RuntimeEvent::PairingStatus { .. } => {
                 self.pairing_status =
@@ -245,6 +368,9 @@ impl State {
     pub(super) fn lagged(&mut self) {
         // A lost event may invalidate ordering, so retire all content and handshakes.
         self.sync = clipboard_sync::Sync::default();
+        if let Some(files) = self.file_bridge.take() {
+            files.reset(true);
+        }
         self.last_error = Some("event stream overflow; clipboard session reset; copy again".into());
     }
     fn snapshot(&self, network: &Network, auth: ClientSession, epoch: u64) -> ipc::Snapshot {
@@ -311,15 +437,47 @@ impl State {
             control_port: network.control_port,
             capabilities: ipc::Capabilities {
                 clipboard: self.owner == Some(auth) && self.epoch == epoch,
-                files: false,
-                input: self
-                    .input_heartbeat
-                    .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+                files: self.owner == Some(auth)
+                    && self.epoch == epoch
+                    && self.file_bridge.is_some()
+                    && !self.sync.file_peers(&network.runtime).is_empty(),
+                input: self.helper_available()
+                    && self
+                        .input_heartbeat
+                        .is_some_and(|instant| instant.elapsed() < Duration::from_secs(1)),
+                elevated_input: self.helper_available()
+                    && self.input_helper.as_ref().is_some_and(|h| h.ui_access),
+                secure_desktop_input: self.session_agent.secure_desktop_input_available(),
+                login_input: self.session_agent.login_input_available(),
+                secure_attention_sequence: self.session_agent.secure_attention_sequence_available(),
                 updater: false,
+                remote_app: matches!(
+                    remote_app::availability(),
+                    remote_app::Availability::Available
+                ),
+                workflow_execution: self.owner == Some(auth) && self.epoch == epoch,
+                workflow_sync: self.owner == Some(auth) && self.epoch == epoch,
             },
             input: self.input_state(network),
             peers,
             pending,
+            file_transfers: self
+                .file_bridge
+                .as_ref()
+                .map_or_else(Vec::new, FileBridge::views),
+            file_cache: self.file_bridge.as_ref().map_or(
+                ipc::FileCache {
+                    max_bytes: 0,
+                    used_bytes: 0,
+                },
+                |bridge| {
+                    let usage = bridge.cache_usage();
+                    ipc::FileCache {
+                        max_bytes: usage.max_bytes,
+                        used_bytes: usage.used_bytes,
+                    }
+                },
+            ),
             pairing_status: self
                 .sync
                 .status
@@ -333,6 +491,125 @@ impl State {
             }),
         }
     }
+    fn platform_command(&mut self, command: PlatformCommand, network: &Network) -> ipc::Reply {
+        let failed = |code: BoundaryErrorCode, message: &str| ipc::Reply::Platform {
+            event: PlatformEvent::Failed {
+                code,
+                message: message.into(),
+            },
+        };
+        match command {
+            // These variants predate the host payload protocol. Do not let a
+            // Session-0 process infer or access interactive clipboard state.
+            PlatformCommand::ReadClipboard
+            | PlatformCommand::WriteClipboard { .. }
+            | PlatformCommand::ExecuteWorkflow { .. } => failed(
+                BoundaryErrorCode::InvalidRequest,
+                "typed Windows host payload required",
+            ),
+            PlatformCommand::CreateFileDataObject { paths } => {
+                if paths.is_empty() || paths.len() > 512 {
+                    return failed(BoundaryErrorCode::InvalidRequest, "invalid file list");
+                }
+                match self.publish_file_data_object(network, paths) {
+                    Ok(id) => ipc::Reply::Platform {
+                        event: PlatformEvent::FileDataObjectCreated { id },
+                    },
+                    Err(message) => failed(BoundaryErrorCode::Native, &message),
+                }
+            }
+            PlatformCommand::ReadClipboardHost { content } => {
+                if content.revision.value() < 0
+                    || content.data.bytes.len() > ipc::MAX_CONTENT
+                    || content.data.file_urls.len() > 512
+                {
+                    return failed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "invalid clipboard capture",
+                    );
+                }
+                self.platform_capture = Some(content.clone());
+                ipc::Reply::Platform {
+                    event: PlatformEvent::ClipboardCaptured(content),
+                }
+            }
+            PlatformCommand::WriteClipboardHost {
+                content,
+                expected_revision,
+            } => {
+                if expected_revision.value() < 0
+                    || content.data.bytes.len() > ipc::MAX_CONTENT
+                    || content.data.file_urls.len() > 512
+                {
+                    return failed(BoundaryErrorCode::InvalidRequest, "invalid clipboard write");
+                }
+                let Some(next) = expected_revision.value().checked_add(1) else {
+                    return failed(BoundaryErrorCode::Conflict, "clipboard revision exhausted");
+                };
+                ipc::Reply::Platform {
+                    event: PlatformEvent::ClipboardApplied(ApplyResult::Applied {
+                        new_revision: NativeRevision::new(next),
+                    }),
+                }
+            }
+            PlatformCommand::ExecuteWorkflowHost { workflow_id, input } => {
+                let input_bytes = input
+                    .iter()
+                    .try_fold(0usize, |total, item| total.checked_add(item.bytes.len()));
+                if input.is_empty() || input_bytes.is_none_or(|total| total > ipc::MAX_CONTENT) {
+                    return failed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "workflow input is empty or oversized",
+                    );
+                }
+                let workflow = match network.workflow_catalog.list() {
+                    Ok(workflows) => workflows.into_iter().find(|item| item.id == workflow_id),
+                    Err(_) => {
+                        return failed(BoundaryErrorCode::Ipc, "cannot read workflow catalog");
+                    }
+                };
+                let Some(workflow) = workflow else {
+                    return failed(BoundaryErrorCode::InvalidRequest, "workflow does not exist");
+                };
+                let wire_input = input
+                    .into_iter()
+                    .map(|item| ipc::WorkflowInput {
+                        mime: item.mime,
+                        data_base64: base64::engine::general_purpose::STANDARD.encode(item.bytes),
+                    })
+                    .collect::<Vec<_>>();
+                match workflow::execute(&workflow, &wire_input) {
+                    Ok(result) => {
+                        let output = result
+                            .formats
+                            .iter()
+                            .find(|format| format.mime == "text/plain")
+                            .or_else(|| result.formats.first())
+                            .and_then(|format| {
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(&format.data_base64)
+                                    .ok()
+                                    .map(|bytes| ContentData {
+                                        mime: format.mime.clone(),
+                                        bytes,
+                                        file_urls: Vec::new(),
+                                        items: Vec::new(),
+                                    })
+                            });
+                        ipc::Reply::Platform {
+                            event: PlatformEvent::WorkflowCompleted {
+                                workflow_id,
+                                message: result.message,
+                                content: output,
+                            },
+                        }
+                    }
+                    Err(message) => failed(BoundaryErrorCode::CapabilityDenied, &message),
+                }
+            }
+        }
+    }
+
     fn command(
         &mut self,
         command: ipc::Command,
@@ -345,6 +622,7 @@ impl State {
             self.owner = Some(auth);
             self.epoch = epoch;
             self.heartbeat = Some(Instant::now());
+            self.file_bridge = Some(crate::native::file_transfer::session_bridge());
             self.sync.tick(&network.runtime);
             return ipc::Reply::Snapshot(self.snapshot(network, auth, epoch));
         }
@@ -362,6 +640,21 @@ impl State {
             self.heartbeat = Some(Instant::now());
         }
         match command {
+            ipc::Command::Platform {
+                session_epoch,
+                sequence,
+                command,
+            } => {
+                if session_epoch != epoch || sequence == 0 {
+                    return ipc::Reply::Platform {
+                        event: PlatformEvent::Failed {
+                            code: BoundaryErrorCode::Conflict,
+                            message: "desktop session or request sequence is stale".into(),
+                        },
+                    };
+                }
+                self.platform_command(command, network)
+            }
             ipc::Command::Poll {
                 session_epoch,
                 after_sequence,
@@ -417,6 +710,95 @@ impl State {
                     Err(message) => ipc::Reply::rejected("clipboard_unavailable", message),
                 }
             }
+            ipc::Command::PublishFileClipboard {
+                session_epoch,
+                sequence,
+                paths,
+            } => {
+                if session_epoch != epoch
+                    || sequence == 0
+                    || sequence <= self.local_sequence
+                    || sequence <= self.published_sequence
+                {
+                    return ipc::Reply::rejected(
+                        "stale_clipboard",
+                        "clipboard generation is no longer current",
+                    );
+                }
+                self.local_sequence = sequence;
+                self.published_sequence = sequence;
+                self.sync.invalidate_copy(&network.runtime);
+                let Some(files) = self.file_bridge.as_ref() else {
+                    return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
+                };
+                let peers = self.sync.file_peers(&network.runtime);
+                let frames = match files.publish_local(
+                    &peers,
+                    paths.into_iter().map(std::path::PathBuf::from).collect(),
+                ) {
+                    Ok(frames) => frames,
+                    Err(message) => return ipc::Reply::rejected("files_unavailable", &message),
+                };
+                for (peer, _id, frame) in frames {
+                    if let Ok(data) = frame.encode() {
+                        self.sync.announce_file_offer(&network.runtime, peer, data);
+                    }
+                }
+                ipc::Reply::queued()
+            }
+            ipc::Command::RequestFileClipboard {
+                session_epoch,
+                transfer_id,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                match self.file_bridge.as_ref().map_or_else(
+                    || Err("文件通道尚未就绪".to_owned()),
+                    |files| files.request_incoming(&transfer_id),
+                ) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(message) => ipc::Reply::rejected("files_unavailable", &message),
+                }
+            }
+            ipc::Command::CancelFileClipboard {
+                session_epoch,
+                transfer_id,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                if let Some(files) = self.file_bridge.as_ref() {
+                    files.cancel_incoming(&transfer_id, "Windows desktop cancelled file transfer");
+                }
+                ipc::Reply::queued()
+            }
+            ipc::Command::CommitFileClipboard {
+                session_epoch,
+                transfer_id,
+                applied,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                match self.file_bridge.as_ref().map_or_else(
+                    || Err("文件通道尚未就绪".to_owned()),
+                    |files| files.commit_incoming(&transfer_id, applied),
+                ) {
+                    Ok(true) => ipc::Reply::queued(),
+                    Ok(false) => ipc::Reply::rejected("stale_transfer", "文件传输不再等待桌面确认"),
+                    Err(message) => ipc::Reply::rejected("files_unavailable", &message),
+                }
+            }
             ipc::Command::CommitClipboard {
                 session_epoch,
                 sequence,
@@ -435,7 +817,8 @@ impl State {
                 if topology.validate().is_err() {
                     return ipc::Reply::rejected("invalid_input", "invalid display topology");
                 }
-                self.input_heartbeat = Some(Instant::now());
+                self.input_heartbeat = None;
+                self.input_desktop = ipc::InputDesktop::Unavailable;
                 self.input_topology = Some(topology.clone());
                 self.input_reported_activation = None;
                 self.input_last_lease = None;
@@ -445,11 +828,31 @@ impl State {
                     .handle
                     .try_send(RuntimeCommand::PublishDisplayTopology(topology))
                 {
-                    Ok(()) => ipc::Reply::queued(),
+                    Ok(()) => ipc::Reply::InputRegistered {
+                        session_epoch: epoch,
+                    },
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
-            ipc::Command::PollInput { after_sequence } => {
+            ipc::Command::PollInput {
+                session_epoch,
+                after_sequence,
+                desktop,
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected("session_expired", "input helper epoch expired");
+                }
+                self.input_desktop = desktop;
+                if desktop != ipc::InputDesktop::Default {
+                    self.input_heartbeat = None;
+                    self.session_agent
+                        .clear("secure session agent is not available through the ordinary helper");
+                    self.release_input("Windows input desktop is protected or unavailable");
+                    return ipc::Reply::rejected(
+                        "desktop_unavailable",
+                        "Default input desktop required",
+                    );
+                }
                 if self.input_topology.is_none() {
                     return ipc::Reply::rejected(
                         "input_unregistered",
@@ -496,6 +899,78 @@ impl State {
                 self.input_reported_activation = None;
                 ipc::Reply::queued()
             }
+            ipc::Command::SetInputSharingSettings { settings } => {
+                if let Err(error) = settings.validate() {
+                    return ipc::Reply::rejected("invalid_input", &error);
+                }
+                match network
+                    .runtime
+                    .try_send(RuntimeCommand::SetInputSharingSettings(settings))
+                {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::GetWorkflows => match network.workflow_catalog.list() {
+                Ok(workflows) => ipc::Reply::Workflows { workflows },
+                Err(_) => ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录"),
+            },
+            ipc::Command::SaveWorkflow { workflow } => {
+                match network.workflow_catalog.save(workflow) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("invalid_workflow", &error),
+                }
+            }
+            ipc::Command::DeleteWorkflow { id } => match network.workflow_catalog.delete(&id) {
+                Ok(()) => ipc::Reply::queued(),
+                Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
+            },
+            ipc::Command::SaveWorkflowRule { rule } => {
+                match network.workflow_catalog.save_rule(rule) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("invalid_workflow_rule", &error),
+                }
+            }
+            ipc::Command::DeleteWorkflowRule { id } => {
+                match network.workflow_catalog.delete_rule(&id) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
+                }
+            }
+            ipc::Command::RunWorkflow { workflow_id, input } => {
+                let workflow = match network.workflow_catalog.list() {
+                    Ok(workflows) => workflows.into_iter().find(|item| item.id == workflow_id),
+                    Err(_) => {
+                        return ipc::Reply::rejected("storage_unavailable", "无法读取工作流目录");
+                    }
+                };
+                let Some(workflow) = workflow else {
+                    return ipc::Reply::rejected("not_found", "工作流不存在");
+                };
+                match workflow::execute(&workflow, &input) {
+                    Ok(result) => ipc::Reply::WorkflowResult {
+                        run_id: result.run_id,
+                        workflow_id,
+                        formats: result.formats,
+                        message: result.message,
+                    },
+                    Err(message) => ipc::Reply::rejected("workflow_failed", &message),
+                }
+            }
+            ipc::Command::CancelWorkflow { .. } => ipc::Reply::rejected(
+                "not_supported",
+                "当前 Windows 工作流步骤为受限同步执行，无需取消",
+            ),
+            ipc::Command::GetWorkflowCatalog => match network.workflow_catalog.view_json() {
+                Ok(json) => ipc::Reply::WorkflowCatalog { json },
+                Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
+            },
+            ipc::Command::RestoreWorkflowConflict { conflict_id } => {
+                match network.workflow_catalog.restore(&conflict_id) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(error) => ipc::Reply::rejected("not_found", &error),
+                }
+            }
             ipc::Command::ReclaimInput => {
                 self.release_input("Windows user reclaimed local input");
                 self.input_reported_activation = None;
@@ -508,10 +983,91 @@ impl State {
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
-            ipc::Command::Rename { .. } => ipc::Reply::rejected(
-                "unsupported",
+            ipc::Command::Rename { .. } => ipc::Reply::rejected_typed(
+                BoundaryErrorCode::Unsupported,
                 "authoritative runtime rename is not yet available",
             ),
+            ipc::Command::ListRemoteApps => {
+                let (available, reason) = match remote_app::availability() {
+                    remote_app::Availability::Available => (true, None),
+                    remote_app::Availability::UnsupportedEdition { edition } => (
+                        false,
+                        Some(format!(
+                            "当前 Windows 版本（{edition}）不支持 RemoteApp；需要专业版或更高版本"
+                        )),
+                    ),
+                };
+                let apps = remote_app::list_remote_apps()
+                    .into_iter()
+                    .map(remote_app_info)
+                    .collect();
+                ipc::Reply::RemoteApps {
+                    available,
+                    reason,
+                    apps,
+                }
+            }
+            ipc::Command::ListInstalledApps => {
+                let apps = remote_app::list_installed_apps()
+                    .into_iter()
+                    .map(installed_app_info)
+                    .collect();
+                ipc::Reply::InstalledApps { apps }
+            }
+            ipc::Command::RegisterRemoteApp {
+                name,
+                path,
+                display_name,
+            } => {
+                if name.trim().is_empty() || path.trim().is_empty() {
+                    return ipc::Reply::rejected(
+                        "invalid_request",
+                        "RemoteApp 名称与可执行文件路径不能为空",
+                    );
+                }
+                let full_name = if display_name.trim().is_empty() {
+                    path.rsplit('\\')
+                        .next()
+                        .filter(|stem| !stem.is_empty())
+                        .map(|stem| stem.strip_suffix(".exe").unwrap_or(stem).to_owned())
+                        .unwrap_or_else(|| path.clone())
+                } else {
+                    display_name
+                };
+                let entry = remote_app::RemoteAppEntry {
+                    name,
+                    full_name,
+                    path,
+                    command_line: String::new(),
+                    command_line_setting: 1,
+                    icon_path: String::new(),
+                    icon_index: 0,
+                    show_in_tswa: 0,
+                };
+                match remote_app::register_app(&entry) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => {
+                        ipc::Reply::rejected("remote_app_unavailable", "无法写入 RemoteApp 注册表")
+                    }
+                }
+            }
+            ipc::Command::UnregisterRemoteApp { name } => match remote_app::unregister_app(&name) {
+                Ok(()) => ipc::Reply::queued(),
+                Err(_) => {
+                    ipc::Reply::rejected("remote_app_unavailable", "无法移除 RemoteApp 注册项")
+                }
+            },
+            ipc::Command::RemoteAppConnection { name } => {
+                let Some(entry) = remote_app::list_remote_apps()
+                    .into_iter()
+                    .find(|entry| entry.name == name)
+                else {
+                    return ipc::Reply::rejected("not_found", "该应用尚未注册为 RemoteApp");
+                };
+                ipc::Reply::RemoteAppConnection {
+                    rdp: remote_app::rdp_file(&entry),
+                }
+            }
             other => match runtime_command(other) {
                 Some(command) => {
                     self.last_error = None;
@@ -528,6 +1084,24 @@ impl State {
         }
     }
 }
+fn remote_app_info(entry: remote_app::RemoteAppEntry) -> ipc::RemoteAppInfo {
+    ipc::RemoteAppInfo {
+        name: entry.name,
+        display_name: entry.full_name,
+        path: entry.path,
+        command_line: entry.command_line,
+        icon_path: entry.icon_path,
+        icon_index: entry.icon_index,
+    }
+}
+
+fn installed_app_info(app: remote_app::InstalledApp) -> ipc::InstalledAppInfo {
+    ipc::InstalledAppInfo {
+        name: app.name,
+        path: app.path,
+    }
+}
+
 fn enum_string(value: &impl serde::Serialize) -> String {
     serde_json::to_value(value)
         .ok()
@@ -560,6 +1134,17 @@ fn runtime_command(command: ipc::Command) -> Option<RuntimeCommand> {
         },
         ipc::Command::Revoke { peer_id } => RuntimeCommand::RevokePeer {
             peer_id: peer_id.parse().ok()?,
+        },
+        ipc::Command::MoveControlDevice {
+            device_id,
+            display_id,
+            x,
+            y,
+        } => RuntimeCommand::MoveInputDevice {
+            device_id: device_id.parse().ok()?,
+            display_id: display_id.into(),
+            x,
+            y,
         },
         _ => return None,
     })
@@ -617,6 +1202,27 @@ pub(super) async fn handle(
                     | ipc::Command::PollInput { .. }
                     | ipc::Command::InputFault { .. }
             );
+            let helper_identity = if helper_request {
+                Some(input_security::authenticate(pipe.as_raw_handle(), before)?)
+            } else {
+                None
+            };
+            if let Some(identity) = helper_identity {
+                if let Some(registered) = state.input_helper.as_ref() {
+                    if !registered.same_process(&identity) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "input helper process changed; reopen desktop session",
+                        ));
+                    }
+                } else if !matches!(&request.command, ipc::Command::RegisterInput { .. }) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "input helper not registered",
+                    ));
+                }
+                state.input_helper = Some(identity);
+            }
             // Helper polling has an independent process-local request sequence.
             // Its commands are idempotent and remain bound to the authenticated
             // desktop generation, so they do not share the GUI monotonic cursor.

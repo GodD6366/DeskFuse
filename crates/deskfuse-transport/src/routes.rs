@@ -78,6 +78,7 @@ pub async fn classify_endpoints(endpoints: Vec<Endpoint>) -> Vec<ClassifiedEndpo
                 let context = UdpSocket::bind("0.0.0.0:0").ok().and_then(|socket| {
                     socket.connect(address).ok()?;
                     Some(super::lan::inspect(
+                        None,
                         TransportSessionId::new(),
                         socket.local_addr().ok()?,
                         address,

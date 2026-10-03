@@ -20,6 +20,7 @@ prost = "0.14"
 deskfuse-protocol = { path = "../../crates/deskfuse-protocol" }
 deskfuse-runtime = { path = "../../crates/deskfuse-runtime" }
 deskfuse-transport = { path = "../../crates/deskfuse-transport" }
+deskfuse-platform = { path = "../../crates/deskfuse-platform" }
 
 quinn.workspace = true
 rustls.workspace = true
@@ -32,3 +33,6 @@ unsafe_code = "warn"
 
 [lints.clippy]
 all = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+deskfuse-platform-macos = { path = "../../crates/deskfuse-platform-macos" }

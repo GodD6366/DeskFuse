@@ -3,7 +3,9 @@
 #![allow(unsafe_code)]
 mod background_cursor;
 mod capture;
+mod environment;
 mod injector;
+pub use environment::MacOSInputEnvironment;
 pub mod timing;
 use crate::{PlatformError, PlatformResult};
 pub use capture::{

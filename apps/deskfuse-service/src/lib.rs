@@ -20,6 +20,10 @@
     clippy::too_many_lines
 )]
 pub mod desktop_protocol;
+#[cfg(all(test, windows))]
+mod file_transfer_tests;
+#[cfg(all(test, windows))]
+mod input_controller_tests;
 #[cfg(windows)]
 pub mod native;
 pub mod policy;

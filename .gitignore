@@ -74,6 +74,9 @@ identity.key
 /docs/archive/
 /docs/history/
 
+# FreeRDP static library bundle (regenerate with scripts/build-freerdp-macos.sh).
+/apps/deskfuse-macos/RemoteApplication/Vendor/
+
 # Windows native desktop build outputs.
 /apps/deskfuse-windows/bin/
 /apps/deskfuse-windows/obj/

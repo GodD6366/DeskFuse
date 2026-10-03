@@ -1,8 +1,5 @@
 //! Dedicated input orchestration. File reads and clipboard delivery cannot stall
 //! this thread; native capture and injection also own fail-safe lease timers.
-use crate::platform::{
-    PermissionSnapshot, PermissionStatus, create_permission_service, display_topology,
-};
 use crate::tokio_bridge::UiEvent;
 use deskfuse_core::{
     DeviceId, DisplayKey, InputActivationId, InputActivationStatus, InputSessionId, InputShareRole,
@@ -12,7 +9,12 @@ use deskfuse_input::{
     Point, Vector2,
     sharing::{HotkeyBindings, HotkeyChord, SharingAction, SharingController, SharingDisplay},
 };
-use deskfuse_platform::{CaptureEvent, SharedInputCapture, SharedInputInjector, timing};
+use deskfuse_platform::ports::EnginePlatformPort;
+use deskfuse_platform::{
+    CaptureEvent, InputCapability, InputEnvironmentSnapshot, SharedInputCapture,
+    SharedInputInjector, timing,
+};
+use deskfuse_platform::{PermissionSnapshot, PermissionStatus};
 use deskfuse_runtime::{RuntimeCommand, RuntimeEvent, RuntimeHandle};
 use futures::{StreamExt, channel::mpsc::UnboundedSender};
 use std::{
@@ -36,6 +38,7 @@ pub struct InputCoordinator {
 impl InputCoordinator {
     pub fn start(
         runtime: RuntimeHandle,
+        platform: Arc<dyn EnginePlatformPort>,
         ui: UnboundedSender<UiEvent>,
         recording: Arc<AtomicBool>,
         emergency: Arc<AtomicBool>,
@@ -44,6 +47,7 @@ impl InputCoordinator {
             let stopping = Arc::new(AtomicBool::new(false));
             let stop = stopping.clone();
             let channel = remote.clone();
+            let remote_platform = platform.clone();
             let worker = thread::Builder::new()
                 .name("deskfuse-input-ui".into())
                 .spawn(move || {
@@ -72,9 +76,7 @@ impl InputCoordinator {
                             .as_ref()
                             .is_some_and(|p| p.running && !native.running)
                         {
-                            let _ =
-                                deskfuse_platform_macos::sharing::restore_pointer_after_service_exit(
-                                );
+                            let _ = remote_platform.restore_pointer_after_service_exit();
                         }
                         if previous.as_ref() != Some(&native) {
                             let _ = ui.unbounded_send(UiEvent::InputStatus {
@@ -86,7 +88,10 @@ impl InputCoordinator {
                             ));
                             let permissions = helper_permissions(
                                 &native,
-                                create_permission_service().snapshot().full_disk_access,
+                                remote_platform
+                                    .permission_service()
+                                    .snapshot()
+                                    .full_disk_access,
                             );
                             let _ = ui.unbounded_send(UiEvent::PermissionSnapshot(permissions));
                             previous = Some(native);
@@ -110,6 +115,7 @@ impl InputCoordinator {
         }
         Self::start_local(
             runtime,
+            platform,
             ui,
             recording,
             emergency,
@@ -119,6 +125,7 @@ impl InputCoordinator {
     }
     pub(crate) fn start_local(
         runtime: RuntimeHandle,
+        platform: Arc<dyn EnginePlatformPort>,
         ui: UnboundedSender<UiEvent>,
         recording: Arc<AtomicBool>,
         emergency: Arc<AtomicBool>,
@@ -135,7 +142,15 @@ impl InputCoordinator {
                     .enable_all()
                     .build()
                 {
-                    executor.block_on(run(runtime, ui, signal, recording, emergency, pause_signal));
+                    executor.block_on(run(
+                        runtime,
+                        platform,
+                        ui,
+                        signal,
+                        recording,
+                        emergency,
+                        pause_signal,
+                    ));
                 }
             })
             .ok();
@@ -242,6 +257,7 @@ struct State {
     available: bool,
     last_error: Option<String>,
     observer_thread: Option<Arc<thread::Thread>>,
+    platform: Arc<dyn EnginePlatformPort>,
     /// Positions this machine forwarded to a peer, and positions it injected for a
     /// peer. Motion is forwarded as absolute positions and every stage keeps only
     /// the newest one, so the *update rate and its regularity* is what a user
@@ -298,7 +314,12 @@ impl MotionCadence {
 }
 impl State {
     fn error(&mut self, ui: &UnboundedSender<UiEvent>, message: String) {
-        publish_native_error(&mut self.last_error, Some(message), ui);
+        if self.last_error.as_ref() != Some(&message) {
+            self.last_error = Some(message.clone());
+            let _ = ui.unbounded_send(UiEvent::InputStatus {
+                error: Some(message),
+            });
+        }
     }
     async fn reclaim(&mut self, runtime: &RuntimeHandle, restore: Option<(f64, f64)>) {
         self.crossing_started = None;
@@ -406,13 +427,14 @@ impl State {
             }
         };
         self.available = status == InputActivationStatus::Ready;
-        if self.last_report.as_ref() != Some(&report)
-            && runtime.send(report.command()).await.is_ok()
-        {
-            self.last_report = Some(report);
-        }
-        if self.available && self.last_error.take().is_some() {
-            let _ = self.ui.unbounded_send(UiEvent::InputStatus { error: None });
+        if self.last_report.as_ref() != Some(&report) {
+            if runtime.send(report.command()).await.is_ok() {
+                self.last_report = Some(report);
+            }
+            if self.available {
+                self.last_error = None;
+                let _ = self.ui.unbounded_send(UiEvent::InputStatus { error: None });
+            }
         }
     }
 
@@ -474,7 +496,7 @@ impl State {
                         if changing_device {
                             self.capture.exit_remote(restore).map_err(|e| e.to_string())
                         } else if let Some((x, y)) = restore {
-                            crate::platform::warp_pointer(x, y).map_err(|e| e.to_string())
+                            self.platform.warp_pointer(x, y).map_err(|e| e.to_string())
                         } else {
                             Ok(())
                         }
@@ -753,65 +775,14 @@ fn native_available(
 }
 
 const NATIVE_OBSERVATION_MAX_AGE: Duration = Duration::from_secs(1);
-const NATIVE_OBSERVER_RESTART_AFTER: Duration = Duration::from_secs(5);
-
-fn publish_native_error(
-    previous: &mut Option<String>,
-    error: Option<String>,
-    ui: &UnboundedSender<UiEvent>,
-) {
-    if *previous != error {
-        *previous = error.clone();
-        let _ = ui.unbounded_send(UiEvent::InputStatus { error });
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum ObserverRecovery {
-    Wait,
-    Replace,
-    RestartService,
-}
-
-fn observer_recovery(
-    age: Duration,
-    exited: bool,
-    retired_blocked: bool,
-    replacements: u8,
-    manual: bool,
-) -> ObserverRecovery {
-    // Bound spawn failures and repeated clicks as well as blocked native queries.
-    let deadline = if exited || manual {
-        NATIVE_OBSERVATION_MAX_AGE
-    } else {
-        NATIVE_OBSERVER_RESTART_AFTER
-    };
-    if age < deadline {
-        ObserverRecovery::Wait
-    } else if replacements >= 2 {
-        ObserverRecovery::RestartService
-    } else if exited || !retired_blocked {
-        ObserverRecovery::Replace
-    } else {
-        ObserverRecovery::RestartService
-    }
-}
-
-fn native_check_error(
-    observation: Option<&NativeObservation>,
-    startup_age: Duration,
-) -> Option<String> {
-    match observation.filter(|sample| sample.fresh()) {
-        Some(sample) => sample.topology.as_ref().err().cloned(),
-        None if startup_age < NATIVE_OBSERVATION_MAX_AGE => None,
-        None => Some("原生输入状态检查超时，正在自动重试；也可点击重试".into()),
-    }
-}
 
 #[derive(Clone)]
 struct NativeObservation {
     permission: PermissionSnapshot,
     session_active: bool,
+    /// Fresh native admission from the same helper/session that owns capture
+    /// and injection. Permission state alone never authorizes input.
+    input_environment: InputEnvironmentSnapshot,
     topology: Result<deskfuse_core::DisplayTopology, String>,
     started_at: Instant,
     started_wall: SystemTime,
@@ -821,6 +792,13 @@ impl NativeObservation {
         self.fresh()
             && self.permission.accessibility() == PermissionStatus::Granted
             && self.session_active
+            && matches!(
+                (
+                    &self.input_environment.capture,
+                    &self.input_environment.inject
+                ),
+                (InputCapability::Allowed, InputCapability::Allowed)
+            )
             && self.topology.is_ok()
     }
     fn fresh(&self) -> bool {
@@ -841,17 +819,20 @@ type NativeObserver = (
 /// Native permission/session/display queries may block in macOS. Keep them on
 /// their own thread and publish only the latest observation, never an input
 /// work item. A stalled observer fails closed through the freshness check.
-fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
+fn native_observer(
+    stopping: Arc<AtomicBool>,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> NativeObserver {
     let (tx, rx) = tokio::sync::watch::channel(None);
     let worker = thread::Builder::new()
         .name("deskfuse-input-observer".into())
         .spawn(move || {
-            let permissions = create_permission_service();
+            let permissions = platform.permission_service();
             let mut last_topology: Option<(
                 Instant,
                 Result<deskfuse_core::DisplayTopology, String>,
             )> = None;
-            while !stopping.load(Ordering::Acquire) && !tx.is_closed() {
+            while !stopping.load(Ordering::Acquire) {
                 let started_at = Instant::now();
                 let started_wall = SystemTime::now();
                 let topology = match last_topology.as_ref() {
@@ -861,24 +842,19 @@ fn native_observer(stopping: Arc<AtomicBool>) -> NativeObserver {
                         value.clone()
                     }
                     _ => {
-                        let next = display_topology().map_err(|error| error.to_string());
+                        let next = platform
+                            .display_topology()
+                            .map_err(|error| error.to_string());
                         last_topology = Some((started_at, next.clone()));
                         next
                     }
                 };
-                // Input monitoring must not wait for unrelated protected-file
-                // probes. The main permission observer owns full disk access.
-                #[cfg(target_os = "macos")]
-                let permission = PermissionSnapshot::new(
-                    permissions.status(deskfuse_platform::PermissionKind::Accessibility),
-                    PermissionStatus::Unknown,
-                    PermissionStatus::Unknown,
-                );
-                #[cfg(not(target_os = "macos"))]
-                let permission = permissions.snapshot();
+                let input_environment = platform.input_environment().snapshot();
                 let observation = NativeObservation {
-                    permission,
-                    session_active: crate::platform::session_is_active(),
+                    permission: permissions.snapshot(),
+                    session_active: input_environment.desktop
+                        == deskfuse_platform::DesktopState::UserDesktop,
+                    input_environment,
                     topology,
                     started_at,
                     started_wall,
@@ -909,6 +885,7 @@ fn finish_native_observer(observer: Option<thread::JoinHandle<()>>) {
 
 async fn run(
     runtime: RuntimeHandle,
+    platform: Arc<dyn EnginePlatformPort>,
     ui: UnboundedSender<UiEvent>,
     stopping: Arc<AtomicBool>,
     recording: Arc<AtomicBool>,
@@ -922,9 +899,10 @@ async fn run(
         crossing_started: None,
         last_slow_capture: None,
         ui: ui.clone(),
+        platform: platform.clone(),
         local,
         policy: SharingController::new(local),
-        capture: crate::platform::create_capture(),
+        capture: platform.input_capture(),
         capture_started: false,
         injector: None,
         snapshot: Default::default(),
@@ -944,12 +922,8 @@ async fn run(
         in_motion: MotionCadence::default(),
         cadence_at: Instant::now(),
     };
-    let (mut observations, mut observer, observer_thread) = native_observer(stopping.clone());
-    let mut observer_started = Instant::now();
-    let mut retired_observer: Option<thread::JoinHandle<()>> = None;
-    let mut observer_retry_requested = false;
-    let mut observer_recovery_requested = false;
-    let mut observer_replacements = 0;
+    let (mut observations, observer, observer_thread) =
+        native_observer(stopping.clone(), platform.clone());
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1066,9 +1040,7 @@ async fn run(
                         if let Some(thread) = &state.observer_thread {
                             thread.unpark();
                         }
-                        observer_retry_requested = true;
                         next_refresh=Instant::now();
-                        timer.reset_immediately();
                     }
                     RuntimeEvent::SharedInputReceived {session_id,target_display,state_epoch,events,..} => {
                         let receive_arrived = Instant::now();
@@ -1132,10 +1104,6 @@ async fn run(
             }
             changed = observations.changed(), if observer_open => {
                 observer_open = changed.is_ok();
-                if observations.borrow().as_ref().is_some_and(NativeObservation::fresh) {
-                    observer_started = Instant::now();
-                    observer_replacements = 0;
-                }
                 next_refresh = Instant::now();
                 timer.reset_immediately();
             }
@@ -1221,43 +1189,6 @@ async fn run(
             }
             _ = timer.tick() => {
                 let now = Instant::now();
-                if retired_observer.as_ref().is_some_and(|worker| worker.is_finished()) {
-                    finish_native_observer(retired_observer.take());
-                }
-                let observer_age = observations.borrow().as_ref().map_or_else(
-                    || observer_started.elapsed(),
-                    |sample| observer_started.elapsed().max(sample.started_at.elapsed()).max(sample.started_wall.elapsed().unwrap_or(NATIVE_OBSERVER_RESTART_AFTER)),
-                );
-                let observer_exited = observer.as_ref().is_none_or(|worker| worker.is_finished());
-                match observer_recovery(observer_age, observer_exited, retired_observer.is_some(), observer_replacements, observer_retry_requested) {
-                    ObserverRecovery::Wait => {},
-                    ObserverRecovery::Replace => {
-                        // Closing the old receiver fences late results. Never accumulate
-                        // more than one retired blocked query in this process.
-                        if observer_exited {
-                            finish_native_observer(observer.take());
-                        } else {
-                            retired_observer = observer.take();
-                        }
-                        let (receiver, worker, thread) = native_observer(stopping.clone());
-                        observations = receiver;
-                        observer = worker;
-                        observer_started = now;
-                        observer_replacements += 1;
-                        state.observer_thread = thread;
-                        observer_open = observer.is_some();
-                        next_refresh = now;
-                        timing::record("native_observer_retry", observer_age, "replaced observer".into());
-                    }
-                    ObserverRecovery::RestartService if !observer_recovery_requested => {
-                        observer_recovery_requested = true;
-                        state.native_failed(&runtime, "原生输入检查持续无响应，正在恢复输入服务".into()).await;
-                        let _ = ui.unbounded_send(UiEvent::InputObserverRecoveryRequired);
-                        timing::record("native_observer_recovery", observer_age, "observer budget exhausted".into());
-                    }
-                    ObserverRecovery::RestartService => {},
-                }
-                observer_retry_requested = false;
                 let mut snapshot = runtime.input_snapshot();
                 let effective = effective_native_settings(&snapshot, &state.paused_activations);
                 if latch_emergency(&emergency, &snapshot, &mut state.paused_activations) {
@@ -1295,23 +1226,29 @@ async fn run(
                     let permission = observation.as_ref().map(|sample| sample.permission).unwrap_or_default();
                     let session_active = observation.as_ref().is_some_and(|sample| sample.session_active);
                     let (initial_phase, _) = native_phase(permission,session_active,recording_active,false,None);
-                    let permitted = initial_phase == InputActivationStatus::Preparing;
-                    let observation_pending = observation.is_none();
-                    let mut adapter_error = native_check_error(observation.as_ref(), started.elapsed());
-                    if let Some(sample) = observation {
-                        match sample.topology {
-                            Ok(topology) => {
-                                if snapshot.local_topology.as_ref() != Some(&topology) {
-                                    state.reclaim(&runtime, Some(state.anchor)).await;
-                                    if let Err(error) = runtime.send(RuntimeCommand::PublishDisplayTopology(topology)).await { adapter_error=Some(error.to_string()); }
-                                    let refreshed = runtime.input_snapshot();
-                                    if !native_report_is_current(&snapshot, &refreshed) { next_refresh=now; continue; }
-                                    snapshot=refreshed;
-                                    // The same activation was verified above; retain any local emergency pause overlay.
-                                }
+                    let environment_ready = observation.as_ref().is_some_and(|sample| {
+                        matches!(
+                            (&sample.input_environment.capture, &sample.input_environment.inject),
+                            (InputCapability::Allowed, InputCapability::Allowed)
+                        )
+                    });
+                    let permitted = initial_phase == InputActivationStatus::Preparing && environment_ready;
+                    let mut adapter_error = observation.as_ref()
+                        .and_then(|sample| sample.input_environment.blocker())
+                        .map(|blocker| blocker.reason.clone());
+                    match observation.map(|sample| sample.topology)
+                        .unwrap_or_else(|| Err("原生输入状态检查未完成或已超时".into())) {
+                        Ok(topology) => {
+                            if snapshot.local_topology.as_ref() != Some(&topology) {
+                                state.reclaim(&runtime, Some(state.anchor)).await;
+                                if let Err(error) = runtime.send(RuntimeCommand::PublishDisplayTopology(topology)).await { adapter_error=Some(error.to_string()); }
+                                let refreshed = runtime.input_snapshot();
+                                if !native_report_is_current(&snapshot, &refreshed) { next_refresh=now; continue; }
+                                snapshot=refreshed;
+                                // The same activation was verified above; retain any local emergency pause overlay.
                             }
-                            Err(error) => adapter_error=Some(error.to_string()),
                         }
+                        Err(error) => adapter_error=Some(error.to_string()),
                     }
                     if effective.enabled && permitted && adapter_error.is_none() {
                         if !state.capture_started {
@@ -1328,19 +1265,12 @@ async fn run(
                             }
                         }
                         if state.injector.is_none() && adapter_error.is_none() {
-                            match crate::platform::create_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
+                            match platform.input_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
                         }
                     }
-                    // A successful check clears its error even when sharing is off or
-                    // locally paused. Native Ready is not a prerequisite for recovery.
-                    publish_native_error(&mut state.last_error, adapter_error.clone(), &ui);
+                    if let Some(error)=&adapter_error {state.error(&ui,error.clone());}
                     let adapters_ready=native_available(&effective,permitted,state.capture_started,state.injector.is_some());
-                    let (status, reason) = if observation_pending {
-                        match adapter_error {
-                            Some(error) => (InputActivationStatus::Unavailable, Some(error)),
-                            None => (InputActivationStatus::Preparing, Some("正在检查原生输入状态".into())),
-                        }
-                    } else if effective.enabled {
+                    let (status, reason) = if effective.enabled {
                         native_phase(permission,session_active,recording_active,adapters_ready,adapter_error)
                     } else {
                         (InputActivationStatus::Unavailable,Some("本机主控未启用，等待设备网络中的主控".into()))
@@ -1440,7 +1370,6 @@ async fn run(
     state.reclaim(&runtime, Some(state.anchor)).await;
     let _ = state.capture.stop();
     finish_native_observer(observer);
-    finish_native_observer(retired_observer);
     let _ = runtime
         .send(RuntimeCommand::SetInputAvailability {
             available: false,
@@ -1471,150 +1400,6 @@ pub(crate) fn helper_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn healthy_observation() -> NativeObservation {
-        NativeObservation {
-            permission: PermissionSnapshot::new(
-                PermissionStatus::Granted,
-                PermissionStatus::Unknown,
-                PermissionStatus::Unknown,
-            ),
-            session_active: true,
-            topology: Ok(deskfuse_core::DisplayTopology {
-                generation: 1,
-                displays: vec![],
-            }),
-            started_at: Instant::now(),
-            started_wall: SystemTime::now(),
-        }
-    }
-
-    #[test]
-    fn initial_check_is_pending_not_an_error_but_missing_samples_time_out() {
-        assert_eq!(native_check_error(None, Duration::ZERO), None);
-        assert!(native_check_error(None, NATIVE_OBSERVATION_MAX_AGE).is_some());
-        let sample = healthy_observation();
-        assert_eq!(
-            native_check_error(Some(&sample), Duration::from_secs(30)),
-            None
-        );
-        let mut stale = sample;
-        stale.started_at -= Duration::from_secs(2);
-        assert!(native_check_error(Some(&stale), Duration::from_secs(30)).is_some());
-        assert!(!stale.permits_input());
-    }
-
-    #[test]
-    fn successful_recheck_clears_error_without_enabling_sharing() {
-        let settings = InputSharingSettings::default();
-        let (ui, mut events) = futures::channel::mpsc::unbounded();
-        let mut error = None;
-        publish_native_error(
-            &mut error,
-            native_check_error(None, Duration::from_secs(2)),
-            &ui,
-        );
-        assert!(matches!(
-            events.try_recv(),
-            Ok(UiEvent::InputStatus { error: Some(_) })
-        ));
-        let sample = healthy_observation();
-        publish_native_error(
-            &mut error,
-            native_check_error(Some(&sample), Duration::from_secs(2)),
-            &ui,
-        );
-        assert!(matches!(
-            events.try_recv(),
-            Ok(UiEvent::InputStatus { error: None })
-        ));
-        assert!(error.is_none());
-        assert!(!native_available(&settings, true, false, false));
-        publish_native_error(&mut error, None, &ui);
-        assert!(
-            events.try_recv().is_err(),
-            "unchanged health must not flood the UI"
-        );
-    }
-
-    #[test]
-    fn fresh_failed_check_remains_visible_and_permission_denial_still_fails_closed() {
-        let mut sample = healthy_observation();
-        sample.topology = Err("display query failed".into());
-        assert_eq!(
-            native_check_error(Some(&sample), Duration::from_secs(2)).as_deref(),
-            Some("display query failed")
-        );
-        assert!(!sample.permits_input());
-        let mut denied = healthy_observation();
-        denied.permission.accessibility = PermissionStatus::Denied;
-        assert_eq!(
-            native_check_error(Some(&denied), Duration::from_secs(2)),
-            None
-        );
-        assert!(!denied.permits_input());
-    }
-
-    #[test]
-    fn blocked_observers_escalate_without_unbounded_threads_or_click_restarts() {
-        use ObserverRecovery::*;
-        assert_eq!(
-            observer_recovery(Duration::ZERO, false, false, 0, true),
-            Wait
-        );
-        assert_eq!(
-            observer_recovery(Duration::ZERO, true, false, 0, false),
-            Wait
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(1), true, true, 1, false),
-            Replace
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, false, 0, false),
-            Wait
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, false, 0, true),
-            Replace
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, false, 0, false),
-            Replace
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, true, 1, false),
-            RestartService
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(2), false, true, 1, true),
-            RestartService
-        );
-        // A retired worker that finally exits frees the one replacement slot.
-        assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, false, 1, false),
-            Replace
-        );
-        // Queries that keep completing with expired samples must not retry forever.
-        assert_eq!(
-            observer_recovery(Duration::from_secs(5), false, false, 2, false),
-            RestartService
-        );
-        assert_eq!(
-            observer_recovery(Duration::from_secs(1), true, false, 2, false),
-            RestartService
-        );
-    }
-
-    #[test]
-    fn retired_observer_cannot_publish_a_late_success_to_its_replacement() {
-        let (old_sender, receiver) = tokio::sync::watch::channel(None);
-        drop(receiver);
-        let (_new_sender, replacement) = tokio::sync::watch::channel(None::<NativeObservation>);
-        assert!(old_sender.send(Some(healthy_observation())).is_err());
-        assert!(replacement.borrow().is_none());
-    }
-
     #[test]
     fn shutdown_does_not_join_a_blocked_native_observer() {
         let (release, query) = std::sync::mpsc::channel();
@@ -1637,6 +1422,11 @@ mod tests {
         let mut observation = NativeObservation {
             permission: PermissionSnapshot::all_unknown(),
             session_active: false,
+            input_environment: InputEnvironmentSnapshot::blocked(
+                deskfuse_platform::DesktopState::Unavailable,
+                deskfuse_platform::InputBlockerKind::Unavailable,
+                "not sampled",
+            ),
             topology: Err("not sampled".into()),
             started_at: Instant::now(),
             started_wall: SystemTime::now(),

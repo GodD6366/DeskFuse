@@ -21,8 +21,7 @@ use crate::diagnostics::{DiagnosticLevel, Diagnostics};
 use crate::model::{
     ClipboardHistoryItem, DEFAULT_CLIPBOARD_SYNC_ENABLED, TransferDirection, TransferState,
 };
-use crate::platform::create_worker_pasteboard;
-use crate::platform::{PermissionService, PermissionSnapshot, create_permission_service};
+use crate::platform::memory_platform;
 #[cfg(test)]
 use deskfuse_core::RouteCandidate;
 use deskfuse_core::{
@@ -38,8 +37,11 @@ use deskfuse_identity::MemoryIdentityProvider;
 use deskfuse_platform::ports::{
     ApplyResult, ContentData, ContentToApply, NativeRevision, apply_clipboard,
 };
+use deskfuse_platform::ports::{
+    CapturedFilePaste, EnginePlatformPort, FilePasteCapture, FilePasteReference,
+};
 use deskfuse_platform::{Pasteboard, PasteboardSnapshot, UNIVERSAL_CLIPBOARD_TYPE};
-use deskfuse_platform_macos::{CapturedFilePaste, FilePasteCapture, FilePasteReference};
+use deskfuse_platform::{PermissionService, PermissionSnapshot};
 #[cfg(test)]
 use deskfuse_runtime::{ProviderFuture, TransportConnection, TransportProvider};
 use deskfuse_runtime::{
@@ -153,7 +155,6 @@ pub enum UiEvent {
     InputStatus {
         error: Option<String>,
     },
-    InputObserverRecoveryRequired,
     PasteReady {
         target_pid: i32,
         expected_change_count: i64,
@@ -411,13 +412,17 @@ fn clipboard_primary_image(
 }
 
 /// A display derivative only. History restoration retains the original bytes.
-pub(crate) fn clipboard_preview_png(snapshot: &PasteboardSnapshot) -> Option<Arc<Vec<u8>>> {
-    clipboard_preview_png_at_size(snapshot, 1600)
+pub(crate) fn clipboard_preview_png(
+    snapshot: &PasteboardSnapshot,
+    platform: Option<&dyn EnginePlatformPort>,
+) -> Option<Arc<Vec<u8>>> {
+    clipboard_preview_png_at_size(snapshot, 1600, platform)
 }
 
 pub(crate) fn clipboard_preview_png_at_size(
     snapshot: &PasteboardSnapshot,
     max_pixel_size: u32,
+    platform: Option<&dyn EnginePlatformPort>,
 ) -> Option<Arc<Vec<u8>>> {
     let max_pixel_size = max_pixel_size.clamp(64, 1600);
     if !snapshot.file_urls.is_empty() {
@@ -427,19 +432,18 @@ pub(crate) fn clipboard_preview_png_at_size(
         {
             // Decode only when a preview is requested; the clipboard poll and
             // summary query stay free of image IO. ImageIO bounds allocation.
-            return deskfuse_platform_macos::lan_web::image_png(
-                std::path::Path::new(path),
-                max_pixel_size,
-            )
-            .ok()
-            .map(Arc::new);
+            return platform?
+                .lan_web()
+                .image_png(std::path::Path::new(path), max_pixel_size)
+                .ok()
+                .map(Arc::new);
         }
         return None;
     }
     let (data, _, _) = clipboard_primary_image(snapshot)?;
     #[cfg(target_os = "macos")]
     {
-        deskfuse_platform_macos::image_processor::preview_png(data, max_pixel_size)
+        crate::workflow_image::preview_png(data, max_pixel_size)
             .ok()
             .map(Arc::new)
     }
@@ -454,7 +458,7 @@ pub(crate) fn clipboard_preview_png_at_size(
         limits.max_image_height = Some(16_384);
         reader.limits(limits);
         let decoded = reader.decode().ok()?;
-        let thumbnail = decoded.thumbnail(max_pixel_size, max_pixel_size);
+        let thumbnail = crate::workflow_image::bounded_thumbnail(decoded, max_pixel_size);
         let mut png = std::io::Cursor::new(Vec::new());
         thumbnail.write_to(&mut png, image::ImageFormat::Png).ok()?;
         Some(Arc::new(png.into_inner()))
@@ -510,8 +514,8 @@ impl ClipboardHistoryStore {
         self.record_with_image_digest(snapshot, source, None, ui_sender);
     }
 
-    /// 带解码分析的捕获路径把单次解码得到的图像摘要直接交给历史入库，
-    /// 避免库内再次解码快照；`None` 表示未分析，回退到库内自算摘要。
+    /// Use a single image analysis for echo suppression, source metadata, and
+    /// history persistence instead of decoding the same snapshot again.
     fn record_with_image_digest(
         &mut self,
         snapshot: PasteboardSnapshot,
@@ -623,7 +627,8 @@ impl ClipboardHistoryStore {
                 .text
                 .as_ref()
                 .is_some_and(|text| text.chars().nth(32_000).is_some()),
-            image_png: cached_preview.or_else(|| clipboard_preview_png_at_size(&snapshot, 160)),
+            image_png: cached_preview
+                .or_else(|| clipboard_preview_png_at_size(&snapshot, 160, None)),
             file_paths: snapshot.file_urls.clone(),
             source: source.into(),
         };
@@ -657,7 +662,7 @@ impl ClipboardHistoryStore {
     }
 
     #[allow(dead_code)] // The UI restore path is migrating to the global library.
-    fn restore(&self, id: u64, pasteboard: &impl Pasteboard) -> Result<(), String> {
+    fn restore(&self, id: u64, pasteboard: &dyn Pasteboard) -> Result<(), String> {
         // SQLite membership/retention is authoritative; the UI cache can be stale.
         let stored = crate::clipboard_library::global()?.snapshot(id)?;
         let snapshot = &stored;
@@ -782,7 +787,7 @@ impl ClipboardPreparations {
     }
 }
 fn write_prepared_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     snapshot: &PasteboardSnapshot,
 ) -> Result<(), String> {
     if !snapshot.file_urls.is_empty() {
@@ -952,6 +957,7 @@ pub struct TokioBridge {
     paste_target_pid: Arc<AtomicI32>,
     cache_leases: ExternalCacheLeases,
     file_paste_capture: Arc<FilePasteCapture>,
+    runtime: Arc<dyn deskfuse_platform::ports::HostRuntimePort>,
 }
 
 impl TokioBridge {
@@ -977,6 +983,13 @@ impl TokioBridge {
     pub fn start(
         diagnostics: Diagnostics,
     ) -> Result<(std::sync::Arc<Self>, UnboundedReceiver<UiEvent>), String> {
+        Self::start_with_platform(diagnostics, memory_platform())
+    }
+
+    pub fn start_with_platform(
+        diagnostics: Diagnostics,
+        platform: Arc<dyn EnginePlatformPort>,
+    ) -> Result<(std::sync::Arc<Self>, UnboundedReceiver<UiEvent>), String> {
         let (ui_sender, ui_receiver) = unbounded();
         let (command_sender, command_receiver) = unbounded_channel();
         let worker_diagnostics = diagnostics.clone();
@@ -1001,6 +1014,8 @@ impl TokioBridge {
         let paste_requested_for_worker = Arc::clone(&paste_requested);
         let paste_target_pid_for_worker = Arc::clone(&paste_target_pid);
         let worker_completion_for_thread = Arc::clone(&worker_completion);
+        let platform_worker = platform.clone();
+        let runtime_port = platform.runtime();
         let worker = thread::Builder::new()
             .name("deskfuse-tokio".to_owned())
             .spawn(move || {
@@ -1016,6 +1031,7 @@ impl TokioBridge {
                         cache_leases_worker,
                         worker_file_paste_capture,
                         file_paste_requests,
+                        platform_worker,
                         InputSignals {
                             input_service: input_service_worker,
                             update_admission: update_admission_worker,
@@ -1056,6 +1072,7 @@ impl TokioBridge {
                 paste_target_pid,
                 cache_leases,
                 file_paste_capture,
+                runtime: runtime_port,
             }),
             ui_receiver,
         ))
@@ -1358,7 +1375,7 @@ impl TokioBridge {
             "debug_enabled": deskfuse_core::debug_logging::enabled(),
             "scope": "current_process",
             "version": env!("CARGO_PKG_VERSION"),
-            "pid": std::process::id(),
+            "pid": self.runtime.process_id(),
             "note": "Debug collection is on by default; hourly files retain at most seven days. Disabling retains prior samples; absent samples do not prove absence of stalls."
         }).to_string();
         contents.push('\n');
@@ -1417,7 +1434,9 @@ impl TokioBridge {
         {
             contents.push_str(&diagnostics);
         }
-        std::fs::write(path, contents).map_err(|error| format!("诊断导出失败：{error}"))
+        self.runtime
+            .write_file(path, contents.as_bytes())
+            .map_err(|error| format!("诊断导出失败：{error}"))
     }
 
     pub fn shutdown(&self) {
@@ -1484,6 +1503,7 @@ async fn run_worker(
     cache_leases: ExternalCacheLeases,
     file_paste_capture: Arc<FilePasteCapture>,
     mut file_paste_requests: TokioReceiver<CapturedFilePaste>,
+    platform: Arc<dyn EnginePlatformPort>,
     input_signals: InputSignals,
 ) {
     crate::diagnostics::record!(
@@ -1495,7 +1515,7 @@ async fn run_worker(
         None
     );
 
-    let permission_service = create_permission_service();
+    let permission_service = platform.permission_service();
     let mut last_permission = None;
     emit_permission_snapshot(
         &ui_sender,
@@ -1505,7 +1525,7 @@ async fn run_worker(
         &mut last_permission,
     );
 
-    let runtime = match build_runtime(&diagnostics).await {
+    let runtime = match build_runtime(&diagnostics, platform.clone()).await {
         Ok(runtime) => runtime,
         Err(error) => {
             let message = error.to_string();
@@ -1524,7 +1544,7 @@ async fn run_worker(
     };
 
     #[cfg(target_os = "macos")]
-    let lan_display_name = local_display_name();
+    let lan_display_name = local_display_name(&*platform.runtime());
     let input_service = runtime.input_service_control();
     *input_signals
         .input_service
@@ -1548,17 +1568,16 @@ async fn run_worker(
     // diagnostics; only mime/length/sequence metadata reach the UI.
     let wake_signal = Arc::new(tokio::sync::Notify::new());
     let wake_callback = wake_signal.clone();
-    let _wake_observer = crate::platform::WakeObserver::new(move || {
+    let _wake_observer = match platform.wake_observer(Box::new(move || {
         wake_callback.notify_one();
-    });
-    let pasteboard = match create_worker_pasteboard() {
-        Ok(pasteboard) => pasteboard,
+    })) {
+        Ok(observer) => observer,
         Err(error) => {
             emit_clipboard_error(&ui_sender, &diagnostics, error.to_string());
-            let _ = ui_sender.unbounded_send(UiEvent::BridgeError(error.to_string()));
             return;
         }
     };
+    let pasteboard = platform.pasteboard();
     let mut clipboard_enabled = DEFAULT_CLIPBOARD_SYNC_ENABLED;
     // Inspect the current pasteboard on startup. Finder may have populated it
     // before DeskFuse launched, and treating that value as an unseen baseline
@@ -1590,7 +1609,7 @@ async fn run_worker(
     let mut finder_path_requests: HashMap<TransferId, CapturedFilePaste> = HashMap::new();
     let (finder_path_tx, mut finder_path_rx) = unbounded_channel::<(
         TransferId,
-        Result<Option<deskfuse_platform_macos::FinderDestination>, String>,
+        Result<Option<Arc<dyn deskfuse_platform::ports::FinderDestinationPort>>, String>,
     )>();
     let mut file_policy = match FilePolicy::new() {
         Ok(policy) => policy,
@@ -1601,13 +1620,13 @@ async fn run_worker(
     };
     file_policy.cache.set_external_leases(cache_leases.clone());
     file_policy.external_leases = cache_leases.clone();
-    let (cleanup, startup_error) = file_policy.initialize_cache(&pasteboard);
+    let (cleanup, startup_error) = file_policy.initialize_cache(pasteboard.as_ref());
     let cleanup_message =
         (!cleanup.removed_paths.is_empty() || cleanup.failed_transfers > 0).then(|| {
             file_policy::apply_cleanup(
                 cleanup,
                 &mut clipboard_history,
-                &pasteboard,
+                pasteboard.as_ref(),
                 &mut clipboard_last_change_count,
                 &ui_sender,
             )
@@ -1620,6 +1639,7 @@ async fn run_worker(
 
     let input_coordinator = crate::input_coordinator::InputCoordinator::start(
         runtime.clone(),
+        platform.clone(),
         ui_sender.clone(),
         input_signals.recording,
         input_signals.emergency,
@@ -1628,8 +1648,8 @@ async fn run_worker(
     let public_updates = crate::github_update::is_public_bundle();
     let manual_updates = crate::github_update::is_manual_bundle();
     let manual_update_view = deskfuse_runtime::updates::LanUpdateView {
-        installed: deskfuse_update::installer::current_bundle()
-            .and_then(|bundle| deskfuse_update::installer::installed_release(&bundle))
+        installed: deskfuse_update_platform::installer::current_bundle()
+            .and_then(|bundle| deskfuse_update_platform::installer::installed_release(&bundle))
             .ok(),
         message: "此版本仅支持手动安装更新".into(),
         ..Default::default()
@@ -1656,23 +1676,8 @@ async fn run_worker(
         None
     };
     #[cfg(not(test))]
-    let updater = if manual_updates {
+    let updater = if public_updates || manual_updates {
         None
-    } else if public_updates {
-        match crate::app_update::start_github(runtime.clone()) {
-            Ok(updater) => Some(updater),
-            Err(error) => {
-                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
-                    deskfuse_runtime::updates::LanUpdateView {
-                        github: Some(Default::default()),
-                        message: "局域网分发暂不可用".into(),
-                        error: Some(error),
-                        ..Default::default()
-                    },
-                ));
-                None
-            }
-        }
     } else {
         match crate::app_update::start(runtime.clone()) {
             Ok(updater) => Some(updater),
@@ -1694,6 +1699,7 @@ async fn run_worker(
     #[cfg(target_os = "macos")]
     let _wifi_task = {
         let runtime = runtime.clone();
+        let wifi_platform = platform.clone();
         struct WifiTask(tokio::task::JoinHandle<()>);
         impl Drop for WifiTask {
             fn drop(&mut self) {
@@ -1707,9 +1713,12 @@ async fn run_worker(
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                let ssid = tokio::task::spawn_blocking(crate::platform::current_ssid)
-                    .await
-                    .unwrap_or_default();
+                let ssid = tokio::task::spawn_blocking({
+                    let platform = wifi_platform.clone();
+                    move || platform.current_ssid()
+                })
+                .await
+                .unwrap_or_default();
                 if runtime
                     .send(RuntimeCommand::ObserveWifiEnvironment { ssid })
                     .await
@@ -1730,18 +1739,10 @@ async fn run_worker(
     library_prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut library_prune_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut update_tick = tokio::time::interval(Duration::from_secs(2));
-    let mut permission_tick = tokio::time::interval(Duration::from_secs(2));
-    permission_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // NSPasteboard has no usable change notification for the general pasteboard:
-    // the legacy `com.apple.pasteboard.changed` distributed notification is no
-    // longer posted on current macOS, and NSNotificationCenter never reports
-    // general-pasteboard changes. Poll `changeCount` instead — it is a cheap
-    // integer read. This tick also has to keep running for `library_sync`
-    // worker lifecycle and for `clipboard_sync.poll`, which advances async
-    // prepare/decode/send work that never produces a pasteboard event.
     let mut clipboard_tick = tokio::time::interval(Duration::from_millis(250));
     clipboard_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut permission_tick = tokio::time::interval(Duration::from_secs(2));
+    permission_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         finder_pastes.reconcile_waiting(&file_policy, &incoming_file_clipboards, &ui_sender);
@@ -1766,7 +1767,7 @@ async fn run_worker(
                             total_bytes: incoming.manifest.total_bytes(),
                         })
                 })
-                .or_else(|| finder_pastes.ready_reference(&pasteboard)),
+                .or_else(|| finder_pastes.ready_reference(pasteboard.as_ref())),
         );
         if let Some(catalog) = &workflow_catalog {
             let peers = trusted_connected_peer_ids(&runtime.snapshot_view());
@@ -1812,7 +1813,7 @@ async fn run_worker(
         for peer in clipboard_sync.take_disconnected() {
             file_policy.connection_lost(
                 peer,
-                &pasteboard,
+                pasteboard.as_ref(),
                 &mut incoming_file_clipboards,
                 &pending_incoming_file,
                 &paste_requested,
@@ -1842,10 +1843,10 @@ async fn run_worker(
                                     if peer.is_none_or(|peer| !trusted_connected_peer_ids(&runtime.snapshot_view()).contains(&peer)) {
                                         Err("来源设备离线或未配对，请连接后重试".into())
                                     } else {
-                                        file_policy.protect_clipboard(&pasteboard);
+                                        file_policy.protect_clipboard(pasteboard.as_ref());
                                         match file_policy.cache.reserve(token,reference.total_bytes) {
                                             Ok(cleanup) => {
-                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);
+                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);
                                                 let destination=file_policy.cache.destination(token);
                                                 job.destination=Some(destination.clone());
                                                 let runtime=runtime.clone();let cancel=job.cancel.clone();let tx=preparations.tx.clone();
@@ -1858,7 +1859,7 @@ async fn run_worker(
                                             }
                                             Err(error) => {
                                                 let cleanup=file_policy.cache.take_partial_cleanup();
-                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);
+                                                file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);
                                                 Err(error)
                                             }
                                         }
@@ -1873,12 +1874,12 @@ async fn run_worker(
                     let mut installed=false;
                     let result=outcome.and_then(|snapshot| {
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(job.baseline){return Err("本次剪贴板准备已失效".into())}
-                        write_prepared_clipboard(&pasteboard,&snapshot)?;
+                        write_prepared_clipboard(pasteboard.as_ref(),&snapshot)?;
                         installed=true;
                         let count=pasteboard.change_count().map_err(|e|e.to_string())?;
                         clipboard_last_change_count=Some(count);
                         clipboard_sync.invalidate_copy(&ui_sender);
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(count){return Err("剪贴板已被其他复制替换，未发出粘贴请求".into())}
                         crate::clipboard_library::global()?.mark_used(job.id)?;
                         Ok(count)
@@ -1939,41 +1940,34 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::RefreshPermissions) => {
-                        // Refresh the actual input owner, not only the GUI's cached permissions.
-                        if let Err(error) = runtime.send(RuntimeCommand::RefreshNativeObserver).await {
-                            command_error = Some(error.to_string());
-                        }
                         last_permission = None;
                         emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
                     }
                     Some(TokioCommand::CheckForUpdates) => {
-                        if github_updater.is_none() && updater.is_none() {
-                            command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into());
-                        } else {
-                            if let Some(updater) = &mut github_updater { updater.check_now(); }
-                            if let Some(updater) = &updater { updater.check_now(); }
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                                github_updater.as_ref(), updater.as_ref(), Some(&manual_update_view),
-                            )));
-                        }
+                        if let Some(updater) = &mut github_updater {
+                            updater.check_now();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                        } else if let Some(updater) = &updater {
+                            updater.check_now();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
-                        if github_updater.is_none() && updater.is_none() {
-                            command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into());
-                        } else {
-                            if let Some(updater) = &mut github_updater { updater.download_and_install_now(); }
-                            if let Some(updater) = &updater { updater.download_and_install_now(); }
+                        if let Some(updater) = &mut github_updater {
+                            updater.download_and_install_now();
                             update_tick.reset_immediately();
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                                github_updater.as_ref(), updater.as_ref(), Some(&manual_update_view),
-                            )));
-                        }
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                        } else if let Some(updater) = &updater {
+                            updater.download_and_install_now();
+                            update_tick.reset_immediately();
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
                     }
                     Some(TokioCommand::Snapshot) => {
                         clipboard_history.publish(&ui_sender);
-                        let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                            github_updater.as_ref(), updater.as_ref(), Some(&manual_update_view),
-                        )));
+                        if let Some(updater) = &github_updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
+                        else if let Some(updater) = &updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
+                        else if manual_updates { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(manual_update_view.clone())); }
                         file_policy.emit(&ui_sender,None);
                         let _ = ui_sender.unbounded_send(UiEvent::RuntimeView(runtime.snapshot_view()));
                     }
@@ -2003,7 +1997,7 @@ async fn run_worker(
                     }
                     Some(TokioCommand::PushClipboard) => {
                         command_error = push_local_clipboard(
-                            &pasteboard,
+                            pasteboard.as_ref(),
                             &mut ClipboardPushContext {
                                 runtime: &runtime,
                                 sync: &mut clipboard_sync,
@@ -2168,7 +2162,7 @@ async fn run_worker(
                                         Ok(count) => {
                                             snapshot.change_count = count;
                                             clipboard_last_change_count = Some(count);
-                                            file_policy.protect_clipboard(&pasteboard);
+                                            file_policy.protect_clipboard(pasteboard.as_ref());
                                             clipboard_sync.invalidate_copy(&ui_sender);
                                             if clipboard_enabled { clipboard_sync.publish(snapshot.clone(), false, &runtime, &ui_sender); }
                                             written = true;
@@ -2225,20 +2219,20 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::WorkflowCacheReserve { id, size, reply }) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         let result = file_policy.cache.reserve(id, size).map(|cleanup| {
-                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, &pasteboard, &mut clipboard_last_change_count, &ui_sender);
+                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, pasteboard.as_ref(), &mut clipboard_last_change_count, &ui_sender);
                             file_policy.cache.destination(id)
                         });
                         if result.is_err() {
                             let cleanup = file_policy.cache.take_partial_cleanup();
-                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, &pasteboard, &mut clipboard_last_change_count, &ui_sender);
+                            file_policy::apply_cleanup(cleanup, &mut clipboard_history, pasteboard.as_ref(), &mut clipboard_last_change_count, &ui_sender);
                         }
                         file_policy.emit(&ui_sender, None);
                         if reply.send(result).is_err() { file_policy.cache.finish(id); }
                     }
                     Some(TokioCommand::WorkflowCacheFinish(id)) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         file_policy.cache.finish(id);
                         file_policy.emit(&ui_sender, None);
                     }
@@ -2265,7 +2259,7 @@ async fn run_worker(
                             let count = pasteboard.change_count().map_err(|e| e.to_string())?;
                             snapshot.change_count = count;
                             clipboard_history.record(snapshot, "工作流", &ui_sender);
-                            file_policy.protect_clipboard(&pasteboard);
+                            file_policy.protect_clipboard(pasteboard.as_ref());
                             clipboard_sync.invalidate_copy(&ui_sender);
                             // Do not advance clipboard_last_change_count: normal polling must
                             // still synchronize this new local copy when auto-sync is enabled.
@@ -2293,16 +2287,16 @@ async fn run_worker(
                         }
                     }
                     Some(TokioCommand::SetFileTransferSettings(settings)) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         match file_policy.update(settings) {
-                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
-                            Err(error) => {command_error = Some(error.clone()); let cleanup=file_policy.cache.take_partial_cleanup();let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender);file_policy.emit(&ui_sender,Some(format!("{error}；{message}")));}
+                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
+                            Err(error) => {command_error = Some(error.clone()); let cleanup=file_policy.cache.take_partial_cleanup();let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);file_policy.emit(&ui_sender,Some(format!("{error}；{message}")));}
                         }
                     }
                     Some(TokioCommand::ClearTransferCache) => {
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         match file_policy.cache.clear_completed() {
-                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,&pasteboard,&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
+                            Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
                             Err(error) => { command_error = Some(error.clone()); file_policy.emit(&ui_sender,Some(error)); }
                         }
                     }
@@ -2319,7 +2313,7 @@ async fn run_worker(
                         for state in incoming_file_clipboards.values_mut() { state.cancel(); }
                         while !incoming_file_clipboards.is_empty() {
                             let Some(event) = receive_event_rx.recv().await else { break; };
-                            let _ = handle_receive_event(event, &pasteboard, &mut RemoteClipboardState {
+                            let _ = handle_receive_event(event, pasteboard.as_ref(), &mut RemoteClipboardState {
                                 last_change_count: &mut clipboard_last_change_count,
                                 incoming_files: &mut incoming_file_clipboards,
                                 receive_events: &receive_events,
@@ -2407,7 +2401,7 @@ async fn run_worker(
                             continue;
                         }
                         if let ClipboardFileFrame::Cancel { transfer_id, .. } = &frame && let Some(cancelled)=outgoing_file_cancellations.get(transfer_id) { cancelled.store(true,Ordering::Release); }
-                        if file_policy.control(&frame,peer_id,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
+                        if file_policy.control(&frame,peer_id,pasteboard.as_ref(),&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await { continue; }
                         if let ClipboardFileFrame::Ack { transfer_id } = &frame {
                             if let Ok(mut acknowledgements) = file_clipboard_acknowledgements.lock()
                                 && let Some(acknowledge) = acknowledgements.remove(&(peer_id, *transfer_id)) {
@@ -2418,7 +2412,7 @@ async fn run_worker(
                         let file_id = frame.transfer_id();
                         let is_data_frame = matches!(frame, ClipboardFileFrame::Offer {..}|ClipboardFileFrame::RequestedOffer {..}|ClipboardFileFrame::Chunk {..}|ClipboardFileFrame::Complete {..});
                         if let Some(transfer_id) = apply_remote_clipboard_decoded(
-                            &pasteboard,
+                            pasteboard.as_ref(),
                             &payload,
                             &mut RemoteClipboardState {
                                 last_change_count: &mut clipboard_last_change_count,
@@ -2437,7 +2431,7 @@ async fn run_worker(
                             Some(frame),
                         ) {
                             file_policy.finished(transfer_id);
-                            file_policy.protect_clipboard(&pasteboard);
+                            file_policy.protect_clipboard(pasteboard.as_ref());
                             file_policy.emit(&ui_sender,None);
                             let runtime = runtime.clone();
                             let sequence = clipboard_sequence.clone();
@@ -2530,7 +2524,7 @@ async fn run_worker(
                             if let Ok(frame @ ClipboardFileFrame::Deferred {..})=ClipboardFileFrame::decode(&ready.payload.data) {
                                 let id=frame.transfer_id();
                                 remember_file_source(ready.peer, id, ready.metadata.clone());
-                                file_policy.control(&frame,ready.peer,&pasteboard,&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await;
+                                file_policy.control(&frame,ready.peer,pasteboard.as_ref(),&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await;
                                 file_policy.reference_installed(ready.peer,id)
                             } else {false}
                         } else {
@@ -2558,7 +2552,7 @@ async fn run_worker(
                             };
                             let result = match data.and_then(|data| {
                                 apply_clipboard(
-                                    &pasteboard,
+                                    pasteboard.as_ref(),
                                     ContentToApply {
                                         data,
                                         remote_origin_marker: None,
@@ -2574,7 +2568,7 @@ async fn run_worker(
                                 Ok(ApplyResult::Rejected { reason }) => Err(reason),
                                 Err(error) => Err(error),
                             };
-                            finish_native_clipboard(&pasteboard,&ready.payload,&mut RemoteClipboardState {
+                            finish_native_clipboard(pasteboard.as_ref(),&ready.payload,&mut RemoteClipboardState {
                                 last_change_count:&mut clipboard_last_change_count,incoming_files:&mut incoming_file_clipboards,receive_events:&receive_events,cache:&mut file_policy.cache,loop_guard:&mut clipboard_loop_guard,history:&mut clipboard_history,pending_incoming_file:&pending_incoming_file,paste_requested:&paste_requested,paste_target_pid:&paste_target_pid,
                             },&ui_sender,&diagnostics,ready.peer,result,Some(&ready.metadata))
                         };
@@ -2610,14 +2604,14 @@ async fn run_worker(
                     } else { waiting_sources.push(request); }
                 }
                 workflow_sources = waiting_sources;
-                file_policy.protect_clipboard(&pasteboard);
-                file_policy.tick(&pasteboard,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;
+                file_policy.protect_clipboard(pasteboard.as_ref());
+                file_policy.tick(pasteboard.as_ref(),&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;
                 match pasteboard.change_count() {
                     Ok(count) => {
                         if clipboard_last_change_count.is_none_or(|last| last != count) {
                             if !clipboard_enabled {clipboard_sync.invalidate_copy(&ui_sender);clipboard_last_change_count=Some(count);continue;}
                             let _ = push_local_clipboard(
-                                &pasteboard,
+                                pasteboard.as_ref(),
                                 &mut ClipboardPushContext {
                                     runtime: &runtime,
                                     sync: &mut clipboard_sync,
@@ -2646,28 +2640,6 @@ async fn run_worker(
             _ = update_tick.tick() => {
                 if let Some(updater) = &mut github_updater {
                     updater.poll().await;
-                }
-                if let Some(updater) = &updater {
-                    if stage_task.as_ref().is_some_and(|task| task.is_finished()) {
-                        match stage_task.take().expect("completed staging").await {
-                            Ok(Ok(())) => staged = true,
-                            other => updater.quarantine(format!("更新暂存失败：{}", match other { Ok(Err(error)) => error, Err(error) => error.to_string(), _ => unreachable!() })),
-                        }
-                    }
-                    if !staged && stage_task.is_none() && !updater.install_abandoned() {
-                        if let Some((release,path)) = updater.ready() && let Some(status) = updater.snapshot().status {
-                            stage_task = Some(crate::app_update::stage(release,path,status));
-                        } else if let Some((offer,path)) = updater.github_ready() && let Some(status) = updater.snapshot().status {
-                            stage_task = Some(crate::app_update::stage_github_zip(offer.release,path,status));
-                        }
-                    }
-                }
-                let github_dmg_ready = github_updater.as_ref().is_some_and(|updater| updater.ready() && !updater.install_abandoned());
-                let lan_payload_ready = updater.as_ref().is_some_and(|updater| {
-                    !updater.install_abandoned() && (updater.ready().is_some() || updater.github_ready().is_some())
-                });
-                if github_dmg_ready {
-                    let github = github_updater.as_mut().expect("github updater");
                     if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                         install_handoff = None;
                         if let Some(mut helper) = install_helper.take() {
@@ -2675,18 +2647,18 @@ async fn run_worker(
                             let _ = helper.wait();
                         }
                         if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
-                        github.abandon_install(&format!(
+                        updater.abandon_install(&format!(
                             "更新安装未在 {} 秒内启动，安装器已取消",
                             INSTALL_HANDOFF.as_secs()
                         ));
                         input_coordinator.resume_after_update();
                     }
-                    if !github.install_abandoned() && install_handoff.is_none() && github.ready() {
-                        let force_install = github.force_install();
+                    if !updater.install_abandoned() && install_handoff.is_none() && updater.ready() {
+                        let force_install = updater.force_install();
                         let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
                             && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
                             && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
-                        github.installation_waiting(if force_install {
+                        updater.installation_waiting(if force_install {
                             "正在立即安装，将跳过传输或粘贴等待"
                         } else if !files_idle {
                             "已请求安装，等待当前文件传输或粘贴完成"
@@ -2694,7 +2666,7 @@ async fn run_worker(
                             "已请求安装，正在结束键鼠共享并等待本地导出完成"
                         });
                         if files_idle {
-                            if input_coordinator.pause_for_update(github.snapshot().manual_requested) {
+                            if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
                                 let admitted = {
                                     let mut closed = input_signals.update_admission.lock().unwrap();
                                     if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
@@ -2702,19 +2674,17 @@ async fn run_worker(
                                     } else { false }
                                 };
                                 if admitted {
-                                    match deskfuse_update::installer::launch_helper() {
+                                    match deskfuse_update_platform::installer::launch_helper() {
                                         Ok(helper) => {
                                             install_helper = Some(helper);
-                                            github.installing();
-                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                                                Some(github), updater.as_ref(), Some(&manual_update_view),
-                                            )));
+                                            updater.installing();
+                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                                             let _ = ui_sender.unbounded_send(UiEvent::Quit);
                                             install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
                                         }
                                         Err(error) => {
                                             if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
-                                            github.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
+                                            updater.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
                                             input_coordinator.resume_after_update();
                                         }
                                     }
@@ -2722,12 +2692,26 @@ async fn run_worker(
                             }
                         } else { input_coordinator.resume_after_update(); }
                     }
-                } else if lan_payload_ready {
-                    let updater = updater.as_ref().expect("lan updater");
+                    let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                } else if let Some(updater) = &updater {
+                    if stage_task.as_ref().is_some_and(|task| task.is_finished()) {
+                        match stage_task.take().expect("completed staging").await {
+                            Ok(Ok(())) => staged = true,
+                            other => updater.quarantine(format!("更新暂存失败：{}", match other { Ok(Err(error)) => error, Err(error) => error.to_string(), _ => unreachable!() })),
+                        }
+                    }
+                    if !staged && stage_task.is_none() && !updater.install_abandoned()
+                        && let Some((release,path)) = updater.ready() && let Some(status) = updater.snapshot().status {
+                        stage_task = Some(crate::app_update::stage(release,path,status));
+                    }
                     let force_install = updater.force_install();
                     let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
                         && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
                         && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
+                    // The helper waits for this process to exit before touching the
+                    // bundle. A handoff that has not ended the process by its deadline
+                    // must give the running app back, so the user keeps a working
+                    // version and can retry after a restart.
                     if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                         install_handoff = None;
                         if let Some(mut helper) = install_helper.take() {
@@ -2742,17 +2726,20 @@ async fn run_worker(
                         input_coordinator.resume_after_update();
                     }
                     if !updater.install_abandoned() && install_handoff.is_none() {
-                        updater.installation_waiting(if !staged {
-                            "正在校验并准备安装，新版就绪后将重新启动"
-                        } else if force_install {
-                            "正在立即安装，将跳过传输或粘贴等待"
-                        } else if !files_idle {
-                            "已请求安装，等待当前文件传输或粘贴完成"
-                        } else {
-                            "已请求安装，正在结束键鼠共享并等待本地导出完成"
-                        });
+                        if updater.ready().is_some() {
+                            updater.installation_waiting(if !staged {
+                                "正在校验并准备安装，新版就绪后将重新启动"
+                            } else if force_install {
+                                "正在立即安装，将跳过传输或粘贴等待"
+                            } else if !files_idle {
+                                "已请求安装，等待当前文件传输或粘贴完成"
+                            } else {
+                                "已请求安装，正在结束键鼠共享并等待本地导出完成"
+                            });
+                        }
                         if staged && files_idle {
                             if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
+                                // Native exports and UI commands share this admission lock.
                                 let admitted = {
                                     let mut closed = input_signals.update_admission.lock().unwrap();
                                     if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
@@ -2760,13 +2747,17 @@ async fn run_worker(
                                     } else { false }
                                 };
                                 if admitted {
-                                    match deskfuse_update::installer::launch_helper() {
+                                    // The handoff starts only once the helper exists. A helper
+                                    // that cannot start leaves a usable app instead of a
+                                    // pending restart that never happens.
+                                    match deskfuse_update_platform::installer::launch_helper() {
                                         Ok(helper) => {
                                             install_helper = Some(helper);
                                             updater.installing();
-                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                                                github_updater.as_ref(), Some(updater), Some(&manual_update_view),
-                                            )));
+                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
+                                            // This worker stays alive to answer the shutdown that
+                                            // follows; the helper only replaces the bundle after
+                                            // this process is gone.
                                             let _ = ui_sender.unbounded_send(UiEvent::Quit);
                                             install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
                                         }
@@ -2780,18 +2771,16 @@ async fn run_worker(
                             }
                         } else { input_coordinator.resume_after_update(); }
                     }
+                    let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                 }
-                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
-                    github_updater.as_ref(), updater.as_ref(), Some(&manual_update_view),
-                )));
             }
             _ = permission_tick.tick() => {
-                file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,&pasteboard,&pending_incoming_file,&paste_requested,&paste_target_pid).await;
+                file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,pasteboard.as_ref(),&pending_incoming_file,&paste_requested,&paste_target_pid).await;
                 emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
             }
             captured = file_paste_requests.recv() => {
                 if let Some(captured) = captured {
-                    if deskfuse_platform_macos::is_finder_pid(captured.target_pid) {
+                    if platform.finder().is_finder_pid(captured.target_pid) {
                         // Repeated presses during one lookup reuse its visible task.
                         let duplicate = finder_path_requests.values().any(|pending|
                             pending.target_pid == captured.target_pid
@@ -2809,11 +2798,12 @@ async fn run_worker(
                                 Some(format!("paste={id} transfer={} pid={pid}", captured.reference.transfer_id)), None);
                             finder_path_requests.insert(id, captured);
                             let tx = finder_path_tx.clone();
+                            let finder_platform = platform.clone();
                             tokio::spawn(async move {
                                 let result = tokio::task::spawn_blocking(move ||
-                                    deskfuse_platform_macos::capture_finder_destination(pid))
+                                    finder_platform.finder().capture_destination(pid))
                                     .await.map_err(|_| "获取 Finder 路径的后台任务异常退出".to_owned())
-                                    .and_then(|result| result);
+                                    .and_then(|result| result.map_err(|e| e.to_string()));
                                 let _ = tx.send((id, result));
                             });
                         }
@@ -2875,7 +2865,7 @@ async fn run_worker(
                     let completed_source = terminal_key.and_then(|key| incoming_file_clipboards.get(&key).map(|incoming| (
                         FilePasteReference { transfer_id: key.1.to_string(), peer_id: key.0.to_hex(), change_count: incoming.pasteboard_change_count, name: incoming.name.clone(), total_bytes: incoming.manifest.total_bytes() }, incoming.root_paths.clone()
                     )));
-                    let acknowledged = handle_receive_event(event, &pasteboard, &mut RemoteClipboardState {
+                    let acknowledged = handle_receive_event(event, pasteboard.as_ref(), &mut RemoteClipboardState {
                         last_change_count: &mut clipboard_last_change_count,
                         incoming_files: &mut incoming_file_clipboards,
                         receive_events: &receive_events,
@@ -2898,7 +2888,7 @@ async fn run_worker(
                             if let Some((reference, paths)) = completed_source { finder_pastes.received(reference, paths, &ui_sender, &diagnostics); }
                         } else { finder_pastes.source_failed(key.1, &ui_sender); }
                         file_policy.finished(key.1);
-                        file_policy.protect_clipboard(&pasteboard);
+                        file_policy.protect_clipboard(pasteboard.as_ref());
                         file_policy.emit(&ui_sender, None);
                         let frame = if acknowledged == Some(key) { ClipboardFileFrame::Ack { transfer_id: key.1 } }
                         else { ClipboardFileFrame::Cancel { transfer_id: key.1, reason: "接收已取消或文件校验失败".into() } };
@@ -3056,7 +3046,7 @@ impl ClipboardLoopGuard {
 
     fn should_suppress(
         &mut self,
-        pasteboard: &impl Pasteboard,
+        pasteboard: &dyn Pasteboard,
         snapshot: &PasteboardSnapshot,
         images: &crate::clipboard_image::ClipboardImageFacts,
     ) -> bool {
@@ -3230,7 +3220,7 @@ struct FileClipboardStreamContext<'a> {
 }
 
 async fn push_local_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     context: &mut ClipboardPushContext<'_>,
 ) -> Result<(), String> {
     let mut snapshot = match pasteboard.read() {
@@ -3438,7 +3428,7 @@ fn start_local_file_clipboard(
         let prepared = match tokio::task::spawn_blocking(move || {
             let check_copy = || -> Result<(), String> {
                 if let Some(expected) = expected_change_count {
-                    let pasteboard = create_worker_pasteboard().map_err(|e| e.to_string())?;
+                    let pasteboard = memory_platform().pasteboard();
                     if pasteboard.change_count().map_err(|e| e.to_string())? != expected {
                         preparation_cancel.store(true, Ordering::Release);
                         return Err("源剪贴板已被新复制替换".into());
@@ -4245,7 +4235,7 @@ struct RemoteClipboardState<'a> {
 
 #[cfg(test)]
 fn apply_remote_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4267,7 +4257,7 @@ fn apply_remote_clipboard(
 }
 
 fn apply_remote_clipboard_decoded(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4403,7 +4393,7 @@ fn apply_remote_clipboard_decoded(
 
 #[allow(clippy::too_many_arguments)] // Shared remote-clipboard context, threaded explicitly.
 fn finish_native_clipboard(
-    pasteboard: &impl Pasteboard,
+    pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
     state: &mut RemoteClipboardState<'_>,
     ui_sender: &UnboundedSender<UiEvent>,
@@ -4592,60 +4582,6 @@ fn event_requires_snapshot_refresh(event: &RuntimeEvent) -> bool {
     )
 }
 
-fn merge_update_view(
-    github: Option<&crate::github_update::GitHubUpdater>,
-    lan: Option<&deskfuse_runtime::updates::LanUpdater>,
-    manual: Option<&deskfuse_runtime::updates::LanUpdateView>,
-) -> deskfuse_runtime::updates::LanUpdateView {
-    use deskfuse_update::UpdatePhase;
-    if let Some(github) = github {
-        let mut view = github.snapshot();
-        let Some(lan) = lan else {
-            return view;
-        };
-        let lan_view = lan.snapshot();
-        view.peers = lan_view.peers;
-        let github_active = github.ready()
-            || view.checking
-            || view.status.as_ref().is_some_and(|status| {
-                matches!(
-                    status.phase,
-                    UpdatePhase::Downloading
-                        | UpdatePhase::Verifying
-                        | UpdatePhase::WaitingForIdle
-                        | UpdatePhase::Staged
-                        | UpdatePhase::Installing
-                )
-            });
-        let lan_active = lan.github_ready().is_some()
-            || lan_view.checking
-            || lan_view.status.as_ref().is_some_and(|status| {
-                matches!(
-                    status.phase,
-                    UpdatePhase::Downloading
-                        | UpdatePhase::Verifying
-                        | UpdatePhase::WaitingForIdle
-                        | UpdatePhase::Staged
-                        | UpdatePhase::Installing
-                )
-            });
-        view.manual_requested = view.manual_requested || lan_view.manual_requested;
-        if !github_active && lan_active {
-            view.checking = lan_view.checking;
-            view.status = lan_view.status;
-            view.message = lan_view.message;
-            if lan_view.error.is_some() {
-                view.error = lan_view.error;
-            }
-        }
-        view
-    } else if let Some(lan) = lan {
-        lan.snapshot()
-    } else {
-        manual.cloned().unwrap_or_default()
-    }
-}
-
 /// Motion datagrams are enabled by default; `reliable` is a diagnostic override.
 /// Path negotiation still decides whether a new control session can use hybrid mode.
 fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
@@ -4656,12 +4592,12 @@ fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
     }
 }
 
-fn runtime_config() -> RuntimeConfig {
+fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> RuntimeConfig {
     RuntimeConfig {
         network: deskfuse_core::NetworkConfig::new()
             .with_mdns_enabled(true)
             .with_public_network_enabled(false),
-        display_name: local_display_name(),
+        display_name: local_display_name(runtime),
         capabilities: Capabilities::NETWORK
             | Capabilities::CLIPBOARD
             | Capabilities::TRANSFER
@@ -4673,25 +4609,23 @@ fn runtime_config() -> RuntimeConfig {
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
-            | motion_mode_capabilities(std::env::var("DESKFUSE_INPUT_MOTION_MODE").ok().as_deref()),
+            | motion_mode_capabilities(
+                runtime.environment("DESKFUSE_INPUT_MOTION_MODE").as_deref(),
+            ),
         ..RuntimeConfig::default()
     }
 }
 
 /// Human-readable device name shown during discovery and pairing.
-fn local_display_name() -> String {
+fn local_display_name(_runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> String {
     #[cfg(not(test))]
     {
         // `hostname` is a stable macOS baseline utility; never use its output
         // as identity, only as the display label.
-        let name = std::process::Command::new("/bin/hostname")
-            .output()
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|name| {
-                let trimmed = name.trim();
-                trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()
-            });
+        let name = _runtime.hostname().map(|name| {
+            let trimmed = name.trim();
+            trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()
+        });
         if let Some(name) = name
             && !name.is_empty()
             && name.chars().count() <= 256
@@ -4703,7 +4637,10 @@ fn local_display_name() -> String {
     "DeskFuse".to_owned()
 }
 
-async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, RuntimeError> {
+async fn build_runtime(
+    diagnostics: &Diagnostics,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> Result<RuntimeHandle, RuntimeError> {
     // Production persists identity beside the state database. Tests stay isolated.
     #[cfg(not(test))]
     let identity_provider = FileIdentityProvider::new(
@@ -4720,7 +4657,7 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     #[cfg(test)]
     let store =
         SQLiteStore::open_in_memory().map_err(|error| RuntimeError::Store(error.to_string()))?;
-    let config = runtime_config();
+    let config = runtime_config(&*platform.runtime());
 
     #[cfg(not(test))]
     let (transport, control_port) = {
@@ -4749,7 +4686,8 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
             CERTIFICATE_DER.to_vec(),
             PRIVATE_KEY_DER.to_vec(),
             CERTIFICATE_DER.to_vec(),
-        );
+        )
+        .with_lan_port(platform.lan_web());
         let transport = QuinnTransport::bind(local_hello, config)
             .await
             .map_err(|error| RuntimeError::Transport(error.to_string()))?;
@@ -4804,7 +4742,9 @@ async fn build_runtime(diagnostics: &Diagnostics) -> Result<RuntimeHandle, Runti
     let builder = builder.with_transport(UnavailableControlTransport);
     #[cfg(all(target_os = "macos", not(test)))]
     let builder = builder.with_input_service(deskfuse_runtime::input_service::ServiceOptions {
-        executable: std::env::current_exe()
+        executable: platform
+            .runtime()
+            .current_executable()
             .map_err(|e| RuntimeError::ThreadStart(e.to_string()))?
             .with_file_name("deskfuse-input-service"),
         identity_path: SQLiteStore::default_path()
@@ -4859,9 +4799,17 @@ mod file_clipboard_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clipboard_image::analyze_snapshot;
     use deskfuse_platform::MemoryPasteboard;
     use futures::{StreamExt, stream::BoxStream};
+
+    fn suppress(
+        guard: &mut ClipboardLoopGuard,
+        pasteboard: &MemoryPasteboard,
+        snapshot: &PasteboardSnapshot,
+    ) -> bool {
+        let images = crate::clipboard_image::analyze_snapshot(snapshot);
+        guard.should_suppress(pasteboard, snapshot, &images)
+    }
 
     #[test]
     fn tiff_preview_is_png_and_restore_keeps_original_representation() {
@@ -4890,7 +4838,7 @@ mod tests {
         assert_eq!((preview.width(), preview.height()), (8, 4));
         assert_eq!(restored.items, snapshot.items);
         snapshot.file_urls.push("/tmp/file-priority".into());
-        assert!(clipboard_preview_png(&snapshot).is_none());
+        assert!(clipboard_preview_png(&snapshot, None).is_none());
     }
 
     #[test]
@@ -4932,52 +4880,47 @@ mod tests {
             pasteboard.read_remote_origin_marker().expect("read marker"),
             Some(clipboard_fingerprint("text/plain", b"from peer"))
         );
-        assert!(loop_guard.should_suppress(&pasteboard, &received, &analyze_snapshot(&received)));
+        assert!(suppress(&mut loop_guard, &pasteboard, &received));
 
         pasteboard
             .write_text("new local copy")
             .expect("write local copy");
         let local = pasteboard.read().expect("read local clipboard");
-        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
+        assert!(!suppress(&mut loop_guard, &pasteboard, &local));
 
-        // 对端写入已把指纹组标记为远端：10 秒窗口内同一段文字的再次出现
-        // （含接力改写）仍视为回声。
+        // 10 秒账本窗口内，同一段文字的再次出现视为回声（含接力改写）。
         pasteboard
             .write_text("from peer")
             .expect("recopy old remote text");
         let recopied = pasteboard.read().unwrap();
         assert!(recopied.change_count > received.change_count);
-        assert!(loop_guard.should_suppress(&pasteboard, &recopied, &analyze_snapshot(&recopied)));
+        assert!(suppress(&mut loop_guard, &pasteboard, &recopied));
     }
 
-    /// 本地组从未被标记为远端，因此无标记的等价改写与本地再复制不可区分，
-    /// 回声窗口必须放行——发送失败后的重试、A→B→A 重新复制依赖这一点。
-    /// 远端内容的无标记回写由 `universal_…` 与 `remote_clipboard_marker_…` 覆盖。
     #[test]
     fn markerless_rewrite_of_a_local_copy_is_republishable() {
         let pasteboard = MemoryPasteboard::new();
         let mut loop_guard = ClipboardLoopGuard::default();
         pasteboard.write_text("帮我安装 kimi code\n").unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
+        assert!(!suppress(&mut loop_guard, &pasteboard, &local));
 
         pasteboard.write_text("帮我安装 kimi code\r\n").unwrap();
-        let rewritten = pasteboard.read().unwrap();
-        assert!(rewritten.change_count > local.change_count);
-        assert!(!loop_guard.should_suppress(
-            &pasteboard,
-            &rewritten,
-            &analyze_snapshot(&rewritten)
-        ));
+        let echoed = pasteboard.read().unwrap();
+        assert!(echoed.change_count > local.change_count);
+        assert!(!suppress(&mut loop_guard, &pasteboard, &echoed));
 
-        // 接力回写常去掉或补上尾随换行；窗口内每次等价观察都放行。
+        // 接力回写常去掉或补上尾随换行，10 秒窗口内仍视为同一条。
         pasteboard.write_text("帮我安装 kimi code").unwrap();
-        let trimmed = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &trimmed, &analyze_snapshot(&trimmed)));
+        assert!(!suppress(
+            &mut loop_guard,
+            &pasteboard,
+            &pasteboard.read().unwrap()
+        ));
 
         pasteboard.write_text("另一段文字").unwrap();
         let incoming = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &incoming, &analyze_snapshot(&incoming)));
+        assert!(!suppress(&mut loop_guard, &pasteboard, &incoming));
     }
 
     #[test]
@@ -4987,16 +4930,18 @@ mod tests {
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         pasteboard.mark_universal_clipboard().unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &handoff, &analyze_snapshot(&handoff)));
+        assert!(suppress(&mut loop_guard, &pasteboard, &handoff));
 
-        // 去掉标记后的接力改写仍是回声（组已被 Universal 分支标记为远端）。
-        // 不同内容的新复制不受影响。
+        // 去掉标记后的接力改写仍是回声。不同内容的新复制不受影响。
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        let rewritten = pasteboard.read().unwrap();
-        assert!(loop_guard.should_suppress(&pasteboard, &rewritten, &analyze_snapshot(&rewritten)));
+        assert!(suppress(
+            &mut loop_guard,
+            &pasteboard,
+            &pasteboard.read().unwrap()
+        ));
         pasteboard.write_png(&[4, 5, 6]).unwrap();
         let local = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &local, &analyze_snapshot(&local)));
+        assert!(!suppress(&mut loop_guard, &pasteboard, &local));
     }
 
     #[test]
@@ -5011,7 +4956,7 @@ mod tests {
         }];
         pasteboard.write_items(&items).unwrap();
         let handoff = pasteboard.read().unwrap();
-        assert!(!loop_guard.should_suppress(&pasteboard, &handoff, &analyze_snapshot(&handoff)));
+        assert!(!suppress(&mut loop_guard, &pasteboard, &handoff));
 
         // Native rich images travel through the clipboard bundle MIME, so
         // payload-only matching is insufficient. The applied native snapshot
@@ -5048,27 +4993,22 @@ mod tests {
             clipboard_snapshot_fingerprint(&snapshot).unwrap(),
             snapshot.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &snapshot, &analyze_snapshot(&snapshot)));
+        assert!(suppress(&mut guard, &pasteboard, &snapshot));
         pasteboard.write_text("same text").unwrap();
         let copied_again = pasteboard.read().unwrap();
-        assert!(!guard.should_suppress(
-            &pasteboard,
-            &copied_again,
-            &analyze_snapshot(&copied_again)
-        ));
+        assert!(!suppress(&mut guard, &pasteboard, &copied_again));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
         let png = pasteboard.read().unwrap();
         guard.remember(
             clipboard_snapshot_fingerprint(&png).unwrap(),
             png.change_count,
         );
-        assert!(guard.should_suppress(&pasteboard, &png, &analyze_snapshot(&png)));
+        assert!(suppress(&mut guard, &pasteboard, &png));
         pasteboard.write_png(&[1, 2, 3]).unwrap();
-        let recopied_png = pasteboard.read().unwrap();
-        assert!(!guard.should_suppress(
+        assert!(!suppress(
+            &mut guard,
             &pasteboard,
-            &recopied_png,
-            &analyze_snapshot(&recopied_png)
+            &pasteboard.read().unwrap()
         ));
     }
 
@@ -5127,7 +5067,7 @@ mod tests {
 
     #[test]
     fn runtime_config_keeps_public_network_disabled() {
-        let config = runtime_config();
+        let config = runtime_config(&*crate::platform::memory_platform().runtime());
         assert!(config.network.mdns_enabled);
         assert!(!config.network.public_network_enabled);
         assert_eq!(config.display_name, "DeskFuse");

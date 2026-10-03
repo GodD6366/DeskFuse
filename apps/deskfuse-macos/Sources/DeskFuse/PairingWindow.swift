@@ -34,7 +34,7 @@ import DeskFuseEngine
 
 struct PairingWindowView: View {
     @Bindable var store: AppStore
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -53,14 +53,14 @@ struct PairingWindowView: View {
             .padding(.horizontal, 24)
             .padding(.top, 52)
             .padding(.bottom, 20)
-            
+
             // Content
             ScrollView {
                 VStack(spacing: 14) {
                     ForEach(store.snapshot?.pairing.filter(\.incoming) ?? [], id: \.id) { request in
                         PairingRow(store: store, request: request)
                     }
-                    
+
                     if let error = store.error {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")

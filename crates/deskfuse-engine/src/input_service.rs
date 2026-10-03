@@ -5,6 +5,7 @@ use crate::{
 };
 use deskfuse_core::*;
 use deskfuse_discovery::{DiscoveryEvent, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
+use deskfuse_platform::ports::EnginePlatformPort;
 use deskfuse_runtime::{
     ControlTransportAdapter, SnapshotView,
     input_service::{Authority, ChildConnection},
@@ -18,7 +19,13 @@ use std::{
 };
 
 pub fn main() -> std::result::Result<(), String> {
-    if std::env::args().nth(1).as_deref() != Some("--input-service") {
+    main_with_platform(crate::platform::memory_platform())
+}
+
+pub fn main_with_platform(
+    platform: Arc<dyn EnginePlatformPort>,
+) -> std::result::Result<(), String> {
+    if platform.runtime().arguments().get(1).map(String::as_str) != Some("--input-service") {
         return Err("input service requires inherited parent channels".into());
     }
     let connection = ChildConnection::open()?;
@@ -26,7 +33,7 @@ pub fn main() -> std::result::Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    executor.block_on(run(connection))
+    executor.block_on(run(connection, platform))
 }
 fn view(
     authority: &Authority,
@@ -57,7 +64,10 @@ fn view(
         discovered_peers: vec![],
     }
 }
-async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
+async fn run(
+    mut child: ChildConnection,
+    platform: Arc<dyn EnginePlatformPort>,
+) -> std::result::Result<(), String> {
     let identity = Arc::new(
         deskfuse_identity::FileIdentityProvider::new(&child.bootstrap.identity_path)
             .load_existing()
@@ -82,7 +92,8 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
         PRIVATE_KEY_DER.to_vec(),
         CERTIFICATE_DER.to_vec(),
     )
-    .for_input_service();
+    .for_input_service()
+    .with_lan_port(platform.lan_web());
     let transport = QuinnTransport::bind(hello, config)
         .await
         .map_err(|e| e.to_string())?;
@@ -125,6 +136,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
     let (ui, mut ui_events) = futures::channel::mpsc::unbounded();
     let native = InputCoordinator::start_local(
         runtime.handle.clone(),
+        crate::platform::memory_platform(),
         ui,
         child.recording.clone(),
         child.emergency.clone(),
@@ -133,11 +145,12 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
     );
     let diagnostics = Arc::new(std::sync::Mutex::new(String::new()));
     let diagnostic_output = diagnostics.clone();
+    let runtime_port = platform.runtime();
     let stop = child.stopping.clone();
     std::thread::Builder::new().name("deskfuse-input-diagnostics".into()).spawn(move || {
         while !stop.load(Ordering::Acquire) {
             if deskfuse_core::debug_logging::enabled() {
-                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":std::process::id(), "build":deskfuse_runtime::input_service::build_identity()}).to_string(); lines.push('\n');
+                let mut lines = serde_json::json!({"subsystem":"input_service", "pid":runtime_port.process_id(), "build":deskfuse_runtime::input_service::build_identity()}).to_string(); lines.push('\n');
                 for record in deskfuse_platform::timing::snapshot().records.into_iter().rev().take(256) {
                     if let Ok(line) = serde_json::to_string(&record) { lines.push_str(&line); lines.push('\n'); }
                 }
@@ -158,7 +171,7 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
         .name("deskfuse-input-wifi".into())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                let ssid = crate::platform::current_ssid();
+                let ssid = None;
                 let _ = wifi_runtime
                     .try_send(deskfuse_runtime::RuntimeCommand::ObserveWifiEnvironment { ssid });
                 for _ in 0..50 {
@@ -170,7 +183,10 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let mut remote_input = crate::remote_application_input::Owner::new(child.pause.clone());
+    let mut remote_input = crate::remote_application_input::Owner::new(
+        child.pause.clone(),
+        crate::platform::memory_platform(),
+    );
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -241,7 +257,6 @@ async fn run(mut child: ChildConnection) -> std::result::Result<(), String> {
             Some(deskfuse_runtime::RuntimeEvent::Error(error)) = runtime_events.next() => { status.native.error = Some(error.to_string()); },
             Some(event) = ui_events.next() => match event {
                 UiEvent::InputStatus {error} => status.native.error = error,
-                UiEvent::InputObserverRecoveryRequired => status.native.observer_recovery_required = true,
                 UiEvent::InputLockStatus(value) => status.native.locked = value,
                 UiEvent::InputRecordingReady(value) => status.native.recording_ready = value,
                 UiEvent::PermissionSnapshot(value) => {

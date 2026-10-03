@@ -76,6 +76,39 @@ never hand-code Rust layouts, share locks or obtain raw runtime/credential handl
 The native binary statically links the engine. The additional Rust dylib is only
 used by the binding generator and is not shipped.
 
+### Platform-boundary closure audit
+
+The platform crate is a contract and memory-double crate: it has no AppKit,
+Win32, GPUI, or platform dependency. Concrete OS calls remain in
+`deskfuse-platform-macos`, `deskfuse-platform-windows`, `deskfuse-update-platform`,
+and the native service/UI adapters. The audit found three deliberate residuals
+that are not safe to delete in this pass: filesystem-backed memory ports in
+`deskfuse-platform`, engine-owned legacy update/LAN/file workers, and the
+Windows v2 string `Rejected.code` field. The latter now carries additive
+`Rejected.boundary_error` (`BoundaryErrorCode`) while old clients continue to
+read `code`.
+
+New boundary code must use `BoundaryErrorCode`, `PlatformCapability`, and typed
+`PlatformEvent`; string codes are compatibility projections only. `Reply::rejected_typed`
+is the constructor for new v2 rejection paths; `Reply::rejected` is retained
+only for pre-typed commands and is the sole legacy-string conversion point.
+Capability booleans in the Windows snapshot and the workflow-specific
+capability snapshot are observations of existing adapters, not a second
+authorization model.
+
+The typed-port closure audit is intentionally explicit:
+
+| Seam | Real wiring | Remaining unused path / deletion prerequisite |
+| --- | --- | --- |
+| `PlatformCommand` / `PlatformEvent` | Authenticated Windows service IPC validates host clipboard, file-object and workflow commands; WPF consumes typed receipts | Legacy command variants and the `Rejected.code` projection remain for v2 clients; remove only after all clients consume `boundary_error` |
+| `FileDataObjectPort` | Windows WPF `DesktopClipboardController` validates local paths and publishes the typed `FileDataObjectCreated` receipt | The Rust collaboration host has no file-object consumer; do not replace deferred transfer with a second path until a native host and protocol consumer are specified |
+| `WorkflowExecutionPort` | Engine workers use the injected macOS execution adapter; Windows uses the authenticated interactive host workflow adapter | Filesystem/process helpers remain host-owned and are not a license to reintroduce OS calls into common crates |
+| `WorkflowOutputPort` | macOS `host_ports` injects `MacOSWorkflowOutputPort`, whose guarded-paste capability is fail-closed | The extracted collaboration workflow service does not consume this port yet; keep the adapter and unavailable default until output ownership is cut over |
+
+These seams remain contracts rather than dead declarations: each unconsumed
+path has an owner and a concrete prerequisite, and no new call site may add a
+legacy string mapping.
+
 A single event dispatcher serializes initial snapshots, monotonically revised
 updates, command outcomes and host actions. Ordinary snapshots are coalesced at
 100 ms; terminal states and host actions flush immediately. Swift callbacks keep

@@ -4,13 +4,15 @@ using System.Windows.Threading;
 
 namespace DeskFuse.Windows;
 
-/// <summary>Supervises the fixed ordinary-desktop Rust input helper.</summary>
+/// <summary>Supervises the fixed signed UIAccess Rust input helper.</summary>
 public sealed class InputHelperProcess : IDisposable
 {
     private readonly Dispatcher dispatcher;
     private readonly DispatcherTimer restart;
     private Process? process;
     private bool disposed;
+
+    public int? ProcessId => process is { HasExited: false } current ? current.Id : null;
 
     public InputHelperProcess(Dispatcher dispatcher)
     {
@@ -21,6 +23,34 @@ public sealed class InputHelperProcess : IDisposable
             Start();
         }, dispatcher);
         Start();
+    }
+
+    /// Stop and drain the fixed helper before a machine update takes its
+    /// admission lock. This runs on the WPF dispatcher so restart cannot race
+    /// the update helper's process identity snapshot.
+    public bool StopForMachineUpdate()
+    {
+        dispatcher.VerifyAccess();
+        restart.Stop();
+        if (process is not { } current) return true;
+        try
+        {
+            if (!current.HasExited) current.Kill(entireProcessTree: true);
+            return current.WaitForExit(5000);
+        }
+        catch (Exception) { return false; }
+        finally
+        {
+            current.Exited -= HelperExited;
+            current.Dispose();
+            process = null;
+        }
+    }
+
+    public void ResumeAfterMachineUpdate()
+    {
+        dispatcher.VerifyAccess();
+        if (!disposed) Start();
     }
 
     private void Start()

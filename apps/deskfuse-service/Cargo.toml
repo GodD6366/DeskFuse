@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 deskfuse-core = { path = "../../crates/deskfuse-core" }
+deskfuse-platform = { path = "../../crates/deskfuse-platform" }
 tokio = { version = "1", features = ["rt", "net", "time", "io-util", "sync", "macros"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -27,7 +28,6 @@ deskfuse-runtime = { path = "../../crates/deskfuse-runtime" }
 deskfuse-store = { path = "../../crates/deskfuse-store" }
 deskfuse-transport = { path = "../../crates/deskfuse-transport" }
 deskfuse-discovery = { path = "../../crates/deskfuse-discovery" }
-deskfuse-platform = { path = "../../crates/deskfuse-platform" }
 deskfuse-platform-windows = { path = "../../crates/deskfuse-platform-windows" }
 uuid.workspace = true
 windows-sys = { version = "=0.61.2", features = [

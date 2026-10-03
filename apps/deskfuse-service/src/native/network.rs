@@ -1,4 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
+use super::{file_transfer, remote_app};
 use deskfuse_core::{
     Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
 };
@@ -10,7 +11,12 @@ use deskfuse_runtime::{
 };
 use deskfuse_store::{PeerStore, SQLiteStore, SettingsStore};
 use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
-use std::{collections::BTreeSet, io, net::SocketAddr, sync::Mutex};
+use std::{
+    collections::BTreeSet,
+    io,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 const CONTROL_PORT: u16 = 42424;
 const INPUT_PORT: u16 = 42425;
@@ -24,8 +30,13 @@ const INPUT_CAPABILITIES: Capabilities = Capabilities::from_bits(
 pub struct Network {
     pub runtime: RuntimeHandle,
     pub input_runtime: InputOnlyRuntime,
+    /// Shared settings store for desktop-owned catalogs. The service remains
+    /// the only writer; the WPF process accesses it through authenticated IPC.
+    pub store: SQLiteStore,
+    pub workflow_catalog: super::workflow::Catalog,
     pub control_port: u16,
     input_transport: QuinnTransport,
+    remote_app_transport: QuinnTransport,
     input_authorized: Mutex<BTreeSet<deskfuse_core::DeviceId>>,
     _input_discovery: Mutex<PlatformDiscovery>,
     input_discovery_events: Mutex<DiscoveryHandle>,
@@ -42,10 +53,17 @@ impl Network {
         store.get_settings().map_err(|_| stage(22))?;
         TrustStore::list(&store).map_err(|_| stage(22))?;
 
+        let cache = directory.transfer_cache_path();
+        file_transfer::open_transfer_cache(&cache)?;
+        file_transfer::set_cache_root(cache);
         let control_capabilities = Capabilities::NETWORK
             | Capabilities::DEVICE_NETWORK
             | Capabilities::CLIPBOARD
-            | Capabilities::CLIPBOARD_SYNC_V2;
+            | Capabilities::CLIPBOARD_SYNC_V2
+            | Capabilities::DEFERRED_FILE_CLIPBOARD
+            | Capabilities::REMOTE_APPLICATION
+            | Capabilities::REMOTE_APPLICATION_RDP
+            | Capabilities::WORKFLOW_SYNC;
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
@@ -62,10 +80,13 @@ impl Network {
             .local_addr()
             .map_err(|_| stage(24))?
             .port();
+        // Remote-app sessions arrive on the control transport; keep a shared
+        // handle so the service can serve them without the runtime's mediation.
+        let remote_app_transport = control_transport.clone();
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(
-                ServiceRecord::v2(
+                ServiceRecord::v1(
                     identity.device_id(),
                     config.display_name.clone(),
                     control_capabilities,
@@ -84,6 +105,7 @@ impl Network {
             .build()
             .map_err(|_| stage(26))?;
 
+        file_transfer::start_delivery(runtime.clone());
         let input_transport =
             bind_transport(identity.as_ref(), INPUT_CAPABILITIES, INPUT_PORT, true)
                 .await
@@ -96,7 +118,7 @@ impl Network {
             PlatformDiscovery::for_input_service(identity.device_id()).map_err(|_| stage(25))?;
         input_discovery
             .set_advertisement(
-                ServiceRecord::v2(
+                ServiceRecord::v1(
                     identity.device_id(),
                     "DeskFuse Windows",
                     INPUT_CAPABILITIES,
@@ -109,15 +131,21 @@ impl Network {
         let initial = input_view(runtime.snapshot_view());
         let input_runtime = InputOnlyRuntime::start(
             std::sync::Arc::new(ControlTransportAdapter::new(input_transport.clone())),
-            std::sync::Arc::new(store),
+            std::sync::Arc::new(store.clone()),
             initial,
         )
         .map_err(|_| stage(26))?;
+        let workflow_catalog =
+            super::workflow::Catalog::open(store.clone(), identity.device_id().to_string())
+                .map_err(|_| stage(22))?;
         let network = Self {
             runtime,
             input_runtime,
+            store,
+            workflow_catalog,
             control_port,
             input_transport,
+            remote_app_transport,
             input_authorized: Mutex::new(BTreeSet::new()),
             _input_discovery: Mutex::new(input_discovery),
             input_discovery_events: Mutex::new(input_events),
@@ -172,6 +200,34 @@ impl Network {
         self.input_runtime.update_view(view);
         Ok(())
     }
+
+    /// Drain and serve pending remote-app sessions from trusted peers. Incoming
+    /// sessions are polled by the service loop; each is served on a blocking
+    /// thread so its bounded `receive` waits never stall the Tokio worker.
+    pub fn serve_remote_applications(&self) {
+        while let Some(session) = self.remote_app_transport.take_remote_application() {
+            let peer = session.peer;
+            if remote_app::availability() == remote_app::Availability::Available
+                && self.remote_app_authorized(peer)
+            {
+                tokio::task::spawn_blocking(move || remote_app::serve(session));
+            } else {
+                session.close();
+            }
+        }
+    }
+
+    fn remote_app_authorized(&self, peer: deskfuse_core::DeviceId) -> bool {
+        let view = self.runtime.snapshot_view();
+        view.device_network
+            .allows(view.snapshot.local_device_id, peer)
+            && !view.device_network.blocked_peer_ids.contains(&peer)
+            && view
+                .snapshot
+                .peers
+                .iter()
+                .any(|entry| entry.id == peer && entry.trust == TrustState::Trusted)
+    }
 }
 
 async fn bind_transport(
@@ -191,7 +247,8 @@ async fn bind_transport(
         include_bytes!("../../../../resources/deskfuse-transport-cert.der").to_vec(),
         include_bytes!("../../../../resources/deskfuse-transport-key.der").to_vec(),
         include_bytes!("../../../../resources/deskfuse-transport-cert.der").to_vec(),
-    );
+    )
+    .with_lan_port(Arc::new(deskfuse_platform::ports::FailClosedLanPort));
     QuinnTransport::bind(
         hello,
         if input {

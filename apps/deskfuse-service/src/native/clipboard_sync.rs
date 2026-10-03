@@ -6,6 +6,7 @@ use deskfuse_core::{
 };
 use deskfuse_protocol::clipboard_sync as wire;
 use deskfuse_runtime::RuntimeHandle;
+use deskfuse_transfer::{ClipboardFileFrame, FileBridge};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -212,7 +213,21 @@ impl Sync {
             },
         );
     }
-    pub fn receive(&mut self, runtime: &RuntimeHandle, id: DeviceId, payload: ClipboardPayload) {
+    pub fn receive(
+        &mut self,
+        runtime: &RuntimeHandle,
+        id: DeviceId,
+        payload: ClipboardPayload,
+        files: &FileBridge,
+    ) {
+        // Content frames use the authenticated direct file MIME channel and
+        // must not enter the acknowledged text/image reassembly state machine.
+        if payload.mime == deskfuse_transfer::CLIPBOARD_FILE_MIME {
+            if let Ok(frame) = ClipboardFileFrame::decode(&payload.data) {
+                files.on_frame(id, frame);
+            }
+            return;
+        }
         if payload.mime != wire::MIME {
             return;
         }
@@ -349,9 +364,29 @@ impl Sync {
             self.ack(runtime, id, &frame, wire::REJECTED);
             return;
         }
-        let Ok(formats) = clipboard_codec::decode(&frame.mime, &incoming.body) else {
-            self.ack(runtime, id, &frame, wire::REJECTED);
-            return;
+        // File references share the same ordered native-application cursor as
+        // text/image copies. Recording an offer is not native OLE publication.
+        let (formats, file_transfer_id) = if frame.mime == deskfuse_transfer::CLIPBOARD_FILE_MIME {
+            match ClipboardFileFrame::decode(&incoming.body) {
+                Ok(file_frame @ ClipboardFileFrame::Deferred { .. }) => {
+                    let ClipboardFileFrame::Deferred { transfer_id, .. } = &file_frame else {
+                        unreachable!()
+                    };
+                    let transfer_id = transfer_id.to_hex();
+                    files.accept_wire_offer(id, file_frame);
+                    (Vec::new(), Some(transfer_id))
+                }
+                _ => {
+                    self.ack(runtime, id, &frame, wire::REJECTED);
+                    return;
+                }
+            }
+        } else {
+            let Ok(formats) = clipboard_codec::decode(&frame.mime, &incoming.body) else {
+                self.ack(runtime, id, &frame, wire::REJECTED);
+                return;
+            };
+            (formats, None)
         };
         if let Some(previous) = self.apply.take() {
             self.ack(runtime, previous.peer, &previous.frame, wire::SUPERSEDED);
@@ -362,6 +397,7 @@ impl Sync {
                 sequence: self.cursor,
                 peer_id: id.to_string(),
                 formats,
+                file_transfer_id,
             },
             peer: id,
             frame,
@@ -479,5 +515,75 @@ impl Sync {
         self.send_grouped(runtime, sends);
         self.status = Some("clipboard queued; waiting for remote application receipt".into());
         Ok(())
+    }
+
+    /// Only authenticated current-generation peers can use the file channel.
+    pub fn file_peers(&self, runtime: &RuntimeHandle) -> Vec<DeviceId> {
+        let view = runtime.snapshot_view();
+        self.peers
+            .iter()
+            .filter_map(|(id, state)| {
+                (state.ready
+                    && runtime.control_generation(*id) == Some(state.generation)
+                    && view.snapshot.peers.iter().any(|peer| {
+                        peer.id == *id
+                            && peer.selected_route.is_some_and(|route| {
+                                peer.routes.iter().any(|r| {
+                                    r.id == route
+                                        && r.capabilities
+                                            .contains(Capabilities::DEFERRED_FILE_CLIPBOARD)
+                                })
+                            })
+                    }))
+                .then_some(*id)
+            })
+            .collect()
+    }
+
+    /// Announces one deferred file offer to a single ready peer over the
+    /// acknowledged sync channel. The announcement is chunked, retried and
+    /// acknowledged like every other clipboard payload; the wire ACK only
+    /// confirms that the peer recorded the offer, never that files moved.
+    pub fn announce_file_offer(
+        &mut self,
+        runtime: &RuntimeHandle,
+        peer: DeviceId,
+        frame_data: Vec<u8>,
+    ) {
+        let Some(state) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        if !state.ready {
+            return;
+        }
+        self.revision = self.revision.saturating_add(1);
+        let revision = self.revision;
+        let digest = Sha256::digest(&frame_data).to_vec();
+        let sync_id = epoch();
+        let chunks = frame_data
+            .chunks(wire::CHUNK_BYTES)
+            .enumerate()
+            .map(|(index, data)| SyncMessage {
+                kind: wire::DATA,
+                source_epoch: state.local.clone(),
+                target_epoch: state.remote.clone().unwrap_or_default(),
+                sync_id: sync_id.clone(),
+                revision,
+                mime: deskfuse_transfer::CLIPBOARD_FILE_MIME.to_owned(),
+                digest: digest.clone(),
+                total: frame_data.len() as u64,
+                offset: (index * wire::CHUNK_BYTES) as u64,
+                data: data.to_vec(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let now = Instant::now();
+        state.outgoing = Some(Outgoing {
+            frames: chunks.clone(),
+            started: now,
+            retry: now + Duration::from_secs(2),
+        });
+        self.send_many(runtime, peer, chunks);
+        self.status = Some("file offer announced; waiting for the remote request".into());
     }
 }

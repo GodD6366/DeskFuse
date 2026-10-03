@@ -722,7 +722,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         if role == .viewer && resumeSharing { RemoteApplicationManager.shared.releaseViewerControl(self) }
         controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
     }
-    
+
     /// 释放本地控制状态，但不通知 RemoteApplicationManager，以保持鼠标穿梭可用
     /// 用于控制申请失败的场景，需要清理控制状态但不影响鼠标穿梭
     private func releaseControlLocally() {

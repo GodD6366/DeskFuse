@@ -5,16 +5,21 @@ mod io;
 pub use io::{pinned_release_key, write_json_atomic};
 mod cache;
 mod coordinator;
-#[cfg(target_os = "macos")]
+#[cfg(not(windows))]
 pub mod installer;
 mod manifest;
+mod ports;
 mod selection;
 mod transaction;
+pub mod windows;
 
 pub use artifact::{VerifiedArtifact, verify_artifact, verify_payload};
 pub use cache::{CachedArtifact, ReleaseCache};
 pub use coordinator::allocate_release;
 pub use manifest::*;
+pub use ports::{
+    PlatformInstaller, PlatformUpdateExecutor, UpdateCapability, UpdateExecutionReceipt,
+};
 pub use selection::*;
 pub use transaction::*;
 

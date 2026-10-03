@@ -1,12 +1,13 @@
 //! Desktop host assembly. Collaboration owns policy; this crate injects Host Ports.
 use deskfuse_collaboration::{CollaborationCore, MemoryTransport};
-use deskfuse_platform::ports::HostPorts;
+use deskfuse_platform::ports::{EnginePlatformPort, HostPorts};
 use std::{path::PathBuf, sync::Arc};
 
 /// Application-process host. Input capture/injection stays in the input subprocess.
 pub struct EngineHost {
     core: CollaborationCore,
     ports: HostPorts,
+    workflow_execution: Arc<dyn deskfuse_platform::WorkflowExecutionPort>,
 }
 
 impl EngineHost {
@@ -28,12 +29,26 @@ impl EngineHost {
     /// # Errors
     /// Returns a filesystem or native-port failure.
     pub fn assemble_in(data_dir: PathBuf) -> Result<Self, String> {
+        let platform = crate::platform::memory_platform();
+        let ports = HostPorts::memory(data_dir.clone());
+        Self::assemble_with(data_dir, ports, platform)
+    }
+
+    /// Assemble the engine with application-owned native ports.
+    ///
+    /// The engine never selects an operating-system adapter. The host owns
+    /// concrete clipboard, Finder, LAN, input and workflow composition.
+    pub fn assemble_with(
+        data_dir: PathBuf,
+        ports: HostPorts,
+        platform: Arc<dyn EnginePlatformPort>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-        let ports = crate::platform::host_ports(&data_dir).map_err(|error| error.to_string())?;
         let transport = Arc::new(MemoryTransport::new());
         Ok(Self {
             core: CollaborationCore::new_desktop(ports.clone(), transport, data_dir),
             ports,
+            workflow_execution: platform.workflow_execution(),
         })
     }
 
@@ -45,6 +60,11 @@ impl EngineHost {
     #[must_use]
     pub fn ports(&self) -> &HostPorts {
         &self.ports
+    }
+
+    #[must_use]
+    pub fn workflow_execution(&self) -> Arc<dyn deskfuse_platform::WorkflowExecutionPort> {
+        self.workflow_execution.clone()
     }
 }
 

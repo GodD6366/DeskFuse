@@ -486,7 +486,9 @@ impl Engine {
     /// Returns an error if the engine is stopped or system shortcuts cannot be enumerated.
     pub fn system_shortcuts(&self) -> Result<Vec<SystemShortcut>, EngineError> {
         self.active()?;
-        Ok(worker::system_shortcuts()
+        Ok(self
+            .workflows
+            .system_shortcuts()
             .map_err(failure)?
             .into_iter()
             .map(|s| SystemShortcut {
