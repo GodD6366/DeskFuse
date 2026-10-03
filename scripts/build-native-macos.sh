@@ -39,77 +39,14 @@ SWIFT_FLAGS=(--build-system swiftbuild --package-path "$ROOT_DIR/apps/deskfuse-m
   --triple "$SWIFT_TRIPLE" --sdk "$SDK_PATH"
   -Xlinker -platform_version -Xlinker macos -Xlinker "$MACOSX_DEPLOYMENT_TARGET" -Xlinker "$SDK_VERSION")
 export DESKFUSE_INPUT_BUILD_ID="${DESKFUSE_INPUT_BUILD_ID:-dev-$(git rev-parse --short=12 HEAD)}"
-RELEASE_FLAG=""
-if [[ "$CONFIGURATION" == release ]]; then RELEASE_FLAG="--release"; fi
-RUST_OUTPUT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/$TARGET_TRIPLE/$CONFIGURATION"
+# Rust builds and binding generation can also run independently of Swift.
+"$ROOT_DIR/scripts/build-rust-macos.sh" "$CONFIGURATION"
+TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+RUST_OUTPUT="$TARGET_DIR/$TARGET_TRIPLE/$CONFIGURATION"
 SDK_DIR="$ROOT_DIR/apps/deskfuse-macos/SDK"
-mkdir -p "$SDK_DIR" apps/deskfuse-macos/Generated apps/deskfuse-macos/Sources/DeskFuseEngine apps/deskfuse-macos/Sources/DeskFuseEngineFFI
-RUST_FINGERPRINT="$(python3 - "$ROOT_DIR" <<'PY'
-import hashlib, os, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-hasher = hashlib.sha256()
-hasher.update(str(root.resolve()).encode())
-# 构建号在运行时从 release.json 或 build-id 读取，不参与指纹。
-# 只有源码、锁文件或证书变化才重编 FFI 与 input service。
-for relative in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml",
-                 "resources/deskfuse-transport-cert.der",
-                 "resources/deskfuse-transport-key.der",
-                 "resources/deskfuse-release-public-key.hex"):
-    hasher.update(relative.encode())
-    hasher.update((root / relative).read_bytes())
-for path in sorted((root / "config").rglob("*.json")):
-    hasher.update(str(path.relative_to(root)).encode())
-    hasher.update(path.read_bytes())
-for folder in (
-    "crates", "extensions", "tools",
-    "apps/deskfuse-service", "apps/deskfuse-probe",
-    "apps/deskfuse-input-macos", "apps/deskfuse-input-windows",
-):
-    base = root / folder
-    if not base.exists():
-        continue
-    for path in sorted(base.rglob("*")):
-        if path.suffix in {".rs", ".toml", ".sql"} and path.is_file():
-            hasher.update(str(path.relative_to(root)).encode())
-            hasher.update(path.read_bytes())
-print(hasher.hexdigest())
-PY
-)"
-# Each target/profile owns its cache evidence. A successful arm64 build must
-# never validate stale Intel libraries left by an earlier source revision.
-FINGERPRINT_FILE="$SDK_DIR/.rust-fingerprint-$TARGET_TRIPLE-$CONFIGURATION"
-SKIP_RUST=0
-if [[ "${DESKFUSE_FORCE_RUST:-0}" != 1 \
-  && -f "$FINGERPRINT_FILE" \
-  && "$(cat "$FINGERPRINT_FILE")" == "$RUST_FINGERPRINT" \
-  && -f "$RUST_OUTPUT/libdeskfuse_ffi.dylib" \
-  && -f "$RUST_OUTPUT/libdeskfuse_ffi.a" \
-  && -f "$RUST_OUTPUT/deskfuse-input-service" \
-  && -f "$ROOT_DIR/apps/deskfuse-macos/Sources/DeskFuseEngine/DeskFuseEngine.swift" ]]; then
-  SKIP_RUST=1
-  echo "Rust SDK cache hit ($CONFIGURATION $TARGET_TRIPLE)"
-fi
-copy_if_changed() {
-  local source="$1"
-  local destination="$2"
-  if [[ -f "$destination" ]] && cmp -s "$source" "$destination"; then
-    return 0
-  fi
-  cp "$source" "$destination"
-}
 write_build_identity() {
   printf '%s\n' "$DESKFUSE_INPUT_BUILD_ID" > "$1"
 }
-if [[ "$SKIP_RUST" -eq 0 ]]; then
-  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p deskfuse-ffi --lib --target "$TARGET_TRIPLE" $RELEASE_FLAG
-  "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p deskfuse-engine --bin deskfuse-input-service --target "$TARGET_TRIPLE" $RELEASE_FLAG
-  cargo run --locked -p deskfuse-ffi --bin deskfuse-bindgen -- generate --library "$RUST_OUTPUT/libdeskfuse_ffi.dylib" --language swift --out-dir "$ROOT_DIR/apps/deskfuse-macos/Generated"
-  copy_if_changed apps/deskfuse-macos/Generated/DeskFuseEngine.swift apps/deskfuse-macos/Sources/DeskFuseEngine/DeskFuseEngine.swift
-  copy_if_changed apps/deskfuse-macos/Generated/DeskFuseEngineFFI.h apps/deskfuse-macos/Sources/DeskFuseEngineFFI/DeskFuseEngineFFI.h
-  copy_if_changed apps/deskfuse-macos/Generated/DeskFuseEngineFFI.modulemap apps/deskfuse-macos/Sources/DeskFuseEngineFFI/module.modulemap
-  printf '%s\n' "$RUST_FINGERPRINT" > "$FINGERPRINT_FILE"
-fi
-write_build_identity "$RUST_OUTPUT/build-id"
 
 # Swift 指纹覆盖源码、绑定和静态库内容。构建号变化不在其中。
 SWIFT_VERSION="$(swift --version | awk 'NR==1 { print; exit }')"
@@ -161,7 +98,7 @@ PY
 )"
 SWIFT_FINGERPRINT_FILE="$SDK_DIR/.swift-fingerprint-$TARGET_TRIPLE-$CONFIGURATION"
 SWIFT_BIN_PATH_FILE="$SDK_DIR/.swift-bin-path-$TARGET_TRIPLE-$CONFIGURATION"
-DESTINATION="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/native-macos/$CONFIGURATION"
+DESTINATION="$TARGET_DIR/native-macos/$CONFIGURATION"
 mkdir -p "$DESTINATION"
 METADATA_ACTIONS="$DESTINATION/Metadata.appintents/extract.actionsdata"
 SKIP_SWIFT=0

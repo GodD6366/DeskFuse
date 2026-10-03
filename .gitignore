@@ -67,6 +67,7 @@ identity.key
 /apps/deskfuse-macos/SDK/.swift-fingerprint-*
 /apps/deskfuse-macos/SDK/.swift-bin-path-*
 /apps/deskfuse-macos/SDK/.helpers-fingerprint-*
+/apps/deskfuse-macos/SDK/.swift-bindings-fingerprint.json
 
 # Historical development plans remain local; active contracts stay in docs/.
 /docs/INPUT_DATAGRAM_PLAN.md

@@ -19,7 +19,8 @@ source "$ROOT_DIR/scripts/codesign-identity.sh"
 "$ROOT_DIR/scripts/generate-assets.sh"
 "$ROOT_DIR/scripts/build-native-macos.sh" debug
 
-BUILD_BINARY="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/native-macos/debug/$BINARY_NAME"
+TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+BUILD_BINARY="$TARGET_DIR/native-macos/debug/$BINARY_NAME"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_BINARY" "$APP_BINARY"
