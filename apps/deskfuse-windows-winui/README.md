@@ -11,6 +11,8 @@
 - 认证命名管道客户端 `ServiceClient` 已完整移植：`DispatcherQueue` 取代 WPF `Dispatcher`（新增 `DispatcherQueueExtensions.EnqueueAsync`），服务 PID 核对、SCM 启动探测、请求/响应帧校验与错误映射保持不变。
 - exe 清单使用 `app.store.manifest`（`asInvoker`、无 uiAccess），与 MSIX/Store 变体一致。
 
+已实测：在解锁的 console 会话上，本工程编译产物直接启动并与真实 `DeskFuseService` 完成认证 IPC（界面显示"服务运行中"，本机名与服务版本来自快照）。锁屏或非 console 会话下服务按设计返回 `session_unavailable`，与 WPF 客户端、PowerShell 探针行为一致。
+
 尚未接入（WPF 版本仍提供）：
 
 - 剪贴板历史/预览/恢复、暂存区、设置、设备列表与配对、传输队列、工作流编辑。

@@ -60,7 +60,7 @@ MSIX Version = <产品 Major>.<产品 Minor>.<release.json build_number>.0
 3. **文案与合规**：应用说明（zh-CN/en-US）、隐私政策 URL、支持联系方式、年龄分级问卷、类别、版权信息。
 4. **能力说明**：`runFullTrust` 需在提交时说明理由（本地剪贴板、OLE、命名管道、窗口子类化、无 UWP 替代）；`privateNetworkClientServer`/`internetClient` 用于局域网发现与 QUIC 传输。
 5. **认证风险自查**：客户端的核心功能依赖机器上单独安装的服务。提交说明必须写清楚，或按第 5 节改造。
-6. **签名**：Store 由微软签名；本地/CI 测试用 `-SigningPfx`（自签证书需导入受信任存储才能安装测试）。
+6. **签名**：Store 由微软签名；本地/CI 测试用 `-SigningPfx`。清单 `Publisher` 必须与签名证书 `Subject` 完全一致（Store 证书的 Subject 就是保留身份的 Publisher）。`package-windows-store.ps1` 已在 publish 前校验，不一致时直接给出可执行的报错，不再落到 SignTool 的 `0x8007000b`。
 
 ## 4. 与 Store 模型的硬性冲突（清单）
 
@@ -89,13 +89,14 @@ MSIX Version = <产品 Major>.<产品 Minor>.<release.json build_number>.0
 已验证：
 
 - `scripts/generate-store-assets.ps1` 生成 7 个 PNG 与 `store-assets.json`。
-- `scripts/package-windows-store.ps1` 完整跑通：publish → MakeAppx pack 成功 → `.msix` + `.sha256` + `.store.json`。
-- AppxManifest 通过 MakeAppx 的 schema 校验（此前修正了 `windows.appExecutionAlias` 命名空间与 `uap10:TrustLevel/RuntimeBehavior` 的写法）。
+- `scripts/package-windows-store.ps1` 完整跑通：publish → MakeAppx pack 成功 → `signtool` 签名成功 → `.msix` + `.sha256` + `.store.json`。
+- AppxManifest 通过 MakeAppx 的 schema 校验（修正了 `windows.appExecutionAlias` 命名空间与 `uap10:TrustLevel/RuntimeBehavior` 的写法）。
+- 签名证书 Subject 与清单 Publisher 不一致时，脚本在前置校验阶段即失败并给出修正参数（负向用例实测）。
+- **实测安装与运行**：测试签名后的 MSIX 经 `Add-AppxPackage` 注册为 `DeskFuse.Desktop_0.4.64.0_x64__1fq7k4d2z8axe`，从 `C:\Program Files\WindowsApps\...` 启动成功；打包版 full-trust 客户端与 LocalSystem 服务的认证命名管道 IPC 正常（界面显示"服务运行中"，剪贴板历史与预览可用）。验证后已 `Remove-AppxPackage` 清理，未改变常规安装。
 
 未验证（不得表述为已通过）：
 
-- MSIX 未安装、未启动客户端；未做 Store 提交。
-- WACK（`appcert.exe`）未运行。
-- 未使用真实 Partner Center Identity/Publisher，未做 Store 签名。
-- WinUI 3 迁移尚未完成，当前打包对象仍是 WPF 客户端（迁移完成后同一打包脚本可直接复用）。
-- 打包后的客户端与服务的管道 ACL、开机自启、防火墙策略在 MSIX 环境下均未实测。
+- WACK（`appcert.exe`）未运行；未做 Store 提交；未使用真实 Partner Center Identity/Publisher，未做 Store 签名。
+- 未在 Windows 10 1809/21H2 等 `TargetPlatformMinVersion` 边界系统上安装验证。
+- WinUI 3 迁移尚未完成，上述打包与安装验证使用的是 WPF 客户端；迁移完成后同一打包脚本可直接复用（需以 `-ClientProject` 指向 WinUI 工程）。
+- 打包版客户端的开机自启、防火墙策略、多用户/多会话行为均未实测。

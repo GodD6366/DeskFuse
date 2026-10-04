@@ -62,8 +62,7 @@ if ($versionParts.Count -ne 4 -or ($versionParts | Where-Object { $_ -notmatch '
 if ($versionParts[3] -ne '0') { throw 'Microsoft Store submissions require Revision 0' }
 foreach ($part in $versionParts) { if ([int]$part -gt 65535) { throw "MSIX version component exceeds 65535: $Version" } }
 
-function Find-SdkTool([string]$Name) {
-    $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin")
+function Find-SdkTool([string]$Name) {    $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin")
     $found = foreach ($root in $roots) {
         if (Test-Path -LiteralPath $root) {
             Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
@@ -78,6 +77,16 @@ function Find-SdkTool([string]$Name) {
 }
 $makeAppx = Find-SdkTool 'makeappx.exe'
 $signTool = Find-SdkTool 'signtool.exe'
+# MSIX signing requires the certificate Subject to exactly match the manifest
+# Publisher; otherwise SignTool fails with the opaque 0x8007000b. Fail before the
+# publish/pack work instead of after it.
+if ($SigningPfx) {
+    if (!(Test-Path -LiteralPath $SigningPfx -PathType Leaf)) { throw "Signing certificate not found: $SigningPfx" }
+    $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($SigningPfx, $SigningPassword)
+    if ($certificate.Subject -ne $Publisher) {
+        throw "MSIX Publisher must equal the signing certificate Subject. Publisher='$Publisher' certificate='$($certificate.Subject)'. Re-run with -Publisher '$($certificate.Subject)' (or use the certificate that owns the reserved identity)."
+    }
+}
 
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('deskfuse-store-package-' + [guid]::NewGuid().ToString('N'))
 $layout = Join-Path $stage 'layout'
