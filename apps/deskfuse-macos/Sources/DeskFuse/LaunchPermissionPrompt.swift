@@ -4,7 +4,7 @@ import SwiftUI
 import PermissionFlow
 import PermissionFlowScreenRecordingStatus
 
-/// The three system permissions highlighted during launch. The order matches
+/// System permissions highlighted during launch. The order matches
 /// the launch prompt and the settings permissions page.
 enum LaunchPermission: String, CaseIterable, Identifiable {
     case accessibility
@@ -53,8 +53,8 @@ enum LaunchPermission: String, CaseIterable, Identifiable {
     }
 }
 
-/// Owns the once-per-launch permission prompt. Status comes from
-/// PermissionFlow's official-API providers, so probing never triggers a
+/// Owns the once-per-launch permission prompt. Status comes from public macOS
+/// APIs (PermissionFlow providers and CoreLocation), so probing never triggers a
 /// system alert; suppression is per permission and is lifted again once the
 /// grant is in place, so a later revocation brings the prompt back.
 @MainActor
@@ -68,6 +68,9 @@ final class PermissionPromptController {
 
     private var evaluatedThisLaunch = false
     private let authorizationFlow = PermissionFlowController()
+    private let wifiPermission = WifiPermissionAccess.shared
+    var wifiState: WifiPermissionState { wifiPermission.state }
+    func refreshWifiPermission() { wifiPermission.refresh() }
     private var authorizationTask: Task<Void, Never>?
     private let defaults: UserDefaults
     private(set) var suppressedPermissions: Set<LaunchPermission>
@@ -85,6 +88,7 @@ final class PermissionPromptController {
     /// already-granted or fully suppressed launches stay silent.
     func evaluateAtLaunch() {
         PermissionFlowScreenRecordingStatus.register()
+        refreshWifiPermission()
         guard !evaluatedThisLaunch else { return }
         evaluatedThisLaunch = true
         liftSuppressionForGranted()
@@ -95,6 +99,7 @@ final class PermissionPromptController {
     /// Called when the app regains focus while the prompt is visible: grants
     /// made in System Settings collapse the list, and an empty list closes it.
     func reevaluateWhilePresented() {
+        refreshWifiPermission()
         guard presented != nil else { return }
         liftSuppressionForGranted()
         let pending = pendingPermissions()
@@ -102,25 +107,15 @@ final class PermissionPromptController {
     }
 
     func authorize(_ permission: LaunchPermission) {
-        hasOpenedAuthorization = true
+        let wasGranted = isGranted(permission)
+        if permission != .wifi { hasOpenedAuthorization = true }
         authorizationTask?.cancel()
-        if permission == .wifi {
-            WifiPermission.request()
-            authorizationTask = Task { @MainActor [weak self] in
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                    guard let self, self.isGranted(.wifi) else { continue }
-                    self.reevaluateWhilePresented()
-                    AppStore.shared.send(.refreshPermissions)
-                    AppStore.shared.openMain()
-                    return
-                }
-            }
-            return
-        }
-        guard let pane = permission.pane else { return }
-        authorizationFlow.setLocaleIdentifier("zh-Hans")
-        authorizationFlow.authorize(pane: pane, suggestedAppURLs: [Bundle.main.bundleURL])
+        authorizationFlow.closePanel()
+        if let pane = permission.pane {
+            authorizationFlow.setLocaleIdentifier("zh-Hans")
+            authorizationFlow.authorize(pane: pane, suggestedAppURLs: [Bundle.main.bundleURL])
+        } else { wifiPermission.authorize() }
+        guard !wasGranted else { return }
         authorizationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -206,15 +201,13 @@ final class PermissionPromptController {
     }
 
     private func isGranted(_ permission: LaunchPermission) -> Bool {
-        if permission == .wifi { return WifiPermission.isGranted }
-        guard let pane = permission.pane else { return false }
+        guard let pane = permission.pane else { return wifiState == .granted }
         return PermissionStatusRegistry.provider(for: pane).authorizationState() == .granted
     }
 }
 
-/// Launch-time permission prompt. Each row authorizes through
-/// PermissionFlow, which opens the matching System Settings pane together
-/// with the floating drag-to-authorize panel.
+/// Launch-time permission prompt. Privacy-list grants use PermissionFlow's
+/// floating authorization panel; Wi-Fi uses the native Location prompt.
 struct PermissionPromptView: View {
     @Bindable var controller: PermissionPromptController
     @State private var doNotRemind = false

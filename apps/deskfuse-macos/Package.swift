@@ -49,10 +49,13 @@ let applicationLinkerSettings: [LinkerSetting] = [
 ]
 
 let deskfuseTargets: [Target] = [
+    .target(name: "DeskFuseVirtualDisplay", path: "RemoteApplication/Sources/DeskFuseVirtualDisplay",
+        cSettings: [.unsafeFlags(["-fobjc-arc"])],
+        linkerSettings: [.linkedFramework("CoreGraphics")]),
     .systemLibrary(name: "CDeskFuseRdp", path: "RemoteApplication/Vendor/FreeRDP"),
     .target(
         name: "DeskFuseRemoteApplication",
-        dependencies: ["CDeskFuseRdp"],
+        dependencies: ["CDeskFuseRdp", "DeskFuseVirtualDisplay"],
         path: "RemoteApplication/Sources/DeskFuseRemoteApplication",
         exclude: ["RemoteTransport.swift", "RemoteTLSIdentity.swift", "RdpBridge"],
         linkerSettings: remoteApplicationLinkerSettings
@@ -69,6 +72,7 @@ let deskfuseTargets: [Target] = [
         dependencies: applicationDependencies,
         linkerSettings: applicationLinkerSettings
     ),
+    .testTarget(name: "DeskFuseTests", dependencies: ["DeskFuse", "DeskFuseEngine"], path: "Tests/DeskFuseTests"),
 ]
 
 let package = Package(
@@ -79,4 +83,5 @@ let package = Package(
         .package(url: "https://github.com/jaywcjlove/PermissionFlow.git", from: "2.11.2"),
     ],
     targets: deskfuseTargets
+
 )

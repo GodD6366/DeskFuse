@@ -15,24 +15,21 @@ struct DisplayLayout: View {
     @State private var dragging: String?
     @State private var delta: CGSize = .zero
     @State private var dragDisplays: [Display] = []
-    @State private var dragScale: CGFloat = 1
     @State private var hoveredDisplay: String?
+    @State private var dragViewport: DisplayLayoutViewport?
+    @State private var pendingMove: UUID?
+    @State private var snapped = false
+    // The coordinate space belongs to the stationary canvas, never a moving tile.
+    static let canvasSpace = "DeskFuse.DisplayLayout.canvas"
+    static var moveGesture: DragGesture { DragGesture(minimumDistance: 4, coordinateSpace: .named(canvasSpace)) }
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geometry in
             let displays = dragging == nil ? snapshot.input.displays.sorted { $0.layoutID < $1.layoutID } : dragDisplays
-            let minX = displays.map(\.x).min() ?? 0
-            let minY = displays.map(\.y).min() ?? 0
-            let maxX = displays.map { $0.x + $0.width }.max() ?? 1
-            let maxY = displays.map { $0.y + $0.height }.max() ?? 1
-            let scale = max(0.001, min(
-                (geometry.size.width - 64) / max(1, maxX - minX),
-                (geometry.size.height - 64) / max(1, maxY - minY)
-            ) * 0.9)
-            let offsetX = (geometry.size.width - (maxX - minX) * scale) / 2
-            let offsetY = (geometry.size.height - (maxY - minY) * scale) / 2
+            let viewport = dragViewport ?? DisplayLayoutViewport(displays: displays, size: geometry.size)
+            let scale = viewport.scale
 
             ZStack(alignment: .topLeading) {
                 Color(nsColor: .controlBackgroundColor)
@@ -58,6 +55,7 @@ struct DisplayLayout: View {
                     let outline = DisplayPalette.color(for: display.deviceId, displays: displays)
                     let reconnecting = isReconnecting(display.deviceId)
                     let canReconnect = showsReconnect(for: display)
+                    let position = viewport.position(of: display, translation: dragging == display.deviceId ? delta : .zero)
                     ZStack {
                         DisplayWallpaperView(display: display, localWallpaper: store.localDisplayWallpapers[display.id],
                             outline: outline, size: CGSize(
@@ -72,30 +70,32 @@ struct DisplayLayout: View {
                                     ))
                             }
                             .contentShape(Rectangle())
-                            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("displayLayoutCanvas"))
+                            .gesture(Self.moveGesture
                                 .onChanged { value in
-                                    guard !editingDisabled else { return }
+                                    guard !editingDisabled, pendingMove == nil else { return }
                                     if dragging == nil {
                                         dragDisplays = displays
-                                        dragScale = scale
+                                        dragViewport = viewport
                                         dragging = display.deviceId
                                     }
                                     guard dragging == display.deviceId else { return }
-                                    delta = value.translation
+                                    updateDrag(value.translation, device: display.deviceId, attach: false)
                                 }
                                 .onEnded { value in
-                                    guard dragging == display.deviceId else { return }
-                                    defer {
-                                        dragging = nil
-                                        dragDisplays = []
-                                        delta = .zero
-                                    }
-                                    guard !editingDisabled else { return }
-                                    if let offset = snappedDrop(value.translation, device: display.deviceId),
-                                       let anchor = dragDisplays.first(where: { $0.layoutID == display.layoutID }) {
-                                        store.send(.moveInputDevice(deviceId: display.deviceId, displayId: display.id,
-                                            x: anchor.x + offset.x, y: anchor.y + offset.y))
-                                    }
+                                    guard dragging == display.deviceId, pendingMove == nil else { return }
+                                    guard !editingDisabled,
+                                          updateDrag(value.translation, device: display.deviceId, attach: true),
+                                          let anchor = dragDisplays.first(where: { $0.layoutID == display.layoutID }),
+                                          let dragViewport else { resetDrag(); return }
+                                    let movement = dragViewport.logicalTranslation(delta)
+                                    let token = UUID()
+                                    pendingMove = token
+                                    store.send(.moveInputDevice(deviceId: display.deviceId, displayId: display.id,
+                                        x: anchor.x + movement.width, y: anchor.y + movement.height), failed: { _ in
+                                            guard pendingMove == token else { return }
+                                            resetDrag()
+                                        })
+                                    confirmMove(using: snapshot.input.displays)
                                 })
                         if hoveredDisplay == display.layoutID && dragging == nil {
                             VStack(alignment: .leading, spacing: 3) {
@@ -126,10 +126,7 @@ struct DisplayLayout: View {
                     }
                     .frame(width: display.width * scale, height: display.height * scale)
                     .clipShape(RoundedRectangle(cornerRadius: 2))
-                    .offset(
-                        x: offsetX + (display.x - minX) * scale + (dragging == display.deviceId ? delta.width : 0),
-                        y: offsetY + (display.y - minY) * scale + (dragging == display.deviceId ? delta.height : 0)
-                    )
+                    .offset(x: position.x, y: position.y)
                     .onHover { inside in
                         if inside { hoveredDisplay = display.layoutID }
                         else if hoveredDisplay == display.layoutID { hoveredDisplay = nil }
@@ -148,21 +145,48 @@ struct DisplayLayout: View {
                             }
                         }
                     }
+                    .help(screenHelp(display, reconnecting: reconnecting))
                     .accessibilityElement(children: canReconnect ? .contain : .ignore)
                     .accessibilityLabel("屏幕 \(index + 1)，\(display.name)，\(display.layoutSizeLabel)，\(display.ready ? "已就绪" : "未就绪")")
                     .accessibilityHint(canReconnect ? "未正式连接。可重新连接并通知对端准备键鼠共享。" : "")
                 }
             }
-            .coordinateSpace(name: "displayLayoutCanvas")
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .coordinateSpace(name: Self.canvasSpace)
+            .transaction { transaction in
+                if dragging != nil { transaction.animation = nil; transaction.disablesAnimations = true }
+            }
             .overlay(alignment: .topLeading) {
                 if dragging != nil {
-                    Label("松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
+                    Label(pendingMove != nil ? "正在保存布局…" : snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
                         .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                         .allowsHitTesting(false)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.5)))
+        }
+        .onChange(of: snapshot.input.displays) { _, displays in confirmMove(using: displays) }
+        .onDisappear { resetDrag() }
+        .task(id: pendingMove) {
+            guard let token = pendingMove else { return }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            guard pendingMove == token else { return }
+            resetDrag()
+            store.error = "屏幕布局更新尚未确认，请重试"
+        }
+    }
+
+    private func resetDrag() {
+        dragging = nil; dragDisplays = []; dragViewport = nil
+        delta = .zero; snapped = false; pendingMove = nil
+    }
+
+    private func confirmMove(using displays: [Display]) {
+        guard pendingMove != nil, let dragging, let dragViewport else { return }
+        if DisplayLayoutConfirmation.matches(before: dragDisplays, after: displays, deviceID: dragging,
+            translation: dragViewport.logicalTranslation(delta)) {
+            resetDrag()
         }
     }
 
@@ -177,15 +201,32 @@ struct DisplayLayout: View {
             || snapshot.devices.contains { $0.id == id && $0.detail.contains("正在连接") }
     }
 
-    private func snappedDrop(_ translation: CGSize, device: String) -> (x: Double, y: Double)? {
+    private func screenHelp(_ display: Display, reconnecting: Bool) -> String {
+        let status: String
+        if display.ready {
+            status = "已就绪"
+        } else if reconnecting {
+            status = "正在重新连接"
+        } else {
+            status = "未就绪，可点中间的重连按钮通知对端准备连接"
+        }
+        return "\(display.name)\(display.local ? " · 本机" : "") · \(status)\n拖动自动吸附边缘；同一设备的屏幕整体移动，松手贴合相邻屏幕。"
+    }
+
+    @discardableResult
+    private func updateDrag(_ translation: CGSize, device: String, attach: Bool) -> Bool {
+        guard let dragViewport else { return false }
+        let movement = dragViewport.logicalTranslation(translation)
         do {
             let offset = try previewDisplayMove(displays: dragDisplays, deviceId: device,
-                deltaX: translation.width / dragScale, deltaY: translation.height / dragScale,
-                snapDistance: 0, attach: true)
-            return (offset.x, offset.y)
+                deltaX: movement.width, deltaY: movement.height,
+                snapDistance: 14 / dragViewport.scale, attach: attach)
+            delta = CGSize(width: offset.x * dragViewport.scale, height: offset.y * dragViewport.scale)
+            snapped = abs(delta.width - translation.width) > 0.1 || abs(delta.height - translation.height) > 0.1
+            return true
         } catch {
             store.error = error.userFacingMessage
-            return nil
+            return false
         }
     }
 

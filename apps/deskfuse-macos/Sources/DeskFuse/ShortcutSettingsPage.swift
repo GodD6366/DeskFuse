@@ -5,7 +5,7 @@ struct ShortcutSettingsPage: View {
     @Bindable var store: AppStore
     let manageWorkflows: () -> Void
     let configureInput: () -> Void
-    private let directions = ["向左切换", "向右切换", "向上切换", "向下切换", "锁定当前设备"]
+    private let directions = ShortcutEditor.titles
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,14 +21,14 @@ struct ShortcutSettingsPage: View {
                 WorkflowShortcutSettings(store: store, manageWorkflows: manageWorkflows)
                 Section {
                     if let input = store.snapshot?.input {
-                        ForEach(Array(input.settings.shortcuts.prefix(5).enumerated()), id: \.offset) { index, shortcut in
+                        ForEach(Array(input.settings.shortcuts.prefix(6).enumerated()), id: \.offset) { index, shortcut in
                             HStack {
                                 Text(directions[index])
                                 Spacer()
                                 ShortcutKeycaps(shortcut: shortcut)
                             }.padding(.vertical, 3)
                         }
-                        if input.canConfigure {
+                        if !input.managed {
                             Button("编辑键鼠快捷键…", action: configureInput)
                         } else {
                             Text(input.summary).font(.caption).foregroundStyle(.secondary)
@@ -42,7 +42,7 @@ struct ShortcutSettingsPage: View {
                 } header: { Label("键鼠控制", systemImage: "computermouse") }
                   footer: { Text("方向切换与锁定遵循键鼠共享状态；显示组合键不代表当前可用。") }
                 Section {
-                    fixedRow("紧急收回", detail: "立即收回键鼠控制", key: 53, modifiers: 0x1c0000)
+                    fixedRow("紧急收回（保底）", detail: "自定义按键之外，此组合始终可用", key: 53, modifiers: 0x1c0000)
                     fixedRow("文件暂存区", detail: "打开或收起暂存区", key: 2, modifiers: 0x120000)
                 } header: { Label("固定快捷键", systemImage: "lock") }
                   footer: { Text("这些组合键由 DeskFuse 保留，不能分配给工作流。") }

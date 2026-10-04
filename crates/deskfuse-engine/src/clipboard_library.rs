@@ -303,31 +303,29 @@ END;").map_err(err)?;
             )
             .optional()
             .map_err(err)?;
-        let fts_rows: i64 = db
-            .query_row("SELECT COUNT(*) FROM cl_items_fts", [], |row| row.get(0))
-            .map_err(err)?;
-        let item_rows: i64 = db
-            .query_row("SELECT COUNT(*) FROM cl_items", [], |row| row.get(0))
-            .map_err(err)?;
-        if search_index_version.as_deref() != Some("1") || fts_rows != item_rows {
+        // External-content FTS COUNT(*) reads cl_items, not the index. It
+        // cannot detect index corruption and needlessly scans history at launch.
+        if search_index_version.as_deref() != Some("1") {
+            let tx = db.transaction().map_err(err)?;
             // Build the denormalized search document once. The FTS table stores
             // only its on-disk index; row payloads and OCR are never retained in
             // the Rust process while querying.
-            db.execute(
+            tx.execute(
                 "UPDATE cl_items SET search_index=trim(coalesce(search_text,'') || char(10) || coalesce(title,'') || char(10) || coalesce(ocr_text,'') || char(10) || coalesce(json_extract(summary,'$.preview'),'') || char(10) || coalesce(json_extract(summary,'$.source'),'') )",
                 [],
             )
             .map_err(err)?;
-            db.execute(
+            tx.execute(
                 "INSERT INTO cl_items_fts(cl_items_fts) VALUES('rebuild')",
                 [],
             )
             .map_err(err)?;
-            db.execute(
+            tx.execute(
                 "INSERT INTO cl_meta(key,value) VALUES('search_index_v1','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 [],
             )
             .map_err(err)?;
+            tx.commit().map_err(err)?;
         }
         db.execute_batch(QUERY_INDEXES).map_err(err)?;
         let this = Self {
@@ -764,8 +762,10 @@ END;").map_err(err)?;
         if !self.settings()?.sync_index {
             return Ok(());
         }
-        let db = self.db.lock().map_err(err)?;
-        reconcile_index_db(&db)
+        let mut db = self.db.lock().map_err(err)?;
+        let tx = db.transaction().map_err(err)?;
+        reconcile_index_db(&tx)?;
+        tx.commit().map_err(err)
     }
 
     pub fn snapshot(&self, id: u64) -> Result<PasteboardSnapshot> {
@@ -2083,7 +2083,7 @@ fn materialize_index(db: &Connection, v: &Value, author: &str) -> Result<()> {
         if ordinary {
             s.id = id as u64;
             db.execute(
-                "UPDATE cl_items SET summary=?1,title=?2,ocr_text=?3,search_text=?4,blob_hash=?5,digest=?6,copied=?7 WHERE id=?8",
+                "UPDATE cl_items SET summary=?1,title=?2,ocr_text=?3,search_text=?4,blob_hash=?5,digest=?6,copied=?7 WHERE id=?8 AND (summary IS NOT ?1 OR title IS NOT ?2 OR ocr_text IS NOT ?3 OR search_text IS NOT ?4 OR blob_hash IS NOT ?5 OR digest IS NOT ?6 OR copied IS NOT ?7)",
                 params![
                     serde_json::to_string(&s).map_err(err)?,
                     title,
@@ -2838,6 +2838,44 @@ mod remote_text_tests {
             r.get(0)
         })
         .unwrap()
+    }
+
+    #[test]
+    fn startup_index_reconciliation_skips_unchanged_rows_and_repairs_changes() {
+        let library = Library::open().unwrap();
+        let id = sync_text(
+            &library,
+            "startup-index",
+            "blob-startup",
+            "searchable startup text",
+        );
+        let mut db = library.db.lock().unwrap();
+        // Normalize existing rows once, then a normal reopen must not rewrite
+        // their search index (or cause one disk commit per historical item).
+        reconcile_index_db(&db).unwrap();
+        let before = db.total_changes();
+        reconcile_index_db(&db).unwrap();
+        assert_eq!(db.total_changes(), before);
+        db.execute("UPDATE cl_items SET title='stale' WHERE id=?1", [id])
+            .unwrap();
+        let tx = db.transaction().unwrap();
+        reconcile_index_db(&tx).unwrap();
+        tx.commit().unwrap();
+        let title: Option<String> = db
+            .query_row("SELECT title FROM cl_items WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, None);
+        let hits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM cl_items_fts WHERE cl_items_fts MATCH 'sea'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
+        let before = db.total_changes();
+        reconcile_index_db(&db).unwrap();
+        assert_eq!(db.total_changes(), before);
     }
 
     fn page_row(library: &Library, id: u64) -> Value {

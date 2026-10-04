@@ -15,6 +15,8 @@ pub struct NativeStatus {
     pub remote_application_viewer_paused: bool,
     pub remote_application_lease: Option<String>,
     #[serde(default)]
+    pub remote_application_quiesced: Option<String>,
+    #[serde(default)]
     pub remote_application_request: Option<String>,
     #[serde(default)]
     pub remote_application_error: Option<String>,
@@ -107,7 +109,7 @@ impl ServiceControl {
 /// The updater calls this even when no update is pending.
 pub fn resume_update_pause(pause: &std::sync::atomic::AtomicU8) {
     use std::sync::atomic::Ordering;
-    let _ = pause.fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+    let _ = pause.try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
         matches!(state, 1..=3).then_some(0)
     });
 }

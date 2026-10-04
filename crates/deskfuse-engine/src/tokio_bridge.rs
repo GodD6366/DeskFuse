@@ -1707,9 +1707,9 @@ async fn run_worker(
             }
         }
         WifiTask(tokio::spawn(async move {
-            if runtime.input_service_control().is_some() {
-                return;
-            }
+            // CoreWLAN must run in the app that owns Location authorization,
+            // not the independently signed input helper. The command is routed
+            // to the helper when one is installed.
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;

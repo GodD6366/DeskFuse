@@ -21,10 +21,11 @@ public struct CaptureSurface: Codable, Equatable, Sendable {
     /// Presentation metadata. Input remains normalized to the entire capture.
     public let applicationRect: CGRect?
     public let auxiliaryRects: [CGRect]?
+    public let presentationDisplaySize: CGSize?
 
     public init(identity: SurfaceIdentity, displayID: UInt32, displayFrame: CGRect, contentRect: CGRect,
                 pointPixelScale: Double, sourceHz: Double?, applicationRect: CGRect? = nil,
-                auxiliaryRects: [CGRect]? = nil) throws {
+                auxiliaryRects: [CGRect]? = nil, presentationDisplaySize: CGSize? = nil) throws {
         let values = [displayFrame.minX, displayFrame.minY, displayFrame.width, displayFrame.height,
                       contentRect.minX, contentRect.minY, contentRect.width, contentRect.height, pointPixelScale]
         guard values.allSatisfy(\.isFinite), pointPixelScale > 0, !displayFrame.isEmpty,
@@ -38,13 +39,19 @@ public struct CaptureSurface: Codable, Equatable, Sendable {
             guard [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite),
                   !rect.isEmpty, contentRect.contains(rect) else { throw RemoteApplicationError.invalidGeometry }
         }
+        if let presentationDisplaySize {
+            guard [presentationDisplaySize.width, presentationDisplaySize.height].allSatisfy({ $0.isFinite && $0 > 0 }) else {
+                throw RemoteApplicationError.invalidGeometry
+            }
+        }
+        self.presentationDisplaySize = presentationDisplaySize
         self.applicationRect = applicationRect; self.auxiliaryRects = auxiliaryRects
     }
 
     public func withIdentity(_ identity: SurfaceIdentity) throws -> CaptureSurface {
         try CaptureSurface(identity: identity, displayID: displayID, displayFrame: displayFrame,
             contentRect: contentRect, pointPixelScale: pointPixelScale, sourceHz: sourceHz,
-            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects)
+            applicationRect: applicationRect, auxiliaryRects: auxiliaryRects, presentationDisplaySize: presentationDisplaySize)
     }
 
     /// Layout-only updates may share an identity only while pixel-to-input
@@ -75,6 +82,24 @@ public struct CaptureSurface: Codable, Equatable, Sendable {
         return CGPoint(x: (viewPoint.x - videoRect.minX) / videoRect.width,
                        y: 1 - (viewPoint.y - videoRect.minY) / videoRect.height)
     }
+}
+
+/// Serializes capture reconfiguration with a control handshake. A handshake
+/// drains an already-running refresh, then blocks new refreshes until it ends.
+/// Finishing an older request must not unlock a newer request.
+public struct CaptureControlInterlock: Sendable {
+    public private(set) var capturing = false
+    public private(set) var request: UUID?
+    public init() {}
+    public mutating func beginCapture() -> Bool {
+        guard !capturing, request == nil else { return false }
+        capturing = true; return true
+    }
+    public mutating func endCapture() { capturing = false }
+    public mutating func beginControl(_ token: UUID) { request = token }
+    public func canControl(_ token: UUID) -> Bool { request == token && !capturing }
+    public mutating func endControl(_ token: UUID) { if request == token { request = nil } }
+    public mutating func cancelControl() { request = nil }
 }
 
 public struct CropTracker: Sendable {
@@ -108,4 +133,24 @@ public struct SurfaceGate: Sendable {
         lastSequence = sequence; return true
     }
     public mutating func revoke() { expected = nil; presented = false; lastSequence = 0 }
+}
+
+/// Window sizing uses logical screen points, never encoded pixels or Retina scale.
+public enum RemotePresentationGeometry {
+    public static func proportionalSize(_ content: CGSize, sourceScreen: CGSize, destinationScreen: CGSize) -> CGSize {
+        guard [content.width, content.height, sourceScreen.width, sourceScreen.height,
+               destinationScreen.width, destinationScreen.height].allSatisfy({ $0.isFinite && $0 > 0 }) else {
+            return content
+        }
+        let scale = min(destinationScreen.width / sourceScreen.width,
+                        destinationScreen.height / sourceScreen.height)
+        return CGSize(width: content.width * scale, height: content.height * scale)
+    }
+}
+
+public enum RemoteControlRecovery {
+    public static func shouldAcquireAfterSurface(paused: Bool, initialRequest: Bool,
+                                                controlling: Bool, resuming: Bool) -> Bool {
+        !paused && (initialRequest || controlling || resuming)
+    }
 }

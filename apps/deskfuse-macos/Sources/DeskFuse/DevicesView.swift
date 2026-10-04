@@ -371,8 +371,9 @@ struct DevicesView: View {
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(.borderless)
-                .disabled(!device.connected)
-                .help(device.connected ? "打开远程应用" : "连接设备后可打开远程应用")
+                .disabled(!device.connected || !snapshot.input.canOperateRemoteApplications)
+                .help(!snapshot.input.canOperateRemoteApplications ? RemoteApplicationManager.viewerRestriction
+                      : device.connected ? "打开远程应用" : "连接设备后可打开远程应用")
                 .accessibilityLabel("打开 \(device.name) 的远程应用")
             }
         }
@@ -422,7 +423,10 @@ struct DevicesView: View {
 
     @ViewBuilder private var applicationPane: some View {
         if #available(macOS 14.2, *) {
-            if let device = snapshot.devices.first(where: { $0.id == selected }) {
+            if !snapshot.input.canOperateRemoteApplications {
+                ContentUnavailableView("当前无法操作远程应用", systemImage: "keyboard",
+                    description: Text(RemoteApplicationManager.viewerRestriction))
+            } else if let device = snapshot.devices.first(where: { $0.id == selected }) {
                 if device.blocked {
                     ContentUnavailableView("设备已阻止", systemImage: "hand.raised",
                         description: Text("在设备页解除阻止并配对后，即可查看应用列表。"))
@@ -542,7 +546,8 @@ struct DevicesView: View {
                     Button("打开远程应用", systemImage: "square.grid.2x2") {
                         RemoteApplicationManager.shared.open(device)
                     }
-                    .disabled(!device.connected)
+                    .disabled(!device.connected || !snapshot.input.canOperateRemoteApplications)
+                    .help(RemoteApplicationManager.viewerRestriction)
                 }
                 Divider()
                 Button("刷新连接", systemImage: "arrow.clockwise") { store.send(.refreshDevices) }

@@ -81,8 +81,9 @@ for relative in ("Package.swift", "Package.resolved", "RemoteApplication/Vendor/
     if path.is_file():
         hasher.update(relative.encode())
         hasher.update(path.read_bytes())
-suffixes = {".swift", ".h", ".modulemap"}
-for folder in ("Host", "Sources", "RemoteApplication/Sources/DeskFuseRemoteApplication"):
+suffixes = {".swift", ".h", ".m", ".modulemap"}
+for folder in ("Host", "Sources", "RemoteApplication/Sources/DeskFuseRemoteApplication",
+               "RemoteApplication/Sources/DeskFuseVirtualDisplay"):
     base = package / folder
     if not base.exists():
         continue

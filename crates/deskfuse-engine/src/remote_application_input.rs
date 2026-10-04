@@ -32,7 +32,9 @@ pub struct Owner {
     received: u64,
     injected: u64,
     pub request: Option<String>,
+    pub quiesced: Option<String>,
     pub error: Option<String>,
+    release_failed: bool,
 }
 impl Owner {
     pub fn new(pause: Arc<AtomicU8>, platform: Arc<dyn EnginePlatformPort>) -> Self {
@@ -48,7 +50,9 @@ impl Owner {
             received: 0,
             injected: 0,
             request: None,
+            quiesced: None,
             error: None,
+            release_failed: false,
         }
     }
     fn allowed(packet: &Packet, authority: &Authority) -> bool {
@@ -111,20 +115,23 @@ impl Owner {
             .as_ref()
             .map(|(p, _, _, _)| format!("{}:{}:{}", p.peer.unwrap(), p.session, p.generation))
     }
-    pub fn release(&mut self) {
+    pub fn release(&mut self) -> bool {
         if self.pending.is_some() || self.active.is_some() {
             self.diagnostic("release");
         }
         self.pending = None;
         self.buffered.clear();
-        if let Some((_, _, _, injector)) = self.active.take() {
-            let _ = injector.release_all();
-        }
+        let released = self
+            .active
+            .take()
+            .is_none_or(|(_, _, _, injector)| injector.release_all().is_ok());
         let _ = self
             .pause
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 matches!(value, 4 | 5).then_some(0)
             });
+        self.release_failed |= !released;
+        !self.release_failed
     }
     pub fn tick(&mut self, authority: &Authority, emergency: bool) {
         if emergency {
@@ -181,6 +188,11 @@ impl Owner {
                 self.release();
                 return;
             }
+            if self.platform.frontmost_pid() != packet.pid {
+                self.diagnostic("foreground_changed");
+                self.release();
+                return;
+            }
             let result = (|| {
                 let id = InputSessionId(uuid::Uuid::parse_str(&packet.session).ok()?);
                 let injector = self.platform.input_injector().ok()?;
@@ -218,7 +230,30 @@ impl Owner {
             self.diagnostic("packet_unauthorized");
             return;
         }
+        if packet.kind == "quiesce" {
+            // A nonce-bound barrier, not an input lease. The UI waits for this
+            // acknowledgement before changing the foreground process. Releases
+            // queued before it have drained on this same service thread.
+            if uuid::Uuid::parse_str(&packet.session).is_err()
+                || self
+                    .active
+                    .as_ref()
+                    .is_some_and(|(p, _, _, _)| p.peer != packet.peer)
+                || self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|(p, _)| p.peer != packet.peer)
+            {
+                return;
+            }
+            self.quiesced = None;
+            if self.release() {
+                self.quiesced = Some(format!("{}:{}", packet.peer.unwrap(), packet.session));
+            }
+            return;
+        }
         if packet.kind == "configure" {
+            self.quiesced = None;
             // A second remote peer never preempts an existing controller.
             if self
                 .active
@@ -291,6 +326,13 @@ impl Owner {
             return;
         };
         if !Self::same(owner, &packet) {
+            return;
+        }
+        // Focus can change between the 50 ms watchdog ticks, especially while
+        // another application's windows are being created or unminimized.
+        if self.platform.frontmost_pid() != owner.pid {
+            self.diagnostic("foreground_changed");
+            self.release();
             return;
         }
         if packet.kind == "heartbeat" {
@@ -373,6 +415,82 @@ mod tests {
             "generation": generation, "pid": 1, "width": 1920, "height": 1080
         }))
         .unwrap()
+    }
+    fn authority(peer: DeviceId) -> Authority {
+        Authority {
+            local: DeviceId::from_bytes([1; 32]),
+            network: Default::default(),
+            peers: vec![PeerSnapshot {
+                id: peer,
+                display_name: "test".into(),
+                public_key: [2; 32],
+                liveness: LivenessState::Online,
+                trust: TrustState::Trusted,
+                connection: ConnectionState::Connected,
+                routes: vec![],
+                selected_route: None,
+            }],
+        }
+    }
+    #[test]
+    fn quiesce_acknowledges_nonce_only_after_pending_input_is_cleared() {
+        let pause = Arc::new(AtomicU8::new(4));
+        let mut owner = Owner::new(pause.clone(), crate::platform::memory_platform());
+        let peer = DeviceId::from_bytes([2; 32]);
+        let mut pending = packet(1);
+        pending.peer = Some(peer);
+        owner.pending = Some((pending.clone(), Instant::now()));
+        owner.buffered.push_back(pending.clone());
+        let mut barrier = pending;
+        barrier.kind = "quiesce".into();
+        barrier.session = uuid::Uuid::new_v4().to_string();
+        owner.receive(barrier.clone(), &authority(peer));
+        assert!(owner.pending.is_none());
+        assert!(owner.buffered.is_empty());
+        assert_eq!(pause.load(Ordering::Acquire), 0);
+        assert_eq!(owner.quiesced, Some(format!("{peer}:{}", barrier.session)));
+        barrier.session = uuid::Uuid::new_v4().to_string();
+        owner.receive(barrier.clone(), &authority(peer));
+        assert_eq!(owner.quiesced, Some(format!("{peer}:{}", barrier.session)));
+    }
+    #[test]
+    fn quiesce_never_preempts_another_peer_or_acknowledges_a_failed_release() {
+        let mut owner = Owner::new(
+            Arc::new(AtomicU8::new(4)),
+            crate::platform::memory_platform(),
+        );
+        let peer = DeviceId::from_bytes([2; 32]);
+        let mut pending = packet(1);
+        pending.peer = Some(DeviceId::from_bytes([3; 32]));
+        owner.pending = Some((pending, Instant::now()));
+        let mut barrier = packet(1);
+        barrier.peer = Some(peer);
+        barrier.kind = "quiesce".into();
+        owner.receive(barrier.clone(), &authority(peer));
+        assert!(owner.pending.is_some());
+        assert!(owner.quiesced.is_none());
+        owner.pending = None;
+        owner.release_failed = true;
+        owner.receive(barrier, &authority(peer));
+        assert!(owner.quiesced.is_none());
+    }
+    #[test]
+    fn quiesce_requires_authority_and_a_valid_nonce() {
+        let mut owner = Owner::new(
+            Arc::new(AtomicU8::new(0)),
+            crate::platform::memory_platform(),
+        );
+        let peer = DeviceId::from_bytes([2; 32]);
+        let mut barrier = packet(1);
+        barrier.peer = Some(peer);
+        barrier.kind = "quiesce".into();
+        let mut denied = authority(peer);
+        denied.network.blocked_peer_ids.push(peer);
+        owner.receive(barrier.clone(), &denied);
+        assert!(owner.quiesced.is_none());
+        barrier.session = "invalid".into();
+        owner.receive(barrier, &authority(peer));
+        assert!(owner.quiesced.is_none());
     }
     #[test]
     fn remote_release_never_unpauses_viewer_or_update() {

@@ -17,10 +17,12 @@ let package = Package(
         .executable(name: "deskfuse-media-probe", targets: ["RemoteMediaProbe"]),
     ],
     targets: [
+        .target(name: "DeskFuseVirtualDisplay", cSettings: [.unsafeFlags(["-fobjc-arc"])],
+            linkerSettings: [.linkedFramework("CoreGraphics")]),
         .systemLibrary(name: "CDeskFuseRdp", path: "Vendor/FreeRDP"),
         .target(
             name: "DeskFuseRemoteApplication",
-            dependencies: ["CDeskFuseRdp"],
+            dependencies: ["CDeskFuseRdp", "DeskFuseVirtualDisplay"],
             exclude: ["RdpBridge"],
             linkerSettings: [
                 .unsafeFlags(["-L", freerdpLibDirectory]),
@@ -35,6 +37,7 @@ let package = Package(
                 .linkedFramework("CoreImage"),
             ]
         ),
+
         .executableTarget(name: "RemoteApplicationSpike", dependencies: ["DeskFuseRemoteApplication"]),
         .executableTarget(name: "RemoteMediaProbe", dependencies: ["DeskFuseRemoteApplication"]),
         .testTarget(name: "RemoteApplicationTests", dependencies: ["DeskFuseRemoteApplication"]),

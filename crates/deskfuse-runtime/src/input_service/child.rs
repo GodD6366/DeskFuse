@@ -133,7 +133,7 @@ impl ChildConnection {
                             // The coordinator may acknowledge 6 -> 7 concurrently.
                             // One atomic update releases either viewer state.
                             let _ =
-                                update.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                                update.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                                     matches!(value, 6 | 7).then_some(0)
                                 });
                         }
@@ -142,7 +142,7 @@ impl ChildConnection {
                                 update.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
                         }
                         b'M' => {
-                            let _ = update.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+                            let _ = update.try_update(Ordering::AcqRel, Ordering::Acquire, |v| {
                                 matches!(v, 0 | 1).then_some(3)
                             });
                         }

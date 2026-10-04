@@ -47,7 +47,23 @@ impl Service {
                 .iter()
                 .any(|p| p.id == peer && p.trust == TrustState::Trusted)
     }
+    pub fn require_viewer_allowed(&self) -> Result<(), String> {
+        if self
+            .runtime
+            .input_snapshot()
+            .can_operate_remote_applications()
+        {
+            return Ok(());
+        }
+        // Releasing the viewer pause is always allowed. Never leave the native
+        // input service paused after a role transition rejects the viewer.
+        if let Some(control) = self.runtime.input_service_control() {
+            let _ = control.signal(b'v');
+        }
+        Err("当前键鼠共享角色不允许操作远程应用，请在主控电脑操作，或结束被控并关闭键鼠共享".into())
+    }
     pub fn open(&self, peer: DeviceId) -> Result<Arc<RemoteSession>, String> {
+        self.require_viewer_allowed()?;
         if !self.authorized(peer) {
             return Err("仅允许连接已配对且未被阻止的设备".into());
         }
@@ -57,8 +73,14 @@ impl Service {
             let result = transport.open_remote_application(peer).await;
             let _ = tx.send(result);
         });
-        rx.recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| "远程应用连接超时".to_string())?
+        let session = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "远程应用连接超时".to_string())??;
+        if let Err(error) = self.require_viewer_allowed() {
+            session.close();
+            return Err(error);
+        }
+        Ok(session)
     }
     pub fn incoming(&self) -> Option<Arc<RemoteSession>> {
         let session = self.transport.take_remote_application()?;
@@ -70,6 +92,9 @@ impl Service {
         }
     }
     pub fn viewer_control(&self, active: bool) -> Result<(), String> {
+        if active {
+            self.require_viewer_allowed()?;
+        }
         let control = self
             .runtime
             .input_service_control()
@@ -81,12 +106,41 @@ impl Service {
         }
     }
     pub fn viewer_ready(&self) -> bool {
+        if self.require_viewer_allowed().is_err() {
+            return false;
+        }
         self.runtime.input_service_control().is_some_and(|control| {
             control
                 .status
                 .lock()
                 .is_ok_and(|s| s.running && s.remote_application_viewer_paused)
         })
+    }
+    /// Runs off the UI thread. A fresh nonce rules out stale status snapshots,
+    /// including an old "no active lease" observed before queued input drains.
+    pub fn prepare_control(&self, peer: DeviceId) -> Result<(), String> {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let packet = serde_json::json!({"kind": "quiesce", "session": nonce, "generation": 0});
+        self.input(peer, &packet.to_string())?;
+        let acknowledgement = format!("{peer}:{nonce}");
+        let control = self
+            .runtime
+            .input_service_control()
+            .ok_or("输入进程不可用")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            if !self.enabled.load(Ordering::Acquire) || !self.authorized(peer) {
+                return Err("远程应用访问授权已失效".into());
+            }
+            if control.status.lock().is_ok_and(|status| {
+                status.running
+                    && status.remote_application_quiesced.as_deref() == Some(&acknowledgement)
+            }) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Err("输入服务未确认旧按键已释放，请更新两端或重新连接后重试".into())
     }
     pub fn control_ready(&self, peer: DeviceId, session: &str, generation: u64) -> bool {
         self.authorized(peer)

@@ -11,6 +11,19 @@ pub struct RemoteApplicationNetworkStats {
 #[derive(uniffi::Object)]
 pub struct RemoteApplicationChannel {
     session: Arc<deskfuse_transport::remote_application::RemoteSession>,
+    /// Incoming hosting is unaffected by the local viewer-role restriction.
+    viewer_service: Option<Arc<deskfuse_engine::remote_application::Service>>,
+}
+impl RemoteApplicationChannel {
+    fn check_viewer_role(&self) -> Result<(), EngineError> {
+        if let Some(service) = &self.viewer_service
+            && let Err(error) = service.require_viewer_allowed()
+        {
+            self.session.close();
+            return Err(failure(error));
+        }
+        Ok(())
+    }
 }
 #[uniffi::export]
 impl RemoteApplicationChannel {
@@ -28,9 +41,11 @@ impl RemoteApplicationChannel {
     }
     /// Compressed packets only. Never a pixel buffer and never a UI snapshot.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), EngineError> {
+        self.check_viewer_role()?;
         self.session.send_blocking(bytes).map_err(failure)
     }
     pub fn receive(&self, wait_ms: u64) -> Result<Option<Vec<u8>>, EngineError> {
+        self.check_viewer_role()?;
         self.session.receive(wait_ms).map_err(failure)
     }
     pub fn close(&self) {
@@ -58,21 +73,22 @@ impl Engine {
         peer_id: String,
     ) -> Result<Arc<RemoteApplicationChannel>, EngineError> {
         self.active()?;
+        let service = service().map_err(failure)?;
         Ok(Arc::new(RemoteApplicationChannel {
-            session: service()
-                .map_err(failure)?
-                .open(device(&peer_id)?)
-                .map_err(failure)?,
+            session: service.open(device(&peer_id)?).map_err(failure)?,
+            viewer_service: Some(service),
         }))
     }
     pub fn take_remote_application(
         &self,
     ) -> Result<Option<Arc<RemoteApplicationChannel>>, EngineError> {
         self.active()?;
-        Ok(service()
-            .map_err(failure)?
-            .incoming()
-            .map(|session| Arc::new(RemoteApplicationChannel { session })))
+        Ok(service().map_err(failure)?.incoming().map(|session| {
+            Arc::new(RemoteApplicationChannel {
+                session,
+                viewer_service: None,
+            })
+        }))
     }
     pub fn remote_application_viewer_control(&self, active: bool) -> Result<(), EngineError> {
         self.active()?;
@@ -84,6 +100,13 @@ impl Engine {
     pub fn remote_application_viewer_ready(&self) -> Result<bool, EngineError> {
         self.active()?;
         Ok(service().map_err(failure)?.viewer_ready())
+    }
+    pub fn remote_application_prepare_control(&self, peer_id: String) -> Result<(), EngineError> {
+        self.active()?;
+        service()
+            .map_err(failure)?
+            .prepare_control(device(&peer_id)?)
+            .map_err(failure)
     }
     pub fn remote_application_control_ready(
         &self,

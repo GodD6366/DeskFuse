@@ -19,9 +19,10 @@ impl HotkeyChord {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotkeyBindings {
-    /// Left, right, up, down, in that order. Emergency reclaim is fixed.
+    /// Left, right, up, down, in that order. The fixed emergency chord remains a fallback.
     pub directional: [HotkeyChord; 4],
     pub lock: HotkeyChord,
+    pub emergency: HotkeyChord,
 }
 impl Default for HotkeyBindings {
     fn default() -> Self {
@@ -34,17 +35,24 @@ impl Default for HotkeyBindings {
                 code: 37,
                 modifiers: SHARING_MODIFIERS,
             },
+            emergency: HotkeyChord {
+                code: 53,
+                modifiers: SHARING_MODIFIERS,
+            },
         }
     }
 }
 impl HotkeyBindings {
     pub fn matches(&self, code: u16, modifiers: u64) -> bool {
-        Self::is_emergency(code, modifiers)
+        self.is_reclaim(code, modifiers)
             || self.lock.matches(code, modifiers)
             || self
                 .directional
                 .iter()
                 .any(|key| key.matches(code, modifiers))
+    }
+    pub fn is_reclaim(&self, code: u16, modifiers: u64) -> bool {
+        Self::is_emergency(code, modifiers) || self.emergency.matches(code, modifiers)
     }
     pub fn is_emergency(code: u16, modifiers: u64) -> bool {
         HotkeyChord {
@@ -302,7 +310,7 @@ impl SharingController {
                 if repeat {
                     return actions;
                 }
-                if HotkeyBindings::is_emergency(code, modifiers) {
+                if self.hotkeys.is_reclaim(code, modifiers) {
                     self.reclaim();
                     self.consumed_keys.insert(code);
                     return vec![SharingAction::Reclaim];
@@ -872,6 +880,51 @@ mod tests {
         assert!(crossed(&motion(&mut c, 99.0, 50.0, 100.0, 0.0, 5)));
         assert_eq!(c.active_display().unwrap().display_id.as_str(), "c");
     }
+    #[test]
+    fn custom_emergency_and_fixed_fallback_reclaim_without_forwarding() {
+        for (code, modifiers) in [(14, 0x0c0000), (53, SHARING_MODIFIERS)] {
+            let mut c = controller(EdgeSwitchMode::Instant);
+            c.set_hotkeys(HotkeyBindings {
+                emergency: HotkeyChord {
+                    code: 14,
+                    modifiers: 0x0c0000,
+                },
+                ..Default::default()
+            });
+            motion(&mut c, 99.0, 50.0, 0.0, 0.0, 0);
+            assert!(c.is_remote());
+            assert_eq!(
+                c.handle_input(
+                    SharedInputEvent::Key {
+                        code,
+                        pressed: true,
+                        modifiers,
+                        repeat: false,
+                    },
+                    Point::default(),
+                    Vector2::default(),
+                    1
+                ),
+                vec![SharingAction::Reclaim]
+            );
+            assert!(!c.is_remote());
+            assert!(
+                c.handle_input(
+                    SharedInputEvent::Key {
+                        code,
+                        pressed: false,
+                        modifiers: 0,
+                        repeat: false,
+                    },
+                    Point::default(),
+                    Vector2::default(),
+                    2
+                )
+                .is_empty()
+            );
+        }
+    }
+
     #[test]
     fn only_chord_escape_reclaims_and_lock_blocks() {
         let mut c = controller(EdgeSwitchMode::Instant);
