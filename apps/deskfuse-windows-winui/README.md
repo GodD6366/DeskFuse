@@ -10,13 +10,16 @@
 - 与 WPF 版一致的应用调色板与导航骨架（剪贴板 / 键鼠共享 / 设备 / 传输 / 工作流），未接入的页面明确标注"迁移中"而不是静默降级。
 - 认证命名管道客户端 `ServiceClient` 已完整移植：`DispatcherQueue` 取代 WPF `Dispatcher`（新增 `DispatcherQueueExtensions.EnqueueAsync`），服务 PID 核对、SCM 启动探测、请求/响应帧校验与错误映射保持不变。
 - exe 清单使用 `app.store.manifest`（`asInvoker`、无 uiAccess），与 MSIX/Store 变体一致。
+- Win32 剪贴板层 `NativeClipboard`（Win32 `AddClipboardFormatListener` + `WindowMessageHook` 子类化；`CF_UNICODETEXT`/`CF_HDROP`/`CF_DIB(V5)`/`HTML Format`/`Rich Text Format`/`PNG` 读写；保留原有的序列号、owner 标记、尺寸上限与回滚语义），PNG 编解码与 DIBV5 回退改用 GDI+。
+- `ClipboardHistory`（含 WinUI 用的 `CreatedLabel`，因为 WinUI 绑定没有 `StringFormat`）、`ClipboardContent`/`ClipboardRepresentation` 模型、`ExplorerOleFileDataObject`（OLE 延迟渲染）。
 
 已实测：在解锁的 console 会话上，本工程编译产物直接启动并与真实 `DeskFuseService` 完成认证 IPC（界面显示"服务运行中"，本机名与服务版本来自快照）。锁屏或非 console 会话下服务按设计返回 `session_unavailable`，与 WPF 客户端、PowerShell 探针行为一致。
 
 尚未接入（WPF 版本仍提供）：
 
-- 剪贴板历史/预览/恢复、暂存区、设置、设备列表与配对、传输队列、工作流编辑。
-- Win32 互操作：全局剪贴板监听与 `CF_HDROP`/OLE 文件数据对象、托盘图标、全局快捷键、多显示器布局。
+- `DesktopClipboardController`（本机捕获/同步/远端应用回执）与剪贴板页交互。
+- 暂存区、设置、设备列表与配对、传输队列、工作流编辑。
+- 托盘图标、全局快捷键、多显示器布局。
 - 单实例与登录自启策略。
 
 ## 互操作替换计划
