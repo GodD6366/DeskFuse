@@ -1,0 +1,63 @@
+﻿{
+    "schema_version":  1,
+    "purpose":  "Microsoft Store / MSIX image assets derived from the existing app mark",
+    "source":  "resources/DeskFuse-icon.svg (Edge headless raster)",
+    "source_sha256":  "a944743cacfbe7ea06c103eb92bc45db6cc02cc998f035861a976dbdcfbe8cc7",
+    "generated_at":  "2026-10-04T16:06:30.7948062Z",
+    "generated_on":  "windows-powershell-system.drawing",
+    "assets":  [
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/StoreLogo.png",
+                       "width":  50,
+                       "height":  50,
+                       "bytes":  2353,
+                       "sha256":  "7360640484af6c32235fd3283abb3a4a6e7071ec7857b40a607582a64a845cbb"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/Square44x44Logo.png",
+                       "width":  44,
+                       "height":  44,
+                       "bytes":  2169,
+                       "sha256":  "9cd931ee058065bf9802aaaca0096faacacfa2ebb5a6fd378c5f6b660ce65e6e"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/Square150x150Logo.png",
+                       "width":  150,
+                       "height":  150,
+                       "bytes":  10546,
+                       "sha256":  "0aa2c7ce8886b3599621313e579cbf97d05d8733e15341e34f07b27829f70550"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/Wide310x150Logo.png",
+                       "width":  310,
+                       "height":  150,
+                       "bytes":  11228,
+                       "sha256":  "c1ac7692e41bd75371b91fdce2b65cfa7d9d61179b0b63e0c01e5bf6e6539586"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/SplashScreen.png",
+                       "width":  620,
+                       "height":  300,
+                       "bytes":  30638,
+                       "sha256":  "4c81455d2071ea386d405364eb28343096aab2e61b055ec1d5fd7ccce877cf26"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/StoreListingLogo-300x300.png",
+                       "width":  300,
+                       "height":  300,
+                       "bytes":  32427,
+                       "sha256":  "92f99d0c24fe7e3cd43a03f8397befd391e21f9396b05d06da3c3650dafbcfdd"
+                   },
+                   {
+                       "path":  "apps/deskfuse-windows/Assets/Square44x44Logo.targetsize-256.png",
+                       "width":  256,
+                       "height":  256,
+                       "bytes":  25474,
+                       "sha256":  "dedaf78326bf790acff86134c8d4db0b562aea2d3e6bb5dfe942b41436059a00"
+                   }
+               ],
+    "notes":  [
+                  "Square tiles and the wide/splash variants keep a transparent background; the artwork already contains the app tile.",
+                  "Regenerate on a machine with resources/generated/DeskFuse-icon-1024.png (macOS asset pipeline) for canonical pixels."
+              ]
+}

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Microsoft Store / MSIX package manifest for the DeskFuse desktop client.
+
+  Identity values are placeholders that MUST be replaced with the Partner Center
+  reservation before submission; scripts/package-windows-store.ps1 rewrites
+  Name/Publisher/Version from its parameters and never submits anything.
+
+  Scope: this package contains the full-trust desktop client only. The machine
+  service (DeskFuseService, LocalSystem) and the uiAccess input helper cannot be
+  delivered by an MSIX/Store package; see docs/WINDOWS_STORE.md.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 rescap">
+
+  <Identity
+    Name="DeskFuse.Desktop"
+    Publisher="CN=DeskFuse Development"
+    Version="0.4.64.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>DeskFuse</DisplayName>
+    <PublisherDisplayName>DeskFuse</PublisherDisplayName>
+    <Description>在设备之间接着用：跨设备剪贴板、文件传输与键鼠共享。</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Capabilities>
+    <!-- Full-trust desktop client: clipboard listener, Explorer OLE data object,
+         named-pipe IPC to the machine service, window subclassing for hotkeys. -->
+    <rescap:Capability Name="runFullTrust" />
+    <!-- LAN discovery (mDNS) and QUIC control/input transport. -->
+    <Capability Name="internetClient" />
+    <Capability Name="privateNetworkClientServer" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="DeskFuse"
+      Executable="DeskFuse.Windows.exe"
+      EntryPoint="Windows.FullTrustApplication"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="packagedClassicApp">
+      <!-- Full-trust classic desktop app: the client needs Win32 clipboard,
+           OLE data objects, named-pipe IPC and window subclassing.
+           TrustLevel/RuntimeBehavior are uap10 attributes (not child elements). -->
+      <uap:VisualElements
+        DisplayName="DeskFuse"
+        Description="在设备之间接着用：跨设备剪贴板、文件传输与键鼠共享。"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#F7FAFD" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>
