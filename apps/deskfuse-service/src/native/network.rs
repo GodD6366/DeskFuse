@@ -86,7 +86,7 @@ impl Network {
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(
-                ServiceRecord::v1(
+                ServiceRecord::v2(
                     identity.device_id(),
                     config.display_name.clone(),
                     control_capabilities,
@@ -118,7 +118,7 @@ impl Network {
             PlatformDiscovery::for_input_service(identity.device_id()).map_err(|_| stage(25))?;
         input_discovery
             .set_advertisement(
-                ServiceRecord::v1(
+                ServiceRecord::v2(
                     identity.device_id(),
                     "DeskFuse Windows",
                     INPUT_CAPABILITIES,

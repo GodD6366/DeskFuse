@@ -395,7 +395,7 @@ public partial class MainWindow : Window
                 if (values.Length != 2 || !ushort.TryParse(values[0], out var key) || !ulong.TryParse(values[1], out var modifiers)) throw new FormatException();
                 shortcuts[names[i]] = new JsonObject { ["key_code"] = key, ["modifiers"] = modifiers };
             }
-            await service.SendAsync("SetInputSharingSettings", new { settings = node });
+            await service.SendAsync(ServiceClient.Command("SetInputSharingSettings", new { settings = node }));
             ShowNotice("快捷键已提交；以输入状态和服务持久化结果为准。");
         }
         catch (FormatException) { ShowNotice("快捷键格式无效，请使用 key code, modifiers，每行一组。"); }
@@ -430,7 +430,7 @@ public partial class MainWindow : Window
         draggingDisplay = null;
         try
         {
-            await service.SendAsync("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x = drag.X, y = drag.Y });
+            await service.SendAsync(ServiceClient.Command("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x = drag.X, y = drag.Y }));
             ShowNotice("布局位置已提交；运行时会进行吸附并持久化。");
         }
         catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。"); }
@@ -609,9 +609,9 @@ public partial class MainWindow : Window
         if (hotkeySource is null) return;
         hotkeySource.RemoveHook(HotkeyWindowProc);
         hotkeySource.AddHook(HotkeyWindowProc);
-        foreach (var id in hotkeys.Keys.ToArray()) UnregisterHotKey(hotkeySource.Handle, id);
+        foreach (var oldId in hotkeys.Keys.ToArray()) UnregisterHotKey(hotkeySource.Handle, oldId);
         hotkeys.Clear();
-        int id = 0x5540;
+        int hotkeyId = 0x5540;
         foreach (var workflow in workflows.Where(w => w.Enabled && w.Shortcut is not null))
         {
             var shortcut = workflow.Shortcut!;
@@ -623,8 +623,8 @@ public partial class MainWindow : Window
             if ((shortcut.Modifiers & 0x40000) != 0) modifiers |= ModControl;
             if ((shortcut.Modifiers & 0x20000) != 0) modifiers |= ModShift;
             if ((shortcut.Modifiers & 0x100000) != 0) modifiers |= ModWin;
-            if (modifiers == 0 || !RegisterHotKey(hotkeySource.Handle, id, modifiers, shortcut.KeyCode)) continue;
-            hotkeys[id++] = workflow;
+            if (modifiers == 0 || !RegisterHotKey(hotkeySource.Handle, hotkeyId, modifiers, shortcut.KeyCode)) continue;
+            hotkeys[hotkeyId++] = workflow;
         }
     }
     private IntPtr HotkeyWindowProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -690,7 +690,7 @@ public partial class MainWindow : Window
             }
             editingWorkflow.Name = WorkflowName.Text.Trim(); editingWorkflow.Enabled = WorkflowEnabled.IsChecked == true; editingWorkflow.Shortcut = shortcut;
             if (editingWorkflow.Steps.Count == 0) editingWorkflow.Steps = [WorkflowStepRecord.Copy()];
-            await service.SendAsync("SaveWorkflow", new { workflow = editingWorkflow });
+            await service.SendAsync(ServiceClient.Command("SaveWorkflow", new { workflow = editingWorkflow }));
             if (!workflows.Contains(editingWorkflow)) workflows.Add(editingWorkflow);
             InstallWorkflowHotkeys();
             WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
@@ -705,7 +705,7 @@ public partial class MainWindow : Window
         if (editingWorkflow is null || !workflows.Contains(editingWorkflow)) return;
         try
         {
-            await service.SendAsync("DeleteWorkflow", new { id = editingWorkflow.Id });
+            await service.SendAsync(ServiceClient.Command("DeleteWorkflow", new { id = editingWorkflow.Id }));
             workflows.Remove(editingWorkflow); editingWorkflow = null; InstallWorkflowHotkeys(); WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows; RenderWorkflowEditor();
         }
         catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流删除失败。"; }

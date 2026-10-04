@@ -425,12 +425,12 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     File.Copy(source, target, overwrite: false);
                 }
-                var copies = roots.Values.ToList();
+                var copiedRoots = roots.Values.ToList();
                 destinations.Remove(id);
-                var content = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
-                native.Write(content);
+                var copiedContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copiedRoots);
+                native.Write(copiedContent);
                 observedNativeSequence = native.SequenceNumber;
-                if (CaptureEnabled) history.Add(content, "local", "本机");
+                if (CaptureEnabled) history.Add(copiedContent, "local", "本机");
                 await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
                 FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
                 return;
@@ -447,10 +447,10 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             destinations.Remove(id);
             // The received copies are installed onto the clipboard so the user
             // can paste them in Explorer immediately, mirroring macOS.
-            var content = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
-            native.Write(content);
+            var flatContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
+            native.Write(flatContent);
             observedNativeSequence = native.SequenceNumber;
-            if (CaptureEnabled) history.Add(content, "local", "本机");
+            if (CaptureEnabled) history.Add(flatContent, "local", "本机");
             await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
             FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
         }

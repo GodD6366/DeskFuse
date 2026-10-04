@@ -62,8 +62,12 @@ public sealed class InputHelperProcess : IDisposable
         {
             var start = new ProcessStartInfo(executable)
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
+                // A medium-integrity process cannot create a uiAccess child with
+                // CreateProcess (Win32 740). Launch through the shell, which
+                // performs the checked UIAccess launch; Hidden keeps the
+                // console-subsystem helper invisible.
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
                 WorkingDirectory = AppContext.BaseDirectory
             };
             start.ArgumentList.Add("--parent");
