@@ -722,107 +722,60 @@ struct PairingRow: View {
     let request: Pairing
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            // Icon container with gradient background
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.accentColor.opacity(0.18),
-                                Color.accentColor.opacity(0.08)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 56, height: 56)
-
-                Image(systemName: "person.crop.circle.badge.plus")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.accentColor, Color.accentColor.opacity(0.8)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            }
-
-            // Content
-            VStack(alignment: .leading, spacing: 6) {
-                Text(request.name)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
+                // Icon container with gradient background
+                ZStack {
                     Circle()
-                        .fill(Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Actions
-            if request.incoming {
-                if store.pairingDecisions.contains(request.id) {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.8)
-                        Text("处理中")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                } else {
-                    HStack(spacing: 10) {
-                        Button {
-                            store.send(.reject(requestId: request.id), pairing: request.id)
-                        } label: {
-                            Text("拒绝")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 9)
-                        }
-                        .buttonStyle(.plain)
-                        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
-                        .clipShape(Capsule())
-                        .contentShape(Capsule())
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
-                        }
-
-                        Button {
-                            store.send(.approve(requestId: request.id), pairing: request.id)
-                        } label: {
-                            Text("允许配对")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 9)
-                        }
-                        .buttonStyle(.plain)
-                        .background(
+                        .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.accentColor,
-                                    Color.accentColor.opacity(0.9)
+                                    Color.accentColor.opacity(0.18),
+                                    Color.accentColor.opacity(0.08)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .clipShape(Capsule())
-                        .contentShape(Capsule())
-                        .shadow(color: Color.accentColor.opacity(0.3), radius: 8, y: 4)
+                        .frame(width: 56, height: 56)
+
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.accentColor, Color.accentColor.opacity(0.8)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+
+                // Content
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(request.name)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
                     }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if request.incoming {
+                HStack {
+                    Spacer(minLength: 0)
+                    pairingActions
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }
@@ -861,5 +814,65 @@ struct PairingRow: View {
         }
         .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+    }
+
+    @ViewBuilder
+    private var pairingActions: some View {
+        if store.pairingDecisions.contains(request.id) {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+                Text("处理中")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        } else {
+            HStack(spacing: 10) {
+                Button {
+                    store.send(.reject(requestId: request.id), pairing: request.id)
+                } label: {
+                    Text("拒绝")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.plain)
+                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
+                }
+
+                Button {
+                    store.send(.approve(requestId: request.id), pairing: request.id)
+                } label: {
+                    Text("允许配对")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    LinearGradient(
+                        colors: [
+                            Color.accentColor,
+                            Color.accentColor.opacity(0.9)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .shadow(color: Color.accentColor.opacity(0.3), radius: 8, y: 4)
+            }
+        }
     }
 }

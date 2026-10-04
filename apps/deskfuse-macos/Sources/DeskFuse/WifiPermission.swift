@@ -1,5 +1,5 @@
+import AppKit
 import CoreLocation
-import DeskFuseEngine
 
 /// macOS requires the Location permission before an app may read the current
 /// Wi-Fi SSID. DeskFuse only reads that name for scene selection; it never
@@ -7,7 +7,13 @@ import DeskFuseEngine
 @MainActor
 enum WifiPermission {
     /// One manager keeps authorization queries cheap; it never starts updates.
-    private static let manager = CLLocationManager()
+    private static let delegate = AuthorizationDelegate()
+    private static let manager: CLLocationManager = {
+        let manager = CLLocationManager()
+        manager.delegate = delegate
+        return manager
+    }()
+    private static var hasRequestedAuthorization = false
 
     private static var authorization: CLAuthorizationStatus { manager.authorizationStatus }
 
@@ -27,9 +33,34 @@ enum WifiPermission {
         }
     }
 
-    /// Not determined shows the system prompt; denied/restricted opens the
-    /// Location Services pane, both through the shared FFI entry point.
+    /// Request only once while undetermined. Repeated clicks must still offer
+    /// a way forward if the system cannot display an authorization prompt.
     static func request() {
-        requestWifiAccess()
+        guard CLLocationManager.locationServicesEnabled(),
+              authorization == .notDetermined,
+              !hasRequestedAuthorization else {
+            openSettings()
+            return
+        }
+        hasRequestedAuthorization = true
+        NSApp.activate(ignoringOtherApps: true)
+        manager.requestWhenInUseAuthorization()
+    }
+
+    static func openSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"),
+              NSWorkspace.shared.open(url) else {
+            AppStore.shared.error = "无法打开定位服务设置，请在系统设置 → 隐私与安全性 → 定位服务中为 DeskFuse 授权。"
+            return
+        }
+    }
+
+    private final class AuthorizationDelegate: NSObject, CLLocationManagerDelegate {
+        func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+            Task { @MainActor in
+                AppStore.shared.permissionPrompt.reevaluateWhilePresented()
+                AppStore.shared.send(.refreshPermissions)
+            }
+        }
     }
 }

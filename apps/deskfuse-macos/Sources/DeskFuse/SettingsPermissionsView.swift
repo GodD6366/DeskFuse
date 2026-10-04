@@ -79,7 +79,7 @@ struct SettingsPermissionsView: View {
                 .frame(width: 120, alignment: .leading)
             Button(wifiGranted ? "查看设置" : "前往授权") {
                 if wifiGranted {
-                    openLocationSettings()
+                    WifiPermission.openSettings()
                 } else {
                     WifiPermission.request()
                 }
@@ -95,11 +95,6 @@ struct SettingsPermissionsView: View {
 
     private func refreshWifiPermission() {
         wifiGranted = WifiPermission.isGranted
-    }
-
-    private func openLocationSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     @available(macOS 14.2, *)
