@@ -2,7 +2,7 @@
 
 `DeskFuse.ico` 复用当前 `resources/generated/DeskFuse-icon-1024.png`，不重新设计图案。ICO 包含 16、20、24、32、40、48、64、128、256 px 九种 PNG/RGBA 表示，保留透明外缘。
 
-- `DeskFuse.Windows.csproj` 的 `ApplicationIcon` 嵌入 EXE 图标，同时将 ICO 编译为 WPF Resource。
+- `DeskFuse.Windows.csproj` 的 `ApplicationIcon` 嵌入 EXE 图标，并作为 WinUI 3 `Content` 随输出复制（托盘与窗口图标从 `Assets/DeskFuse.ico` 读取）。
 - `AppIcon` 提供窗口及系统托盘图标。托盘使用现有彩色标记及浅色底面，不直接使用依赖 macOS template 自动着色的黑色菜单栏图，因此无需猜测 Windows 浅深主题。
 - 安装器可以直接使用本目录的 `DeskFuse.ico`；安装快捷方式也可以使用生成后的 `DeskFuse.Windows.exe` 索引 0。
 - `icons-manifest.json` 记录原 PNG 与 ICO 的 SHA-256 及全部尺寸。

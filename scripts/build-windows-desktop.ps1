@@ -4,7 +4,10 @@ param(
     [string]$ProjectRoot = '',
     [string]$ReleaseMetadata = '',
     [string]$OutputDirectory = '',
-    [switch]$Offline
+    [switch]$Offline,
+    # Only meaningful for a signed, trusted-location build: an unsigned uiAccess
+    # binary is rejected by Windows at launch (Win32 740).
+    [switch]$UiAccess
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -47,16 +50,28 @@ try {
     $env:CARGO_ENCODED_RUSTFLAGS = if ($effectiveFlags.Length) { $effectiveFlags + $separator + $staticCrtFlags } else { $staticCrtFlags }
     $cargoArgs = @('build', '--locked', '--release', '--target', 'x86_64-pc-windows-msvc', '-p', 'deskfuse-service', '--bins')
     if ($Offline) { $cargoArgs += '--offline' }
+    # PowerShell 5.1 turns native stderr output into a terminating error under
+    # ErrorActionPreference=Stop, and cargo/dotnet write progress to stderr.
+    # Relax it for each native call and keep the explicit exit-code checks.
+    $ErrorActionPreference = 'Continue'
     & cargo @cargoArgs
+    $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) { throw 'Service Release build failed' }
     $helperArgs = @('build', '--locked', '--release', '--target', 'x86_64-pc-windows-msvc', '-p', 'deskfuse-update-platform', '--bin', 'deskfuse-update-helper')
     if ($Offline) { $helperArgs += '--offline' }
+    $ErrorActionPreference = 'Continue'
     & cargo @helperArgs
+    $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) { throw 'Windows updater helper build failed' }
     $publishArgs = @('publish', 'apps\deskfuse-windows\DeskFuse.Windows.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $OutputDirectory, '-p:PublishSingleFile=false', '-p:PublishTrimmed=false', "-p:Version=$($release.version)", "-p:FileVersion=$($release.version).$($release.build_number)", "-p:InformationalVersion=$($release.version)+build.$($release.build_number)")
+    # WinUI 3 client: the default manifest is the packaged/Store variant (no
+    # uiAccess) so the unsigned offline payload still launches.
+    $publishArgs += if ($UiAccess) { '-p:ApplicationManifest=app.manifest' } else { '-p:ApplicationManifest=app.store.manifest' }
     # Offline builds require a prior restore of the exact project/runtime on this host.
     if ($Offline) { $publishArgs += '--no-restore' }
+    $ErrorActionPreference = 'Continue'
     & dotnet @publishArgs
+    $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) { throw 'Windows desktop publish failed' }
     foreach ($name in @('deskfuse-service.exe', 'deskfuse-service-client.exe', 'deskfuse-input-helper.exe', 'deskfuse-update-helper.exe')) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "target\x86_64-pc-windows-msvc\release\$name") -Destination $OutputDirectory -Force

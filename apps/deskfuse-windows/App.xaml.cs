@@ -1,96 +1,113 @@
 using System.Diagnostics;
 using System.Security.Principal;
-using System.Windows;
-using Forms = System.Windows.Forms;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 
 namespace DeskFuse.Windows;
 
-public partial class App : System.Windows.Application
+public partial class App : Application
 {
     private Mutex? singleton;
     private EventWaitHandle? activate;
     private CancellationTokenSource? activationStop;
-    private Forms.NotifyIcon? tray;
-    private System.Drawing.Icon? trayIcon;
+    private TrayIcon? tray;
     private ServiceClient? service;
     private DesktopClipboardController? clipboard;
     private InputHelperProcess? inputHelper;
+    private MainWindow? window;
     internal bool Exiting { get; private set; }
 
-    protected override void OnStartup(StartupEventArgs e)
+    public App() => InitializeComponent();
+
+    protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        base.OnStartup(e);
+        base.OnLaunched(args);
         string user = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;
         string instance = $"Local\\DeskFuse.Windows.{user}.{Process.GetCurrentProcess().SessionId}";
         singleton = new Mutex(true, instance, out bool first);
         activate = new EventWaitHandle(false, EventResetMode.AutoReset, instance + ".Activate");
-        if (!first) { activate.Set(); Shutdown(); return; }
-        AppIcon.InstallWindowDefaults();
-        service = new ServiceClient(Dispatcher);
-        clipboard = new DesktopClipboardController(service);
-        var window = new MainWindow(service, clipboard) { Icon = AppIcon.WindowIcon };
-        MainWindow = window;
-        window.SourceInitialized += (_, _) => clipboard.Start(window);
-        window.Show();
-        var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("打开 DeskFuse", null, (_, _) => Dispatcher.Invoke(ShowMain));
-        var recent = new Forms.ToolStripMenuItem("最近剪贴板");
-        menu.Items.Add(recent);
-        menu.Opening += (_, _) => Dispatcher.Invoke(() =>
+        if (!first)
         {
-            recent.DropDownItems.Clear();
-            var entries = clipboard.Entries.Take(20).ToArray();
-            if (entries.Length == 0) recent.DropDownItems.Add(new Forms.ToolStripMenuItem("还没有剪贴板记录") { Enabled = false });
-            foreach (var entry in entries)
-            {
-                string title = entry.Title.Replace('\r', ' ').Replace('\n', ' ');
-                if (title.Length > 42) title = title[..42] + "…";
-                var item = new Forms.ToolStripMenuItem($"{title}  ·  {entry.SourceName}");
-                item.Click += (_, _) => Dispatcher.Invoke(() =>
-                {
-                    try { clipboard.Restore(entry); }
-                    catch (Exception) { tray?.ShowBalloonTip(4000, "DeskFuse", "无法恢复剪贴板。请检查源文件、当前会话或剪贴板占用。", Forms.ToolTipIcon.Warning); }
-                });
-                recent.DropDownItems.Add(item);
-            }
-        });
-        menu.Items.Add("暂存区", null, (_, _) => Dispatcher.Invoke(() => clipboard.ShowShelf()));
-        menu.Items.Add("设置", null, (_, _) => Dispatcher.Invoke(window.ShowSettings));
-        menu.Items.Add("反馈问题…", null, (_, _) => Dispatcher.Invoke(() => SupportLinks.ReportProblem(service.LatestSnapshot)));
-        menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("退出 DeskFuse", null, (_, _) => Dispatcher.Invoke(ExitApp));
-        trayIcon = AppIcon.CreateTrayIcon();
-        tray = new Forms.NotifyIcon { Text = "DeskFuse", Icon = trayIcon, Visible = true, ContextMenuStrip = menu };
-        tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowMain);
+            activate.Set();
+            Exit();
+            return;
+        }
+
+        var dispatcher = DispatcherQueue.GetForCurrentThread();
+        service = new ServiceClient(dispatcher);
+        clipboard = new DesktopClipboardController(service, dispatcher);
+        window = new MainWindow(service, clipboard);
+        window.Closed += (_, _) => Cleanup();
+        clipboard.ShelfFactory = () => new ShelfWindow(clipboard.Native, clipboard.History, clipboard);
+        clipboard.Start(window.Handle);
+
+        tray = new TrayIcon(window.Handle, "DeskFuse")
+        {
+            Activated = () => window?.RestoreFromTray(),
+            MenuProvider = () => BuildTrayMenu(),
+        };
+
         activationStop = new CancellationTokenSource();
         var token = activationStop.Token;
-        _ = Task.Run(() => { while (WaitHandle.WaitAny([activate, token.WaitHandle]) == 0) Dispatcher.BeginInvoke(ShowMain); });
+        _ = Task.Run(() =>
+        {
+            while (WaitHandle.WaitAny([activate, token.WaitHandle]) == 0) dispatcher.TryEnqueue(() => window?.RestoreFromTray());
+        });
+
         service.Start();
-        inputHelper = new InputHelperProcess(Dispatcher);
-        if (e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase)) window.Hide();
+        inputHelper = new InputHelperProcess(dispatcher);
+        window.RestoreFromTray();
+        if (Environment.GetCommandLineArgs().Any(argument => argument.Equals("--minimized", StringComparison.OrdinalIgnoreCase))) window.HideToTray();
     }
-    private void ShowMain()
+
+    private IReadOnlyList<TrayMenuEntry> BuildTrayMenu()
     {
-        if (MainWindow is null) return;
-        MainWindow.Show();
-        if (MainWindow.WindowState == WindowState.Minimized) MainWindow.WindowState = WindowState.Normal;
-        MainWindow.Activate();
+        var entries = clipboard?.Entries.Take(20).ToArray() ?? [];
+        var recent = new List<TrayMenuEntry>();
+        if (entries.Length == 0) recent.Add(new TrayMenuEntry("还没有剪贴板记录", null, null, false));
+        foreach (var entry in entries)
+        {
+            string title = entry.Title.Replace('\r', ' ').Replace('\n', ' ');
+            if (title.Length > 42) title = title[..42] + "…";
+            string label = $"{title}  ·  {entry.SourceName}";
+            recent.Add(new TrayMenuEntry(label, () =>
+            {
+                try { window?.RestoreEntry(entry); }
+                catch (Exception) { }
+            }));
+        }
+        return
+        [
+            new TrayMenuEntry("打开 DeskFuse", () => window?.RestoreFromTray()),
+            new TrayMenuEntry("最近剪贴板", null, recent),
+            new TrayMenuEntry("暂存区", () => clipboard?.ShowShelf()),
+            new TrayMenuEntry("设置", () => window?.ShowSettings()),
+            new TrayMenuEntry("反馈问题…", () => SupportLinks.ReportProblem(service?.LatestSnapshot)),
+            new TrayMenuEntry("-"),
+            new TrayMenuEntry("退出 DeskFuse", ExitApp),
+        ];
     }
+
+    private bool cleaned;
+
     internal void ExitApp()
     {
         Exiting = true;
-        Shutdown();
+        if (window is not null) window.AllowClose = true;
+        window?.Close(); // Closed drives Cleanup; WinUI 3 has no Application.OnExit override.
+        Exit();
     }
-    protected override void OnExit(ExitEventArgs e)
+
+    private void Cleanup()
     {
+        if (cleaned) return;
+        cleaned = true;
         activationStop?.Cancel();
         inputHelper?.Dispose();
         clipboard?.Dispose();
         service?.Dispose();
         tray?.Dispose();
-        trayIcon?.Dispose();
         activate?.Dispose();
         singleton?.Dispose();
-        base.OnExit(e);
     }
 }

@@ -1,81 +1,138 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Interop;
-using System.Windows.Media;
-using Button = System.Windows.Controls.Button;
-using DataObject = System.Windows.DataObject;
-using DataFormats = System.Windows.DataFormats;
-using ListBox = System.Windows.Controls.ListBox;
-using Orientation = System.Windows.Controls.Orientation;
-using Point = System.Windows.Point;
-using Brushes = System.Windows.Media.Brushes;
-using DragDropEffects = System.Windows.DragDropEffects;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
+using Windows.Storage.Streams;
 
 namespace DeskFuse.Windows;
 
 /// <summary>Local temporary shelf. It holds references; removing items never removes user files.</summary>
-public sealed class ShelfWindow : Window
+public sealed class ShelfWindow : IShelfHost
 {
     private readonly NativeClipboard clipboard;
     private readonly ClipboardHistory history;
     private readonly DesktopClipboardController controller;
-    private readonly ObservableCollection<ClipboardEntry> entries = new();
-    private readonly ListBox list = new() { DisplayMemberPath = nameof(ClipboardEntry.Title), BorderThickness = new Thickness(0) };
-    private readonly TextBlock status = new() { Text = "拖入本机文件，或从历史加入", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.SlateGray, FontSize = 11 };
-    private Point? dragStart;
+    private readonly Window window = new();
+    private readonly ObservableCollection<ClipboardEntry> entries = [];
+    private readonly ListBox list = new() { BorderThickness = new Thickness(0) };
+    private readonly TextBlock status = new() { Text = "拖入本机文件，或从历史加入", TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), FontSize = 11 };
+    private readonly Button expand = new() { Content = "展开", Padding = new Thickness(5, 2, 5, 2) };
     private bool exiting;
+    private bool expanded;
+
     public ShelfWindow(NativeClipboard clipboard, ClipboardHistory history, DesktopClipboardController controller)
     {
-        this.clipboard = clipboard; this.history = history; this.controller = controller;
-        Title = "DeskFuse 暂存区"; Width = 240; Height = 240; MinWidth = 240; MinHeight = 240;
-        ShowInTaskbar = false; ShowActivated = false; ResizeMode = ResizeMode.CanResizeWithGrip;
-        Background = Brushes.White; AllowDrop = true; WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var layout = new DockPanel { Margin = new Thickness(10) };
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
-        var expand = new Button { Content = "展开", Padding = new Thickness(5, 2, 5, 2) };
-        expand.Click += (_, _) => { var large = Width > 300; Width = large ? 240 : 480; Height = large ? 240 : 420; expand.Content = large ? "展开" : "收起"; };
-        DockPanel.SetDock(expand, Dock.Right); header.Children.Add(expand);
-        header.Children.Add(new TextBlock { Text = "暂存区", FontWeight = FontWeights.SemiBold, FontSize = 16 });
-        DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header);
-        DockPanel.SetDock(status, Dock.Bottom); layout.Children.Add(status);
-        list.ItemsSource = entries; layout.Children.Add(list); Content = layout;
-        var menu = new ContextMenu();
-        var copy = new MenuItem { Header = "复制" }; copy.Click += (_, _) => CopySelection(); menu.Items.Add(copy);
-        var send = new MenuItem { Header = "发送到设备" }; send.Click += (_, _) => _ = SendSelectionAsync(); menu.Items.Add(send);
-        var remove = new MenuItem { Header = "移出暂存区" }; remove.Click += (_, _) => { if (list.SelectedItem is ClipboardEntry e) entries.Remove(e); }; menu.Items.Add(remove);
-        list.ContextMenu = menu;
-        list.PreviewMouseLeftButtonDown += (_, e) => dragStart = e.GetPosition(list);
-        list.PreviewMouseMove += BeginDrag;
-        list.MouseDoubleClick += (_, _) => CopySelection();
-        list.KeyDown += (_, e) => { if (e.Key == Key.Enter) { CopySelection(); e.Handled = true; } };
-        DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
-        Drop += OnDrop;
-        Closing += OnClosing;
+        this.clipboard = clipboard;
+        this.history = history;
+        this.controller = controller;
+        AppIcon.Apply(window);
+        window.AppWindow.Title = "DeskFuse 暂存区";
+        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(240, 240));
+        window.AppWindow.Closing += (_, args) => { if (!exiting) { args.Cancel = true; window.AppWindow.Hide(); } };
+
+        list.ItemsSource = entries;
+        list.DisplayMemberPath = nameof(ClipboardEntry.Title);
+        list.SelectionMode = SelectionMode.Single;
+        list.CanDrag = true;
+        list.AllowDrop = true;
+        list.DoubleTapped += (_, _) => CopySelection();
+        list.KeyDown += (_, args) => { if (args.Key == global::Windows.System.VirtualKey.Enter) { CopySelection(); args.Handled = true; } };
+        list.DragStarting += DragOut;
+        list.DragOver += (_, args) => { args.AcceptedOperation = args.DataView.Contains(StandardDataFormats.StorageItems) ? DataPackageOperation.Copy : DataPackageOperation.None; args.Handled = true; };
+        list.Drop += OnDrop;
+
+        var copy = new MenuFlyoutItem { Text = "复制" };
+        copy.Click += (_, _) => CopySelection();
+        var send = new MenuFlyoutItem { Text = "发送到设备" };
+        send.Click += async (_, _) => await SendSelectionAsync();
+        var remove = new MenuFlyoutItem { Text = "移出暂存区" };
+        remove.Click += (_, _) => { if (list.SelectedItem is ClipboardEntry selected) entries.Remove(selected); UpdateStatus(); };
+        var menu = new MenuFlyout();
+        menu.Items.Add(copy); menu.Items.Add(send); menu.Items.Add(remove);
+        list.ContextFlyout = menu;
+
+        expand.Click += (_, _) =>
+        {
+            expanded = !expanded;
+            window.AppWindow.Resize(expanded ? new global::Windows.Graphics.SizeInt32(480, 420) : new global::Windows.Graphics.SizeInt32(240, 240));
+            expand.Content = expanded ? "收起" : "展开";
+        };
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+        header.Children.Add(new TextBlock { Text = "暂存区", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 16, VerticalAlignment = VerticalAlignment.Center });
+        header.Children.Add(expand);
+        var layout = new Grid { Margin = new Thickness(10) };
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(header, 0); Grid.SetRow(list, 1); Grid.SetRow(status, 2);
+        layout.Children.Add(header); layout.Children.Add(list); layout.Children.Add(status);
+        window.Content = layout;
     }
+
     public void Add(ClipboardEntry entry)
     {
-        if (entries.Any(e => e.Id == entry.Id)) return;
+        if (entries.Any(existing => existing.Id == entry.Id)) return;
         if (entries.Count >= 100) { status.Text = "暂存区已满（100 项），请先移出部分项目"; return; }
-        entries.Insert(0, entry); list.SelectedItem = entry;
-        status.Text = $"{entries.Count} 项 · 移出不会删除原文件";
+        entries.Insert(0, entry);
+        list.SelectedItem = entry;
+        UpdateStatus();
     }
-    private void OnDrop(object sender, System.Windows.DragEventArgs args)
+
+    private void UpdateStatus() => status.Text = $"{entries.Count} 项 · 移出不会删除原文件";
+
+    private void OnDrop(object sender, DragEventArgs args)
     {
         try
         {
-            if (args.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
+            if (!args.DataView.Contains(StandardDataFormats.StorageItems)) return;
+            var items = args.DataView.GetStorageItemsAsync().AsTask().GetAwaiter().GetResult();
+            var paths = items.Select(item => item.Path).Where(path => !string.IsNullOrWhiteSpace(path)).ToArray();
             NativeClipboard.ValidateLocalFiles(paths);
             // Staging must not silently replace the system clipboard or transmit file bodies.
             var content = new ClipboardContent(ClipboardContent.LocalFilesMime, [], paths);
-            Add(history.Add(content, "local", "本机")); args.Effects = DragDropEffects.Copy;
+            Add(history.Add(content, "local", "本机"));
+            args.AcceptedOperation = DataPackageOperation.Copy;
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException) { status.Text = "无法暂存：文件不可用或数量超过限制"; }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or AggregateException) { status.Text = "无法暂存：文件不可用或数量超过限制"; }
         args.Handled = true;
     }
+
+    private void DragOut(UIElement sender, DragStartingEventArgs args)
+    {
+        if (list.SelectedItem is not ClipboardEntry entry) { args.Cancel = true; return; }
+        try
+        {
+            if (entry.Content.Files is { Count: > 0 } paths)
+            {
+                NativeClipboard.ValidateLocalFiles(paths);
+                // Copy only: Explorer must never move/delete the source as a shelf side effect.
+                args.Data.RequestedOperation = DataPackageOperation.Copy;
+                var items = paths.Select(path => StorageFile.GetFileFromPathAsync(path).AsTask().GetAwaiter().GetResult()).Cast<IStorageItem>().ToList();
+                args.Data.SetStorageItems(items, false);
+            }
+            else if (entry.Content.Mime == "text/plain")
+            {
+                args.Data.RequestedOperation = DataPackageOperation.Copy;
+                args.Data.SetText(System.Text.Encoding.UTF8.GetString(entry.Content.Data));
+            }
+            else
+            {
+                // Image drag-out needs a bitmap provider; keep the safe path only.
+                args.Cancel = true;
+                status.Text = "此格式请使用复制";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or AggregateException or ArgumentException)
+        {
+            args.Cancel = true;
+            status.Text = "拖出失败：请确认原文件仍可用";
+        }
+    }
+
     private void CopySelection()
     {
         if (list.SelectedItem is not ClipboardEntry entry) return;
@@ -83,6 +140,7 @@ public sealed class ShelfWindow : Window
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Runtime.InteropServices.COMException or NotSupportedException or ArgumentException)
         { status.Text = "复制失败，原文件保持不变"; }
     }
+
     private async Task SendSelectionAsync()
     {
         if (list.SelectedItem is not ClipboardEntry entry) return;
@@ -94,26 +152,9 @@ public sealed class ShelfWindow : Window
             ? "已发送文件引用；对方粘贴时按需传输并校验。"
             : "文件未发送；请查看主窗口提示";
     }
-    private void BeginDrag(object sender, System.Windows.Input.MouseEventArgs args)
-    {
-        if (dragStart is not Point start || args.LeftButton != MouseButtonState.Pressed || list.SelectedItem is not ClipboardEntry entry) return;
-        var now = args.GetPosition(list);
-        if (Math.Abs(now.X - start.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(now.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-        dragStart = null;
-        try
-        {
-            var data = new DataObject();
-            if (entry.Content.Files is { Count: > 0 } paths)
-            { NativeClipboard.ValidateLocalFiles(paths); data.SetData(DataFormats.FileDrop, paths.ToArray()); }
-            else if (entry.Content.Mime == "image/png") data.SetImage(NativeClipboard.DecodeImage(entry.Content.Data));
-            else if (entry.Content.Mime == "text/plain") data.SetText(System.Text.Encoding.UTF8.GetString(entry.Content.Data));
-            else { status.Text = "此格式请使用复制"; return; }
-            // Copy only: Explorer must never move/delete the source as a shelf side effect.
-            DragDrop.DoDragDrop(list, data, DragDropEffects.Copy);
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
-        { status.Text = "拖出失败：请确认原文件仍可用"; }
-    }
-    private void OnClosing(object? sender, CancelEventArgs args) { if (!exiting) { args.Cancel = true; Hide(); } }
-    public void Shutdown() { exiting = true; Close(); }
+
+    public void Show() { window.AppWindow.Show(); window.Activate(); }
+    public void Hide() { if (window.AppWindow.Presenter is OverlappedPresenter presenter && presenter.State == OverlappedPresenterState.Minimized) presenter.Restore(); window.AppWindow.Hide(); }
+
+    public void Shutdown() { exiting = true; window.Close(); }
 }

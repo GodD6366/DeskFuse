@@ -1,19 +1,52 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    WinUI 3 (Windows App SDK) desktop client. Converted in place from the former
+    WPF client so the offline NSIS installer, the MSIX/Store packaging and the CI
+    paths keep working unchanged. AssemblyName stays DeskFuse.Windows because the
+    package manifests and shortcuts reference that name.
+
+    ApplicationManifest defaults to the packaged/Store variant (asInvoker, no
+    uiAccess). Release builds that are Authenticode-signed and installed in a
+    trusted location may build with -p:ApplicationManifest=app.manifest to request
+    uiAccess for elevated-window input; an unsigned uiAccess build is rejected by
+    Windows at launch (Win32 740).
+  -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
-    <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <PlatformTarget>x64</PlatformTarget>
-    <AssemblyName>DeskFuse.Windows</AssemblyName>
+    <!-- WinUI 3 needs the Windows 10 19041 projections; the runtime minimum stays
+         17763 (Windows 10 1809) through TargetPlatformMinVersion. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>DeskFuse.Windows</RootNamespace>
+    <AssemblyName>DeskFuse.Windows</AssemblyName>
+    <Platforms>x64</Platforms>
+    <!-- Self-contained Windows App SDK deployment needs a concrete RID. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <!-- Required for the WinUI 3 XAML compiler/tooling to publish the compiled
+         XAML (*.xbf) and the app resource index (*.pri); unpackaged WinUI 3
+         clients cannot start without them. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>Assets/DeskFuse.ico</ApplicationIcon>
+    <ApplicationManifest>app.store.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\DeskFuse.ico</ApplicationIcon>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
   </PropertyGroup>
+
   <ItemGroup>
-    <Resource Include="Assets/DeskFuse.ico" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
+    <!-- SessionSwitch notifications for clipboard pause/resume, and the GDI+ DIB
+         conversion used for the CF_DIBV5 clipboard fallback. -->
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\DeskFuse.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

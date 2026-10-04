@@ -1,36 +1,35 @@
 using System.Diagnostics;
 using System.IO;
-using System.Windows.Threading;
+using Microsoft.UI.Dispatching;
 
 namespace DeskFuse.Windows;
 
 /// <summary>Supervises the fixed signed UIAccess Rust input helper.</summary>
 public sealed class InputHelperProcess : IDisposable
 {
-    private readonly Dispatcher dispatcher;
-    private readonly DispatcherTimer restart;
+    private readonly DispatcherQueue dispatcher;
+    private readonly DispatcherQueueTimer restart;
     private Process? process;
     private bool disposed;
 
     public int? ProcessId => process is { HasExited: false } current ? current.Id : null;
 
-    public InputHelperProcess(Dispatcher dispatcher)
+    public InputHelperProcess(DispatcherQueue dispatcher)
     {
         this.dispatcher = dispatcher;
-        restart = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) =>
-        {
-            restart.Stop();
-            Start();
-        }, dispatcher);
+        restart = dispatcher.CreateTimer();
+        restart.Interval = TimeSpan.FromSeconds(2);
+        restart.IsRepeating = false;
+        restart.Tick += (_, _) => Start();
         Start();
     }
 
     /// Stop and drain the fixed helper before a machine update takes its
-    /// admission lock. This runs on the WPF dispatcher so restart cannot race
-    /// the update helper's process identity snapshot.
+    /// admission lock. This runs on the UI thread so restart cannot race the
+    /// update helper's process identity snapshot.
     public bool StopForMachineUpdate()
     {
-        dispatcher.VerifyAccess();
+        VerifyAccess();
         restart.Stop();
         if (process is not { } current) return true;
         try
@@ -49,8 +48,13 @@ public sealed class InputHelperProcess : IDisposable
 
     public void ResumeAfterMachineUpdate()
     {
-        dispatcher.VerifyAccess();
+        VerifyAccess();
         if (!disposed) Start();
+    }
+
+    private void VerifyAccess()
+    {
+        if (!dispatcher.HasThreadAccess) throw new InvalidOperationException("input helper must be controlled from the UI thread");
     }
 
     private void Start()
@@ -82,7 +86,7 @@ public sealed class InputHelperProcess : IDisposable
         catch (Exception) { restart.Start(); }
     }
 
-    private void HelperExited(object? sender, EventArgs args) => dispatcher.BeginInvoke(() =>
+    private void HelperExited(object? sender, EventArgs args) => dispatcher.TryEnqueue(() =>
     {
         if (sender is Process exited) exited.Exited -= HelperExited;
         if (!disposed) restart.Start();

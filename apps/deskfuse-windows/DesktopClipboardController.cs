@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Text.Json;
-using System.Windows;
+using Microsoft.UI.Dispatching;
 using Microsoft.Win32;
 
 namespace DeskFuse.Windows;
@@ -10,10 +9,11 @@ namespace DeskFuse.Windows;
 // to the authenticated service. Neither reconnect nor startup republishes history.
 public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePort, ClipboardApplyPort, FileDataObjectPort
 {
-    private readonly NativeClipboard native = new();
+    private readonly NativeClipboard native;
     private readonly ClipboardHistory history = new();
     private readonly ServiceClient service;
-    private ShelfWindow? shelf;
+    private readonly DispatcherQueue dispatcher;
+    private IShelfHost? shelf;
     private bool paused;
     private bool disposed;
     private long publishSequence;
@@ -25,6 +25,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private bool syncEnabled;
     private string? preferencesError;
     private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop", "settings-v1.json");
+    /// <summary>Shelf window factory. Wired by the app so the controller keeps no UI type.</summary>
+    public Func<IShelfHost>? ShelfFactory { get; set; }
+    /// <summary>Shared with the shelf window; the controller stays the owner.</summary>
+    internal NativeClipboard Native => native;
+    internal ClipboardHistory History => history;
     public bool SyncEnabled
     {
         get => syncEnabled;
@@ -37,9 +42,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     }
     public ObservableCollection<ClipboardEntry> Entries => history.Entries;
     public event Action<string>? Error;
-    public DesktopClipboardController(ServiceClient service)
+    public DesktopClipboardController(ServiceClient service, DispatcherQueue dispatcher)
     {
         this.service = service;
+        this.dispatcher = dispatcher;
+        native = new NativeClipboard(dispatcher);
         LoadPreferences();
         native.Changed += LocalChanged;
         native.LocalInvalidated += ObserveNativeChange;
@@ -50,9 +57,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         service.ConnectionChanged += Connection;
         SystemEvents.SessionSwitch += SessionChanged;
     }
-    public void Start(Window window)
+    public void Start(IntPtr hwnd)
     {
-        try { native.Start(window); observedNativeSequence = native.SequenceNumber; if (history.StorageError is string error) Error?.Invoke(error); if (preferencesError is string warning) Error?.Invoke(warning); }
+        try { native.Start(hwnd); observedNativeSequence = native.SequenceNumber; if (history.StorageError is string error) Error?.Invoke(error); if (preferencesError is string warning) Error?.Invoke(warning); }
         catch (Exception) { Error?.Invoke("无法启动 Windows 剪贴板监听。请重新打开客户端。"); }
     }
 
@@ -93,7 +100,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
 
     internal async Task<ClipboardContent> ApplyTypedAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token = default) =>
         await ((ClipboardApplyPort)this).ApplyAsync(content, expectedRevision, sessionEpoch, sequence, token);
+
     private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false);
+
     private void LoadPreferences()
     {
         try
@@ -106,6 +115,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         }
         catch (Exception) { preferencesError = "无法读取本机偏好；本次使用默认设置，原文件未改变。"; }
     }
+
     private void SavePreferences()
     {
         string temporary = preferencesFile + ".tmp";
@@ -123,6 +133,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             try { if (File.Exists(temporary)) File.Delete(temporary); } catch (Exception) { }
         }
     }
+
     private void PollStarting()
     {
         // Includes unsupported and over-limit native formats that have no
@@ -130,26 +141,30 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         ObserveNativeChange();
         pollNativeSequence = native.SequenceNumber;
     }
+
     private void ObserveNativeChange()
     {
         var ownership = native.TryAcknowledgeOwnWrite(out uint ownSequence);
-        if (ownership == true) { observedNativeSequence = ownSequence; return; }
+        if (ownership is true) { observedNativeSequence = ownSequence; return; }
         if (ownership is null) return; // Busy is unknown, not proof of a new local copy.
         uint current = native.SequenceNumber;
         if (current == observedNativeSequence || paused || disposed) return;
         observedNativeSequence = current;
         _ = InvalidateAndPublishAsync(null);
     }
+
     private void Snapshot(JsonElement snapshot)
     {
         long epoch = snapshot.Number("session_epoch");
         if (generation != epoch) { generation = epoch; publishSequence = 0; nativeRevision++; }
         ObserveFileTransfers(snapshot);
     }
+
     private void Connection(bool connected, string message)
     {
         if (!connected) { generation = null; pollNativeSequence = null; }
     }
+
     private void LocalChanged(ClipboardContent content)
     {
         if (paused || disposed) return;
@@ -158,6 +173,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         observedNativeSequence = native.SequenceNumber;
         _ = InvalidateAndPublishAsync(content);
     }
+
     private async Task InvalidateAndPublishAsync(ClipboardContent? content)
     {
         long revision = ++nativeRevision;
@@ -185,6 +201,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         }
         catch (Exception) { if (!disposed && generation == epoch) Error?.Invoke("本机剪贴板保留，但服务未接受同步状态。请检查连接；旧内容不会作为新复制重发。"); }
     }
+
     private async void RemoteReceived(JsonElement item)
     {
         long? epoch = generation;
@@ -226,6 +243,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         }
         catch (Exception) { if (!disposed) Error?.Invoke("远端剪贴板应用回执未送达，请检查连接状态。"); }
     }
+
     public void Restore(ClipboardEntry entry)
     {
         native.Write(entry.Content);
@@ -241,7 +259,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private readonly HashSet<string> copying = new();
     /// <summary>Offers already announced, so notices fire once per offer.</summary>
     private readonly HashSet<string> seenOffers = new();
-    /// <summary>Raised when a new remote file offer arrives (notice/托盘).</summary>
+    /// <summary>Raised when a new remote file offer arrives (notice/tray).</summary>
     public event Action<string, string>? FileOfferReceived;
     /// <summary>Raised when a transfer settles (transfer id, detail, success).</summary>
     public event Action<string, string, bool>? FileTransferSettled;
@@ -492,15 +510,18 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar))));
         }
     }
+
     public void Clear() => history.Clear();
     public void Remove(ClipboardEntry entry) => history.Remove(entry);
+
     public void ShowShelf(ClipboardEntry? entry = null)
     {
-        if (shelf is null) { shelf = new ShelfWindow(native, history, this); shelf.Closed += (_, _) => shelf = null; }
+        if (shelf is null) { shelf = ShelfFactory?.Invoke(); if (shelf is null) { Error?.Invoke("暂存区不可用。"); return; } }
         if (entry is not null) shelf.Add(entry);
         shelf.Show();
     }
-    private void SessionChanged(object sender, SessionSwitchEventArgs args) => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+
+    private void SessionChanged(object sender, SessionSwitchEventArgs args) => dispatcher.TryEnqueue(() =>
     {
         if (disposed) return;
         if (args.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff or SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteConnect)
@@ -508,6 +529,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         else if (args.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect)
         { paused = false; native.Resume(); }
     });
+
     public void Dispose()
     {
         disposed = true;
@@ -521,4 +543,13 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         shelf?.Shutdown();
         history.Dispose();
     }
+}
+
+/// <summary>Shelf window contract, so the controller holds no WinUI type.</summary>
+public interface IShelfHost
+{
+    void Add(ClipboardEntry entry);
+    void Show();
+    void Hide();
+    void Shutdown();
 }

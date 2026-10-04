@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -14,6 +13,9 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     public string Kind => Content.Files is { Count: > 0 } ? "files" : Content.Mime == "image/png" ? "image" : "text";
     [JsonIgnore]
     public long SizeBytes => Content.SizeBytes;
+    /// <summary>Preformatted timestamp: WinUI bindings have no StringFormat.</summary>
+    [JsonIgnore]
+    public string CreatedLabel => CreatedAt.LocalDateTime.ToString("g");
     [JsonIgnore]
     public string Title => Kind switch
     {
@@ -67,17 +69,19 @@ public sealed class ClipboardHistory : IDisposable
         { StorageError = "无法读取剪贴板历史；原文件保留，不会自动覆盖"; }
         writer = Task.Run(SaveLoop);
     }
+
     private static bool Valid(ClipboardEntry? entry)
     {
         if (entry is null || entry.Content is null || entry.Content.Data is null || entry.Id is null
             || entry.SourceName is null || entry.SourceId is null
-            || entry.Content.Representations?.Any(r => r is null || r.Data is null) == true
+            || entry.Content.Representations?.Any(r => r is null || r.Data is null) is true
             || entry.Content.SizeBytes > MaxBytes) return false;
         if (entry.Content.Mime == ClipboardContent.LocalFilesMime)
             return entry.Content.Files is { Count: > 0 and <= 512 } && entry.SourceId == "local"
                    && entry.Content.Files.All(p => p is not null && Path.IsPathFullyQualified(p) && !p.StartsWith(@"\\", StringComparison.Ordinal));
         return entry.Content.Files is null && entry.Content.Mime is "text/plain" or "image/png" or "text/html" or "text/rtf";
     }
+
     public ClipboardEntry Add(ClipboardContent content, string sourceId, string sourceName)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -90,6 +94,7 @@ public sealed class ClipboardHistory : IDisposable
             Entries.Remove(duplicate);
         Entries.Insert(0, entry); Trim(); ScheduleSave(); return entry;
     }
+
     private void Trim()
     {
         long size = 0;
@@ -100,13 +105,16 @@ public sealed class ClipboardHistory : IDisposable
             else i++;
         }
     }
+
     public void Remove(ClipboardEntry entry) { Entries.Remove(entry); ScheduleSave(); }
     public void Clear() { Entries.Clear(); ScheduleSave(); }
+
     private void ScheduleSave()
     {
         // A malformed/unreadable old index is not replaced silently by a blank one.
         if (StorageError is null && !disposed) saves.Writer.TryWrite(Entries.ToArray());
     }
+
     private async Task SaveLoop()
     {
         await foreach (var snapshot in saves.Reader.ReadAllAsync())
@@ -123,11 +131,12 @@ public sealed class ClipboardHistory : IDisposable
             finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         }
     }
+
     public void Dispose()
     {
         if (disposed) return;
         ScheduleSave(); disposed = true; saves.Writer.TryComplete();
-        // No Dispatcher continuation is needed by the writer, so normal exit can flush safely.
+        // No dispatcher continuation is needed by the writer, so normal exit can flush safely.
         try { writer.GetAwaiter().GetResult(); } catch (IOException) { }
     }
 }

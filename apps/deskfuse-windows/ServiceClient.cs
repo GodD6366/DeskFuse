@@ -3,14 +3,14 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Windows.Threading;
+using Microsoft.UI.Dispatching;
 using Microsoft.Win32.SafeHandles;
 
 namespace DeskFuse.Windows;
 
 // Never grants FILE_CREATE_PIPE_INSTANCE via GENERIC_WRITE. The authenticated
 // LocalSystem service is the only network/identity owner, even while offline.
-public sealed class ServiceClient(Dispatcher dispatcher) : IDisposable
+public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
 {
     private const int MaxFrame = 24 * 1024 * 1024;
     private const string Pipe = @"\\.\pipe\com.deskfuse.app.desktop.v2";
@@ -42,7 +42,7 @@ public sealed class ServiceClient(Dispatcher dispatcher) : IDisposable
             {
                 bool initial = !sessionEpoch.HasValue;
                 if (initial) await Task.Run(() => EnsureRunning(stop.Token), stop.Token);
-                if (!initial) await dispatcher.InvokeAsync(() => PollStarting?.Invoke());
+                if (!initial) await dispatcher.EnqueueAsync(() => PollStarting?.Invoke());
                 var reply = await SendAsync(initial ? "Snapshot" : Command("Poll", new { session_epoch = sessionEpoch!.Value, after_sequence = clipboardCursor }), stop.Token);
                 JsonElement snapshot;
                 JsonElement? incoming = null;
@@ -55,13 +55,13 @@ public sealed class ServiceClient(Dispatcher dispatcher) : IDisposable
                 }
                 else throw new IOException("服务未提供桌面状态，请更新服务和客户端到同一版本。");
                 var clone = snapshot.Clone();
-                await dispatcher.InvokeAsync(() => { LatestSnapshot = clone; IsConnected = true; ConnectionChanged?.Invoke(true, "服务已连接"); SnapshotChanged?.Invoke(clone); if (incoming.HasValue) ClipboardReceived?.Invoke(incoming.Value); });
+                await dispatcher.EnqueueAsync(() => { LatestSnapshot = clone; IsConnected = true; ConnectionChanged?.Invoke(true, "服务已连接"); SnapshotChanged?.Invoke(clone); if (incoming.HasValue) ClipboardReceived?.Invoke(incoming.Value); });
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
                 string message = ex is EndOfStreamException ? "后台连接中断，正在自动重连；本机历史仍可使用。" : ex is TimeoutException or OperationCanceledException ? "后台组件尚未就绪，正在自动重试。" : ex is IOException ? ex.Message : "后台连接暂时不可用，正在自动重试。";
-                await dispatcher.InvokeAsync(() => { IsConnected = false; LatestSnapshot = null; sessionEpoch = null; clipboardCursor = 0; ConnectionChanged?.Invoke(false, message); });
+                await dispatcher.EnqueueAsync(() => { IsConnected = false; LatestSnapshot = null; sessionEpoch = null; clipboardCursor = 0; ConnectionChanged?.Invoke(false, message); });
             }
             try { await Task.Delay(TimeSpan.FromSeconds(1), stop.Token); }
             catch (OperationCanceledException) { break; }

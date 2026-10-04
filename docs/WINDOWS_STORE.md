@@ -98,5 +98,6 @@ MSIX Version = <产品 Major>.<产品 Minor>.<release.json build_number>.0
 
 - WACK（`appcert.exe`）未运行；未做 Store 提交；未使用真实 Partner Center Identity/Publisher，未做 Store 签名。
 - 未在 Windows 10 1809/21H2 等 `TargetPlatformMinVersion` 边界系统上安装验证。
-- WinUI 3 迁移尚未完成，上述打包与安装验证使用的是 WPF 客户端；迁移完成后同一打包脚本可直接复用（需以 `-ClientProject` 指向 WinUI 工程）。
+- MSIX 的 `Add-AppxPackage` + 启动 + 服务 IPC 验证是在就地转换为 WinUI 3 **之前**用 WPF 客户端完成的；转换后同一脚本已能产出 MSIX（基于 WinUI 3 客户端，构建成功），但**未重新安装验证**，也未来得及在 WinUI 3 客户端上重跑 WACK。
+- WinUI 3 客户端本身的运行验证见 `apps/deskfuse-windows/README.md`（服务 IPC、真实剪贴板捕获、打包版启动）。
 - 打包版客户端的开机自启、防火墙策略、多用户/多会话行为均未实测。

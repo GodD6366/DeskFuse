@@ -34,6 +34,18 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 - 原生系统符号／设备表现由平台 API 提供，不从 macOS 系统资源提取二进制素材加入仓库。
 - `design/current/` 的 v5 与菜单栏原图来自 Atelier，来源标识与 SHA-256 见同目录清单；布局参考为用户提供的截图，图标预览来自项目 SVG。设计图不属于原生应用运行证据，不随应用打包。
 - 早期设计参考中的风景照来自 [Unsplash 图片源](https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1)；原始示例照片及旧 HTML 样稿已清理，此处保留来源署名。[Unsplash License](https://unsplash.com/license) 单独适用，不属于项目双许可证。
+
+## .NET / Windows 客户端依赖
+
+Windows 客户端（`apps/deskfuse-windows`）通过 NuGet 引用下列包，版本在 `DeskFuse.Windows.csproj` 中固定，由 `dotnet restore` 解析：
+
+- `Microsoft.WindowsAppSDK` 1.8.x（WinUI 3 / Windows App SDK，MIT）。自包含部署会把框架 DLL 随发行载荷分发。
+- `Microsoft.Windows.SDK.BuildTools` 10.0.26100.x（Windows SDK 构建工具，按 Microsoft SDK 许可条款，含可再分发组件）。
+- `Microsoft.Win32.SystemEvents` 8.0.0（MIT）：会话锁屏/解锁通知。
+- `System.Drawing.Common` 8.0.0（MIT）：仅用于 Windows 剪贴板 `CF_DIBV5` 回退的 DIB 转换。
+
+每个包自带其版权与许可文本（`~/.nuget/packages/<id>/<version>/`），上述列表不替代这些原文；本项目未修改任何上游源码。清单与哈希核对属于构建流程（`scripts/build-windows-desktop.ps1`、`scripts/package-windows-store.ps1`），不在此重复声明具体文件哈希。
+
 ## 参考项目
 
 BlueSync 用于交互行为参考；DeskFuse 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。

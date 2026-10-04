@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace DeskFuse.Windows;
 
-/// Typed host ports keep WPF/OLE operations in the interactive process. The
+/// Typed host ports keep clipboard/OLE operations in the interactive process. The
 /// service only authenticates the bounded request and returns an operation
 /// receipt; it never opens the user's clipboard from Session 0.
 internal interface ClipboardCapturePort
