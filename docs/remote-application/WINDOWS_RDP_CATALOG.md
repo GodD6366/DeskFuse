@@ -48,7 +48,7 @@ Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`�
 - 目录会话在轮询及处理请求时重新检查设备授权，撤销信任后关闭会话。独立 RDP 会话的 Windows 认证仍由 Windows 管理。
 - Mac 独立窗口与侧栏内嵌目录都按 `remoteAppRdp` 选择 Windows JSON 协议，不再将 Windows 目录交给 Mac 媒体协议解析。
 
-此自动目录改动不等于 Windows 单点登录：当前仍使用 NLA 用户凭据，尚未实现首次免密登录集成。
+首次连接仍使用 Windows NLA 用户名和密码。Mac 端可选择将凭据保存到本机 macOS Keychain；保存后同一配对设备的后续 RemoteApp 启动会自动填充并登录。凭据不经过 DeskFuse Windows 服务、不进入 QUIC 目录协议，也不会默认保存。此功能不是 Kerberos/AD 单点登录。
 
 ## 服务端实现位置
 
@@ -59,5 +59,5 @@ Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`�
 ## 边界
 
 - 本协议只交换元数据（应用名、路径、`.rdp`），不承载 RDP 字节流；RDP 由主控端直接连 `Windows:3389`。
-- 服务端不读取 Windows 账户凭据；凭据由主控端 RDP 客户端在连接时提示输入。
+- 服务端不读取 Windows 账户凭据；凭据由主控端 RDP 客户端提示输入，或从用户明确启用的本机 Keychain 记录读取。
 - Windows Home / Core 版不宣告该能力，也不提供目录。

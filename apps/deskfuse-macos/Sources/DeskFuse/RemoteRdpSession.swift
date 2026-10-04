@@ -16,6 +16,9 @@ import DeskFuseRemoteApplication
     let engine: Engine
     let peerID: String
     let peerHost: String
+    var savedCredential: RemoteRDPCredentialStore.Credential? {
+        RemoteRDPCredentialStore.load(peerID: peerID)
+    }
     @ObservationIgnored private var channel: RemoteApplicationChannel?
     @ObservationIgnored private var bridge: RemoteRdpBridge?
     @ObservationIgnored private var reader: Task<Void, Never>?

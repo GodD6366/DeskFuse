@@ -12,6 +12,8 @@ struct RemoteRdpPicker: View {
     var launch: (RemoteRdpApp, String?, String?) -> Void
     @State private var username = ""
     @State private var password = ""
+    @State private var rememberCredentials = false
+    @State private var credentialsMessage: String?
     @State private var selected: RemoteRdpApp?
 
     var body: some View {
@@ -36,10 +38,26 @@ struct RemoteRdpPicker: View {
                 Form {
                     TextField("Windows 用户名", text: $username)
                     SecureField("Windows 密码", text: $password)
+                    Toggle("使用 macOS 钥匙串记住此设备的登录凭据", isOn: $rememberCredentials)
+                        .onChange(of: rememberCredentials) { _, remember in
+                            if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
+                        }
+                    if let credentialsMessage {
+                        Text(credentialsMessage).font(.caption).foregroundStyle(.orange)
+                    }
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
                         ForEach(session.apps, id: \.name) { app in
                             Button {
                                 selected = app
+                                let credential = RemoteRDPCredentialStore.Credential(username: username, password: password)
+                                if rememberCredentials {
+                                    do {
+                                        try RemoteRDPCredentialStore.save(credential, peerID: session.peerID)
+                                        credentialsMessage = nil
+                                    } catch { credentialsMessage = error.localizedDescription }
+                                } else {
+                                    RemoteRDPCredentialStore.remove(peerID: session.peerID)
+                                }
                                 launch(app, username.isEmpty ? nil : username, password.isEmpty ? nil : password)
                             } label: {
                                 VStack(spacing: 8) {
@@ -51,11 +69,11 @@ struct RemoteRdpPicker: View {
                             .buttonStyle(.bordered)
                             .disabled(username.isEmpty || password.isEmpty)
                             .help(app.path)
-                        }
+                    }
                     }
                 }
                 .formStyle(.grouped)
-                Text("使用 Windows 账户密码（不是 PIN）。需已启用远程桌面和相应防火墙规则；RDP 不提供 Mac 媒体画质/暂停控制。凭据仅用于此连接，不保存。")
+                Text("使用 Windows 账户密码（不是 PIN）。凭据按设备保存在 macOS 钥匙串（可关闭）；不会发送到 DeskFuse 服务端。需已启用远程桌面和相应防火墙规则。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let selected, session.launchedName == selected.name {
@@ -66,6 +84,11 @@ struct RemoteRdpPicker: View {
         .padding(24)
         .frame(minWidth: 620, minHeight: 420)
         .task {
+            if let credential = session.savedCredential {
+                username = credential.username
+                password = credential.password
+                rememberCredentials = true
+            }
             if session.phase == .idle { await session.connect() }
         }
     }
