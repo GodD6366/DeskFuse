@@ -1,0 +1,84 @@
+<Window
+  x:Class="DeskFuse.Windows.MainWindow"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  mc:Ignorable="d">
+  <Grid x:Name="Root" Background="{StaticResource CanvasBrush}">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="52" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <Grid Grid.Row="0" Margin="20,8,12,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <TextBlock Text="DeskFuse" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal">
+        <Button Content="暂存区" IsEnabled="False" ToolTipService.ToolTip="迁移中：暂存区即将接入" />
+        <Button Content="设置" IsEnabled="False" ToolTipService.ToolTip="迁移中：设置页即将接入" />
+      </StackPanel>
+    </Grid>
+
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="180" />
+        <ColumnDefinition Width="*" />
+      </Grid.ColumnDefinitions>
+      <Border Background="#EDF4FA" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
+        <Grid Margin="12,22,12,16">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <StackPanel>
+            <TextBlock Text="工作空间" Foreground="{StaticResource MutedBrush}" Margin="10,0,0,14" />
+            <ListBox x:Name="Navigation" SelectionChanged="NavigationChanged" SelectedIndex="0">
+              <ListBoxItem Content="▣  剪贴板" />
+              <ListBoxItem Content="⌨  键鼠共享" />
+              <ListBoxItem Content="▱  设备" />
+              <ListBoxItem Content="⇄  传输" />
+              <ListBoxItem Content="⚙  工作流" />
+            </ListBox>
+          </StackPanel>
+          <StackPanel Grid.Row="1">
+            <TextBlock x:Name="LocalName" FontWeight="SemiBold" Text="这台 Windows" />
+            <TextBlock x:Name="LocalStatus" Foreground="{StaticResource MutedBrush}" Text="正在连接服务…" Margin="0,6,0,0" FontSize="12" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Column="1">
+        <StackPanel x:Name="ClipboardPage" Margin="26,22,26,18">
+          <TextBlock Text="剪贴板" FontSize="26" FontWeight="SemiBold" />
+          <TextBlock Text="在设备之间，接着用" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,18" />
+          <TextBlock x:Name="PageDetail" Foreground="{StaticResource MutedBrush}" />
+        </StackPanel>
+        <StackPanel x:Name="InputPage" Visibility="Collapsed" Margin="24">
+          <TextBlock Text="让操作自然跨过屏幕" FontSize="28" FontWeight="SemiBold" />
+          <TextBlock Text="迁移中：显示器布局与快捷键编辑即将接入。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+        </StackPanel>
+        <StackPanel x:Name="DevicesPage" Visibility="Collapsed" Margin="24">
+          <TextBlock Text="设备" FontSize="26" FontWeight="SemiBold" />
+          <TextBlock Text="迁移中：设备列表与配对即将接入。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+        </StackPanel>
+        <StackPanel x:Name="TransfersPage" Visibility="Collapsed" Margin="24">
+          <TextBlock Text="传输" FontSize="28" FontWeight="SemiBold" />
+          <TextBlock Text="迁移中：传输队列即将接入。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+        </StackPanel>
+        <StackPanel x:Name="WorkflowsPage" Visibility="Collapsed" Margin="24">
+          <TextBlock Text="工作流" FontSize="28" FontWeight="SemiBold" />
+          <TextBlock Text="迁移中：工作流目录即将接入。" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+
+    <Border Grid.Row="2" Background="#EAF1F8" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="18,8">
+      <TextBlock x:Name="Notice" Text="正在连接 DeskFuseService…" FontSize="12" />
+    </Border>
+  </Grid>
+</Window>
