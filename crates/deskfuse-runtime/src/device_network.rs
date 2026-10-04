@@ -147,17 +147,25 @@ impl Actor {
         if self.device_network.integrity_error.is_some() {
             return Err(invalid("设备网络记录无法验证，请先修复网络记录"));
         }
-        // Keep the durable tombstone and actor block. Only the signed Offer
-        // path may use this local, bounded permission. No application identity
-        // may remain registered while waiting for the user's second approval.
+        //解除阻止必须清除本地 revoked 记录；否则下一次连接仍会被传输层拒绝。
         self.transport.revoke_peer(peer).await?;
         self.registered_identities.remove(&peer);
         self.transport.restore_peer(peer).await?;
         self.device_network.incoming_rate.remove(&peer);
-        self.device_network.pairing_recovery.insert(
-            peer,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(120),
-        );
+        self.device_network.pairing_recovery.remove(&peer);
+        let identity_id = identity_device_id(peer);
+        let store = self.trust_store.clone();
+        task::spawn_blocking(move || store.forget(&identity_id))
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .map_err(RuntimeError::from)?;
+        if let Some(state) = self.peers.get_mut(&peer) {
+            state.trust = TrustState::Pairing;
+            state.pending_pairing = None;
+            state.connection = ConnectionState::Disconnected;
+        }
+        self.blocked.remove(&peer);
+        self.publish();
         self.publish_view();
         Ok(())
     }

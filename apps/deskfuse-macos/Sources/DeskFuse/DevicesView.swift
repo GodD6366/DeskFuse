@@ -670,6 +670,7 @@ struct DevicesView: View {
                         confirmBlock = true
                     }
                     .buttonStyle(.bordered)
+                    .tint(.red)
                 }
                 Spacer(minLength: 0)
             }

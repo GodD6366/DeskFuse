@@ -2734,7 +2734,12 @@ impl Actor {
                 self.reject_pairing(request_id, reason).await;
             }
             RuntimeCommand::AllowPairing { peer_id } => {
-                if let Err(error) = self.allow_network_pairing(peer_id).await {
+                let result = if self.transport.supports_network_pairing() {
+                    self.allow_network_pairing(peer_id).await
+                } else {
+                    self.allow_local_pairing(peer_id).await
+                };
+                if let Err(error) = result {
                     self.emit_error(error);
                 }
             }
@@ -3474,6 +3479,26 @@ impl Actor {
             self.emit_error(error);
         }
         self.persist_peer(peer_id).await;
+    }
+
+    async fn allow_local_pairing(&mut self, peer_id: DeviceId) -> Result<(), RuntimeError> {
+        if !self.blocked.remove(&peer_id) {
+            return Err(RuntimeError::UnknownPeer(peer_id));
+        }
+        let identity_id = identity_device_id(peer_id);
+        let store = self.trust_store.clone();
+        task::spawn_blocking(move || store.forget(&identity_id))
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .map_err(RuntimeError::from)?;
+        self.transport.restore_peer(peer_id).await?;
+        if let Some(peer) = self.peers.get_mut(&peer_id) {
+            peer.trust = TrustState::Pairing;
+            peer.pending_pairing = None;
+            peer.connection = ConnectionState::Disconnected;
+        }
+        self.publish();
+        Ok(())
     }
 
     async fn forget_peer(&mut self, peer_id: DeviceId) {
