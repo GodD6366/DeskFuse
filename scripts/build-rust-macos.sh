@@ -28,7 +28,7 @@ fi
 # Keep CLI features in a separate invocation: workspace feature unification
 # must not pull bindgen's template/parser stack into the production FFI library.
 "$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p deskfuse-ffi --lib --target "$TARGET_TRIPLE" $PROFILE_FLAGS
-"$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p deskfuse-engine --bin deskfuse-input-service --target "$TARGET_TRIPLE" $PROFILE_FLAGS
+"$ROOT_DIR/scripts/cargo-macos.sh" build --locked -p deskfuse-ffi --bin deskfuse-input-service --target "$TARGET_TRIPLE" $PROFILE_FLAGS
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 cargo build --locked -p deskfuse-bindgen --bin deskfuse-bindgen --target "$HOST_TRIPLE"
 python3 "$ROOT_DIR/scripts/generate-swift-bindings.py" \

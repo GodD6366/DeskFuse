@@ -18,10 +18,6 @@ use std::{
     time::Duration,
 };
 
-pub fn main() -> std::result::Result<(), String> {
-    main_with_platform(crate::platform::memory_platform())
-}
-
 pub fn main_with_platform(
     platform: Arc<dyn EnginePlatformPort>,
 ) -> std::result::Result<(), String> {
@@ -136,7 +132,7 @@ async fn run(
     let (ui, mut ui_events) = futures::channel::mpsc::unbounded();
     let native = InputCoordinator::start_local(
         runtime.handle.clone(),
-        crate::platform::memory_platform(),
+        platform.clone(),
         ui,
         child.recording.clone(),
         child.emergency.clone(),
@@ -166,12 +162,13 @@ async fn run(
         }
     }).map_err(|e|e.to_string())?;
     let wifi_runtime = runtime.handle.clone();
+    let wifi_platform = platform.clone();
     let stop = child.stopping.clone();
     std::thread::Builder::new()
         .name("deskfuse-input-wifi".into())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                let ssid = None;
+                let ssid = wifi_platform.current_ssid();
                 let _ = wifi_runtime
                     .try_send(deskfuse_runtime::RuntimeCommand::ObserveWifiEnvironment { ssid });
                 for _ in 0..50 {
@@ -183,10 +180,8 @@ async fn run(
             }
         })
         .map_err(|e| e.to_string())?;
-    let mut remote_input = crate::remote_application_input::Owner::new(
-        child.pause.clone(),
-        crate::platform::memory_platform(),
-    );
+    let mut remote_input =
+        crate::remote_application_input::Owner::new(child.pause.clone(), platform.clone());
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
     let mut tick = tokio::time::interval(Duration::from_millis(50));

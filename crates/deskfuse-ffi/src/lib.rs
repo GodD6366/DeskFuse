@@ -36,6 +36,16 @@ use std::{
 pub use types::*;
 pub use workflow::*;
 uniffi::setup_scaffolding!();
+
+/// Run the standalone input helper with the same native ports as the macOS app.
+///
+/// # Errors
+/// Returns an error if inherited channels or the input runtime cannot start.
+#[cfg(target_os = "macos")]
+pub fn run_input_service() -> Result<(), String> {
+    deskfuse_engine::input_service::main_with_platform(crate::platform::platform())
+}
+
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static STARTUP: OnceLock<Mutex<Option<deskfuse_update::UpdateStatus>>> = OnceLock::new();
 fn failure(message: impl ToString) -> EngineError {
