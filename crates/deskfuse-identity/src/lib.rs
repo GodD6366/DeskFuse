@@ -503,6 +503,8 @@ pub trait TrustStore: Send + Sync {
     fn list(&self) -> Result<Vec<TrustRecord>, IdentityError>;
     /// Mark a device as revoked. Missing devices are not an error.
     fn revoke(&self, device_id: &DeviceId) -> Result<(), IdentityError>;
+    /// Remove trust without blocking future pairing.
+    fn forget(&self, device_id: &DeviceId) -> Result<(), IdentityError>;
     /// Test whether a device is currently trusted (exists and is not revoked).
     fn is_trusted(&self, device_id: &DeviceId) -> Result<bool, IdentityError> {
         Ok(self.get(device_id)?.is_some_and(|record| !record.revoked))
@@ -569,6 +571,14 @@ impl MemoryTrustStore {
 }
 
 impl TrustStore for MemoryTrustStore {
+    fn forget(&self, device_id: &DeviceId) -> Result<(), IdentityError> {
+        self.records
+            .lock()
+            .map_err(|_| IdentityError::Poisoned)?
+            .remove(device_id);
+        Ok(())
+    }
+
     fn upsert(&self, record: TrustRecord) -> Result<(), IdentityError> {
         self.records
             .lock()

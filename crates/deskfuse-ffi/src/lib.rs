@@ -356,6 +356,9 @@ impl Engine {
                     peer_id: device(&peer_id)?,
                 })
             }
+            EngineCommand::Block { peer_id } => TokioCommand::Runtime(RuntimeCommand::RevokePeer {
+                peer_id: device(&peer_id)?,
+            }),
             EngineCommand::AllowPairing { peer_id } => {
                 TokioCommand::Runtime(RuntimeCommand::AllowPairing {
                     peer_id: device(&peer_id)?,

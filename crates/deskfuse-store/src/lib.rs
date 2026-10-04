@@ -800,6 +800,22 @@ impl PeerStore for SQLiteStore {
 }
 
 impl TrustStore for SQLiteStore {
+    fn forget(
+        &self,
+        device_id: &deskfuse_identity::DeviceId,
+    ) -> std::result::Result<(), deskfuse_identity::IdentityError> {
+        let connection = self
+            .lock_connection()
+            .map_err(|error| deskfuse_identity::IdentityError::TrustStore(error.to_string()))?;
+        connection
+            .execute(
+                "DELETE FROM trust_records WHERE device_id = ?1",
+                [device_id.into_bytes().as_slice()],
+            )
+            .map_err(|error| deskfuse_identity::IdentityError::TrustStore(error.to_string()))?;
+        Ok(())
+    }
+
     fn upsert(
         &self,
         record: TrustRecord,

@@ -17,6 +17,8 @@ struct DevicesView: View {
     @State private var showManualPairing = false
     @State private var confirmForget = false
     @State private var forgetTarget: String?
+    @State private var confirmBlock = false
+    @State private var blockTarget: String?
     @State private var confirmLeave = false
     @FocusState private var searchFocused: Bool
 
@@ -69,6 +71,15 @@ struct DevicesView: View {
             Button("忘记设备", role: .destructive) {
                 if let forgetTarget { store.send(.forget(peerId: forgetTarget)) }
             }
+        } message: {
+            Text("这会断开连接并移除配对关系。设备仍可被发现和重新配对，不会被拉黑。")
+        }
+        .confirmationDialog("拉黑此设备？", isPresented: $confirmBlock) {
+            Button("拉黑设备", role: .destructive) {
+                if let blockTarget { store.send(.block(peerId: blockTarget)) }
+            }
+        } message: {
+            Text("这会断开连接并阻止该设备配对，直到你允许重新配对。")
         }
         .confirmationDialog("退出当前设备网络？", isPresented: $confirmLeave) {
             Button("退出网络", role: .destructive) { store.send(.leaveNetwork) }
@@ -645,6 +656,13 @@ struct DevicesView: View {
                     Button("忘记设备", systemImage: "trash", role: .destructive) {
                         forgetTarget = device.id
                         confirmForget = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if !device.blocked {
+                    Button("拉黑设备", systemImage: "hand.raised", role: .destructive) {
+                        blockTarget = device.id
+                        confirmBlock = true
                     }
                     .buttonStyle(.bordered)
                 }

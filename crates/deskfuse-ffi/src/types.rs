@@ -503,6 +503,9 @@ pub enum EngineCommand {
     Forget {
         peer_id: String,
     },
+    Block {
+        peer_id: String,
+    },
     AllowPairing {
         peer_id: String,
     },

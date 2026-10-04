@@ -3484,21 +3484,18 @@ impl Actor {
             return;
         }
 
-        // Keep a revoked trust tombstone so rediscovery cannot silently
-        // recreate and reconnect a device the user explicitly removed.
+        // Forgetting removes trust; only explicit revocation blocks pairing.
         self.trusted.remove(&peer_id);
-        self.blocked.insert(peer_id);
+        self.blocked.remove(&peer_id);
         // Keep a live discovery hint: duplicate mDNS announcements may be suppressed.
-        // The revoked tombstone still prevents all automatic reconnection.
+        // Rediscovery must require fresh consent before granting trust.
         self.pending.retain(|_, id| *id != peer_id);
         self.pending_app_messages.remove(&peer_id);
         self.registered_identities.remove(&peer_id);
 
         let identity_id = identity_device_id(peer_id);
-        let fingerprint = Fingerprint::from(peer_id);
         let trust_store = self.trust_store.clone();
-        let trust_record = TrustRecord::revoked(identity_id, fingerprint);
-        match task::spawn_blocking(move || trust_store.upsert(trust_record)).await {
+        match task::spawn_blocking(move || trust_store.forget(&identity_id)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 self.emit_error(RuntimeError::from(error));
@@ -3511,6 +3508,9 @@ impl Actor {
         }
 
         if let Err(error) = self.transport.revoke_peer(peer_id).await {
+            self.emit_error(error);
+        }
+        if let Err(error) = self.transport.restore_peer(peer_id).await {
             self.emit_error(error);
         }
         let store = self.persistence.clone();
@@ -5428,6 +5428,10 @@ mod tests {
     }
 
     impl TrustStore for FailOnceTrustStore {
+        fn forget(&self, device_id: &IdentityDeviceId) -> std::result::Result<(), IdentityError> {
+            self.inner.forget(device_id)
+        }
+
         fn upsert(&self, record: TrustRecord) -> std::result::Result<(), IdentityError> {
             if self.failures.swap(0, Ordering::SeqCst) != 0 {
                 return Err(IdentityError::TrustStore("injected failure".to_owned()));
@@ -6158,7 +6162,7 @@ mod tests {
         assert!(view.snapshot.peers.is_empty());
         assert_eq!(view.discovered_peers.len(), 1);
 
-        // The explicit connect lifts the tombstone but never grants trust:
+        // Explicit connect never grants trust:
         // it must go through the consent-gated pairing flow again.
         handle
             .send(RuntimeCommand::connect(peer_id))
@@ -6187,7 +6191,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn signed_discovery_does_not_resurrect_a_forgotten_peer_row() {
+    async fn signed_discovery_requires_fresh_consent_for_a_forgotten_peer() {
         let discovery = MemoryDiscovery::new();
         let store = MemoryRuntimeStore::new();
         let transport = MemoryTransport::new();
@@ -6234,25 +6238,26 @@ mod tests {
             .expect("forget");
         let _ = wait_for_snapshot(&handle, |snapshot| snapshot.peers.is_empty()).await;
 
-        // Signed discovery from a still-trusting remote must not recreate an
-        // authenticated row; it may only refresh the untrusted hint.
+        // Rediscovery may recreate a pairing row, but must never restore trust.
         discovery.push(DiscoveryEvent::PeerDiscovered {
             hello: remote,
             routes: vec![route],
         });
-        loop {
-            match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
-                Ok(Ok(RuntimeEvent::DiscoveredPeerHint(hint))) => {
-                    assert_eq!(hint.peer_id, peer_id);
-                    break;
-                }
-                Ok(Ok(_)) => continue,
-                _ => panic!("signed discovery must surface a hint for a forgotten peer"),
-            }
-        }
-        let view = handle.snapshot_view();
-        assert!(view.snapshot.peers.is_empty());
-        assert_eq!(view.discovered_peers.len(), 1);
+        let snapshot = wait_for_snapshot(&handle, |snapshot| {
+            snapshot
+                .peers
+                .first()
+                .is_some_and(|peer| peer.trust == TrustState::Pairing)
+        })
+        .await;
+        assert_ne!(snapshot.peers[0].connection, ConnectionState::Connected);
+        assert!(
+            handle
+                .snapshot_view()
+                .device_network
+                .blocked_peer_ids
+                .is_empty()
+        );
         handle.shutdown_and_wait().await.expect("shutdown");
     }
 
