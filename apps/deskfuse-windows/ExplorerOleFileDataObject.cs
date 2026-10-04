@@ -33,8 +33,8 @@ public sealed class ExplorerOleFileEntry
 [ComVisible(true)]
 public sealed class ExplorerOleFileDataObject : ComDataObject
 {
-    private const int DVASPECT_CONTENT = 1;
-    private const int TYMED_HGLOBAL = 1;
+    private const DVASPECT DVASPECT_CONTENT = DVASPECT.DVASPECT_CONTENT;
+    private const TYMED TYMED_HGLOBAL = TYMED.TYMED_HGLOBAL;
     private const int S_OK = 0;
     private const int DV_E_FORMATETC = unchecked((int)0x80040064);
     private const int FD_ATTRIBUTES = 0x00000004;
@@ -93,11 +93,12 @@ public sealed class ExplorerOleFileDataObject : ComDataObject
 
     public int QueryGetData(ref FORMATETC format)
     {
+        int lindex = format.lindex;
         if (format.dwAspect != DVASPECT_CONTENT || (format.cfFormat != descriptorFormat && format.cfFormat != contentsFormat)
-            || (format.cfFormat == descriptorFormat && format.lindex != -1)
-            || (format.cfFormat == contentsFormat && (format.lindex < 0 ||
-                (metadata.Length > 0 && !Descriptors.Any(entry => entry.Lindex == format.lindex && !entry.IsDirectory))))
-            || (format.tymed & TYMED_HGLOBAL) == 0)
+            || (format.cfFormat == descriptorFormat && lindex != -1)
+            || (format.cfFormat == contentsFormat && (lindex < 0 ||
+                (metadata.Length > 0 && !Descriptors.Any(entry => entry.Lindex == lindex && !entry.IsDirectory))))
+            || (format.tymed & TYMED_HGLOBAL) == TYMED.TYMED_NULL)
             return DV_E_FORMATETC;
         return S_OK;
     }
@@ -106,9 +107,10 @@ public sealed class ExplorerOleFileDataObject : ComDataObject
     {
         if (QueryGetData(ref format) != S_OK) throw new COMException("Unsupported Explorer clipboard format", DV_E_FORMATETC);
         var entries = Materialized();
+        int lindex = format.lindex;
         byte[] bytes = format.cfFormat == descriptorFormat
             ? Descriptor(entries)
-            : File.ReadAllBytes(entries.Single(entry => entry.Lindex == format.lindex).LocalPath!);
+            : File.ReadAllBytes(entries.Single(entry => entry.Lindex == lindex).LocalPath!);
         IntPtr memory = Marshal.AllocHGlobal(Math.Max(1, bytes.Length));
         Marshal.Copy(bytes, 0, memory, bytes.Length);
         medium = new STGMEDIUM { tymed = TYMED_HGLOBAL, unionmember = memory, pUnkForRelease = null };
@@ -175,7 +177,7 @@ public sealed class ExplorerOleFileDataObject : ComDataObject
             return copied == count ? 0 : 1;
         }
         public int Skip(int count) { index = Math.Min(formats.Length, index + count); return index < formats.Length ? 0 : 1; }
-        public void Reset() => index = 0;
+        public int Reset() { index = 0; return 0; }
         public void Clone(out IEnumFORMATETC clone) { clone = new FormatEnumerator(formats) { index = index }; }
     }
 }

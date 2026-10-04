@@ -153,7 +153,7 @@ fn read_request(path: &Path) -> Result<WindowsMachineRequest, String> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|_| "更新请求读取失败")?;
-    serde_json::from_slice(&bytes).map_err(|_| "更新请求格式无效")
+    serde_json::from_slice(&bytes).map_err(|_| "更新请求格式无效".to_owned())
 }
 
 fn is_elevated() -> bool {

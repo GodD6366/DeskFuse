@@ -1,6 +1,6 @@
 //! Authenticated desktop coordinator; shared state never contains private keys.
 use super::{
-    Control, Network, clipboard_sync, input_security, remote_app, security, session_agent,
+    Control, Network, clipboard_sync, input_security, remote_app, security, session_agent, workflow,
 };
 use crate::{
     desktop_protocol as ipc,
@@ -10,8 +10,8 @@ use crate::{
 use base64::Engine;
 use deskfuse_core::Endpoint;
 use deskfuse_platform::{
-    ApplyResult, BoundaryErrorCode, CapturedContent, ContentData, NativeRevision, PlatformCommand,
-    PlatformEvent,
+    BoundaryErrorCode, NativeRevision, PlatformCommand, PlatformEvent,
+    ports::{ApplyResult, CapturedContent, ContentData},
 };
 use deskfuse_runtime::{RuntimeCommand, RuntimeEvent};
 use deskfuse_transfer::FileBridge;
@@ -43,6 +43,7 @@ pub(super) struct State {
     input_sequence: u64,
     input_reported_activation: Option<String>,
     input_last_lease: Option<(String, u64)>,
+    controlling: Option<ipc::ControlView>,
     session_agent: session_agent::SessionAgent,
     file_bridge: Option<FileBridge>,
     workflow_sync_at: Option<Instant>,
@@ -100,6 +101,7 @@ impl State {
         self.input_deliveries.clear();
         self.push_input(|sequence| ipc::InputDelivery::Release { sequence, reason });
         self.input_last_lease = None;
+        self.controlling = None;
     }
     fn input_state(&self, network: &Network) -> ipc::InputState {
         let input = network.input_runtime.handle.input_snapshot();
@@ -166,7 +168,7 @@ impl State {
                 .map_or(0, |topology| topology.displays.len()),
             local_device_id: runtime_snapshot.local_device_id.to_string(),
             settings: Some(input.settings.clone()),
-            controlling: None,
+            controlling: self.controlling.clone(),
             activations,
             remote_topologies,
             links,
@@ -201,8 +203,44 @@ impl State {
                 state_epoch,
                 events,
             }),
-            RuntimeEvent::InputControlReleased { reason, .. }
-            | RuntimeEvent::InputDeliveryInvalidated { reason }
+            RuntimeEvent::InputControlGranted {
+                session_id,
+                lease_expires_at: _,
+                ..
+            } => self.push_input(|sequence| ipc::InputDelivery::ControlGranted {
+                sequence,
+                session_id: session_id.to_string(),
+                lease_ms: 1_500,
+            }),
+            RuntimeEvent::InputControlDenied {
+                session_id, reason, ..
+            } => {
+                if self
+                    .controlling
+                    .as_ref()
+                    .is_some_and(|control| control.session_id == session_id.to_string())
+                {
+                    self.controlling = None;
+                }
+                self.push_input(|sequence| ipc::InputDelivery::ControlDenied { sequence, reason });
+            }
+            RuntimeEvent::InputControlReleased {
+                session_id, reason, ..
+            } => {
+                if self
+                    .controlling
+                    .as_ref()
+                    .is_some_and(|control| control.session_id == session_id.to_string())
+                {
+                    self.controlling = None;
+                }
+                self.push_input(|sequence| ipc::InputDelivery::ControlReleased {
+                    sequence,
+                    session_id: session_id.to_string(),
+                    reason,
+                });
+            }
+            RuntimeEvent::InputDeliveryInvalidated { reason }
             | RuntimeEvent::InputLinkUnavailable { reason, .. } => self.release_input(reason),
             _ => {}
         }
@@ -491,6 +529,28 @@ impl State {
             }),
         }
     }
+    fn publish_file_data_object(
+        &mut self,
+        network: &Network,
+        paths: Vec<String>,
+    ) -> Result<String, String> {
+        let Some(files) = self.file_bridge.as_ref() else {
+            return Err("文件通道尚未就绪".into());
+        };
+        let peers = self.sync.file_peers(&network.runtime);
+        let frames = files.publish_local(
+            &peers,
+            paths.into_iter().map(std::path::PathBuf::from).collect(),
+        )?;
+        let mut first_id = None;
+        for (peer, id, frame) in frames {
+            first_id.get_or_insert_with(|| id.to_hex());
+            let data = frame.encode().map_err(|error| error.to_string())?;
+            self.sync.announce_file_offer(&network.runtime, peer, data);
+        }
+        first_id.ok_or_else(|| "没有已连接的受信任文件设备".into())
+    }
+
     fn platform_command(&mut self, command: PlatformCommand, network: &Network) -> ipc::Reply {
         let failed = |code: BoundaryErrorCode, message: &str| ipc::Reply::Platform {
             event: PlatformEvent::Failed {
@@ -639,6 +699,7 @@ impl State {
         if !input_command {
             self.heartbeat = Some(Instant::now());
         }
+        let command_is_leave = matches!(&command, ipc::Command::LeaveInputControl { .. });
         match command {
             ipc::Command::Platform {
                 session_epoch,
@@ -901,13 +962,156 @@ impl State {
             }
             ipc::Command::SetInputSharingSettings { settings } => {
                 if let Err(error) = settings.validate() {
-                    return ipc::Reply::rejected("invalid_input", &error);
+                    return ipc::Reply::rejected("invalid_input", &error.to_string());
                 }
                 match network
                     .runtime
                     .try_send(RuntimeCommand::SetInputSharingSettings(settings))
                 {
                     Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::EnableInputControl { peer_id } => {
+                let Ok(peer_id) = peer_id.parse::<deskfuse_core::DeviceId>() else {
+                    return ipc::Reply::rejected("invalid_input", "invalid input peer id");
+                };
+                let settings = controller_settings(
+                    network.input_runtime.handle.input_snapshot().settings,
+                    Some(peer_id),
+                );
+                match settings.validate() {
+                    Ok(()) => match network
+                        .input_runtime
+                        .handle
+                        .try_send(RuntimeCommand::SetInputSharingSettings(settings))
+                    {
+                        Ok(()) => ipc::Reply::queued(),
+                        Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                    },
+                    Err(error) => ipc::Reply::rejected("invalid_input", &error.to_string()),
+                }
+            }
+            ipc::Command::DisableInputControl => {
+                let settings = controller_settings(
+                    network.input_runtime.handle.input_snapshot().settings,
+                    None,
+                );
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::SetInputSharingSettings(settings))
+                {
+                    Ok(()) => {
+                        self.controlling = None;
+                        ipc::Reply::queued()
+                    }
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::RestartInputControl { peer_id } => {
+                let Ok(peer_id) = peer_id.parse::<deskfuse_core::DeviceId>() else {
+                    return ipc::Reply::rejected("invalid_input", "invalid input peer id");
+                };
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::RestartInputActivation { peer_id })
+                {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::EnterInputControl {
+                session_id,
+                target_display,
+                x,
+                y,
+            } => {
+                let Ok(session_id) = parse_input_session(&session_id) else {
+                    return ipc::Reply::rejected("invalid_input", "invalid input session id");
+                };
+                if target_display.trim().is_empty() || !x.is_finite() || !y.is_finite() {
+                    return ipc::Reply::rejected("invalid_input", "invalid input target");
+                }
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::EnterInputControl {
+                        session_id,
+                        target_display: target_display.clone().into(),
+                        x,
+                        y,
+                    }) {
+                    Ok(()) => {
+                        let peer_id = network
+                            .input_runtime
+                            .handle
+                            .input_snapshot()
+                            .links
+                            .iter()
+                            .find(|link| link.control_session == Some(session_id))
+                            .map(|link| link.peer_id.to_string())
+                            .unwrap_or_default();
+                        self.controlling = Some(ipc::ControlView {
+                            session_id: session_id.to_string(),
+                            peer_id,
+                            target_display,
+                        });
+                        ipc::Reply::queued()
+                    }
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::SendInputEvents {
+                session_id,
+                target_display,
+                batch: _,
+                events,
+            } => {
+                let Ok(session_id) = parse_input_session(&session_id) else {
+                    return ipc::Reply::rejected("invalid_input", "invalid input session id");
+                };
+                if target_display.trim().is_empty()
+                    || events.is_empty()
+                    || events.len() > 256
+                    || events.iter().any(|event| event.validate().is_err())
+                {
+                    return ipc::Reply::rejected("invalid_input", "invalid input event batch");
+                }
+                match network
+                    .input_runtime
+                    .handle
+                    .try_send(RuntimeCommand::SendSharedInput {
+                        session_id,
+                        target_display: target_display.into(),
+                        events,
+                    }) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
+                }
+            }
+            ipc::Command::LeaveInputControl { session_id }
+            | ipc::Command::ReleaseInputControl { session_id } => {
+                let Ok(session_id) = parse_input_session(&session_id) else {
+                    return ipc::Reply::rejected("invalid_input", "invalid input session id");
+                };
+                let command = if command_is_leave {
+                    RuntimeCommand::LeaveInputControl { session_id }
+                } else {
+                    RuntimeCommand::ReleaseInputControl { session_id }
+                };
+                match network.input_runtime.handle.try_send(command) {
+                    Ok(()) => {
+                        if self
+                            .controlling
+                            .as_ref()
+                            .is_some_and(|control| control.session_id == session_id.to_string())
+                        {
+                            self.controlling = None;
+                        }
+                        ipc::Reply::queued()
+                    }
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),
                 }
             }
@@ -1100,6 +1304,35 @@ fn installed_app_info(app: remote_app::InstalledApp) -> ipc::InstalledAppInfo {
         name: app.name,
         path: app.path,
     }
+}
+
+fn parse_input_session(value: &str) -> Result<deskfuse_core::InputSessionId, ()> {
+    value
+        .parse::<uuid::Uuid>()
+        .map(deskfuse_core::InputSessionId)
+        .map_err(|_| ())
+}
+
+pub(crate) fn controller_settings(
+    mut settings: deskfuse_core::InputSharingSettings,
+    peer: Option<deskfuse_core::DeviceId>,
+) -> deskfuse_core::InputSharingSettings {
+    match peer {
+        Some(peer) => {
+            settings.enabled = true;
+            settings.role = deskfuse_core::InputShareRole::Controller;
+            settings.authorized_controller = None;
+            if !settings.participants.contains(&peer) {
+                settings.participants.push(peer);
+            }
+        }
+        None => {
+            settings.enabled = false;
+            settings.role = deskfuse_core::InputShareRole::Disabled;
+            settings.authorized_controller = None;
+        }
+    }
+    settings
 }
 
 fn enum_string(value: &impl serde::Serialize) -> String {

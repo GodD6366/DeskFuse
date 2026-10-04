@@ -5,7 +5,6 @@ use super::super::desktop_protocol::{Format, WorkflowInput};
 use base64::Engine;
 use deskfuse_core::workflow::{Workflow, WorkflowContentType, WorkflowStepKind};
 use deskfuse_platform::{WorkflowCapabilities, WorkflowExecutionPlan, WorkflowOutputMode};
-use deskfuse_store::SettingsStore;
 use serde::Deserialize;
 use sha2::Digest;
 
@@ -344,7 +343,7 @@ impl Catalog {
         let incoming_wins = dominates(&incoming.clock, &existing.clock);
         let existing_wins = dominates(&existing.clock, &incoming.clock);
         if incoming_wins && !existing_wins {
-            state.records.insert(incoming.key, incoming);
+            state.records.insert(incoming.key.clone(), incoming);
         } else if !incoming_wins && !existing_wins && incoming.definition != existing.definition {
             let (winner, loser) = if incoming.revision > existing.revision {
                 (incoming, existing)

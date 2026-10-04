@@ -29,7 +29,8 @@ if (!$MakeNSIS) {
 }
 if (!(Test-Path -LiteralPath $MakeNSIS -PathType Leaf)) { throw 'NSIS 3 is required; install it before packaging.' }
 $sourceBytesHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceSnapshot).Hash
-$source = @(Get-Content -Raw -LiteralPath $SourceSnapshot | ConvertFrom-Json)
+# PowerShell 5.1 emits a top-level JSON array as one pipeline object.
+$source = @(Get-Content -Raw -LiteralPath $SourceSnapshot | ConvertFrom-Json | ForEach-Object { $_ })
 if (!$source.Count) { throw 'Empty source snapshot' }
 $rootPrefix = $ProjectRoot.TrimEnd('\') + '\'
 $paths = @{}
