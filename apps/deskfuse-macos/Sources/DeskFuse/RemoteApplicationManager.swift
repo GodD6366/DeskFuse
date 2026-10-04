@@ -10,6 +10,9 @@ import DeskFuseRemoteApplication
     private(set) var hosts: [UUID: RemoteApplicationSession] = [:]
     private(set) var viewers: [UUID: RemoteApplicationSession] = [:]
     var error: String?
+    var virtualDisplayEnabled = UserDefaults.standard.object(forKey: "remoteApplication.virtualDisplayEnabled") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(virtualDisplayEnabled, forKey: "remoteApplication.virtualDisplayEnabled") }
+    }
     @ObservationIgnored private var engine: Engine?
     @ObservationIgnored private var incoming: Task<Void, Never>?
     @ObservationIgnored private var windows: [UUID: RemoteApplicationWindow] = [:]
@@ -19,8 +22,24 @@ import DeskFuseRemoteApplication
     @ObservationIgnored private var catalogs: [UUID: RemoteApplicationSession] = [:]
     @ObservationIgnored private var viewerOwner: UUID?
     @ObservationIgnored private var hostOwner: UUID?
+    @ObservationIgnored private var hostClaim = UUID()
+    @ObservationIgnored private var hostPreparation: Task<Void, Error>?
     @ObservationIgnored private var focusedViewerID: UUID?
     private init() {}
+
+    static let viewerRestriction = "当前键鼠共享角色不允许操作远程应用，请在主控电脑操作，或结束被控并关闭键鼠共享。"
+    var canOperateApplications: Bool { AppStore.shared.snapshot?.input.canOperateRemoteApplications == true }
+
+    @discardableResult private func allowViewer() -> Bool {
+        guard canOperateApplications else { error = Self.viewerRestriction; return false }
+        return true
+    }
+    func reconcileViewerRole() {
+        guard !canOperateApplications else { return }
+        // Only outgoing sessions stop; this Mac can still host apps for A.
+        let sessions = Array(viewers.values) + pickers.values.map(\.session) + Array(catalogs.values)
+        for session in sessions { session.restrictViewerRole() }
+    }
 
     func start(engine: Engine) {
         self.engine = engine; incoming?.cancel()
@@ -108,6 +127,7 @@ import DeskFuseRemoteApplication
         Task { await viewer.connect(); viewer.launch(app, username: username, password: password) }
     }
     func openPicker(peerID: String, peerName: String) {
+        guard allowViewer() else { return }
         guard let engine else { error = "远程应用引擎尚未就绪"; return }
         if let picker = pickers[peerID] {
             picker.showWindow(nil); picker.window?.deminiaturize(nil); picker.window?.makeKeyAndOrderFront(nil)
@@ -121,7 +141,9 @@ import DeskFuseRemoteApplication
     }
     /// Workspace catalogs own only a browsing connection, never viewer windows.
     func makeCatalog(for device: Device) -> RemoteApplicationSession? {
+        guard allowViewer() else { return nil }
         guard let engine, !device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
+
         let session = RemoteApplicationSession(engine: engine, peerID: device.id, peerName: device.name, role: .viewer)
         catalogs[session.id] = session
         return session
@@ -134,6 +156,7 @@ import DeskFuseRemoteApplication
         Set(viewers.values.filter { $0.peerID == peerID }.compactMap(\.applicationKey))
     }
     func openApplication(_ application: RemoteApplicationInfo, from picker: RemoteApplicationSession) {
+        guard allowViewer() else { return }
         guard let engine else { return }
         if let existing = viewers.values.first(where: { $0.peerID == picker.peerID && $0.applicationKey == application.applicationKey }),
            let window = windows[existing.id] {
@@ -198,6 +221,7 @@ import DeskFuseRemoteApplication
         session.stop()
     }
     func claimViewerControl(_ session: RemoteApplicationSession) throws {
+        guard allowViewer() else { throw RemoteApplicationError.unsupported(Self.viewerRestriction) }
         if let owner = viewerOwner, owner != session.id { viewers[owner]?.releaseControl(resumeSharing: false) }
         try session.engine.remoteApplicationViewerControl(active: true)
         viewerOwner = session.id
@@ -227,16 +251,34 @@ import DeskFuseRemoteApplication
             }
         }
     }
-    func claimHostControl(_ session: RemoteApplicationSession) -> Bool {
+    func claimHostControl(_ session: RemoteApplicationSession) async throws -> Bool {
         if let owner = hostOwner, owner != session.id, let previous = hosts[owner] {
             guard previous.peerID == session.peerID else { return false }
             previous.yieldHostControl()
         }
+        session.plane.input.focus(false)
         hostOwner = session.id
+        let claim = UUID(); hostClaim = claim
+        let previous = hostPreparation, engine = session.engine, peerID = session.peerID
+        // Serialize native barriers. An older detached request must not arrive
+        // after the new application's lease has already been armed.
+        let preparation = Task {
+            _ = await previous?.result
+            try await Task.detached { try engine.remoteApplicationPrepareControl(peerId: peerID) }.value
+        }
+        hostPreparation = preparation
+        do { try await preparation.value }
+        catch {
+            if hostClaim == claim { releaseHostControl(session) }
+            throw error
+        }
+        guard hostClaim == claim, hostOwner == session.id else { return false }
+        hostPreparation = nil
         return true
     }
+    func ownsHostControl(_ session: RemoteApplicationSession) -> Bool { hostOwner == session.id }
     func releaseHostControl(_ session: RemoteApplicationSession) {
-        if hostOwner == session.id { hostOwner = nil }
+        if hostOwner == session.id { hostOwner = nil; hostClaim = UUID() }
     }
     func stop() {
         incoming?.cancel(); incoming = nil
@@ -247,7 +289,10 @@ import DeskFuseRemoteApplication
         for session in rdpSessions { session.stop() }
         rdpPickers.removeAll()
         let sessions = Array(hosts.values) + Array(viewers.values) + pickers.values.map(\.session) + Array(catalogs.values)
-        for session in sessions { session.releaseControl(resumeSharing: true); session.yieldHostControl() }
+        for session in sessions {
+            session.releaseControl(resumeSharing: true); session.yieldHostControl()
+            session.restoreHostDesktopBeforeExit()
+        }
         focusedViewerID = nil
         RemoteApplicationDockController.shared.reset()
         Task { for session in sessions { await session.stop() } }
@@ -365,6 +410,7 @@ import DeskFuseRemoteApplication
     private var canvasAspect: CGFloat?
     private var lastContentSize: CGSize?
     private var fittedInitially = false
+    private var userSizeMultiplier: CGFloat = 1
     private let chrome = RemoteWindowChrome()
     private var frameBeforeZoom: NSRect?
     private static let menuItem = NSToolbarItem.Identifier("deskfuse-remote-application-menu")
@@ -533,9 +579,12 @@ import DeskFuseRemoteApplication
         let old = window.frame, layout = window.contentLayoutRect
         let chrome = CGSize(width: old.width - layout.width, height: old.height - layout.height)
         let available = (window.screen?.visibleFrame ?? old).insetBy(dx: 16, dy: 16)
-        let minimumWidth = min(240, 180 * aspect, size.width)
+        let proportional = RemotePresentationGeometry.proportionalSize(size,
+            sourceScreen: session.presentationSurface?.presentationDisplaySize ?? session.presentationSurface?.displayFrame.size ?? size,
+            destinationScreen: window.screen?.frame.size ?? size)
+        let preferredWidth = frameBeforeZoom != nil ? layout.width : proportional.width * userSizeMultiplier
+        let minimumWidth = min(240, 180 * aspect, preferredWidth)
         window.contentMinSize = CGSize(width: minimumWidth, height: minimumWidth / aspect)
-        let preferredWidth = fittedInitially ? layout.width : size.width
         let width = min(max(minimumWidth, preferredWidth), available.width - chrome.width,
                         (available.height - chrome.height) * aspect)
         let frameSize = CGSize(width: width + chrome.width, height: width / aspect + chrome.height)
@@ -555,6 +604,13 @@ import DeskFuseRemoteApplication
             return CGSize(width: frameSize.width, height: (frameSize.width - chrome.width) / aspect + chrome.height)
         }
         return CGSize(width: (frameSize.height - chrome.height) * aspect + chrome.width, height: frameSize.height)
+    }
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window, let size = lastContentSize, session.scale == .fit else { return }
+        let proportional = RemotePresentationGeometry.proportionalSize(size,
+            sourceScreen: session.presentationSurface?.presentationDisplaySize ?? session.presentationSurface?.displayFrame.size ?? size,
+            destinationScreen: window.screen?.frame.size ?? size)
+        if proportional.width > 0 { userSizeMultiplier = window.contentLayoutRect.width / proportional.width }
     }
     func windowDidExitFullScreen(_ notification: Notification) {
         canvasAspect = nil

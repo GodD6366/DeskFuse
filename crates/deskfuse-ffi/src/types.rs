@@ -335,10 +335,10 @@ impl InputSettings {
                 })
             })
             .collect::<Result<_, EngineError>>()?;
-        let [left, right, up, down, lock]: [Shortcut; 5] = self
-            .shortcuts
-            .try_into()
-            .map_err(|_| EngineError::from("快捷键配置需要五个方向/锁定按键".to_string()))?;
+        let [left, right, up, down, lock, emergency]: [Shortcut; 6] =
+            self.shortcuts.try_into().map_err(|_| {
+                EngineError::from("快捷键配置需要方向、锁定和紧急收回共六组按键".to_string())
+            })?;
         let key = |s: Shortcut| core::InputShortcut {
             key_code: s.key_code,
             modifiers: s.modifiers,
@@ -349,11 +349,35 @@ impl InputSettings {
             up: key(up),
             down: key(down),
             lock: key(lock),
+            emergency: key(emergency),
         };
         s.validate().map_err(|e| EngineError::from(e.to_string()))?;
         Ok(s)
     }
 }
+#[cfg(test)]
+mod input_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn six_shortcut_dto_round_trips_custom_emergency() {
+        let original = core::InputSharingSettings::default();
+        let mut dto = InputSettings::from(&original);
+        assert_eq!(dto.shortcuts.len(), 6);
+        assert_eq!(dto.shortcuts[5].key_code, 53);
+        dto.shortcuts[5] = Shortcut {
+            key_code: 14,
+            modifiers: 0x0c0000,
+        };
+        let updated = dto.clone().into_core(&original).unwrap();
+        assert_eq!(updated.shortcuts.emergency.key_code, 14);
+        assert_eq!(updated.shortcuts.emergency.modifiers, 0x0c0000);
+        assert_eq!(updated.shortcuts.left, original.shortcuts.left);
+        dto.shortcuts.pop();
+        assert!(dto.into_core(&original).is_err());
+    }
+}
+
 impl From<&core::InputSharingSettings> for InputSettings {
     fn from(s: &core::InputSharingSettings) -> Self {
         Self {
@@ -383,6 +407,7 @@ impl From<&core::InputSharingSettings> for InputSettings {
                 &s.shortcuts.up,
                 &s.shortcuts.down,
                 &s.shortcuts.lock,
+                &s.shortcuts.emergency,
             ]
             .into_iter()
             .map(|k| Shortcut {
@@ -430,6 +455,7 @@ pub struct InputState {
     pub managed: bool,
     pub managed_paused: bool,
     pub can_configure: bool,
+    pub can_operate_remote_applications: bool,
     pub locked: bool,
     pub recording: bool,
     pub displays: Vec<Display>,
@@ -869,6 +895,7 @@ impl From<&EngineState> for EngineSnapshot {
                     .as_ref()
                     .is_some_and(|a| a.status == core::InputActivationStatus::PausedByUser),
                 can_configure: input.can_configure_layout(),
+                can_operate_remote_applications: input.can_operate_remote_applications(),
                 locked: m.input_locked,
                 recording: s.recording,
                 displays,

@@ -2,6 +2,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 struct Presence {
     controller: bool,
@@ -143,10 +146,15 @@ impl InputActor {
         remember: bool,
     ) {
         let local = self.network.borrow().snapshot.local_device_id;
-        if !self.snapshot.environment.candidates.contains(&controller)
+        if (!self.snapshot.environment.candidates.contains(&controller)
+            && !(controller == local && self.snapshot.settings.role == InputShareRole::Controller))
             || (controller != local && !self.network_allowed(controller))
         {
             self.settings_error("所选主控已离线或尚未启用主控，请重新选择");
+            return;
+        }
+        if remember && self.environment.pending.is_some() {
+            self.settings_error("Wi-Fi 场景正在变化，请等待网络稳定后保存规则");
             return;
         }
         let ssid = self.snapshot.environment.ssid.clone();
@@ -327,6 +335,7 @@ impl InputActor {
                 votes.insert(preferred);
             }
         }
+        let automatic = !self.environment.rules.is_empty();
         let conflict = (ambiguous && self.environment.temporary.is_none())
             || votes.len() > 1
             || (votes.is_empty() && candidates.len() > 1);
@@ -336,13 +345,14 @@ impl InputActor {
             votes
                 .first()
                 .copied()
-                .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
+                .or_else(|| (!automatic && candidates.len() == 1).then(|| candidates[0]))
         };
         // A locally enabled controller is handed over only by the local user.
-        // A remote rule or vote surfaces as a conflict to resolve instead of a
+        // A remote vote without a local saved rule surfaces as a conflict instead of a
         // silent takeover of this device's controller role.
         let remote_request = local_controller
             && self.environment.temporary.is_none()
+            && own != requested
             && requested.is_some_and(|id| id != local);
         let conflict = conflict || remote_request;
         let selected = if remote_request { None } else { requested };
@@ -350,10 +360,16 @@ impl InputActor {
         // must not revoke its lease or switch the receiver back to a stale
         // preference; a later selection takes effect after that activation ends.
         if !busy && self.environment.pending.is_none() && self.incoming.is_none() {
-            // Conflicting rules keep the existing effective controller stable.
-            if !conflict || self.snapshot.environment.selected.is_none() {
+            // Conflicting rules keep the existing effective controller stable,
+            // but an unmatched saved scene must not retain a stale controller.
+            if !conflict
+                || self.snapshot.environment.selected.is_none()
+                || (automatic && own.is_none() && !remote_request)
+            {
                 let previous = self.snapshot.environment.selected;
-                if previous != selected {
+                let suspended = selected.is_some_and(|id| id != local)
+                    || (automatic && selected != Some(local));
+                if previous != selected || self.snapshot.environment.local_suspended != suspended {
                     self.release_all("controller environment changed");
                     if self
                         .incoming
@@ -364,7 +380,7 @@ impl InputActor {
                     }
                 }
                 self.snapshot.environment.selected = selected;
-                self.snapshot.environment.local_suspended = selected.is_some_and(|id| id != local);
+                self.snapshot.environment.local_suspended = suspended;
             }
         }
         self.snapshot.environment.candidates = candidates;
@@ -385,6 +401,8 @@ impl InputActor {
             .is_some_and(|id| !self.snapshot.environment.candidates.contains(&id))
         {
             "该 Wi-Fi 的首选主控不在线；保留本地操作，可临时选择其他主控"
+        } else if automatic && self.snapshot.environment.selected.is_none() {
+            "当前 Wi-Fi 未匹配已保存的主控规则，已暂停本机主控"
         } else if own.is_some() {
             "已应用 Wi-Fi 场景主控选择，原有主控设置与布局保持保存"
         } else {

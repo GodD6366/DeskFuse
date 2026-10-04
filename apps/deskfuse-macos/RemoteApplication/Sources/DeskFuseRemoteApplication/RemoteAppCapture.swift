@@ -36,6 +36,43 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
 
 public enum CaptureViewMode: String, Sendable { case application, desktop }
 
+struct CaptureDisplayChoice {
+    let id: UInt32
+    let frame: CGRect
+    static func captureRect(display: CGRect, application: CGRect, pinned: Bool) -> CGRect {
+        // A dedicated display is a stable input coordinate space. Activation,
+        // Dock/menu changes and dialogs update layout, not the native lease.
+        pinned ? display : application.intersection(display)
+    }
+    static func select(_ displays: [Self], pinned: UInt32?, previous: UInt32?, windows: [CGRect]) -> UInt32? {
+        // Explicit assignments are hard boundaries; a lost virtual screen must
+        // never silently select a physical desktop instead.
+        if let pinned { return displays.first { $0.id == pinned }?.id }
+        if let previous, displays.contains(where: { $0.id == previous }) { return previous }
+        func area(_ display: Self) -> CGFloat {
+            windows.reduce(0) { total, window in
+                let intersection = window.intersection(display.frame)
+                return total + (intersection.isNull ? 0 : intersection.width * intersection.height)
+            }
+        }
+        return displays.max { area($0) < area($1) }?.id
+    }
+}
+
+/// A short enumeration gap is recoverable; a persistently absent window is not.
+/// Uses monotonic time and resets only after a complete successful refresh.
+public struct CaptureWindowAvailabilityGrace {
+    public static let duration: TimeInterval = 3
+    private var missingSince: TimeInterval?
+    public var isRecovering: Bool { missingSince != nil }
+    public init() {}
+    public mutating func allowsRetry(at now: TimeInterval) -> Bool {
+        if missingSince == nil { missingSince = now }
+        return now - missingSince! < Self.duration
+    }
+    public mutating func reset() { missingSince = nil }
+}
+
 @available(macOS 14.2, *)
 @MainActor public final class RemoteAppCapture {
     public struct Source {
@@ -51,6 +88,7 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
     private var crop = CropTracker()
     private var currentDisplay: UInt32?
     private var filterApplications: [pid_t] = []
+    public private(set) var sourceStage = "idle"
     public init() {}
     public static var hasScreenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
     @discardableResult public static func requestScreenRecordingPermission() -> Bool { CGRequestScreenCaptureAccess() }
@@ -60,22 +98,18 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         guard Self.hasScreenRecordingPermission else {
             throw RemoteApplicationError.permission("请在被控 Mac 的系统设置中允许 DeskFuse 录制屏幕")
         }
+        sourceStage = "shareable_content"
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        sourceStage = "sck_application"
         guard let application = content.applications.first(where: { $0.processID == processID }) else { throw RemoteApplicationError.noWindow }
         let ownedWindows = content.windows.filter { $0.owningApplication?.processID == processID }
         let windows = ownedWindows.filter { $0.isOnScreen && !$0.frame.isEmpty }
-        let pinnedDisplay = displayID ?? (gestureActive ? currentDisplay : nil)
-        let display = pinnedDisplay.flatMap { id in content.displays.first { $0.displayID == id } }
-            ?? content.displays.max { a, b in
-                func area(_ display: SCDisplay) -> CGFloat {
-                    windows.reduce(0) { total, window in
-                        let intersection = window.frame.intersection(display.frame)
-                        return total + (intersection.isNull ? 0 : intersection.width * intersection.height)
-                    }
-                }
-                return area(a) < area(b)
-            }
-        guard let display else { throw RemoteApplicationError.noWindow }
+        let selectedDisplay = CaptureDisplayChoice.select(content.displays.map { .init(id: $0.displayID, frame: $0.frame) },
+            pinned: displayID, previous: gestureActive ? currentDisplay : nil, windows: windows.map(\.frame))
+        sourceStage = "sck_assigned_display"
+        guard let display = content.displays.first(where: { $0.displayID == selectedDisplay }) else {
+            throw RemoteApplicationError.noWindow
+        }
         currentDisplay = display.displayID
         // Candidate panels are owned by input-method processes, not the editor.
         // Include those applications so new candidate windows appear immediately
@@ -131,10 +165,20 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
             // prevents every show/hide from changing coordinates and the lease.
             let normalWindows = windows.filter { $0.windowLayer == 0 }
             let baseWindows = normalWindows.isEmpty ? windows : normalWindows
-            guard let union = crop.update(windows: baseWindows.map(\.frame), display: display.frame, gestureActive: gestureActive) else {
+            sourceStage = "sck_window_crop"
+            let hasVisibleWindow = baseWindows.contains {
+                let region = $0.frame.intersection(display.frame)
+                return !region.isNull && !region.isEmpty
+            }
+            let visibleUnion = crop.update(windows: baseWindows.map(\.frame), display: display.frame,
+                gestureActive: gestureActive && (displayID == nil || hasVisibleWindow))
+            // The assigned screen remains the capture boundary even when SCK
+            // briefly omits Finder's document window. Never substitute a
+            // physical display or invent an application/input region.
+            guard let union = visibleUnion ?? (displayID != nil ? display.frame : nil) else {
                 throw RemoteApplicationError.noWindow
             }
-            applicationRect = union
+            applicationRect = visibleUnion
             if candidateBase != union || candidateDisplay != display.displayID {
                 candidateBase = union; candidateExtent = union; candidateDisplay = display.displayID
             }
@@ -143,7 +187,7 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
                     candidateExtent = candidateExtent.union(window.frame.intersection(display.frame))
                 }
             }
-            rect = candidateExtent.intersection(display.frame)
+            rect = CaptureDisplayChoice.captureRect(display: display.frame, application: candidateExtent, pinned: displayID != nil)
             let baseWindowIDs = Set(baseWindows.map(\.windowID))
             // A moving main window is still part of the base video. Treating
             // its overflow as an auxiliary panel composites it a second time.
@@ -159,7 +203,8 @@ public enum CaptureViewMode: String, Sendable { case application, desktop }
         let maximum = screen?.maximumFramesPerSecond ?? 0
         let hz: Double? = refresh > 0 ? refresh : (maximum > 0 ? Double(maximum) : nil)
         let scale = Double(filter.pointPixelScale)
-        let note = "bundle=\(application.bundleIdentifier) owned=\(ownedWindows.count) onScreen=\(windows.count) chromium=\(chromiumMatched) displayFilter=\(usesDisplayFilter)"
+        sourceStage = mode == .application && applicationRect == nil ? "sck_window_crop_missing" : "ready"
+        let note = "windowRegion=\(applicationRect == nil ? "missing" : "visible") bundle=\(application.bundleIdentifier) owned=\(ownedWindows.count) onScreen=\(windows.count) chromium=\(chromiumMatched) displayFilter=\(usesDisplayFilter) display=\(display.displayID) pinned=\(displayID != nil)"
         return Source(filter: filter, surface: try CaptureSurface(identity: identity, displayID: display.displayID,
             displayFrame: display.frame, contentRect: rect, pointPixelScale: scale, sourceHz: hz,
             applicationRect: applicationRect, auxiliaryRects: auxiliaryRects),

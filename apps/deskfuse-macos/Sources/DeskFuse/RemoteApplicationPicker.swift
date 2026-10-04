@@ -20,6 +20,20 @@ private enum RemoteApplicationCategory: String, CaseIterable, Identifiable {
     }
 }
 
+@available(macOS 14.2, *)
+struct RemoteApplicationDisplayModeToggle: View {
+    @Bindable private var remote = RemoteApplicationManager.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("虚拟屏幕模式（实验性）", isOn: $remote.virtualDisplayEnabled)
+                .toggleStyle(.switch).controlSize(.small)
+                .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
+            Text("下次打开或重新连接时生效")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// An independent launcher. Selecting an app creates/focuses its remote window;
 /// the catalog connection stays available for opening the next application.
 @available(macOS 14.2, *)
@@ -45,6 +59,7 @@ struct RemoteApplicationPicker: View {
     var body: some View {
         VStack(spacing: 0) {
             header.padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 12)
+            RemoteApplicationDisplayModeToggle().padding(.horizontal, 20).padding(.bottom, 10)
             Divider().padding(.horizontal, 20)
             categories.padding(.horizontal, 20).padding(.vertical, 10)
             if !session.applicationsLoaded {

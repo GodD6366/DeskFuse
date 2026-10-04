@@ -267,6 +267,18 @@ impl InputSharingSettings {
             ));
         }
 
+        let emergency = &self.shortcuts.emergency;
+        if emergency.key_code > 127
+            || emergency.modifiers & 0x1C0000 == 0
+            || emergency.modifiers & !0x1E0000 != 0
+            || (emergency.key_code == 2 && emergency.modifiers == 0x120000)
+            || shortcuts.contains(&emergency)
+        {
+            return Err(invalid(
+                "emergency shortcut must be a distinct valid modifier chord",
+            ));
+        }
+
         if self.disabled_corners > 15
             || self.corner_size > 256
             || [
@@ -942,6 +954,13 @@ mod remote_wallpapers_base64 {
 }
 
 impl InputSharingSnapshot {
+    /// Receiving keyboard/mouse control must never enable a nested remote-app
+    /// controller. A user-paused incoming activation still owns the receiver
+    /// role; saved local settings alone cannot override it.
+    pub fn can_operate_remote_applications(&self) -> bool {
+        self.managed_control.is_none() && (!self.settings.enabled || self.can_configure_layout())
+    }
+
     /// Layout authoring belongs only to the selected local controller, never a receiver.
     pub fn can_configure_layout(&self) -> bool {
         self.managed_control.is_none()
@@ -980,6 +999,14 @@ pub struct InputShortcutBindings {
     pub up: InputShortcut,
     pub down: InputShortcut,
     pub lock: InputShortcut,
+    #[serde(default = "default_emergency_shortcut")]
+    pub emergency: InputShortcut,
+}
+fn default_emergency_shortcut() -> InputShortcut {
+    InputShortcut {
+        key_code: 53,
+        modifiers: 0x1C0000,
+    }
 }
 impl Default for InputShortcutBindings {
     fn default() -> Self {
@@ -993,6 +1020,7 @@ impl Default for InputShortcutBindings {
             up: chord(126),
             down: chord(125),
             lock: chord(37),
+            emergency: default_emergency_shortcut(),
         }
     }
 }
@@ -1206,6 +1234,42 @@ mod tests {
         let debug = format!("{motion:?}");
         assert!(debug.contains("InputToken([redacted])"));
         assert!(!debug.contains("19, 19"));
+    }
+
+    #[test]
+    fn emergency_shortcut_migrates_old_settings_and_rejects_conflicts() {
+        let mut value = serde_json::to_value(InputShortcutBindings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("emergency");
+        let bindings: InputShortcutBindings = serde_json::from_value(value).unwrap();
+        assert_eq!(bindings.emergency, default_emergency_shortcut());
+        let mut settings = InputSharingSettings::default();
+        settings.shortcuts.emergency = InputShortcut {
+            key_code: 14,
+            modifiers: 0x0c0000,
+        };
+        assert!(settings.validate().is_ok());
+        for invalid in [
+            settings.shortcuts.left.clone(),
+            InputShortcut {
+                key_code: 14,
+                modifiers: 0,
+            },
+            InputShortcut {
+                key_code: 14,
+                modifiers: 0x020000,
+            },
+            InputShortcut {
+                key_code: 128,
+                modifiers: 0x0c0000,
+            },
+            InputShortcut {
+                key_code: 2,
+                modifiers: 0x120000,
+            },
+        ] {
+            settings.shortcuts.emergency = invalid;
+            assert!(settings.validate().is_err());
+        }
     }
 
     #[test]

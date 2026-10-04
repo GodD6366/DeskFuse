@@ -36,7 +36,7 @@ fn capture_hotkey_matches(
     code: u16,
     modifiers: u64,
 ) -> bool {
-    HotkeyBindings::is_emergency(code, modifiers)
+    bindings.is_reclaim(code, modifiers)
         || (controller_enabled && bindings.matches(code, modifiers))
 }
 const QUEUE_SIZE: usize = 512;
@@ -988,7 +988,7 @@ unsafe extern "C" fn tap_callback(
                     context.local_keys.remove(&code);
                 }
             }
-            if pressed && HotkeyBindings::is_emergency(code, modifiers) {
+            if pressed && context.hotkeys.is_reclaim(code, modifiers) {
                 context.shared.exclusive.store(false, Ordering::Release);
                 let _ = context.exit_remote(None);
             }
@@ -1708,6 +1708,21 @@ mod tests {
             SharedInputEvent::Modifiers { modifiers: flags }
         );
     }
+    #[test]
+    fn controlled_role_consumes_custom_emergency_even_when_other_hotkeys_are_disabled() {
+        let keys = HotkeyBindings {
+            emergency: deskfuse_input::sharing::HotkeyChord {
+                code: 14,
+                modifiers: 0x0c0000,
+            },
+            ..Default::default()
+        };
+        assert!(capture_hotkey_matches(&keys, false, 14, 0x0c0000));
+        assert!(capture_hotkey_matches(&keys, false, 53, 0x1c0000));
+        assert!(!capture_hotkey_matches(&keys, false, 14, 0));
+        assert!(!capture_hotkey_matches(&keys, false, 123, 0x1c0000));
+    }
+
     #[test]
     fn controlled_role_only_consumes_fixed_emergency_chord() {
         let keys = HotkeyBindings::default();

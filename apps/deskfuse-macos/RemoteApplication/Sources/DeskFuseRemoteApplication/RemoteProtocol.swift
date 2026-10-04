@@ -14,6 +14,18 @@ public struct RemoteMediaDiagnostics: Codable, Sendable {
     }
 }
 
+public enum RemoteApplicationDisplayMode: String, Codable, Sendable {
+    case window, virtualDisplay
+
+    public func captureDisplayID(assigned: UInt32?) throws -> UInt32? {
+        if self == .window { return nil }
+        guard let assigned, assigned != 0 else {
+            throw RemoteApplicationError.unsupported("远程应用专用屏幕不可用，请重新连接")
+        }
+        return assigned
+    }
+}
+
 public struct RemoteMessage: Codable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case hello, acquire, controlReady, applications, launch, surface, layout, frame, presented, input, heartbeat, release, keyFrame, preferences, pause, resume, stop, error
@@ -22,6 +34,8 @@ public struct RemoteMessage: Codable, Sendable {
     public var kind: Kind
     public var applications: [RemoteApplicationInfo]?
     public var application: UUID?
+    /// Launch-only selection; absent on older senders means ordinary windows.
+    public var displayMode: RemoteApplicationDisplayMode?
     public var surface: CaptureSurface?
     public var identity: SurfaceIdentity?
     public var profile: VideoProfile?

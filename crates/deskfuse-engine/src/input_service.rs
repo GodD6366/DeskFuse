@@ -161,25 +161,7 @@ async fn run(
             std::thread::sleep(Duration::from_secs(2));
         }
     }).map_err(|e|e.to_string())?;
-    let wifi_runtime = runtime.handle.clone();
-    let wifi_platform = platform.clone();
-    let stop = child.stopping.clone();
-    std::thread::Builder::new()
-        .name("deskfuse-input-wifi".into())
-        .spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let ssid = wifi_platform.current_ssid();
-                let _ = wifi_runtime
-                    .try_send(deskfuse_runtime::RuntimeCommand::ObserveWifiEnvironment { ssid });
-                for _ in 0..50 {
-                    if stop.load(Ordering::Acquire) {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    // Wi-Fi observations arrive from the authorized UI process over input IPC.
     let mut remote_input =
         crate::remote_application_input::Owner::new(child.pause.clone(), platform.clone());
     let mut runtime_events = runtime.handle.event_stream();
@@ -227,6 +209,7 @@ async fn run(
                 }
                 status.native.remote_application_viewer_paused = child.pause.load(Ordering::Acquire) == 7;
                 status.native.remote_application_lease = remote_input.lease();
+                status.native.remote_application_quiesced = remote_input.quiesced.clone();
                 status.native.remote_application_request = remote_input.request.clone();
                 status.native.remote_application_error = remote_input.error.clone();
                 status.input = runtime.handle.input_snapshot();

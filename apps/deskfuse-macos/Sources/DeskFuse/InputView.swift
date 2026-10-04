@@ -68,7 +68,7 @@ struct InputView: View {
             Image(systemName: snapshot.input.managedPaused ? "pause.circle" : "keyboard")
                 .font(.system(size: 44, weight: .light)).foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text(snapshot.input.managedPaused ? "已停止被控" : snapshot.input.managed ? "被控状态" : "等待主控")
+            Text(snapshot.input.managedPaused ? "已停止被控" : snapshot.input.managed ? "被控状态" : snapshot.input.settings.controller ? "主控已自动暂停" : "等待主控")
                 .font(.system(size: 26, weight: .bold))
             Text(snapshot.input.summary).font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -78,8 +78,16 @@ struct InputView: View {
                     .modifier(NativeGlassAction())
                     .disabled(snapshot.input.managedPaused)
             } else {
-                Button("在此 Mac 启用主控") { enableAsController() }
+                if snapshot.input.settings.controller {
+                    Text(snapshot.input.environmentMessage).font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                Button(snapshot.input.settings.controller ? "本次使用此 Mac 作为主控" : "在此 Mac 启用主控") { enableAsController() }
                     .modifier(NativeGlassAction())
+                Button("共享设置") { store.openSettings(tab: SettingsCategory.input.rawValue) }
+                    .modifier(NativeGlassAction())
+                Button("快捷键设置") { store.openSettings(tab: "shortcuts") }
+                    .buttonStyle(.link)
             }
         }.frame(maxWidth: 520)
     }
@@ -125,6 +133,9 @@ struct InputView: View {
                     store.openSettings(tab: SettingsCategory.input.rawValue)
                 }
                 sharingControl
+                WorkspaceChromeButton("快捷键设置", systemImage: "keyboard", help: "配置紧急收回、方向切换和锁定快捷键") {
+                    store.openSettings(tab: "shortcuts")
+                }
             }
             .fixedSize(horizontal: true, vertical: false)
             .disabled(updatingSettings)
@@ -154,7 +165,12 @@ struct InputView: View {
 
     /// 成为主控但不自动打开共享，避免新设备默认开始注入键鼠。
     private func enableAsController() {
-        var settings = (store.snapshot ?? snapshot).input.settings
+        let current = store.snapshot ?? snapshot
+        if current.input.settings.controller {
+            store.send(.chooseController(id: current.localId, remember: false))
+            return
+        }
+        var settings = current.input.settings
         settings.controller = true
         settings.enabled = false
         applySettings(settings)

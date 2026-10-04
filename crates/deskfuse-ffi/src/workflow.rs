@@ -531,6 +531,7 @@ pub(crate) fn hotkey_issue(
         &bindings.up,
         &bindings.down,
         &bindings.lock,
+        &bindings.emergency,
     ]
     .contains(&shortcut)
         || (shortcut.key_code == 2 && shortcut.modifiers == 0x0012_0000)

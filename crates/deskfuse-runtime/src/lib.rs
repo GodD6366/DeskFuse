@@ -1916,7 +1916,7 @@ impl RuntimeHandle {
     /// Ordered native-input subscription. Only one consumer may take this
     /// stream; subsequent subscriptions are empty. Unlike UI broadcasts,
     /// adjacent motion is coalesced without crossing input-state barriers.
-    #[must_use]
+    #[must_use = "the stream must be polled to receive native input events"]
     pub fn input_event_stream(&self) -> BoxStream<'static, RuntimeEvent> {
         self.input_delivery.stream()
     }
@@ -1942,7 +1942,7 @@ impl RuntimeHandle {
 
     /// Subscribe to UI/control notifications. Native input is delivered only
     /// through `input_event_stream`; lag here must not revoke input leases.
-    #[must_use]
+    #[must_use = "the stream must be polled to receive runtime events"]
     pub fn event_stream(&self) -> BoxStream<'static, RuntimeEvent> {
         Box::pin(stream::unfold(
             self.event_tx.subscribe(),

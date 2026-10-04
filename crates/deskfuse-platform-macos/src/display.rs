@@ -4,6 +4,12 @@ use crate::{PlatformError, PlatformResult};
 
 pub use deskfuse_platform::MainDisplayGeometry;
 
+// Must match DFRemoteVirtualDisplay.m. Excluding by native identity also works
+// in the independent input-service process, without a racy UI-owned ID list.
+fn is_remote_application_display(vendor: u32, model: u32) -> bool {
+    vendor == 0x4453 && model == 0x5241
+}
+
 /// Read the current main-display geometry.
 pub fn main_display_geometry() -> PlatformResult<MainDisplayGeometry> {
     let display = core_graphics::display::CGDisplay::main();
@@ -30,12 +36,19 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> CFUUIDRef;
+        fn CGDisplayVendorNumber(display: u32) -> u32;
+        fn CGDisplayModelNumber(display: u32) -> u32;
     }
     let mut displays = Vec::new();
     for id in CGDisplay::active_displays().map_err(|_| PlatformError::DisplayUnavailable)? {
         let display = CGDisplay::new(id);
+        // SAFETY: these read-only CoreGraphics queries accept active display IDs.
+        let reserved = unsafe {
+            is_remote_application_display(CGDisplayVendorNumber(id), CGDisplayModelNumber(id))
+        };
+        // Remote-application screens must never become mouse-shuttle targets.
         // Mirrored followers do not provide a distinct traversable desktop.
-        if display.mirrors_display() != 0 {
+        if reserved || display.mirrors_display() != 0 {
             continue;
         }
         let bounds = display.bounds();
@@ -89,4 +102,17 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
         .validate()
         .map_err(|_| PlatformError::DisplayUnavailable)?;
     Ok(topology)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_deskfuse_application_displays_are_reserved() {
+        assert!(is_remote_application_display(0x4453, 0x5241));
+        assert!(!is_remote_application_display(0x4453, 1));
+        assert!(!is_remote_application_display(0x0610, 0x5241));
+        assert!(!is_remote_application_display(0, 0));
+    }
 }

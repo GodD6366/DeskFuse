@@ -113,7 +113,7 @@ async fn send(
     frame: Frame,
 ) -> Result<(), String> {
     let bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
-    
+
     // Check frame size before sending to prevent infinite retransmission
     if matches!(frame, Frame::Operations { .. }) && bytes.len() > MAX_OPERATIONS_FRAME {
         if deskfuse_core::debug_logging::enabled() {
@@ -130,7 +130,7 @@ async fn send(
             MAX_OPERATIONS_FRAME
         ));
     }
-    
+
     runtime
         .send_clipboard_on_session(
             peer,
@@ -187,7 +187,7 @@ async fn worker(
     let mut cursor = 0;
     let mut pending = std::collections::BTreeSet::<String>::new();
     let mut receiving: Option<(String, usize, Vec<u8>)> = None;
-    
+
     // Track failed send attempts to prevent infinite retries
     let mut failed_operations: HashMap<u64, usize> = HashMap::new();
     const MAX_SEND_FAILURES: usize = 5;
@@ -239,10 +239,11 @@ async fn worker(
                         let operations = library.export_operations(after, 1)?;
                         let next = operations.last().and_then(|o| o.get("seq")).and_then(Value::as_u64).unwrap_or(after);
                         if !operations.is_empty() && next <= after { return Err("列表操作缺少递增 seq".into()); }
-                        
+
                         // Check if we've failed to send this operation too many times
-                        if let Some(&failure_count) = failed_operations.get(&after) {
-                            if failure_count >= MAX_SEND_FAILURES {
+                        if let Some(&failure_count) = failed_operations.get(&after)
+                            && failure_count >= MAX_SEND_FAILURES
+                        {
                                 if deskfuse_core::debug_logging::enabled() {
                                     eprintln!(
                                         "[library_sync] peer={:?} skipping operation at seq={} after {} failed attempts",
@@ -253,11 +254,10 @@ async fn worker(
                                 let skip_frame = Frame::Operations { after, next, operations: vec![] };
                                 send(&runtime, peer, generation, skip_frame).await?;
                                 continue;
-                            }
                         }
-                        
+
                         let result = send(&runtime, peer, generation, Frame::Operations { after, next, operations: operations.clone() }).await;
-                        
+
                         if let Err(ref e) = result {
                             // Track send failures for oversized operations
                             if e.contains("超过限制") || e.contains("oversized") {
@@ -274,20 +274,20 @@ async fn worker(
                             // Clear failure count on success
                             failed_operations.remove(&after);
                         }
-                        
+
                         result?;
                     }
                     Frame::Operations { after, next, operations } => {
                         if after != cursor || next < after || operations.len() > 1 { continue; }
                         if !operations.is_empty() && next == after { return Err("无效列表游标".into()); }
-                        
+
                         if deskfuse_core::debug_logging::enabled() && !operations.is_empty() {
                             eprintln!(
                                 "[library_sync] peer={:?} received Operations: after={}, next={}, count={}",
                                 peer, after, next, operations.len()
                             );
                         }
-                        
+
                         for operation in &operations {
                             // Index records carry a blob_hash too, but ordinary
                             // history payloads are fetched on demand, not eagerly.
@@ -302,14 +302,14 @@ async fn worker(
                         for hash in completed { pending.remove(&hash); }
                         let advanced = next > cursor;
                         cursor = next;
-                        
+
                         if deskfuse_core::debug_logging::enabled() && advanced {
                             eprintln!(
                                 "[library_sync] peer={:?} cursor advanced to {}",
                                 peer, cursor
                             );
                         }
-                        
+
                         if advanced { send(&runtime, peer, generation, Frame::Pull { after: cursor }).await?; }
                     }
                     Frame::BlobRequest { hash } => {

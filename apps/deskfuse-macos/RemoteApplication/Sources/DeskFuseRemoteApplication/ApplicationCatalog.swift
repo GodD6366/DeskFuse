@@ -85,7 +85,7 @@ public struct RemoteApplicationInfo: Codable, Identifiable, Equatable, Sendable 
         return data
     }
 
-    public func launch(_ id: UUID) async throws -> NSRunningApplication {
+    public func launch(_ id: UUID, activates: Bool = true) async throws -> NSRunningApplication {
         guard let url = urls[id], FileManager.default.fileExists(atPath: url.path), Bundle(url: url) != nil else {
             throw RemoteApplicationError.unsupported("应用已移除，请刷新应用列表")
         }
@@ -94,7 +94,16 @@ public struct RemoteApplicationInfo: Codable, Identifiable, Equatable, Sendable 
         // create their first on-screen window only after activation. Let
         // LaunchServices perform the initial activation; the session still
         // explicitly verifies the foreground process before arming input.
-        configuration.activates = true
-        return try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        configuration.activates = activates
+        let process = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        // Finder is always running even when it has no file-browser window.
+        // Its desktop is not a movable document window. Opening a folder uses
+        // LaunchServices, not Apple Events or an Automation permission prompt.
+        if process.bundleIdentifier == "com.apple.finder",
+           !RemoteApplicationDesktop.hasMovableWindow(processID: process.processIdentifier) {
+            return try await NSWorkspace.shared.open([FileManager.default.homeDirectoryForCurrentUser],
+                withApplicationAt: url, configuration: configuration)
+        }
+        return process
     }
 }

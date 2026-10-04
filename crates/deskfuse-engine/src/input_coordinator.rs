@@ -758,6 +758,7 @@ fn hotkey_bindings(settings: &InputSharingSettings) -> HotkeyBindings {
             chord(&shortcuts.down),
         ],
         lock: chord(&shortcuts.lock),
+        emergency: chord(&shortcuts.emergency),
     }
 }
 
@@ -1150,7 +1151,7 @@ async fn run(
                             }
                             if !state.policy.is_remote() { state.anchor=(sample.global_x,sample.global_y); }
                             if (recording_active || state.effective.role != InputShareRole::Controller)
-                                && !matches!(&sample.event, SharedInputEvent::Key {code,pressed:true,modifiers,..} if HotkeyBindings::is_emergency(*code,*modifiers)) {continue;}
+                                && !matches!(&sample.event, SharedInputEvent::Key {code,pressed:true,modifiers,..} if hotkey_bindings(&state.effective).is_reclaim(*code,*modifiers)) {continue;}
                             let global = Point::new(sample.global_x, sample.global_y);
                             let actions = state.policy.handle_input(sample.event, global, Vector2::new(sample.delta_x,sample.delta_y), started.elapsed().as_millis() as u64);
                             // Count exactly the positions this machine hands to the

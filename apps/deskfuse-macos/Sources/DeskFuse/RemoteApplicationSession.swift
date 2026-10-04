@@ -66,7 +66,8 @@ final class SessionDataPlane: @unchecked Sendable {
         setMetrics(metrics)
         _ = try CaptureSurface(identity: surface.identity, displayID: surface.displayID, displayFrame: surface.displayFrame,
             contentRect: surface.contentRect, pointPixelScale: surface.pointPixelScale, sourceHz: surface.sourceHz,
-            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects)
+            applicationRect: surface.applicationRect, auxiliaryRects: surface.auxiliaryRects,
+            presentationDisplaySize: surface.presentationDisplaySize)
         let next = VideoDecoder(surface: surface.identity, expectedPixels: profile.pixels, expectedCodec: profile.codec, metrics: metrics,
             keyFrameNeeded: { [weak self] in self?.requestRemoteKey(surface.identity) }, output: { [weak self] result in
                 guard let self, self.lock.withLock({ self.connectionToken == token && self.identity == surface.identity }) else { return }
@@ -246,8 +247,30 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         requestedApplication = applications.first { $0.id == id }
         selected = id; choosingApplication = false; launchSelected()
     }
+    @ObservationIgnored private var roleRestrictionPending = false
+    @discardableResult private func viewerRoleAllowed() -> Bool {
+        guard role == .viewer else { return true }
+        guard !roleRestrictionPending, RemoteApplicationManager.shared.canOperateApplications else {
+            status = RemoteApplicationManager.viewerRestriction; failure = status
+            return false
+        }
+        return true
+    }
+    func restrictViewerRole() {
+        guard role == .viewer, !roleRestrictionPending, active || busy || controlling || controlPending else { return }
+        roleRestrictionPending = true
+        autoAcquire = false
+        releaseControl()
+        // Fence any in-flight connect/acquire before scheduling async teardown.
+        operation = UUID()
+        Task {
+            await stop()
+            status = RemoteApplicationManager.viewerRestriction; failure = status
+            roleRestrictionPending = false
+        }
+    }
     func reconnectApplication() {
-        guard !busy else { return }
+        guard !busy, viewerRoleAllowed() else { return }
         startupAttempts = 0
         reconnectTarget = requestedApplication
         Task { await start() }
@@ -260,7 +283,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     /// Only failed startup connections retry automatically. A stopped/closed
     /// window cancels this task; reconnect never replays queued input.
     private func recoverStartupConnection() -> Bool {
-        guard role == .viewer, let requestedApplication, !hasPresentedFrame, startupAttempts < 3 else { return false }
+        guard role == .viewer, viewerRoleAllowed(), let requestedApplication, !hasPresentedFrame, startupAttempts < 3 else { return false }
         startupAttempts += 1
         reconnectTarget = requestedApplication
         failure = nil; status = "正在自动重新连接远程应用…"
@@ -278,12 +301,14 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     }
     func yieldHostControl() {
         guard role == .host else { return }
+        captureControl.cancelControl()
         controlRequest = UUID(); controlling = false; plane.input.focus(false)
         RemoteApplicationManager.shared.releaseHostControl(self)
         var message = RemoteMessage(.release); message.text = "控制已交给其他应用窗口，点击画面可切回"
         plane.send(message)
     }
     private func denyControl(_ reason: String) {
+        captureControl.cancelControl()
         controlling = false; plane.input.focus(false)
         RemoteApplicationManager.shared.releaseHostControl(self)
         var response = RemoteMessage(.release); response.text = reason; plane.send(response)
@@ -302,6 +327,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     var selected: UUID?
     var applicationQuery = ""
     var preferences = VideoPreferences()
+    private(set) var displayMode: RemoteApplicationDisplayMode = .window
     private var remoteCapabilities = MediaCapabilities.h264Only
     var scale: VideoViewScale = .fit
     var presentationSurface: CaptureSurface?
@@ -329,6 +355,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     @ObservationIgnored private var operation = UUID()
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var process: NSRunningApplication?
+    @ObservationIgnored private var hostDesktop: RemoteApplicationDesktop?
     @ObservationIgnored private var capturePaused = false
     @ObservationIgnored private var resumePending = false
     @ObservationIgnored private var lastSurface: CaptureSurface?
@@ -340,15 +367,18 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     @ObservationIgnored private var encoderHasOutput = false
     @ObservationIgnored private var encodedAtProgress: UInt64 = 0
     @ObservationIgnored private var capturedAtProgress: UInt64 = 0
-    @ObservationIgnored private var changing = false
+    @ObservationIgnored private var captureControl = CaptureControlInterlock()
+    private var changing: Bool { captureControl.capturing }
     @ObservationIgnored private var controlPending = false
     @ObservationIgnored private var controlRequest = UUID()
     @ObservationIgnored private var pendingClick: [(RemoteInputEvent, SurfaceIdentity)] = []
     @ObservationIgnored private var firstFrameWatch: Task<Void, Never>?
 
-    private func diagnostic(_ event: String) {
+    @ObservationIgnored private var windowAvailabilityGrace = CaptureWindowAvailabilityGrace()
+
+    private func diagnostic(_ event: String, reason: String? = nil) {
         engine.remoteApplicationDiagnostic(event: event,
-            detail: "peer=\(peerID) host=\(role == .host) session=\(operation.uuidString) generation=\(lastSurface?.identity.generation ?? 0) controlling=\(controlling) pending=\(controlPending)")
+            detail: "peer=\(peerID) host=\(role == .host) session=\(operation.uuidString) generation=\(lastSurface?.identity.generation ?? 0) controlling=\(controlling) pending=\(controlPending) request=\(controlRequest.uuidString) targetPid=\(process?.processIdentifier ?? 0) captureBusy=\(changing) reason=\(reason.map { String($0.prefix(512)).replacingOccurrences(of: "\n", with: " ") } ?? "-")")
     }
     private func layoutDiagnostic(_ surface: CaptureSurface) {
         func rect(_ value: CGRect) -> String {
@@ -358,7 +388,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             detail: "peer=\(peerID) host=\(role == .host) generation=\(surface.identity.generation) capture=\(rect(surface.contentRect)) application=\(surface.applicationRect.map(rect) ?? "missing") auxiliary=\((surface.auxiliaryRects ?? []).map(rect).joined(separator: ";"))")
     }
     func start(channel incoming: RemoteApplicationChannel? = nil) async {
-        guard !busy else { return }
+        guard !busy, viewerRoleAllowed() else { return }
         busy = true; defer { busy = false }
         await stop(); failure = nil; viewerPaused = false; awaitingResumeSurface = false
         hasPresentedFrame = false
@@ -388,6 +418,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                     guard let self, self.operation == token else { return }
+                    if self.role == .viewer && !self.viewerRoleAllowed() {
+                        self.restrictViewerRole(); return
+                    }
                     if self.connected {
                         if self.role == .viewer && self.controlling && (try? self.engine.remoteApplicationViewerReady()) != true {
                             self.diagnostic("viewer_pause_lost")
@@ -411,14 +444,17 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                         }
                     }
                     if self.role == .host && !self.busy && !self.changing {
+                        if self.hostDesktop != nil && self.process?.isTerminated == true {
+                            await self.stopCapture(); self.sendError("B 端应用已退出"); continue
+                        }
                         if self.capturePaused && self.running {
                             self.busy = true
-                            await self.stopCapture()
+                            await self.stopCapture(preserveDesktop: true)
                             self.busy = false
                         } else if !self.capturePaused && self.resumePending {
                             self.resumePending = false; self.busy = true
                             do {
-                                await self.stopCapture()
+                                await self.stopCapture(preserveDesktop: true)
                                 guard self.operation == token else { self.busy = false; return }
                                 guard let process = self.process, !process.isTerminated else { throw RemoteApplicationError.noWindow }
                                 try self.plane.input.start(processID: process.processIdentifier)
@@ -431,6 +467,27 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     if self.role == .host && self.running && !self.capturePaused && !self.busy {
                         if self.process?.isTerminated != false { await self.stopCapture(); self.sendError("B 端应用已退出"); continue }
                         do { try await self.refreshCapture(token: token) }
+                        catch RemoteApplicationError.noWindow {
+                            // Only a previously established dedicated-screen
+                            // stream can survive a temporary AX/SCK gap. Keep
+                            // media, but release held native input immediately.
+                            if self.displayMode == .virtualDisplay, self.lastSurface != nil,
+                               self.windowAvailabilityGrace.allowsRetry(at: ProcessInfo.processInfo.systemUptime) {
+                                if self.controlling || self.captureControl.request != nil {
+                                    self.captureControl.cancelControl()
+                                    self.controlRequest = UUID(); self.controlling = false
+                                    self.plane.input.focus(false)
+                                    RemoteApplicationManager.shared.releaseHostControl(self)
+                                    var release = RemoteMessage(.release)
+                                    release.text = "远端窗口正在恢复，已释放控制，请等待画面后重新点击"
+                                    self.plane.send(release)
+                                }
+                                self.diagnostic("capture_window_retry")
+                            } else {
+                                self.diagnostic("capture_window_timeout")
+                                await self.stopCapture(); self.sendError(RemoteApplicationError.noWindow.localizedDescription)
+                            }
+                        }
                         catch { await self.stopCapture(); self.sendError(error.localizedDescription) }
                     }
                     ticks += 1
@@ -498,7 +555,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         peer = remote; plane.setPeer(remote); plane.startHeartbeats(host: host); remote.start()
     }
     private func receive(_ message: RemoteMessage, token: UUID) async {
-        diagnostic("receive_\(message.kind.rawValue)")
+        diagnostic("receive_\(message.kind.rawValue)", reason: message.kind == .error ? message.text : nil)
         if role == .host {
             switch message.kind {
             case .hello:
@@ -509,53 +566,91 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 guard !busy, let application = message.application else { return }
                 busy = true; defer { busy = false }
                 await stopCapture()
+                guard operation == token else { return }
+                displayMode = message.displayMode ?? .window
                 do {
-                    guard RemoteApplicationManager.shared.claimHostControl(self) else {
-                        throw RemoteApplicationError.unsupported("另一台设备正在控制本机，请先释放控制")
+                    guard try await RemoteApplicationManager.shared.claimHostControl(self) else {
+                        throw RemoteApplicationError.unsupported("另一窗口或设备正在切换控制，请点击画面重试")
                     }
+                    guard operation == token else { return }
                     encoderRateLimit = nil
                     if let preferences = message.preferences { self.preferences = preferences }
-                    process = try await catalog.launch(application)
-                    guard operation == token, let process else { return }
-                    guard !capturePaused else { return }
-                    _ = process.activate(options: [.activateAllWindows])
-                    // Launch completion can precede the first visible window.
-                    // Give LaunchServices a short bounded window to finish
-                    // activation before ScreenCaptureKit enumerates windows.
-                    for _ in 0..<20 {
-                        guard operation == token, !process.isTerminated else { throw RemoteApplicationError.noWindow }
-                        if NSWorkspace.shared.frontmostApplication?.processIdentifier == process.processIdentifier { break }
-                        try? await Task.sleep(for: .milliseconds(50))
+                    let launched = try await catalog.launch(application, activates: false)
+                    guard operation == token else { return }
+                    process = launched
+                    if displayMode == .virtualDisplay {
+                        hostDesktop = try RemoteApplicationDesktop(process: launched)
+                        engine.remoteApplicationDiagnostic(event: "virtual_display_created",
+                            detail: "peer=\(peerID) display=\(hostDesktop?.displayID ?? 0) pid=\(launched.processIdentifier) pixels=1920x1080 hz=60")
                     }
-                    try plane.input.start(processID: process.processIdentifier)
+                    if RemoteApplicationManager.shared.ownsHostControl(self) {
+                        activateHostApplication()
+                    }
+                    try plane.input.start(processID: launched.processIdentifier)
+                    guard !capturePaused else { return }
                     running = true
                     try await waitForInitialCapture(token: token)
-                } catch { await stopCapture(); sendError(error.localizedDescription) }
+                } catch {
+                    guard operation == token else { return }
+                    await stopCapture(); sendError(error.localizedDescription)
+                }
             case .acquire:
-                guard running, message.identity == lastSurface?.identity, let process else {
+                guard running, message.identity == lastSurface?.identity, let process, let surface = lastSurface?.identity else {
                     denyControl("画面配置正在变化，请等待新画面后重试"); return
                 }
-                guard RemoteApplicationManager.shared.claimHostControl(self) else {
-                    denyControl("另一台设备正在控制本机，请先释放控制"); return
+                let request = UUID(); controlling = false; plane.input.focus(false)
+                captureControl.beginControl(request)
+                defer { captureControl.endControl(request) }
+                // An in-flight refresh can publish a new generation. Drain it
+                // before binding the request, and prevent another refresh from
+                // invalidating controlRequest during activation/native arming.
+                for _ in 0..<40 {
+                    guard changing, operation == token, captureControl.request == request else { break }
+                    try? await Task.sleep(for: .milliseconds(25))
                 }
-                let request = UUID(); controlRequest = request
-                if NSWorkspace.shared.frontmostApplication?.processIdentifier != process.processIdentifier {
-                    _ = process.activate(options: [.activateAllWindows])
+                guard operation == token, captureControl.request == request, running else { return }
+                guard captureControl.canControl(request), lastSurface?.identity == surface else {
+                    denyControl("画面配置正在变化，请等待新画面后重试"); return
                 }
+                controlRequest = request
+                guard !windowAvailabilityGrace.isRecovering else {
+                    denyControl("远端窗口正在恢复，请等待画面后重新点击"); return
+                }
+                diagnostic("control_prepare_native")
+                do {
+                    let claimed = try await RemoteApplicationManager.shared.claimHostControl(self)
+                    guard operation == token, controlRequest == request, running, lastSurface?.identity == surface else { return }
+                    guard claimed else {
+                        denyControl("另一窗口或设备正在切换控制，请点击画面重试"); return
+                    }
+                    _ = try displayMode.captureDisplayID(assigned: hostDesktop?.displayID)
+                    try hostDesktop?.prepareWindows()
+                } catch {
+                    if operation == token, controlRequest == request { denyControl(error.localizedDescription) }
+                    return
+                }
+                diagnostic("control_activate")
+                activateHostApplication()
                 // Activation is asynchronous. Never arm against a different foreground app.
                 for _ in 0..<10 {
+                    guard operation == token, controlRequest == request, captureControl.canControl(request) else { return }
                     if NSWorkspace.shared.frontmostApplication?.processIdentifier == process.processIdentifier { break }
                     try? await Task.sleep(for: .milliseconds(30))
                 }
                 guard operation == token, running, controlRequest == request,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == process.processIdentifier else {
-                    if operation == token, controlRequest == request { denyControl("无法激活远端应用，请在 B 端确认应用窗口可用后重试") }
+                    if operation == token, controlRequest == request {
+                        engine.remoteApplicationDiagnostic(event: "control_activation_failed",
+                            detail: "peer=\(peerID) target=\(process.processIdentifier) foreground=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)")
+                        denyControl("无法激活远端应用，请在 B 端确认应用窗口可用后重试")
+                    }
                     return
                 }
                 plane.input.focus(true)
-                let engine = engine, peerID = peerID, surface = lastSurface!.identity
+                let engine = engine, peerID = peerID
                 var armed = false
                 for _ in 0..<20 {
+                    guard operation == token, controlRequest == request, captureControl.canControl(request) else { return }
                     armed = (try? await Task.detached {
                         try engine.remoteApplicationControlReady(peerId: peerID, session: surface.session.uuidString, generation: surface.generation)
                     }.value) == true
@@ -570,8 +665,10 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     return
                 }
                 controlling = true
+                diagnostic("control_armed")
                 var ack = RemoteMessage(.controlReady); ack.identity = lastSurface?.identity; plane.send(ack)
             case .release:
+                captureControl.cancelControl()
                 controlRequest = UUID(); controlling = false; plane.input.focus(false)
                 RemoteApplicationManager.shared.releaseHostControl(self)
             case .pause:
@@ -600,9 +697,12 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             case .surface:
                 guard let surface = message.surface, let profile = message.profile else { return }
                 layoutDiagnostic(surface)
-                autoAcquire = !viewerPaused && (autoAcquire || controlling || controlPending || awaitingResumeSurface)
+                // A pending request is not ownership. Reconfiguration must not
+                // turn an unsuccessful handshake into an automatic retry loop.
+                let reacquire = RemoteControlRecovery.shouldAcquireAfterSurface(paused: viewerPaused,
+                    initialRequest: autoAcquire, controlling: controlling, resuming: awaitingResumeSurface)
                 awaitingResumeSurface = false
-                releaseControl(); lastSurface = surface; presentationSurface = surface; running = true; failure = nil
+                releaseControl(); autoAcquire = reacquire; lastSurface = surface; presentationSurface = surface; running = true; failure = nil
                 presentationSizeChanged?((surface.applicationRect ?? surface.contentRect).size)
                 sourceDescription = "B 源：\(Int(surface.contentRect.width)) × \(Int(surface.contentRect.height)) pt · \(surface.nativePixels.label) px"
                 actualDescription = "传输：\(profile.codec.label) · \(profile.pixels.label) · \(String(format: "%.1f", profile.framesPerSecond)) Hz\(profile.reason.map { " · " + $0 } ?? "")"
@@ -644,10 +744,12 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         }
     }
     func launchSelected() {
-        guard connected, role == .viewer, let selected else { return }
+        guard connected, role == .viewer, viewerRoleAllowed(), let selected else { return }
         releaseControl(); autoAcquire = !viewerPaused; running = false; failure = nil
         plane.frames.reset(nil)
-        var message = RemoteMessage(.launch); message.application = selected; message.preferences = preferences; plane.send(message)
+        displayMode = RemoteApplicationManager.shared.virtualDisplayEnabled ? .virtualDisplay : .window
+        var message = RemoteMessage(.launch); message.application = selected; message.preferences = preferences
+        message.displayMode = displayMode; plane.send(message)
         status = "正在启动远端应用"
     }
     func changePreferences() {
@@ -657,11 +759,12 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     func canvasFocus(_ focused: Bool) {
         diagnostic(focused ? "canvas_focus" : "canvas_blur")
         if !focused { autoAcquire = false; releaseControl(resumeSharing: true); return }
-        guard role == .viewer, running, !viewerPaused, !awaitingResumeSurface,
+        guard role == .viewer, viewerRoleAllowed(), running, !viewerPaused, !awaitingResumeSurface,
               !controlPending, !controlling, let surface = lastSurface else { return }
         guard plane.hasPresented(surface.identity) else {
             status = "正在等待远端画面…"; autoAcquire = true; return
         }
+        autoAcquire = false
         status = "正在申请控制权…"
         do { try RemoteApplicationManager.shared.claimViewerControl(self) }
         catch { status = error.localizedDescription; return }
@@ -677,21 +780,23 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
             }
             guard controlPending, controlRequest == request else { return }
             guard ready else {
-                // 控制申请失败，需要清理状态但保持鼠标穿梭可用
-                releaseControlLocally()
+                releaseControl()
                 status = "请先结束当前键鼠控制或更新操作后重试"
                 return
             }
             var message = RemoteMessage(.acquire); message.identity = surface.identity; plane.send(message)
-            try? await Task.sleep(for: .seconds(3))
+            // Host may drain capture (1s), quiesce native input (1s),
+            // activate (0.3s), then arm (1s), plus transport latency.
+            try? await Task.sleep(for: .seconds(5))
             if controlPending, controlRequest == request {
-                releaseControlLocally()
+                releaseControl()
                 status = "控制申请未得到响应，请点击画面重试"
                 diagnostic("acquire_timeout")
             }
         }
     }
     func canvasInput(_ event: RemoteInputEvent, surface: SurfaceIdentity) {
+        guard viewerRoleAllowed() else { restrictViewerRole(); return }
         if event.kind == .down || event.kind == .up { diagnostic("canvas_\(event.kind.rawValue)") }
         if controlPending {
             // Pointer motion is not an input edge and must not cancel the handshake.
@@ -716,6 +821,8 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     }
     func releaseControl(resumeSharing: Bool = true) {
         diagnostic("release_control")
+        autoAcquire = false
+        captureControl.cancelControl()
         controlRequest = UUID()
         // Explicit release, errors, timeout and blur all restore sharing now.
         // Only an ownership handoff may deliberately retain the global pause.
@@ -723,13 +830,6 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
     }
 
-    /// 释放本地控制状态，但不通知 RemoteApplicationManager，以保持鼠标穿梭可用
-    /// 用于控制申请失败的场景，需要清理控制状态但不影响鼠标穿梭
-    private func releaseControlLocally() {
-        diagnostic("release_control_locally")
-        controlRequest = UUID()
-        controlPending = false; pendingClick.removeAll(); controlling = false; plane.release()
-    }
     private func waitForInitialCapture(token: UUID) async throws {
         // NSWorkspace launch completion precedes creation of the first window
         // and ScreenCaptureKit's shareable-content registration.
@@ -759,16 +859,44 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         }
     }
 
+    private func activateHostApplication() {
+        if displayMode == .virtualDisplay { hostDesktop?.activateWindow() }
+        else { _ = process?.activate(options: [.activateAllWindows]) }
+    }
+
     private func refreshCapture(token: UUID) async throws {
-        guard !changing, !capturePaused, let process, operation == token else { return }
-        changing = true; defer { changing = false }
+        guard !capturePaused, let process, operation == token, captureControl.beginCapture() else { return }
+        defer { captureControl.endCapture() }
         let mode: CaptureViewMode = desktop && allowDesktop ? .desktop : .application
         let identity = SurfaceIdentity(session: token, epoch: 1, generation: generation + 1, configuration: generation + 1)
-        let source = try await capture.source(processID: process.processIdentifier, displayID: nil, mode: mode,
-            identity: identity, gestureActive: plane.input.gestureActive)
+        // Mode is fixed by launch, never inferred from an absent allocation:
+        // normal mode auto-selects a display; virtual-screen loss fails closed.
+        let displayID = try displayMode.captureDisplayID(assigned: hostDesktop?.displayID)
+        do { try hostDesktop?.prepareWindows(gestureActive: plane.input.gestureActive) }
+        catch {
+            diagnostic("capture_prepare_failed", reason: "stage=\(hostDesktop?.preparationStage ?? "unassigned") error=\(error.localizedDescription)")
+            throw error
+        }
+        let source: RemoteAppCapture.Source
+        do {
+            source = try await capture.source(processID: process.processIdentifier, displayID: displayID, mode: mode,
+                identity: identity, gestureActive: plane.input.gestureActive)
+            if displayID != nil, mode == .application, source.surface.applicationRect == nil {
+                throw RemoteApplicationError.noWindow
+            }
+        } catch {
+            diagnostic("capture_source_failed", reason: "stage=\(capture.sourceStage) error=\(error.localizedDescription)")
+            throw error
+        }
+        windowAvailabilityGrace.reset()
         engine.remoteApplicationDiagnostic(event: "capture_source", detail: "peer=\(peerID) \(source.note)")
         guard operation == token, !capturePaused else { return }
-        let surface = source.surface
+        let raw = source.surface
+        let surface = try CaptureSurface(identity: raw.identity, displayID: raw.displayID,
+            displayFrame: raw.displayFrame, contentRect: raw.contentRect,
+            pointPixelScale: raw.pointPixelScale, sourceHz: raw.sourceHz,
+            applicationRect: raw.applicationRect, auxiliaryRects: raw.auxiliaryRects,
+            presentationDisplaySize: hostDesktop?.presentationDisplaySize)
         try recoverEncoderIfStalled()
         let selectedCodec = try selectedVideoCodec()
         let requested = try VideoProfile.requested(native: surface.nativePixels, sourceHz: surface.sourceHz,
@@ -893,14 +1021,31 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     private func sendError(_ text: String) {
         status = text; var message = RemoteMessage(.error); message.text = text; plane.send(message)
     }
-    private func stopCapture() async {
-        running = false; controlRequest = UUID(); pendingCapture = nil
+    private func stopCapture(preserveDesktop: Bool = false) async {
+        captureControl.cancelControl()
+        windowAvailabilityGrace.reset()
+        running = false; controlling = false; controlRequest = UUID(); pendingCapture = nil
         lastSurface = nil
-        plane.input.stop(); await capture.stop()
+        // Detach ownership before suspension so late cleanup cannot destroy a
+        // replacement session's display. Window restoration follows stream stop.
+        let desktopToClose = preserveDesktop ? nil : hostDesktop
+        if !preserveDesktop { hostDesktop = nil }
+        plane.input.stop()
         if role == .host { RemoteApplicationManager.shared.releaseHostControl(self) }
+        await capture.stop()
         let old = encoder; encoder = nil; plane.setEncoder(nil)
         if let old { await Task.detached { old.stop() }.value }
+        if let desktopToClose {
+            let failures = desktopToClose.close()
+            engine.remoteApplicationDiagnostic(event: "virtual_display_closed", detail: "peer=\(peerID) restoreFailures=\(failures)")
+        }
         lastSurface = nil; lastProfile = nil; lastMode = nil
+    }
+    /// AppKit's fast quit path does not drain asynchronous capture teardown.
+    /// Restore synchronously while AX and WindowServer are still available.
+    func restoreHostDesktopBeforeExit() {
+        let desktop = hostDesktop; hostDesktop = nil
+        _ = desktop?.close()
     }
     func stop() async {
         startupReconnect?.cancel(); startupReconnect = nil

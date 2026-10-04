@@ -440,7 +440,8 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Re
 fn host_command_allowed(command: &RuntimeCommand) -> bool {
     matches!(
         command,
-        RuntimeCommand::ChooseEnvironmentController { .. }
+        RuntimeCommand::ObserveWifiEnvironment { .. }
+            | RuntimeCommand::ChooseEnvironmentController { .. }
             | RuntimeCommand::ForgetControllerEnvironment { .. }
             | RuntimeCommand::SaveInputSharingScene { .. }
             | RuntimeCommand::ApplyInputSharingScene { .. }
@@ -455,6 +456,14 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::PauseCurrentManagedActivation
     )
 }
+#[cfg(test)]
+#[test]
+fn wifi_observation_can_cross_host_input_ipc() {
+    let command = RuntimeCommand::ObserveWifiEnvironment { ssid: None };
+    assert!(command.is_input());
+    assert!(host_command_allowed(&command));
+}
+
 fn process_recovery_required(control: &ServiceControl) -> bool {
     control
         .status
@@ -555,7 +564,7 @@ pub(super) async fn run_host(
                     }
                     Some(_) => {
                         let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand(
-                            "输入服务暂不可用，请在鼠标共享页面点击重试".into(),
+                            "输入服务暂不可用，请在键鼠共享页面点击重试".into(),
                         )));
                     }
                 }

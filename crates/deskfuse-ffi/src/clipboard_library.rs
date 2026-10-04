@@ -65,6 +65,7 @@ impl Engine {
                     &shortcuts.up,
                     &shortcuts.down,
                     &shortcuts.lock,
+                    &shortcuts.emergency,
                 ]
                 .iter()
                 .any(|s| s.key_code == key.key_code && s.modifiers == key.modifiers)

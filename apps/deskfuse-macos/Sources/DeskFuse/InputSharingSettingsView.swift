@@ -28,23 +28,26 @@ struct InputSharingSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                controllerSection
-                switchSection
-                shortcutSection
+                controllerSection.disabled(snapshot?.input.managed == true)
+                switchSection.disabled(snapshot?.input.managed == true)
+                shortcutSection.disabled(snapshot?.input.managed == true)
                 if snapshot?.input.canConfigure == true {
                     layoutSection
+                }
+                if snapshot?.input.managed != true {
                     environmentSection
                 }
             }
             .formStyle(.grouped)
-            SettingsSaveFooter(dirty: dirty, saving: saving, canSave: dirty, canRevert: dirty,
+            SettingsSaveFooter(dirty: dirty, saving: saving, canSave: dirty && snapshot?.input.managed != true, canRevert: dirty,
                 status: status, error: failure,
                 revert: { draft = saved; failure = nil; status = nil }, save: save)
         }
         .onChange(of: snapshot?.input.settings, initial: true) { _, current in
             guard let current else { return }
+            let hadUnsavedChanges = dirty
             saved = current
-            if !dirty { draft = current }
+            if !hadUnsavedChanges || snapshot?.input.managed == true { draft = current }
         }
     }
 
@@ -117,6 +120,9 @@ struct InputSharingSettingsView: View {
             Text(snapshot?.input.environmentMessage ?? "等待网络状态")
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Button("Wi-Fi 读取权限…") { store.openSettings(tab: SettingsCategory.permissions.rawValue) }
+            Text("权限统一在“设置 → 权限”中管理。匹配网络自动恢复主控，未匹配网络自动暂停；原有布局和共享开关保持保存。")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("主控", selection: $selectedController) {
                 Text("选择设备").tag("")
                 if let snapshot {
@@ -213,7 +219,7 @@ struct InputSharingSettingsView: View {
     }
 
     private func save() {
-        guard !saving else { return }
+        guard !saving, snapshot?.input.managed != true else { return }
         var submitted = draft
         // Display arrangement belongs to the layout page; keep what is live so
         // a stale form can never rewind a drag that happened meanwhile.

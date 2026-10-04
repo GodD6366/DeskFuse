@@ -64,6 +64,11 @@ import DeskFuseEngine
 
     func start() {
         guard starting, engine == nil else { return }
+        let startupBegan = ProcessInfo.processInfo.systemUptime
+        func recordStartup(_ stage: String) {
+            NSLog("DeskFuse startup %@ %.0f ms", stage,
+                  (ProcessInfo.processInfo.systemUptime - startupBegan) * 1000)
+        }
         // 根据保存的设置恢复常亮状态
         if keepAwake { caffeineController.enable() }
         do {
@@ -71,11 +76,13 @@ import DeskFuseEngine
             let transaction = args.firstIndex(of: "--update-self-test").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
             if args.contains("--update-self-test") && transaction == nil { throw StartupError.invalidTransaction }
             selfTest = try prepareStartup(transaction: transaction)
+            recordStartup("recovery_ready")
             if selfTest { starting = false; return }
         } catch { self.error = error.userFacingMessage; starting = false; return }
         Task {
             do {
                 let engine = try await Task.detached { try Engine() }.value
+                recordStartup("engine_ready")
                 self.engine = engine
                 if #available(macOS 14.2, *) { RemoteApplicationManager.shared.start(engine: engine) }
                 await WorkflowStore.shared.reload(engine: engine)
@@ -95,6 +102,7 @@ import DeskFuseEngine
                     }
                 }
                 try await client.listen(relay)
+                recordStartup("listener_ready")
                 startWallpaperRefresh()
                 transferWindow = TransferProgressWindowController(store: self)
                 transferWindow?.reconcile(snapshot?.transfers ?? [])
@@ -102,6 +110,7 @@ import DeskFuseEngine
                 pairingWindow = PairingWindowController(store: self)
                 pairingWindow?.reconcile(snapshot?.pairing ?? [])
                 starting = false
+                recordStartup("workspace_ready")
             } catch { self.error = error.userFacingMessage; starting = false }
         }
     }
@@ -130,6 +139,9 @@ import DeskFuseEngine
         case .snapshot(let value):
             if value.revision >= (snapshot?.revision ?? 0) {
                 snapshot = value
+                if #available(macOS 14.2, *), !value.input.canOperateRemoteApplications {
+                    RemoteApplicationManager.shared.reconcileViewerRole()
+                }
                 pairingDecisions.formIntersection(Set(value.pairing.map(\.id)))
                 shelf?.reconcileTransfers(value.transfers)
                 transferWindow?.reconcile(value.transfers)
@@ -262,7 +274,7 @@ import DeskFuseEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "鼠标共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
+    case clipboard = "剪贴板", input = "键鼠共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
     /// The transfer queue is presented together with LAN sharing. Keep the
     /// legacy case for deep links and existing command code, but do not expose
     /// a second top-level destination in the redesigned sidebar.

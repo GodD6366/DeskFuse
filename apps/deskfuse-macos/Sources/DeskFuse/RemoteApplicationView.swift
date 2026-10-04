@@ -72,19 +72,22 @@ struct RemoteApplicationView: View {
             if !session.running {
                 VStack(spacing: 16) {
                     if session.failure == nil {
-                        ProgressView()
+                        ProgressView().controlSize(.regular)
                         Text("正在打开 \(session.applicationName)…")
+                            .font(.callout).foregroundStyle(.secondary)
                     } else {
-                        Image(systemName: "network.slash").font(.largeTitle)
+                        Image(systemName: session.connected ? "exclamationmark.triangle" : "network.slash")
+                            .font(.system(size: 28, weight: .regular)).foregroundStyle(.secondary)
                         Text(session.connected ? "无法打开应用" : "连接已中断").font(.headline)
-                        Text(session.failure ?? session.status).font(.callout).multilineTextAlignment(.center)
+                        Text(session.failure ?? session.status).font(.callout).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                         Button("重新连接") { session.reconnectApplication() }
                             .buttonStyle(.borderedProminent)
                     }
                 }
                 .padding(24).frame(maxWidth: 420)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                // Keep loading and error states on the canvas, without an inset card.
             }
         }
         .frame(minWidth: 1, minHeight: 1)
@@ -262,6 +265,7 @@ struct RemoteApplicationMenu: View {
             Divider()
             Toggle("正常顶部导航栏", isOn: $chrome.normalNavigation)
                 .help("关闭后使用悬浮红绿灯与靠近显示的菜单；新窗口沿用此选择")
+            RemoteApplicationDisplayModeToggle()
             Divider()
             Picker("分辨率", selection: $session.preferences.resolution) {
                 ForEach(ResolutionPreference.allCases, id: \.self) { Text($0.label).tag($0) }

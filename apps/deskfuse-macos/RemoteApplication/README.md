@@ -2,6 +2,8 @@
 
 当前交付已集成进 DeskFuse 主程序，使用设备页入口和原有配对连接。请按 [内置测试说明](../../../docs/remote-application/INTEGRATED-TEST.md) 操作。
 
+主程序提供默认关闭的「虚拟屏幕模式（实验性）」开关，位于应用列表及远程窗口更多菜单；开启后使用每应用专用虚拟屏幕，多路画面并行显示、输入自动交接，关闭后使用原有应用窗口。修改在下次打开或重新连接时生效。分辨率预算、权限、私有 API 边界及两机验收见 [虚拟屏幕方案](../../../docs/remote-application/VIRTUAL-DISPLAYS.md)。下方独立原型的显示方式不代表主程序。
+
 下方为保留的 P0 独立原型记录，不再作为测试交付流程。主程序构建明确排除 `RemoteTransport.swift` 和 `RemoteTLSIdentity.swift`，不使用其中的独立证书认证。
 
 ---
