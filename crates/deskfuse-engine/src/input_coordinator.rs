@@ -1268,7 +1268,13 @@ async fn run(
                             match platform.input_injector() {Ok(injector)=>state.injector=Some(injector),Err(error)=>adapter_error=Some(error.to_string())}
                         }
                     }
-                    if let Some(error)=&adapter_error {state.error(&ui,error.clone());}
+                    // Idle input sharing is not a native-input failure. Use the
+                    // effective settings so managed receivers still report errors.
+                    if effective.enabled {
+                        if let Some(error)=&adapter_error {state.error(&ui,error.clone());}
+                    } else if state.last_error.take().is_some() {
+                        let _ = ui.unbounded_send(UiEvent::InputStatus { error: None });
+                    }
                     let adapters_ready=native_available(&effective,permitted,state.capture_started,state.injector.is_some());
                     let (status, reason) = if effective.enabled {
                         native_phase(permission,session_active,recording_active,adapters_ready,adapter_error)
