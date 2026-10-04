@@ -41,11 +41,21 @@ public partial class App : Application
         clipboard.ShelfFactory = () => new ShelfWindow(clipboard.Native, clipboard.History, clipboard);
         clipboard.Start(window.Handle);
 
-        tray = new TrayIcon(window.Handle, "DeskFuse")
+        tray = null;
+        try
         {
-            Activated = () => window?.RestoreFromTray(),
-            MenuProvider = () => BuildTrayMenu(),
-        };
+            tray = new TrayIcon(window.Handle, "DeskFuse")
+            {
+                Activated = () => window?.RestoreFromTray(),
+                MenuProvider = () => BuildTrayMenu(),
+            };
+        }
+        catch (Exception error)
+        {
+            // A missing tray icon must be visible, not silent: closing the window
+            // would otherwise hide the client with no way back.
+            window.Notify($"系统托盘不可用（{error.Message}）；请保持窗口打开，或从任务栏重新打开。");
+        }
 
         activationStop = new CancellationTokenSource();
         var token = activationStop.Token;

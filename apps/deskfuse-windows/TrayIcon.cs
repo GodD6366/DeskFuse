@@ -35,7 +35,8 @@ public sealed class TrayIcon : IDisposable
         icon = AppIcon.CreateTrayIcon();
         WindowMessageHook.Attach(hwnd, WindowProcedure);
         var data = CreateData(tooltip);
-        Shell_NotifyIconW(NimAdd, ref data);
+        if (!Shell_NotifyIconW(NimAdd, ref data))
+            throw new InvalidOperationException($"无法创建系统托盘图标（Windows {Marshal.GetLastWin32Error()}）。");
         data.TimeoutOrVersion = NotifyIconVersion4;
         Shell_NotifyIconW(NimSetVersion, ref data);
     }

@@ -60,7 +60,7 @@ public sealed partial class MainWindow : Window
         };
         workflowExecution = new WindowsWorkflowExecutionPort(service, clipboard);
         clipboard.Entries.CollectionChanged += (_, _) => RefreshHistory();
-        clipboard.Error += ShowNotice;
+        clipboard.Error += Notify;
         clipboard.FileOfferReceived += FileOfferArrived;
         clipboard.FileTransferSettled += FileTransferDone;
         service.SnapshotChanged += SnapshotChanged;
@@ -169,7 +169,7 @@ public sealed partial class MainWindow : Window
     {
         if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
         clipboard.Remove(entry);
-        ShowNotice("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。");
+        Notify("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。");
     }
 
     private void CopyClick(object sender, RoutedEventArgs args) => CopySelection();
@@ -177,8 +177,8 @@ public sealed partial class MainWindow : Window
     /// <summary>Tray "recent clipboard" entry point.</summary>
     public void RestoreEntry(ClipboardEntry entry)
     {
-        try { ShowNotice(clipboard.SyncEnabled ? "已恢复本机剪贴板；跨设备结果取决于真实连接与服务回执。" : "已恢复本机系统剪贴板。"); clipboard.Restore(entry); }
-        catch (Exception) { ShowNotice("无法恢复剪贴板。请检查文件是否仍存在、当前会话是否可用或剪贴板是否被占用。"); }
+        try { Notify(clipboard.SyncEnabled ? "已恢复本机剪贴板；跨设备结果取决于真实连接与服务回执。" : "已恢复本机系统剪贴板。"); clipboard.Restore(entry); }
+        catch (Exception) { Notify("无法恢复剪贴板。请检查文件是否仍存在、当前会话是否可用或剪贴板是否被占用。"); }
     }
 
     private void CopySelection()
@@ -202,7 +202,7 @@ public sealed partial class MainWindow : Window
     {
         if (HistoryList.SelectedItem is not ClipboardEntry entry || entry.Content.Files?.FirstOrDefault() is not string path) return;
         try { var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false }; start.ArgumentList.Add("/select,"); start.ArgumentList.Add(path); Process.Start(start); }
-        catch (Exception) { ShowNotice("资源管理器无法打开此文件位置。"); }
+        catch (Exception) { Notify("资源管理器无法打开此文件位置。"); }
     }
 
     private void FitClick(object sender, RoutedEventArgs args) => ImagePreview.Stretch = ImagePreview.Stretch == Stretch.Uniform ? Stretch.UniformToFill : Stretch.Uniform;
@@ -211,7 +211,7 @@ public sealed partial class MainWindow : Window
     {
         if (updatingSync) return;
         clipboard.SyncEnabled = SyncCheck.IsChecked == true;
-        ShowNotice(clipboard.SyncEnabled ? "已开启文字与图片同步；只发送之后的新复制，不重放历史。" : "已关闭跨设备剪贴板同步；本机历史继续记录。");
+        Notify(clipboard.SyncEnabled ? "已开启文字与图片同步；只发送之后的新复制，不重放历史。" : "已关闭跨设备剪贴板同步；本机历史继续记录。");
     }
 
     private void SnapshotChanged(JsonElement snapshot)
@@ -240,7 +240,7 @@ public sealed partial class MainWindow : Window
             RebuildDevices();
         }
         string error = snapshot.String("last_error");
-        if (error.Length > 0) ShowNotice(error);
+        if (error.Length > 0) Notify(error);
         settings?.RefreshService(snapshot);
     }
 
@@ -261,11 +261,11 @@ public sealed partial class MainWindow : Window
             ReclaimInputButton.IsEnabled = false;
             lastDeviceSnapshot = "";
             RebuildDevices();
-            ShowNotice(message);
+            Notify(message);
         }
         else if (!wasConnected)
         {
-            ShowNotice("DeskFuse 已就绪。关闭窗口后仍在托盘运行；从托盘菜单可以退出。");
+            Notify("DeskFuse 已就绪。关闭窗口后仍在托盘运行；从托盘菜单可以退出。");
             _ = LoadWorkflowsAsync();
         }
         wasConnected = connected;
@@ -418,7 +418,7 @@ public sealed partial class MainWindow : Window
     {
         if (updatingInputSettings || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings)) return;
         var lines = ShortcutBindings.Text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (lines.Length != 5) { ShowNotice("需要按左、右、上、下、锁定顺序填写五行快捷键。 "); return; }
+        if (lines.Length != 5) { Notify("需要按左、右、上、下、锁定顺序填写五行快捷键。 "); return; }
         try
         {
             var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
@@ -431,10 +431,10 @@ public sealed partial class MainWindow : Window
                 shortcuts[names[i]] = new JsonObject { ["key_code"] = key, ["modifiers"] = modifiers };
             }
             await service.SendAsync(ServiceClient.Command("SetInputSharingSettings", new { settings = node }));
-            ShowNotice("快捷键已提交；以输入状态和服务持久化结果为准。");
+            Notify("快捷键已提交；以输入状态和服务持久化结果为准。");
         }
-        catch (FormatException) { ShowNotice("快捷键格式无效，请使用 key code, modifiers，每行一组。"); }
-        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "快捷键未保存，服务可能已断开。"); }
+        catch (FormatException) { Notify("快捷键格式无效，请使用 key code, modifiers，每行一组。"); }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "快捷键未保存，服务可能已断开。"); }
     }
 
     private sealed record RemoteDisplayDrag(string DeviceId, string DisplayId, double X, double Y, double Scale);
@@ -442,7 +442,7 @@ public sealed partial class MainWindow : Window
     private void DisplayDragStarted(object sender, PointerRoutedEventArgs args)
     {
         if (sender is not Border border || border.Tag is not RemoteDisplayDrag || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
-        if (!settings.TryGetProperty("role", out var role) || role.GetString() != "Controller" || !settings.Bool("enabled")) { ShowNotice("只有已启用的本机主控可以编辑远端布局。"); return; }
+        if (!settings.TryGetProperty("role", out var role) || role.GetString() != "Controller" || !settings.Bool("enabled")) { Notify("只有已启用的本机主控可以编辑远端布局。"); return; }
         draggingDisplay = border;
         dragOrigin = args.GetCurrentPoint(DisplayCanvas).Position;
         border.CapturePointer(args.Pointer);
@@ -469,9 +469,9 @@ public sealed partial class MainWindow : Window
         try
         {
             await service.SendAsync(ServiceClient.Command("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x = drag.X, y = drag.Y }));
-            ShowNotice("布局位置已提交；运行时会进行吸附并持久化。");
+            Notify("布局位置已提交；运行时会进行吸附并持久化。");
         }
-        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。"); }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。"); }
         args.Handled = true;
     }
 
@@ -480,9 +480,9 @@ public sealed partial class MainWindow : Window
         try
         {
             await service.SendAsync("ReclaimInput");
-            ShowNotice("已请求停止被控并释放远端按键、鼠标与控制租约。");
+            Notify("已请求停止被控并释放远端按键、鼠标与控制租约。");
         }
-        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "停止被控请求未完成。"); }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "停止被控请求未完成。"); }
     }
 
     private sealed record TransferRow(string Id, string Title, string Detail, string State, double Progress, bool CanReceive, bool CanCancel);
@@ -533,7 +533,7 @@ public sealed partial class MainWindow : Window
         if (row.CanCancel)
         {
             var cancel = new Button { Content = "取消", Padding = new Thickness(10, 3, 10, 3) };
-            cancel.Click += async (_, _) => { await clipboard.CancelFileAsync(row.Id); ShowNotice("已请求取消该文件传输。"); };
+            cancel.Click += async (_, _) => { await clipboard.CancelFileAsync(row.Id); Notify("已请求取消该文件传输。"); };
             actions.Children.Add(cancel);
         }
         panel.Children.Add(actions);
@@ -550,11 +550,11 @@ public sealed partial class MainWindow : Window
 
     private async Task ReceiveAsync(string transferId)
     {
-        if (!clipboard.FilesEnabled) { ShowNotice("跨设备文件传输尚未就绪；请确认对端也是新版本。"); return; }
+        if (!clipboard.FilesEnabled) { Notify("跨设备文件传输尚未就绪；请确认对端也是新版本。"); return; }
         var folder = Dialogs.PickFolder(Handle, "选择接收文件夹", DefaultReceiveFolder());
         if (folder is null) return;
         bool requested = await clipboard.ReceiveFileAsync(transferId, folder);
-        ShowNotice(requested
+        Notify(requested
             ? "已请求文件内容；传输完成后会自动落盘并放入剪贴板。"
             : "接收请求未完成。");
     }
@@ -639,16 +639,16 @@ public sealed partial class MainWindow : Window
     {
         if (!service.IsConnected || latest is not JsonElement snapshot || !snapshot.TryGetProperty("capabilities", out var caps) || !caps.Bool("workflow_execution"))
         {
-            ShowNotice("工作流执行能力尚未就绪；没有向服务发送剪贴板内容。");
+            Notify("工作流执行能力尚未就绪；没有向服务发送剪贴板内容。");
             return;
         }
         try
         {
             long epoch = snapshot.Number("session_epoch");
             await workflowExecution.ExecuteAsync(workflow.Id, epoch, DateTime.UtcNow.Ticks, CancellationToken.None);
-            ShowNotice($"已执行工作流：{workflow.Name}");
+            Notify($"已执行工作流：{workflow.Name}");
         }
-        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "工作流未执行，剪贴板保持不变。"); }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "工作流未执行，剪贴板保持不变。"); }
     }
 
     private void NewWorkflowClick(object sender, RoutedEventArgs args)
@@ -868,9 +868,9 @@ public sealed partial class MainWindow : Window
         try
         {
             var reply = await service.SendAsync(ServiceClient.Command(command, args));
-            ShowNotice(reply.TryGetProperty("Queued", out _) ? "操作已提交；等待服务和对端的真实状态更新。" : "服务已响应；以设备列表中的实际状态为准。");
+            Notify(reply.TryGetProperty("Queued", out _) ? "操作已提交；等待服务和对端的真实状态更新。" : "服务已响应；以设备列表中的实际状态为准。");
         }
-        catch (Exception ex) { ShowNotice(ex is IOException ? ex.Message : "操作未完成，服务可能已断开或请求超时。"); }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "操作未完成，服务可能已断开或请求超时。"); }
         finally { busy = false; PairIpButton.IsEnabled = service.IsConnected; }
     }
 
@@ -878,7 +878,7 @@ public sealed partial class MainWindow : Window
     {
         string ip = ManualIp.Text.Trim();
         if (ip.Split('.').Length != 4 || !IPAddress.TryParse(ip, out var address) || address.AddressFamily != AddressFamily.InterNetwork || address.ToString() != ip)
-        { ShowNotice("请输入完整 IPv4 地址，例如 192.168.1.23。IP 仅用于定位，不授予信任。"); return; }
+        { Notify("请输入完整 IPv4 地址，例如 192.168.1.23。IP 仅用于定位，不授予信任。"); return; }
         await RunCommand("RequestPairingAt", new { ipv4 = ip });
     }
 
@@ -915,13 +915,13 @@ public sealed partial class MainWindow : Window
 
     internal static string FormatBytes(long value) => value >= 1024 * 1024 ? $"{value / (1024.0 * 1024):N1} MiB" : value >= 1024 ? $"{value / 1024.0:N1} KiB" : $"{value} B";
 
-    private void ShowNotice(string message) => Notice.Text = message;
+    internal void Notify(string message) => Notice.Text = message;
 
     private void FileOfferArrived(string peer, string names) =>
-        ShowNotice($"{peer} 发来文件：{names}。在“传输”页选择位置接收。");
+        Notify($"{peer} 发来文件：{names}。在“传输”页选择位置接收。");
 
     private void FileTransferDone(string id, string detail, bool success) =>
-        ShowNotice(success ? detail : $"文件传输未完成：{detail}");
+        Notify(success ? detail : $"文件传输未完成：{detail}");
 
     private void SettingsClick(object sender, RoutedEventArgs args) => ShowSettings();
 
@@ -944,7 +944,7 @@ public sealed partial class MainWindow : Window
         else if (args.Key == global::Windows.System.VirtualKey.Enter && ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), HistoryList)) { CopySelection(); args.Handled = true; }
         else if (args.Key is global::Windows.System.VirtualKey.Delete or global::Windows.System.VirtualKey.Back && ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), HistoryList))
         {
-            if (HistoryList.SelectedItem is ClipboardEntry entry) { clipboard.Remove(entry); ShowNotice("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。"); }
+            if (HistoryList.SelectedItem is ClipboardEntry entry) { clipboard.Remove(entry); Notify("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。"); }
             args.Handled = true;
         }
     }

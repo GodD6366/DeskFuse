@@ -57,3 +57,5 @@ Win32 替换对照（不引入 WinForms 依赖）：
 迁移不改变安全边界：客户端仍不持有身份、信任或网络运行时，跨设备能力仍由 `DeskFuseService` 的认证 IPC 提供。
 
 已实测（2026-10-05，解锁 console 会话）：客户端启动后与真实服务完成认证 IPC（界面「服务运行中」）；本机复制文本被 Win32 监听捕获、写入共享历史并在列表与预览中显示；MSIX 打包的 full-trust 客户端从 `WindowsApps` 启动后同样连通服务。锁屏或非 console 会话下服务按设计返回 `session_unavailable`。
+
+未能复验：本机应用控制策略会拦截**新构建**的 UIAccess 二进制（`ERROR_ACCESS_DISABLED_BY_POLICY`），因此转换后未能重跑 `deskfuse-input-helper` 的启动与监督验证（同一监督逻辑在转换前已用旧客户端实测通过）；托盘图标在通知区域折叠时无法用 UIA 确认，因此只验证了创建失败会显式提示而不是静默。
