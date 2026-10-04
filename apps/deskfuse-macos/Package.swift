@@ -12,20 +12,11 @@ let freerdpLibDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent("RemoteApplication/Vendor/FreeRDP/lib")
     .path
-let homebrewPrefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? "/opt/homebrew"
-let systemLibDirectories = [
-    homebrewPrefix + "/lib",
-    homebrewPrefix + "/opt/openssl@3/lib",
-    homebrewPrefix + "/opt/json-c/lib",
-    homebrewPrefix + "/opt/libusb/lib",
-]
 
 let remoteApplicationLinkerSettings: [LinkerSetting] = [
-    .unsafeFlags(["-L", freerdpLibDirectory] + systemLibDirectories.flatMap { ["-L", $0] }),
-    .linkedLibrary("ssl"),
-    .linkedLibrary("crypto"),
-    .linkedLibrary("usb-1.0"),
-    .linkedLibrary("json-c"),
+    .unsafeFlags(["-L", freerdpLibDirectory]),
+    .linkedLibrary("z"),
+    .linkedFramework("IOKit"),
     .linkedFramework("Foundation"),
     .linkedFramework("CoreServices"),
     .linkedFramework("Security"),

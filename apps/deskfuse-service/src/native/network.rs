@@ -210,7 +210,12 @@ impl Network {
             if remote_app::availability() == remote_app::Availability::Available
                 && self.remote_app_authorized(peer)
             {
-                tokio::task::spawn_blocking(move || remote_app::serve(session));
+                let runtime = self.runtime.clone();
+                tokio::task::spawn_blocking(move || {
+                    remote_app::serve(session, || {
+                        remote_app_authorized(&runtime.snapshot_view(), peer)
+                    });
+                });
             } else {
                 session.close();
             }
@@ -218,16 +223,19 @@ impl Network {
     }
 
     fn remote_app_authorized(&self, peer: deskfuse_core::DeviceId) -> bool {
-        let view = self.runtime.snapshot_view();
-        view.device_network
-            .allows(view.snapshot.local_device_id, peer)
-            && !view.device_network.blocked_peer_ids.contains(&peer)
-            && view
-                .snapshot
-                .peers
-                .iter()
-                .any(|entry| entry.id == peer && entry.trust == TrustState::Trusted)
+        remote_app_authorized(&self.runtime.snapshot_view(), peer)
     }
+}
+
+fn remote_app_authorized(view: &SnapshotView, peer: deskfuse_core::DeviceId) -> bool {
+    view.device_network
+        .allows(view.snapshot.local_device_id, peer)
+        && !view.device_network.blocked_peer_ids.contains(&peer)
+        && view
+            .snapshot
+            .peers
+            .iter()
+            .any(|entry| entry.id == peer && entry.trust == TrustState::Trusted)
 }
 
 async fn bind_transport(

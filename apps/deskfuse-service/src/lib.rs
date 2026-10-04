@@ -28,3 +28,5 @@ mod input_controller_tests;
 pub mod native;
 pub mod policy;
 pub mod protocol;
+
+pub mod remote_app_catalog;

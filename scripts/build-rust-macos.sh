@@ -5,6 +5,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
 CONFIGURATION="${1:-debug}"
 [[ "$CONFIGURATION" == debug || "$CONFIGURATION" == release ]] || { echo "expected debug or release" >&2; exit 2; }
 case "${DESKFUSE_MACOS_ARCH:-arm64}" in

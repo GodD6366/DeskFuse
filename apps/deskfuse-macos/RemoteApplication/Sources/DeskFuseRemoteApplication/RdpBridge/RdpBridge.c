@@ -10,6 +10,7 @@
 #include <freerdp/client.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/client/rail.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/gdi/gdi.h>
 
@@ -172,12 +173,68 @@ static BOOL bridge_desktop_resize(rdpContext* context)
 
 /* --- lifecycle --------------------------------------------------------- */
 
+/* RemoteApp does not launch merely by connecting: the RAIL handshake must
+ * send client status, work area and the requested executable. */
+static UINT bridge_rail_handshake(RailClientContext* context, const RAIL_HANDSHAKE_ORDER* order)
+{
+	WINPR_UNUSED(order);
+	return client_rail_server_start_cmd(context);
+}
+
+static UINT bridge_rail_handshake_ex(RailClientContext* context, const RAIL_HANDSHAKE_EX_ORDER* order)
+{
+	WINPR_UNUSED(order);
+	return client_rail_server_start_cmd(context);
+}
+
+static UINT bridge_rail_execute_result(RailClientContext* context, const RAIL_EXEC_RESULT_ORDER* result)
+{
+	rdp_bridge* bridge = context->custom;
+	if (result->execResult != RAIL_EXEC_S_OK)
+	{
+		notify(bridge, RDP_EVENT_ERROR, "Windows 无法启动所选远程应用");
+		atomic_store(&bridge->stop_requested, 1);
+	}
+	return CHANNEL_RC_OK;
+}
+
+static void bridge_channel_connected(void* context, const ChannelConnectedEventArgs* event)
+{
+	bridgeContext* client = context;
+	if (strcmp(event->name, RAIL_SVC_CHANNEL_NAME) == 0)
+	{
+		RailClientContext* rail = event->pInterface;
+		rail->custom = client->bridge;
+		rail->ServerHandshake = bridge_rail_handshake;
+		rail->ServerHandshakeEx = bridge_rail_handshake_ex;
+		rail->ServerExecuteResult = bridge_rail_execute_result;
+	}
+	else
+		freerdp_client_OnChannelConnectedEventHandler(context, event);
+}
+
+static void bridge_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* event)
+{
+	if (strcmp(event->name, RAIL_SVC_CHANNEL_NAME) == 0)
+	{
+		RailClientContext* rail = event->pInterface;
+		rail->custom = NULL;
+		rail->ServerHandshake = NULL;
+		rail->ServerHandshakeEx = NULL;
+		rail->ServerExecuteResult = NULL;
+	}
+	else
+		freerdp_client_OnChannelDisconnectedEventHandler(context, event);
+}
+
 static BOOL bridge_pre_connect(freerdp* instance)
 {
 	rdpSettings* settings = instance->context->settings;
 
 	if (!freerdp_settings_set_bool(settings, FreeRDP_CertificateCallbackPreferPEM, TRUE))
 		return FALSE;
+	PubSub_SubscribeChannelConnected(instance->context->pubSub, bridge_channel_connected);
+	PubSub_SubscribeChannelDisconnected(instance->context->pubSub, bridge_channel_disconnected);
 	return TRUE;
 }
 
@@ -188,8 +245,7 @@ static BOOL bridge_post_connect(freerdp* instance)
 	if (!gdi_init(instance, PIXEL_FORMAT_XRGB32))
 		return FALSE;
 
-	if (!freerdp_settings_set_bool(context->settings, FreeRDP_DeactivateClientDecoding, TRUE))
-		return FALSE;
+	/* Keep GDI bitmap/glyph decoding enabled; this client displays decoded pixels. */
 
 	context->update->BeginPaint = bridge_begin_paint;
 	context->update->EndPaint = bridge_end_paint;
@@ -282,8 +338,9 @@ static DWORD bridge_thread(LPVOID arg)
 
 		if (!freerdp_check_event_handles(instance->context))
 		{
-			if (freerdp_get_last_error(instance->context) == FREERDP_ERROR_SUCCESS)
-				break;
+			if (freerdp_get_last_error(instance->context) != FREERDP_ERROR_SUCCESS)
+				notify(bridge, RDP_EVENT_ERROR, "RDP 会话传输失败");
+			break;
 		}
 	}
 

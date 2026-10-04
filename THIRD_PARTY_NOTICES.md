@@ -38,3 +38,7 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 ## 参考项目
 
 BlueSync 用于交互行为参考；DeskFuse 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。
+
+## Windows RDP RemoteApp 客户端
+
+macOS 客户端静态链接 FreeRDP/WinPR 3.14.1（Apache-2.0）、OpenSSL 3.6.5（Apache-2.0）和 json-c 0.18（MIT）。固定源码提交及构建入口见 `scripts/build-freerdp-macos.sh`；打包时将上游许可证原文合并为 `DeskFuse.app/Contents/Resources/THIRD_PARTY_RDP.txt`。这些原生依赖不在 Cargo.lock 内，单独随产物附带声明。

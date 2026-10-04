@@ -46,26 +46,8 @@ pub enum Availability {
     },
 }
 
-/// One registered RemoteApp, mirroring RemoteApp Tool's registry schema.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteAppEntry {
-    /// Registry subkey name; also the RemoteApp program name used in `.rdp`.
-    pub name: String,
-    pub full_name: String,
-    pub path: String,
-    pub command_line: String,
-    pub command_line_setting: u32,
-    pub icon_path: String,
-    pub icon_index: u32,
-    pub show_in_tswa: u32,
-}
-
-/// An installed executable surfaced for the local picker.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstalledApp {
-    pub name: String,
-    pub path: String,
-}
+pub use crate::remote_app_catalog::{InstalledApp, RemoteAppEntry};
+use crate::remote_app_catalog::{executable_path, merge_catalog};
 
 /// Whether the current edition can host RemoteApps. Home editions report an
 /// `EditionID` beginning with `Core`; everything else (Pro/Enterprise/Server)
@@ -124,8 +106,8 @@ pub fn register_app(app: &RemoteAppEntry) -> io::Result<()> {
             .chars()
             .any(|c| c.is_control() || matches!(c, '\\' | '/' | ':' | '"'))
         || app.path.len() > 32767
-        || !std::path::Path::new(&app.path).is_absolute()
-        || !app.path.to_ascii_lowercase().ends_with(".exe")
+        || !executable_path(&app.path)
+        || app.full_name.chars().any(char::is_control)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -174,27 +156,63 @@ pub fn unregister_app(name: &str) -> io::Result<()> {
 /// Enumerate installed executables from `App Paths` (already carries exe paths).
 #[must_use]
 pub fn list_installed_apps() -> Vec<InstalledApp> {
-    let Some(parent) = open_key(HKEY_LOCAL_MACHINE, APP_PATHS, KEY_READ) else {
-        return Vec::new();
-    };
     let mut apps = Vec::new();
-    for key_name in enum_subkeys(parent) {
-        if let Some(key) = open_subkey(parent, &key_name, KEY_READ) {
-            let path = read_string(key, "");
-            // SAFETY: open_subkey returned this owned handle.
-            unsafe { RegCloseKey(key) };
-            if let Some(path) = path.filter(|path| !path.is_empty()) {
-                let name = key_name
-                    .strip_suffix(".exe")
-                    .map(str::to_owned)
-                    .unwrap_or(key_name);
-                apps.push(InstalledApp { name, path });
+    for registry_path in [
+        APP_PATHS,
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+    ] {
+        let Some(parent) = open_key(HKEY_LOCAL_MACHINE, registry_path, KEY_READ) else {
+            continue;
+        };
+        for key_name in enum_subkeys(parent) {
+            if let Some(key) = open_subkey(parent, &key_name, KEY_READ) {
+                let path = read_string(key, "");
+                // SAFETY: open_subkey returned this owned handle.
+                unsafe { RegCloseKey(key) };
+                if let Some(path) = path {
+                    let path = path.trim().trim_matches('"').to_owned();
+                    if !executable_path(&path) || !std::path::Path::new(&path).is_file() {
+                        continue;
+                    }
+                    let name = key_name
+                        .strip_suffix(".exe")
+                        .map(str::to_owned)
+                        .unwrap_or(key_name);
+                    apps.push(InstalledApp { name, path });
+                }
+            }
+        }
+        // SAFETY: open_key returned this owned handle.
+        unsafe { RegCloseKey(parent) };
+    }
+    apps
+}
+
+/// Build the live directory without modifying the registry. Built-in apps fill
+/// the common gap where Windows does not publish an App Paths registration.
+fn launchable_apps() -> Vec<RemoteAppEntry> {
+    let mut installed = list_installed_apps();
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        for (name, relative) in [
+            ("记事本", r"System32\notepad.exe"),
+            ("画图", r"System32\mspaint.exe"),
+            ("计算器", r"System32\calc.exe"),
+        ] {
+            let path = std::path::PathBuf::from(&root).join(relative);
+            if path.is_file() {
+                installed.push(InstalledApp {
+                    name: name.into(),
+                    path: path.to_string_lossy().into_owned(),
+                });
             }
         }
     }
-    // SAFETY: open_key returned this owned handle.
-    unsafe { RegCloseKey(parent) };
-    apps
+    installed.retain(|app| executable_path(&app.path) && std::path::Path::new(&app.path).is_file());
+    let registered = list_remote_apps()
+        .into_iter()
+        .filter(|app| executable_path(&app.path) && std::path::Path::new(&app.path).is_file())
+        .collect();
+    merge_catalog(registered, installed)
 }
 
 /// Render a RemoteApp `.rdp` file. `full address` carries [`RDP_HOST_TOKEN`], to
@@ -492,7 +510,11 @@ pub enum RemoteAppRequest {
 /// `catalog` (resend) and `launch` (return the `.rdp` file) requests until the
 /// peer closes the stream. Runs on a blocking thread; `receive` waits at most
 /// 250 ms per poll and never touches the Tokio worker.
-pub fn serve(session: Arc<RemoteSession>) {
+pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
+    if !authorized() {
+        session.close();
+        return;
+    }
     let availability = availability();
     let (available, reason) = match &availability {
         Availability::Available => (true, None),
@@ -501,12 +523,12 @@ pub fn serve(session: Arc<RemoteSession>) {
             Some(format!("当前 Windows 版本（{edition}）不支持 RemoteApp")),
         ),
     };
-    let catalog = RemoteAppMessage::Catalog {
+    let catalog = || RemoteAppMessage::Catalog {
         version: 1,
         available,
-        reason,
+        reason: reason.clone(),
         apps: if available {
-            list_remote_apps()
+            launchable_apps()
                 .into_iter()
                 .map(CatalogApp::from)
                 .collect()
@@ -514,13 +536,19 @@ pub fn serve(session: Arc<RemoteSession>) {
             Vec::new()
         },
     };
-    if send(&session, &catalog).is_err() {
+    if send(&session, &catalog()).is_err() {
         session.close();
         return;
     }
     loop {
-        match session.receive(500) {
+        if !authorized() {
+            break;
+        }
+        match session.receive(250) {
             Ok(Some(data)) => {
+                if !authorized() {
+                    break;
+                }
                 let Ok(request) = serde_json::from_slice::<RemoteAppRequest>(&data) else {
                     let _ = send(
                         &session,
@@ -533,12 +561,12 @@ pub fn serve(session: Arc<RemoteSession>) {
                     continue;
                 };
                 match request {
-                    RemoteAppRequest::Catalog { .. } => {
-                        if send(&session, &catalog).is_err() {
+                    RemoteAppRequest::Catalog { version: 1 } => {
+                        if send(&session, &catalog()).is_err() {
                             break;
                         }
                     }
-                    RemoteAppRequest::Launch { name, .. } => {
+                    RemoteAppRequest::Launch { version: 1, name } => {
                         if !available {
                             let _ = send(
                                 &session,
@@ -550,7 +578,7 @@ pub fn serve(session: Arc<RemoteSession>) {
                             );
                             continue;
                         }
-                        let Some(entry) = list_remote_apps()
+                        let Some(entry) = launchable_apps()
                             .into_iter()
                             .find(|entry| entry.name == name)
                         else {
@@ -559,11 +587,25 @@ pub fn serve(session: Arc<RemoteSession>) {
                                 &RemoteAppMessage::Error {
                                     version: 1,
                                     code: "not_found".into(),
-                                    message: "该应用尚未注册为 RemoteApp".into(),
+                                    message: "应用已移除或不在当前可用目录中，请刷新列表".into(),
                                 },
                             );
                             continue;
                         };
+                        // Never accept paths from the peer, nor rewrite a manual registration.
+                        if !list_remote_apps().iter().any(|app| app.name == entry.name) {
+                            if let Err(error) = register_app(&entry) {
+                                let _ = send(
+                                    &session,
+                                    &RemoteAppMessage::Error {
+                                        version: 1,
+                                        code: "registration_failed".into(),
+                                        message: format!("自动注册应用失败：{error}"),
+                                    },
+                                );
+                                continue;
+                            }
+                        }
                         if send(
                             &session,
                             &RemoteAppMessage::Rdp {
@@ -575,6 +617,16 @@ pub fn serve(session: Arc<RemoteSession>) {
                         {
                             break;
                         }
+                    }
+                    _ => {
+                        let _ = send(
+                            &session,
+                            &RemoteAppMessage::Error {
+                                version: 1,
+                                code: "unsupported_version".into(),
+                                message: "不支持的 Windows 远程应用协议版本".into(),
+                            },
+                        );
                     }
                 }
             }

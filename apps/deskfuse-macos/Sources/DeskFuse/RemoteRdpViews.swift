@@ -31,7 +31,7 @@ struct RemoteRdpPicker: View {
             } else if let reason = session.unavailableReason {
                 ContentUnavailableView("Windows 不支持 RemoteApp", systemImage: "network.slash", description: Text(reason))
             } else if session.apps.isEmpty {
-                ContentUnavailableView("没有可用的远程应用", systemImage: "square.grid.2x2", description: Text("请在 Windows 端将应用注册为 RemoteApp。"))
+                ContentUnavailableView("没有可用的远程应用", systemImage: "square.grid.2x2", description: Text("Windows 尚未提供可用应用。新版服务会自动发现应用并在首次打开时注册；旧版服务仍需手动注册。"))
             } else {
                 Form {
                     TextField("Windows 用户名", text: $username)
@@ -76,11 +76,11 @@ struct RemoteRdpPicker: View {
     let session: RemoteRdpSession
     var launch: ((RemoteRdpApp, String?, String?) -> Void)?
 
-    init(session: RemoteRdpSession) {
+    init(session: RemoteRdpSession, peerName: String) {
         self.session = session
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Windows 远程应用 — \(session.peerID)"
+        window.title = "Windows 远程应用 — \(peerName)"
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self

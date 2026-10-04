@@ -79,16 +79,21 @@ import DeskFuseRemoteApplication
             return
         }
         let session = RemoteRdpSession(engine: engine, peerID: peerID, peerHost: windowsHost(endpoint))
-        let picker = RemoteRdpPickerWindow(session: session)
-        picker.launch = { [weak self, weak picker] app, username, password in
+        let picker = RemoteRdpPickerWindow(session: session, peerName: peerName)
+        picker.launch = { [weak self] app, username, password in
             guard let self else { return }
-            self.openWindowsApplication(app, session: session, picker: picker, username: username, password: password)
+            self.openWindowsApplication(app, session: session, username: username, password: password)
         }
         rdpPickers[peerID] = picker
         picker.showWindow(nil); picker.window?.makeKeyAndOrderFront(nil)
     }
-    private func openWindowsApplication(_ app: RemoteRdpApp, session: RemoteRdpSession,
-                                        picker: RemoteRdpPickerWindow?, username: String?, password: String?) {
+    func makeWindowsCatalog(for device: Device) -> RemoteRdpSession? {
+        guard let engine, device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
+        return RemoteRdpSession(engine: engine, peerID: device.id,
+            peerHost: windowsHost(device.routes.first(where: \.active)?.endpoint ?? device.endpoint))
+    }
+    func openWindowsApplication(_ app: RemoteRdpApp, session: RemoteRdpSession,
+                                username: String?, password: String?) {
         let key = "\(session.peerID):\(app.name)"
         if let existing = rdpWindows[key] {
             existing.showWindow(nil); existing.window?.deminiaturize(nil); existing.window?.makeKeyAndOrderFront(nil)
@@ -116,7 +121,7 @@ import DeskFuseRemoteApplication
     }
     /// Workspace catalogs own only a browsing connection, never viewer windows.
     func makeCatalog(for device: Device) -> RemoteApplicationSession? {
-        guard let engine, device.trusted, device.connected, !device.blocked else { return nil }
+        guard let engine, !device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
         let session = RemoteApplicationSession(engine: engine, peerID: device.id, peerName: device.name, role: .viewer)
         catalogs[session.id] = session
         return session

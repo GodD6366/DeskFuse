@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
 # New SwiftUI SDKs require the platform macro plugins bundled with full Xcode.
 # Select a toolchain for this process only; never change xcode-select globally.
 if [[ -z "${DEVELOPER_DIR:-}" && "$(xcode-select -p)" == */CommandLineTools ]]; then
@@ -39,6 +40,7 @@ SWIFT_FLAGS=(--build-system swiftbuild --package-path "$ROOT_DIR/apps/deskfuse-m
   --triple "$SWIFT_TRIPLE" --sdk "$SDK_PATH"
   -Xlinker -platform_version -Xlinker macos -Xlinker "$MACOSX_DEPLOYMENT_TARGET" -Xlinker "$SDK_VERSION")
 export DESKFUSE_INPUT_BUILD_ID="${DESKFUSE_INPUT_BUILD_ID:-dev-$(git rev-parse --short=12 HEAD)}"
+DESKFUSE_MACOS_ARCH="$MACOS_ARCH" "$ROOT_DIR/scripts/build-freerdp-macos.sh"
 # Rust builds and binding generation can also run independently of Swift.
 "$ROOT_DIR/scripts/build-rust-macos.sh" "$CONFIGURATION"
 TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
@@ -74,7 +76,7 @@ for key in (
 ):
     hasher.update(key.encode())
     hasher.update(os.environ[key].encode())
-for relative in ("Package.swift", "Package.resolved"):
+for relative in ("Package.swift", "Package.resolved", "RemoteApplication/Vendor/FreeRDP/.fingerprint"):
     path = package / relative
     if path.is_file():
         hasher.update(relative.encode())

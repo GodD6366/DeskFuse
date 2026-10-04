@@ -27,14 +27,14 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 - 协议契约：`docs/remote-application/WINDOWS_RDP_CATALOG.md`。
 
 ### Mac 侧（C + Swift）
-- `scripts/build-freerdp-macos.sh`：构建 FreeRDP 3.14.1（headless、静态、仅 RemoteApp 相关 channel）+ 编译 RdpBridge → `apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/libdeskfuse-rdp.a`（本机已验证，见下）。
+- `scripts/build-freerdp-macos.sh`：构建 FreeRDP 3.14.1（headless、静态、仅 RemoteApp 相关 channel）+ 编译 RdpBridge → `apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/lib/libdeskfuse-rdp.a`（本机已验证，见下）。
 - `RemoteApplication/Sources/DeskFuseRemoteApplication/RdpBridge/RdpBridge.c` / `.h`：FreeRDP 无头客户端桥（连接线程、GDI 帧缓冲拷贝、鼠标/键盘/Unicode 注入、证书自动接受、NLA 凭据回调）。
 - `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpBridge.swift`：`RdpBridge.c` 的 Swift 包装（帧拷贝 + 输入 + 状态）。
 - `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpCatalog.swift`：目录协议 JSON 类型（`RemoteRdpMessage`/`RemoteRdpRequest`/`RemoteRdpApp`）。
 - `Sources/DeskFuse/RemoteRdpSession.swift`：主控端编排（取目录 → 发 launch → 收 `.rdp` → 替换 `{host}` → 启动桥）。
-- `Package.swift`（主 app + spike）：`CDeskFuseRdp` systemLibrary + 链接 `-ldeskfuse-rdp -lssl -lcrypto -lusb-1.0 -ljson-c` + Foundation/CoreServices/Security。
+- `Package.swift`（主 app + spike）：`CDeskFuseRdp` systemLibrary；FreeRDP、WinPR、OpenSSL 和 json-c 合并为一个静态库，仅链接 macOS 系统库/框架，不依赖 Homebrew dylib。
 
-## 已验证（本机 macOS）
+## 早期验证记录（不代表当前完整验收）
 
 | 项 | 结果 |
 | --- | --- |
@@ -43,7 +43,7 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 | 组合 `libdeskfuse-rdp.a` + 链接测试 | ✅ 链接并运行（create/parse/free） |
 | `swift build --target DeskFuseRemoteApplication` | ✅ 通过（含 RemoteRdpBridge/RemoteRdpCatalog） |
 
-未能在本机验证：Windows 服务 Rust 代码（需 Windows/MSVC 构建机，见 `docs/WINDOWS_SELF_HOSTED_RUNNER_SETUP.md`）；主 app 打包（需完整 Xcode 27+，本机只有 CommandLineTools）。
+上述记录来自早期环境。当前构建需完整 Xcode 27+；Windows 服务、真实 NLA 登录、RemoteApp 画面和输入仍需 Windows/MSVC 及双设备验收，不由本地桥接测试替代。
 
 ## 打包测试步骤
 
@@ -56,8 +56,9 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 
 ### 2. Mac（主控 A）
 ```sh
-./scripts/build-freerdp-macos.sh          # 产出 Vendor/FreeRDP/libdeskfuse-rdp.a
-./scripts/package-macos.sh                # 正常打包（需完整 Xcode + Rust FFI）
+./scripts/build-native-macos.sh release   # 自动准备 RDP 依赖并构建主程序
+./scripts/package-macos.sh --lan           # 正常打包，不自动安装
+./scripts/build-freerdp-macos.sh --test     # 原生 RAIL/GDI 回归测试
 ```
 
 ## 已接入主 UI（RDP 与媒体能力的边界）
@@ -76,3 +77,12 @@ Windows 桌面端通过 `RemoteAppWindow` 调用受认证的服务 IPC 管理 `T
 - 证书当前**自动接受**（LAN 配对设备信任边界内）；持久化证书固定是后续项。
 - Home/Core 版 Windows 不支持 RemoteApp（服务端 `availability()` 返回不支持并拒绝目录）。
 - RDP 凭据只由 Mac 端 RDP 客户端处理，DeskFuse 服务不读 Windows 账户凭据。
+
+## 可复现的 macOS RDP 依赖构建
+
+- 需要完整 Xcode、CMake、Git、Perl、Make；首次准备需访问上游 Git 仓库。不要求安装 Homebrew 的 OpenSSL、json-c 或 libusb。
+- FreeRDP 3.14.1、OpenSSL 3.6.5、json-c 0.18 均固定上游提交；按 `DESKFUSE_MACOS_ARCH=arm64|x86_64`、SDK 和 macOS 14.0 部署目标构建。缓存默认在 `~/.cache/deskfuse-freerdp`，可用 `FREERDP_CACHE_DIR` 修改。
+- `build-native-macos.sh` 和独立 spike 入口先准备静态依赖；Swift 构建缓存包含 RDP 指纹。依赖升级、桥接源码或工具链改变后自动重建。
+- 未实现的 USB、音频等重定向通道不启用；没有通过关闭 RDP target 绕过构建。RAIL 握手发送应用启动请求，通道事件接入 GDI graphics pipeline，保留 bitmap/glyph 解码。
+- `--test` 使用真实 FreeRDP 库检查 `.rdp` 解析、RAIL 两种握手及失败回调、GDI 帧拷贝边界和重复清理，不连接 Windows、不使用账户凭据。
+- 打包拒绝非系统 dylib 依赖，并携带 `THIRD_PARTY_RDP.txt` 中的原生库许可证。公开发布、签名公证和双设备功能验证分别判定。

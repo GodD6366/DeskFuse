@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "error: macOS packaging must run on Darwin" >&2
@@ -283,7 +284,13 @@ if [[ "$ARCHES" != "$EXPECTED_ARCH" ]]; then
 fi
 
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_SOURCE_DIR/.background"
+# A portable app must never retain a build machine's Homebrew/cache dylib paths.
+if otool -L "$BINARY_PATH" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/System/Library/|/usr/lib/)' ; then
+  echo "error: executable links a non-system dynamic library" >&2
+  exit 1
+fi
 cp "$BINARY_PATH" "$CONTENTS_DIR/MacOS/$BINARY_NAME"
+cp "$ROOT_DIR/apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/NOTICES.txt" "$CONTENTS_DIR/Resources/THIRD_PARTY_RDP.txt"
 ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/Metadata.appintents"
 cp "$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-input-service"
 deskfuse_codesign --identifier com.deskfuse.app.input-service "$CONTENTS_DIR/MacOS/deskfuse-input-service"

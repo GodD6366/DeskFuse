@@ -1,11 +1,11 @@
 # Windows 远程应用目录协议（Mac 主控 ↔ Windows 被控）
 
 Mac 控制 Windows 远程应用不走 Mac↔Mac 那套 ScreenCaptureKit 视频协议，而是：
-Windows 服务把应用注册为原生 **RDP RemoteApp**（`TSAppAllowList`），Mac 端通过现有已认证 QUIC 控制连接取回应用目录与 `.rdp`，再交给 Mac 内嵌的 **RDP 客户端（FreeRDP）** 连 `Windows:3389` 无缝启动单个应用。
+Windows 服务自动发现本机应用，在主控端点击启动时按需注册为原生 **RDP RemoteApp**（`TSAppAllowList`），Mac 端通过现有已认证 QUIC 控制连接取回应用目录与 `.rdp`，再交给 Mac 内嵌的 **RDP 客户端（FreeRDP）** 连 `Windows:3389` 无缝启动单个应用。
 
 ## 能力宣告
 
-Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`（`deskfuse_core::Capabilities`，`1 << 12`）。Mac 端据此判断对端是「RDP RemoteApp 主机」而非「媒体帧主机」。
+Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`（`deskfuse_core::Capabilities`，`1 << 12`），并宣告独立的 `REMOTE_APPLICATION_RDP` 能力。Mac 端使用后者判断对端是「RDP RemoteApp 主机」而非「媒体帧主机」。
 
 ## 连接与授权
 
@@ -39,7 +39,16 @@ Windows 服务在控制 HELLO 的能力位中额外宣告 `REMOTE_APPLICATION`�
 {"type":"launch","version":1,"name":"Notepad"}
 ```
 
-服务端对 `catalog` 重发当前目录；对 `launch` 返回对应 `.rdp`（未注册返回 `error/not_found`）。
+服务端对 `catalog` 重新扫描并返回当前目录，而不是重发会话建立时的快照。
+
+- 自动发现范围：HKLM 的 64/32 位 `App Paths`，以及存在于系统目录中的记事本、画图、计算器可执行入口；尚不覆盖所有开始菜单、用户级安装和 Store 应用。
+- 合并人工注册项，路径去重；人工注册名及启动参数优先。自动发现项使用规范化路径的 SHA-256 生成稳定 ID，不依赖显示名称。
+- 扫描仅读取，不修改注册表。`launch` 只接受目录 ID，不接受远端传入的可执行文件路径或命令行；服务端重新解析目录，首次启动时注册后再返回 `.rdp`。
+- 自动发现路径必须是存在的本机绝对 `.exe` 路径，拒绝 UNC 路径和换行注入。未知或已移除项返回 `error/not_found`，注册失败返回 `error/registration_failed`。
+- 目录会话在轮询及处理请求时重新检查设备授权，撤销信任后关闭会话。独立 RDP 会话的 Windows 认证仍由 Windows 管理。
+- Mac 独立窗口与侧栏内嵌目录都按 `remoteAppRdp` 选择 Windows JSON 协议，不再将 Windows 目录交给 Mac 媒体协议解析。
+
+此自动目录改动不等于 Windows 单点登录：当前仍使用 NLA 用户凭据，尚未实现首次免密登录集成。
 
 ## 服务端实现位置
 

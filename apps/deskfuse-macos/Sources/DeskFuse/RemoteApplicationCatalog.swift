@@ -7,6 +7,7 @@ import DeskFuseEngine
 struct RemoteApplicationCatalog: View {
     let device: Device
     @State private var session: RemoteApplicationSession?
+    @State private var rdpSession: RemoteRdpSession?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,17 +19,25 @@ struct RemoteApplicationCatalog: View {
                 }
                 Spacer()
                 Button {
-                    session?.refreshApplications()
+                    if let rdpSession { rdpSession.refresh() }
+                    else { session?.refreshApplications() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .disabled(session == nil || session?.busy == true)
+                .disabled(device.remoteAppRdp
+                    ? (rdpSession == nil || rdpSession?.phase == .connecting)
+                    : (session == nil || session?.busy == true))
                 .help("刷新应用列表")
                 .accessibilityLabel("刷新应用列表")
             }
             .padding(24)
             Divider()
-            if let session {
+            if let rdpSession {
+                RemoteRdpPicker(session: rdpSession) { application, username, password in
+                    RemoteApplicationManager.shared.openWindowsApplication(application,
+                        session: rdpSession, username: username, password: password)
+                }
+            } else if let session {
                 RemoteApplicationPicker(session: session, embedded: true) { application in
                     RemoteApplicationManager.shared.openApplication(application, from: session)
                 }
@@ -38,8 +47,20 @@ struct RemoteApplicationCatalog: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .task {
+        .task(id: "\(device.id):\(device.remoteAppRdp):\(device.connected)") {
             let manager = RemoteApplicationManager.shared
+            if device.remoteAppRdp {
+                guard let catalog = manager.makeWindowsCatalog(for: device) else { return }
+                rdpSession = catalog
+                // RemoteRdpPicker owns connect(); this task owns teardown only.
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(3600)) }
+                    catch { break }
+                }
+                catalog.stop()
+                if rdpSession === catalog { rdpSession = nil }
+                return
+            }
             guard let catalog = manager.makeCatalog(for: device) else { return }
             session = catalog
             await catalog.start()

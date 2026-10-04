@@ -10,6 +10,7 @@ fi
 MODE="${1:-run}"
 if [[ $# -gt 0 ]]; then shift; fi
 PACKAGE="$ROOT_DIR/apps/deskfuse-macos/RemoteApplication"
+"$ROOT_DIR/scripts/build-freerdp-macos.sh" >&2
 case "$MODE" in
   test) exec swift test --package-path "$PACKAGE" "$@" ;;
   build|run|package|probe) ;;

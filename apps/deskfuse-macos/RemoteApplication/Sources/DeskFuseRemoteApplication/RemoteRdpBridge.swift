@@ -112,6 +112,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
             case RDP_EVENT_CONNECTED:
                 _state = .connected
             case RDP_EVENT_DISCONNECTED:
+                if case .failed = _state { break }
                 _state = .disconnected
             case RDP_EVENT_AUTH_REQUIRED:
                 _state = .connecting

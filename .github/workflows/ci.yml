@@ -48,6 +48,8 @@ jobs:
           python3 scripts/check-branding.py --forbidden "$RETIRED_BRAND"
           python3 scripts/check-repository.py
           python3 -m unittest discover -s scripts/tests -v
+      - name: Native RDP bridge regression
+        run: ./scripts/build-freerdp-macos.sh --test
       - name: Rust checks
         # Loopback QUIC tests each own a multi-thread runtime and real deadlines;
         # do not oversubscribe the small hosted runner with multiple such tests.
