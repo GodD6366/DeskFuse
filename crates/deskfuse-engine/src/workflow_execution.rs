@@ -158,6 +158,7 @@ impl WorkflowService {
                             "public.jpeg",
                             "org.webmproject.webp",
                             "public.heic",
+                            "public.heif",
                             "public.png",
                             "public.tiff",
                             "com.compuserve.gif",

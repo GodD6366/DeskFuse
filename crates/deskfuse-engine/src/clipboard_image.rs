@@ -6,7 +6,13 @@ use std::io::{Cursor, Read};
 
 const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DHASH_BYTES: usize = 8 * 1024 * 1024;
-const IMAGE_KINDS: [&str; 4] = ["public.png", "public.tiff", "public.jpeg", "public.heic"];
+const IMAGE_KINDS: [&str; 5] = [
+    "public.png",
+    "public.tiff",
+    "public.jpeg",
+    "public.heic",
+    "public.heif",
+];
 
 /// One pass over an image-bearing clipboard snapshot, computed on a blocking
 /// thread so the bridge event loop never decodes image bytes.

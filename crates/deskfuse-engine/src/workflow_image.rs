@@ -5,6 +5,13 @@ use std::io::Cursor;
 use deskfuse_core::workflow::ImageFormat;
 use image::{DynamicImage, GenericImageView, ImageReader, imageops::FilterType};
 
+// HEIC is a system codec on macOS rather than a codec shipped by the common
+// `image` crate. Keep the common path portable, but let the macOS adapter
+// provide the missing decode/encode operations so HEIC still enters the same
+// workflow pipeline as PNG/JPEG/WebP.
+#[cfg(target_os = "macos")]
+use deskfuse_platform_macos::image_processor as native_image_processor;
+
 pub const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 16_384;
@@ -50,7 +57,21 @@ fn decode(bytes: &[u8]) -> Result<(DynamicImage, Option<ImageFormat>), String> {
         image::ImageFormat::Tiff => None,
         _ => None,
     });
-    let image = input.decode().map_err(|_| "无法解码该图片")?;
+    let image = match input.decode() {
+        Ok(image) => image,
+        Err(_) => {
+            #[cfg(target_os = "macos")]
+            {
+                let native = native_image_processor::decode_image(bytes)?;
+                let detected = native_image_processor::inspect_image(bytes)?.format;
+                let rgba = image::RgbaImage::from_raw(native.width, native.height, native.rgba)
+                    .ok_or("图片像素数据长度不正确")?;
+                return Ok((DynamicImage::ImageRgba8(rgba), detected.or(format)));
+            }
+            #[cfg(not(target_os = "macos"))]
+            return Err("无法解码该图片".into());
+        }
+    };
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err("图片尺寸超出限制（单边最多 16384，解码像素最多 32 Mi）".into());
@@ -86,7 +107,20 @@ fn encode(image: &DynamicImage, format: ImageFormat, quality: u8) -> Result<Vec<
         ImageFormat::Webp => image
             .write_to(&mut output, image::ImageFormat::WebP)
             .map_err(|_| "图片编码失败")?,
-        ImageFormat::Heic => return Err("当前公共图片编码器不支持 HEIC".into()),
+        ImageFormat::Heic => {
+            #[cfg(target_os = "macos")]
+            {
+                let rgba = image.to_rgba8();
+                let native = native_image_processor::ImagePixels {
+                    width: rgba.width(),
+                    height: rgba.height(),
+                    rgba: rgba.into_raw(),
+                };
+                return native_image_processor::encode_pixels(&native, format, quality);
+            }
+            #[cfg(not(target_os = "macos"))]
+            return Err("当前平台不支持 HEIC 编码".into());
+        }
     }
     let bytes = output.into_inner();
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
@@ -179,4 +213,25 @@ pub fn resize_image(
         ImageFormat::Png,
         100,
     )
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_heic_round_trip_uses_workflow_codec_boundary() {
+    let source = native_image_processor::ImagePixels {
+        width: 2,
+        height: 2,
+        rgba: vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    };
+    let heic = native_image_processor::encode_pixels(&source, ImageFormat::Heic, 80)
+        .expect("macOS ImageIO should encode HEIC");
+    let info = inspect_image(&heic).expect("workflow inspection should accept HEIC");
+    assert_eq!(info.format, Some(ImageFormat::Heic));
+
+    let jpeg = encode_image(&heic, ImageFormat::Jpeg, 80, None)
+        .expect("workflow conversion should decode HEIC")
+        .data;
+    assert!(!jpeg.is_empty());
 }

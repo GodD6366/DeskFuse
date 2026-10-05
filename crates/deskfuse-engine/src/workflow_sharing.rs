@@ -49,6 +49,7 @@ pub fn content_type(snapshot: &PasteboardSnapshot) -> WorkflowContentType {
                         | "public.jpeg"
                         | "public.tiff"
                         | "public.heic"
+                        | "public.heif"
                         | "org.webmproject.webp"
                 )
             })

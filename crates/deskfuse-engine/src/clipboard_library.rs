@@ -2359,7 +2359,7 @@ fn is_primary_image(s: &PasteboardSnapshot) -> bool {
         || s.items.iter().flat_map(|i| &i.representations).any(|r| {
             matches!(
                 r.type_name.as_str(),
-                "public.png" | "public.jpeg" | "public.heic"
+                "public.png" | "public.jpeg" | "public.heic" | "public.heif"
             )
         })
 }
@@ -2410,8 +2410,14 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
         )
     } else if (s.png.is_some()
         || s.items.iter().flat_map(|i| &i.representations).any(|r| {
-            ["public.png", "public.jpeg", "public.tiff", "public.heic"]
-                .contains(&r.type_name.as_str())
+            [
+                "public.png",
+                "public.jpeg",
+                "public.tiff",
+                "public.heic",
+                "public.heif",
+            ]
+            .contains(&r.type_name.as_str())
         }))
         && crate::clipboard_echo::snapshot_plain_texts(s)
             .first()

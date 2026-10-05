@@ -432,6 +432,7 @@ fn snapshot_image(snapshot: &PasteboardSnapshot) -> Result<Vec<u8>, String> {
         "public.jpeg",
         "org.webmproject.webp",
         "public.heic",
+        "public.heif",
         "public.png",
         "public.tiff",
         "com.compuserve.gif",
