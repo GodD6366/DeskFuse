@@ -51,7 +51,19 @@ public sealed partial class MainWindow : Window
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         AppIcon.Apply(this);
         AppWindow.Title = "DeskFuse";
-        AppWindow.Resize(new global::Windows.Graphics.SizeInt32(1280, 840));
+        // Size the window to the actual screen instead of a fixed small default:
+        // ~78% of the work area, centered, never below a readable minimum.
+        var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(Handle);
+        var workArea = global::Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(windowId, global::Microsoft.UI.Windowing.DisplayAreaFallback.Nearest).WorkArea;
+        int windowWidth = Math.Clamp((int)(workArea.Width * 0.78), 1280, workArea.Width);
+        int windowHeight = Math.Clamp((int)(workArea.Height * 0.82), 800, workArea.Height);
+        if (AppWindow.Presenter is global::Microsoft.UI.Windowing.OverlappedPresenter presenter)
+        {
+            presenter.PreferredMinimumWidth = Math.Min(1080, workArea.Width);
+            presenter.PreferredMinimumHeight = Math.Min(700, workArea.Height);
+        }
+        AppWindow.Move(new global::Windows.Graphics.PointInt32(workArea.X + (workArea.Width - windowWidth) / 2, workArea.Y + (workArea.Height - windowHeight) / 2));
+        AppWindow.Resize(new global::Windows.Graphics.SizeInt32(windowWidth, windowHeight));
         AppWindow.Closing += (_, args) =>
         {
             if (AllowClose) { RemoveHotkeys(); return; }

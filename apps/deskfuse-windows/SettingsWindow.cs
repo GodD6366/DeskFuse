@@ -15,7 +15,7 @@ public sealed class SettingsWindow
     {
         AppIcon.Apply(window);
         window.AppWindow.Title = "DeskFuse 设置";
-        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(640, 720));
+        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(700, 800));
 
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(32, 24, 32, 24) };
         var content = new StackPanel { MaxWidth = 560, Spacing = 16 };
