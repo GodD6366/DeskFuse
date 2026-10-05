@@ -29,11 +29,20 @@ ASSETS = (
     "build-info.json",
     "SHA256SUMS",
 )
+MACOS_ASSETS = (
+    DISTRIBUTION["assets"]["arm64"],
+    DISTRIBUTION["assets"]["x86_64"],
+    "release.json",
+    "build-info.json",
+    "SHA256SUMS",
+)
 TARGET_ASSETS = {
     DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
     DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
     DISTRIBUTION["assets"]["windows_x64"]: "win-x64",
 }
+MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
+                       if target.endswith("-apple-darwin")}
 LEGACY_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items() if name != DISTRIBUTION["assets"]["windows_x64"]}
 # v0.4.5 was published before the Windows asset became part of the public
 # distribution contract. Keep it probeable so a retry does not try to replace
@@ -98,15 +107,17 @@ def signing_status(directory: Path, sidecar: Path | None = None) -> tuple[str, b
     return kind, notarized
 
 
-def inventory(directory: Path, commit: str) -> None:
+def inventory(directory: Path, commit: str, include_windows: bool = True) -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("expected full source commit SHA")
     release = validate(directory / "release.json", version())
-    missing = [name for name in ASSETS[:-2] if not (directory / name).is_file()]
+    asset_names = ASSETS if include_windows else MACOS_ASSETS
+    target_assets = TARGET_ASSETS if include_windows else MACOS_TARGET_ASSETS
+    missing = [name for name in asset_names[:-2] if not (directory / name).is_file()]
     if missing:
         raise ValueError(f"release assets missing: {', '.join(missing)}")
     targets = []
-    for name, target in TARGET_ASSETS.items():
+    for name, target in target_assets.items():
         sidecar = None
         if name.endswith("arm64.dmg"):
             sidecar = directory / ".signing-arm64"
@@ -150,13 +161,13 @@ def inventory(directory: Path, commit: str) -> None:
     write_json(directory / "build-info.json", {
         "commit": commit, "release": release, "targets": targets,
         "minimum_macos": "14.0", "rustc": rustc,
-        "dmg_sha256": checksum(directory / ASSETS[0]),
+        "dmg_sha256": checksum(directory / asset_names[0]),
     })
-    (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in ASSETS if name != "SHA256SUMS"))
-    verify_inventory(directory, release, commit)
+    (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in asset_names if name != "SHA256SUMS"))
+    verify_inventory(directory, release, commit, include_windows=include_windows)
 
 
-def verify_inventory(directory: Path, release: dict, commit: str) -> None:
+def verify_inventory(directory: Path, release: dict, commit: str, include_windows: bool | None = None) -> None:
     all_expected = {name for name in ASSETS if name != "SHA256SUMS"}
     legacy_expected = all_expected - {DISTRIBUTION["assets"]["windows_x64"]}
     actual = {}
@@ -165,16 +176,18 @@ def verify_inventory(directory: Path, release: dict, commit: str) -> None:
         if not match or match[2] not in all_expected or match[2] in actual:
             raise ValueError("invalid checksum manifest")
         actual[match[2]] = match[1]
-    expected = all_expected if DISTRIBUTION["assets"]["windows_x64"] in actual else legacy_expected
-    if expected == legacy_expected and release["version"] not in LEGACY_RELEASE_VERSIONS:
-        raise ValueError("Windows installer required for this release")
+    if include_windows is None:
+        include_windows = DISTRIBUTION["assets"]["windows_x64"] in actual
+        if not include_windows and release["version"] not in LEGACY_RELEASE_VERSIONS:
+            raise ValueError("Windows installer required for this release")
+    expected = all_expected if include_windows else legacy_expected
+    target_map = TARGET_ASSETS if include_windows else MACOS_TARGET_ASSETS
     if set(actual) != expected or any(checksum(directory / name) != digest for name, digest in actual.items()):
         raise ValueError("release assets failed checksum verification")
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
     info = json.loads((directory / "build-info.json").read_text())
     targets = info.get("targets")
-    target_map = TARGET_ASSETS if expected == all_expected else LEGACY_TARGET_ASSETS
     if not isinstance(targets, list) or len(targets) != len(target_map):
         raise ValueError("existing build information conflicts with source")
     by_asset = {}
@@ -199,7 +212,7 @@ def verify_inventory(directory: Path, release: dict, commit: str) -> None:
     if set(by_asset) != set(target_map):
         raise ValueError("existing build information conflicts with source")
     if (info.get("commit") != commit or info.get("release") != release
-            or info.get("dmg_sha256") != actual[ASSETS[0]]):
+            or info.get("dmg_sha256") != actual[MACOS_ASSETS[0]]):
         raise ValueError("existing build information conflicts with source")
 
 
@@ -220,7 +233,7 @@ def api(path: str, *, missing_ok: bool = False) -> dict | None:
         raise ValueError(f"GitHub API request failed: HTTP {error.code}") from None
 
 
-def probe(repo: str, tag: str, commit: str) -> bool:
+def probe(repo: str, tag: str, commit: str, include_windows: bool = True) -> bool:
     # A repository lookup disambiguates a missing tag from missing repo access.
     api(f"repos/{repo}")
     release = validate(ROOT / "release.json", version(), tag)
@@ -234,21 +247,21 @@ def probe(repo: str, tag: str, commit: str) -> bool:
     if not remote["prerelease"]:
         raise ValueError("existing release is not a prerelease; refusing to overwrite")
     remote_assets = {item["name"] for item in remote["assets"]}
-    expected_assets = set(ASSETS)
+    expected_assets = set(ASSETS if include_windows else MACOS_ASSETS)
     legacy_assets = expected_assets - {DISTRIBUTION["assets"]["windows_x64"]}
-    if remote_assets != expected_assets and not (
+    if remote_assets != expected_assets and not (include_windows and
             remote_assets == legacy_assets and release["version"] in LEGACY_RELEASE_VERSIONS):
         raise ValueError("existing release type/assets conflict; refusing to overwrite")
     with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
-        verify_inventory(Path(temporary), release, commit)
+        verify_inventory(Path(temporary), release, commit, include_windows=include_windows)
     return True
 
 
-def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
+def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: bool = True) -> None:
     release = validate(ROOT / "release.json", version(), tag)
-    verify_inventory(directory, release, commit)
-    if probe(repo, tag, commit):
+    verify_inventory(directory, release, commit, include_windows=include_windows)
+    if probe(repo, tag, commit, include_windows=include_windows):
         print("Existing published release verified; unchanged.")
         return
     info = json.loads((directory / "build-info.json").read_text())
@@ -271,13 +284,14 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
         path = Path(temporary) / "notes.md"
         path.write_text(notes)
         subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
-        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in ASSETS]], check=True)
+        asset_names = ASSETS if include_windows else MACOS_ASSETS
+        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in asset_names]], check=True)
         # Verify uploaded bytes while still a draft. Failure leaves an unpublished draft.
         download = Path(temporary) / "download"
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", str(download)], check=True)
-        verify_inventory(download, release, commit)
+        verify_inventory(download, release, commit, include_windows=include_windows)
         subprocess.run(["gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease", "--latest=false"], check=True)
-    if not probe(repo, tag, commit):
+    if not probe(repo, tag, commit, include_windows=include_windows):
         raise ValueError("release publication was not confirmed")
 
 
@@ -289,6 +303,7 @@ def main() -> None:
     parser.add_argument("--tag")
     parser.add_argument("--repo", default=os.environ.get("DESKFUSE_RELEASE_REPOSITORY", DISTRIBUTION["release_repository"]))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
+    parser.add_argument("--macos-only", action="store_true", help="publish and verify only the two macOS DMGs")
     args = parser.parse_args()
     if args.command == "version":
         print(version())
@@ -298,14 +313,14 @@ def main() -> None:
         validate(args.descriptor, version(), args.tag)
         print("release descriptor verified")
     elif args.command == "inventory":
-        inventory(args.directory, args.commit or "")
+        inventory(args.directory, args.commit or "", include_windows=not args.macos_only)
     else:
         if not args.tag or not args.repo or not args.commit:
             parser.error("--repo, --tag and --commit required")
         if args.command == "publish":
-            publish(args.directory, args.repo, args.tag, args.commit)
+            publish(args.directory, args.repo, args.tag, args.commit, include_windows=not args.macos_only)
         else:
-            existing = probe(args.repo, args.tag, args.commit)
+            existing = probe(args.repo, args.tag, args.commit, include_windows=not args.macos_only)
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                     out.write(f"exists={str(existing).lower()}\n")

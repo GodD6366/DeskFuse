@@ -69,6 +69,19 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release, "version", return_value=self.data["version"]), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit)
 
+    def make_macos_inventory(self):
+        (self.root / "DeskFuse-arm64.dmg").write_bytes(b"test fixture, not a DMG")
+        (self.root / "DeskFuse-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
+        with patch.object(release, "version", return_value=self.data["version"]), patch.object(release.subprocess, "check_output", return_value="rustc test"):
+            release.inventory(self.root, self.commit, include_windows=False)
+
+    def test_macos_only_inventory_round_trip(self):
+        self.make_macos_inventory()
+        release.verify_inventory(self.root, self.data, self.commit, include_windows=False)
+        info = json.loads((self.root / "build-info.json").read_text())
+        self.assertEqual({item["target"] for item in info["targets"]}, set(release.MACOS_TARGET_ASSETS.values()))
+        self.assertNotIn(release.DISTRIBUTION["assets"]["windows_x64"], (self.root / "SHA256SUMS").read_text())
+
     def test_inventory_round_trip_and_wrong_source(self):
         self.make_inventory()
         release.verify_inventory(self.root, self.data, self.commit)

@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Keep Windows out of the prerelease until Authenticode signing is available.
+# Set the DESKFUSE_INCLUDE_WINDOWS_RELEASE repository variable to `true` to
+# re-enable the Windows job and asset in a future release.
+env:
+  DESKFUSE_INCLUDE_WINDOWS_RELEASE: ${{ vars.DESKFUSE_INCLUDE_WINDOWS_RELEASE || 'false' }}
+
 concurrency:
   group: prerelease-${{ github.ref }}
   cancel-in-progress: false
@@ -23,6 +29,7 @@ jobs:
       x86_64_asset: ${{ steps.distribution.outputs.x86_64_asset }}
       windows_x64_asset: ${{ steps.distribution.outputs.windows_x64_asset }}
       cask_path: ${{ steps.distribution.outputs.cask_path }}
+      include_windows: ${{ steps.release_mode.outputs.include_windows }}
     steps:
       - name: Require an existing version tag
         env:
@@ -35,6 +42,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: distribution
         run: python3 scripts/distribution-config.py --github-output "$GITHUB_OUTPUT"
+      - id: release_mode
+        name: Select release targets
+        run: |
+          case "$DESKFUSE_INCLUDE_WINDOWS_RELEASE" in
+            true|false) ;;
+            *) echo "::error::DESKFUSE_INCLUDE_WINDOWS_RELEASE must be true or false"; exit 1 ;;
+          esac
+          echo "include_windows=$DESKFUSE_INCLUDE_WINDOWS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Windows release assets enabled: $DESKFUSE_INCLUDE_WINDOWS_RELEASE"
       - id: probe
         name: Validate tag and immutable release
         env:
@@ -43,7 +59,9 @@ jobs:
           DESKFUSE_RELEASE_REPOSITORY: ${{ steps.distribution.outputs.release_repository }}
         run: |
           test -n "$GH_TOKEN" || { echo "Missing RELEASE_REPOSITORY_TOKEN (Contents write on public release repository)" >&2; exit 1; }
-          python3 scripts/release.py probe --tag "$RELEASE_TAG"
+          probe_args=()
+          if [[ "$DESKFUSE_INCLUDE_WINDOWS_RELEASE" != "true" ]]; then probe_args+=(--macos-only); fi
+          python3 scripts/release.py probe --tag "$RELEASE_TAG" "${probe_args[@]}"
 
   checks:
     needs: preflight
@@ -168,7 +186,7 @@ jobs:
 
   windows-x64:
     needs: [preflight, checks]
-    if: needs.preflight.outputs.exists != 'true'
+    if: needs.preflight.outputs.exists != 'true' && needs.preflight.outputs.include_windows == 'true'
     name: Windows x64 installer
     runs-on: windows-2022
     timeout-minutes: 120
@@ -279,11 +297,18 @@ jobs:
 
   publish:
     needs: [preflight, macos-arm64, macos-x86_64, windows-x64]
+    if: >-
+      always() &&
+      needs.preflight.outputs.exists != 'true' &&
+      needs.macos-arm64.result == 'success' &&
+      needs.macos-x86_64.result == 'success' &&
+      (needs.windows-x64.result == 'success' || needs.windows-x64.result == 'skipped')
     env:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
       WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
+      INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 20
     permissions:
@@ -302,19 +327,24 @@ jobs:
         with:
           name: release-windows-x64
           path: dist/windows
+        if: needs.preflight.outputs.include_windows == 'true'
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
           source scripts/rust-toolchain-env.sh
           cp "dist/arm64/$ARM64_ASSET" dist/
           cp "dist/x86_64/$X86_64_ASSET" dist/
-          cp "dist/windows/$WINDOWS_ASSET" dist/
-          cp "dist/windows/$WINDOWS_ASSET.manifest.json" "dist/$WINDOWS_ASSET.manifest.json"
+          inventory_args=(--macos-only)
+          if [[ "$INCLUDE_WINDOWS" == "true" ]]; then
+            cp "dist/windows/$WINDOWS_ASSET" dist/
+            cp "dist/windows/$WINDOWS_ASSET.manifest.json" "dist/$WINDOWS_ASSET.manifest.json"
+            inventory_args=()
+          fi
           cmp dist/arm64/release.json dist/x86_64/release.json
           cp dist/arm64/release.json dist/release.json
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64
           cp dist/x86_64/signing-x86_64.txt dist/.signing-x86_64
-          python3 scripts/release.py inventory --directory dist --commit "$GITHUB_SHA"
+          python3 scripts/release.py inventory --directory dist --commit "$GITHUB_SHA" "${inventory_args[@]}"
           (cd dist && shasum -a 256 -c SHA256SUMS)
       - name: Verify, upload draft, then publish prerelease
         env:
@@ -328,7 +358,9 @@ jobs:
             public_sha="$(gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
             gh api --method POST "repos/$DESKFUSE_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$public_sha" > /dev/null
           fi
-          python3 scripts/release.py publish --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+          publish_args=()
+          if [[ "$INCLUDE_WINDOWS" != "true" ]]; then publish_args+=(--macos-only); fi
+          python3 scripts/release.py publish --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" "${publish_args[@]}"
 
   # Brew cannot install an unpublished prerelease, so the cask checksum is
   # refreshed only after @publish confirms the GitHub assets are public. The
