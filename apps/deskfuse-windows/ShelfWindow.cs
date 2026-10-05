@@ -18,9 +18,15 @@ public sealed class ShelfWindow : IShelfHost
     private readonly DesktopClipboardController controller;
     private readonly Window window = new();
     private readonly ObservableCollection<ClipboardEntry> entries = [];
-    private readonly ListBox list = new() { BorderThickness = new Thickness(0) };
-    private readonly TextBlock status = new() { Text = "拖入本机文件，或从历史加入", TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), FontSize = 11 };
-    private readonly Button expand = new() { Content = "展开", Padding = new Thickness(5, 2, 5, 2) };
+    private readonly ListBox list = new() { BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+    private readonly TextBlock status = new()
+    {
+        Text = "拖入本机文件，或从历史加入",
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)),
+        FontSize = 12,
+    };
+    private readonly Button expand = new() { Content = "展开", Padding = new Thickness(10, 4, 10, 4), MinHeight = 0, Margin = new Thickness(0, 0, 0, 0) };
     private bool exiting;
     private bool expanded;
 
@@ -31,7 +37,7 @@ public sealed class ShelfWindow : IShelfHost
         this.controller = controller;
         AppIcon.Apply(window);
         window.AppWindow.Title = "DeskFuse 暂存区";
-        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(240, 240));
+        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(320, 480));
         window.AppWindow.Closing += (_, args) => { if (!exiting) { args.Cancel = true; window.AppWindow.Hide(); } };
 
         list.ItemsSource = entries;
@@ -44,6 +50,15 @@ public sealed class ShelfWindow : IShelfHost
         list.DragStarting += DragOut;
         list.DragOver += (_, args) => { args.AcceptedOperation = args.DataView.Contains(StandardDataFormats.StorageItems) ? DataPackageOperation.Copy : DataPackageOperation.None; args.Handled = true; };
         list.Drop += OnDrop;
+        list.ItemContainerStyle = new Style(typeof(ListBoxItem))
+        {
+            Setters =
+            {
+                new Setter(ListBoxItem.PaddingProperty, new Thickness(12, 8, 12, 8)),
+                new Setter(ListBoxItem.MarginProperty, new Thickness(2)),
+                new Setter(ListBoxItem.CornerRadiusProperty, new CornerRadius(6)),
+            },
+        };
 
         var copy = new MenuFlyoutItem { Text = "复制" };
         copy.Click += (_, _) => CopySelection();
@@ -58,18 +73,34 @@ public sealed class ShelfWindow : IShelfHost
         expand.Click += (_, _) =>
         {
             expanded = !expanded;
-            window.AppWindow.Resize(expanded ? new global::Windows.Graphics.SizeInt32(480, 420) : new global::Windows.Graphics.SizeInt32(240, 240));
+            window.AppWindow.Resize(expanded ? new global::Windows.Graphics.SizeInt32(480, 640) : new global::Windows.Graphics.SizeInt32(320, 480));
             expand.Content = expanded ? "收起" : "展开";
         };
-        var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
-        header.Children.Add(new TextBlock { Text = "暂存区", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 16, VerticalAlignment = VerticalAlignment.Center });
-        header.Children.Add(expand);
-        var layout = new Grid { Margin = new Thickness(10) };
+
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var title = new TextBlock { Text = "暂存区", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 18, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(title, 0); header.Children.Add(title);
+        Grid.SetColumn(expand, 1); header.Children.Add(expand);
+
+        var card = new Border
+        {
+            Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(4),
+            Child = list,
+        };
+
+        var layout = new Grid { Margin = new Thickness(16) };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(header, 0); Grid.SetRow(list, 1); Grid.SetRow(status, 2);
-        layout.Children.Add(header); layout.Children.Add(list); layout.Children.Add(status);
+        Grid.SetRow(header, 0); Grid.SetRow(card, 1); Grid.SetRow(status, 2);
+        layout.Children.Add(header); layout.Children.Add(card); layout.Children.Add(status);
+        status.Margin = new Thickness(0, 10, 0, 0);
         window.Content = layout;
     }
 
@@ -92,7 +123,6 @@ public sealed class ShelfWindow : IShelfHost
             var items = args.DataView.GetStorageItemsAsync().AsTask().GetAwaiter().GetResult();
             var paths = items.Select(item => item.Path).Where(path => !string.IsNullOrWhiteSpace(path)).ToArray();
             NativeClipboard.ValidateLocalFiles(paths);
-            // Staging must not silently replace the system clipboard or transmit file bodies.
             var content = new ClipboardContent(ClipboardContent.LocalFilesMime, [], paths);
             Add(history.Add(content, "local", "本机"));
             args.AcceptedOperation = DataPackageOperation.Copy;
@@ -109,7 +139,6 @@ public sealed class ShelfWindow : IShelfHost
             if (entry.Content.Files is { Count: > 0 } paths)
             {
                 NativeClipboard.ValidateLocalFiles(paths);
-                // Copy only: Explorer must never move/delete the source as a shelf side effect.
                 args.Data.RequestedOperation = DataPackageOperation.Copy;
                 var items = paths.Select(path => StorageFile.GetFileFromPathAsync(path).AsTask().GetAwaiter().GetResult()).Cast<IStorageItem>().ToList();
                 args.Data.SetStorageItems(items, false);
@@ -121,7 +150,6 @@ public sealed class ShelfWindow : IShelfHost
             }
             else
             {
-                // Image drag-out needs a bitmap provider; keep the safe path only.
                 args.Cancel = true;
                 status.Text = "此格式请使用复制";
             }

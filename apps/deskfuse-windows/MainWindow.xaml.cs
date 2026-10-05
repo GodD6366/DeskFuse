@@ -51,7 +51,7 @@ public sealed partial class MainWindow : Window
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         AppIcon.Apply(this);
         AppWindow.Title = "DeskFuse";
-        AppWindow.Resize(new global::Windows.Graphics.SizeInt32(1200, 780));
+        AppWindow.Resize(new global::Windows.Graphics.SizeInt32(1280, 840));
         AppWindow.Closing += (_, args) =>
         {
             if (AllowClose) { RemoveHotkeys(); return; }
