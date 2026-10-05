@@ -14,13 +14,16 @@ final class RemotePeer: @unchecked Sendable {
     private var scheduled = false
     private var stopped = false
     private var waitingKey = false
+    private var keyFrameRequestPending = false
     private var maximumSendWaitMs = 0.0
     private var lastNetworkSample: (sent: UInt64, lost: UInt64, time: Double)?
+    private let keyFrameNeeded: @Sendable () -> Void
     private let receive: @Sendable (RemoteMessage) -> Void
     private let state: @Sendable (String, Bool) -> Void
     init(channel: RemoteApplicationChannel, receive: @escaping @Sendable (RemoteMessage) -> Void,
-         state: @escaping @Sendable (String, Bool) -> Void) {
-        self.channel = channel; self.receive = receive; self.state = state
+         state: @escaping @Sendable (String, Bool) -> Void,
+         keyFrameNeeded: @escaping @Sendable () -> Void = {}) {
+        self.channel = channel; self.receive = receive; self.state = state; self.keyFrameNeeded = keyFrameNeeded
     }
     func start() {
         state("已通过 DeskFuse 配对连接", true)
@@ -53,37 +56,70 @@ final class RemotePeer: @unchecked Sendable {
     }
     func send(_ message: RemoteMessage) {
         var message = message
-        var overflow = false
+        var requestKeyFrame = false
         let wake = lock.withLock { () -> Bool in
             guard !stopped else { return false }
+            let frameBytes = message.frame?.bytes.count ?? 0
             if message.kind == .surface {
-                pending.removeAll { $0.kind == .frame }; queuedBytes = 0; waitingKey = true
+                pending.removeAll { $0.kind == .frame }; queuedBytes = 0; waitingKey = true; keyFrameRequestPending = false
             }
             if let frame = message.frame {
-                if waitingKey && !frame.keyFrame { return false }
-                // Normal backpressure is applied before encoding. Never destroy
-                // reference frames merely because a network write is delayed.
-                if pending.filter({ $0.kind == .frame }).count >= 24 || queuedBytes + frame.bytes.count > 64 * 1024 * 1024 {
-                    overflow = true; return false
+                if waitingKey && !frame.keyFrame {
+                    if !keyFrameRequestPending { keyFrameRequestPending = true; requestKeyFrame = true }
+                    return false
                 }
-                if frame.keyFrame { waitingKey = false }
-                queuedBytes += frame.bytes.count
+                // A slow receiver must not turn media backpressure into a
+                // session reset. Drop queued compressed frames as a unit and
+                // rebuild the reference chain from a fresh key frame. Control
+                // messages and input edges stay in the queue.
+                if pending.filter({ $0.kind == .frame }).count >= 24 || queuedBytes + frame.bytes.count > 64 * 1024 * 1024 {
+                    let droppedBytes = pending.reduce(into: 0) { total, value in
+                        total += value.frame?.bytes.count ?? 0
+                    }
+                    pending.removeAll { $0.frame != nil }
+                    queuedBytes -= droppedBytes
+                    queuedBytes = max(0, queuedBytes)
+                    waitingKey = true
+                    if !frame.keyFrame {
+                        if !keyFrameRequestPending { keyFrameRequestPending = true; requestKeyFrame = true }
+                        return false
+                    }
+                }
+                if frame.keyFrame { waitingKey = false; keyFrameRequestPending = false }
             } else if message.kind == .input, message.input?.kind == .move,
-                      pending.last?.kind == .input, pending.last?.input?.kind == .move,
-                      pending.last?.identity == message.identity {
-                pending[pending.count - 1] = message; return false
+                      let index = pending.lastIndex(where: {
+                          $0.kind == .input && $0.input?.kind == .move && $0.identity == message.identity
+                      }) {
+                pending[index] = message; return false
             }
-            guard pending.count < 128 else { overflow = true; return false }
             if message.kind == .heartbeat || message.kind == .presented {
                 if message.kind == .heartbeat && message.diagnostics == nil {
                     message.diagnostics = pending.last(where: { $0.kind == .heartbeat && $0.identity == message.identity })?.diagnostics
                 }
                 pending.removeAll { $0.kind == message.kind && $0.identity == message.identity }
             }
-            pending.append(message)
+            // Keep a finite control queue under pathological input bursts. A
+            // move is superseded by newer pointer state; lifecycle messages
+            // remain protected and are retried by their caller.
+            if pending.count >= 128 {
+                guard let staleMove = pending.firstIndex(where: {
+                    $0.kind == .input && $0.input?.kind == .move
+                }) else { return false }
+                pending.remove(at: staleMove)
+            }
+            queuedBytes += frameBytes
+            // Heartbeats, presentation ACKs, input and release messages must
+            // overtake queued video once the current packet has drained.
+            let urgent = message.frame == nil
+                && [.heartbeat, .presented, .input, .release, .keyFrame, .error].contains(message.kind)
+            if urgent, let firstFrame = pending.firstIndex(where: { $0.kind == .frame }) {
+                pending.insert(message, at: firstFrame)
+            } else {
+                pending.append(message)
+            }
             guard !scheduled else { return false }; scheduled = true; return true
         }
-        if overflow { fail("远程应用队列已满，已释放控制"); return }
+        if requestKeyFrame { keyFrameNeeded() }
         if wake { writer.async { [weak self] in self?.drain() } }
     }
     private func drain() {
@@ -111,6 +147,7 @@ final class RemotePeer: @unchecked Sendable {
     private func displayMessage(for error: Error) -> String {
         let message = error.userFacingMessage
         if message.localizedCaseInsensitiveContains("stream reset by peer")
+            || message.localizedCaseInsensitiveContains("sending stopped by peer")
             || message.contains("视频通道读取失败")
             || message.contains("视频通道消息不完整")
             || message.contains("远程应用通道读取失败")

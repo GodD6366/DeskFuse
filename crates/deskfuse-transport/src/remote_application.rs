@@ -5,6 +5,12 @@ use std::sync::{atomic::Ordering, mpsc as sync};
 use tokio::sync::{Notify, mpsc, watch};
 
 pub const MAX_PACKET: usize = 17 * 1024 * 1024;
+// A compressed key frame can be several megabytes. The old 2/3 second
+// deadlines treated normal QUIC flow control as a dead peer, then reset the
+// stream; the other side surfaced that reset as `sending stopped by peer`.
+// Match the control connection's 30-second idle budget and let QUIC report a
+// real reset immediately when the peer actually stops the stream.
+const MEDIA_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct RemoteSession {
     pub peer: DeviceId,
     connection: quinn::Connection,
@@ -48,12 +54,12 @@ impl RemoteSession {
                 };
                 let result = tokio::select! {
                     _ = writer_cancel.changed() => break,
-                    result = time::timeout(Duration::from_secs(2), write) => result,
+                    result = time::timeout(MEDIA_IO_TIMEOUT, write) => result,
                 };
                 let problem = match result {
                     Ok(Ok(())) => None,
                     Ok(Err(error)) => Some(format!("视频通道写入失败：{error}")),
-                    Err(_) => Some("视频通道写入持续阻塞超过 2 秒".into()),
+                    Err(_) => Some("视频通道写入持续阻塞超过 30 秒".into()),
                 };
                 if let Some(problem) = problem {
                     *writer_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(problem);
@@ -85,12 +91,12 @@ impl RemoteSession {
                 };
                 let mut packet = tokio::select! {
                     _ = reader_cancel.changed() => break,
-                    result = time::timeout(Duration::from_secs(3), read) => match result {
+                    result = time::timeout(MEDIA_IO_TIMEOUT, read) => match result {
                         Ok(Ok(data)) => data,
                         result => {
                             let reason = match result {
                                 Ok(Err(reason)) => reason,
-                                _ => "视频通道连续 3 秒未收到完整消息".into(),
+                                _ => "视频通道连续 30 秒未收到完整消息".into(),
                             };
                             *reader_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
                             break;
@@ -99,7 +105,7 @@ impl RemoteSession {
                 };
                 // Apply backpressure at the FFI boundary. A scheduling burst is
                 // not a broken connection; retain all reference frames and edges.
-                let deadline = time::Instant::now() + Duration::from_secs(2);
+                let deadline = time::Instant::now() + MEDIA_IO_TIMEOUT;
                 loop {
                     match input.try_send(packet) {
                         Ok(()) => break,
@@ -110,7 +116,7 @@ impl RemoteSession {
                         _ = reader_cancel.changed() => break 'reading,
                         _ = reader_space.notified() => {},
                         _ = time::sleep_until(deadline) => {
-                            *reader_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some("视频接收处理持续阻塞超过 2 秒".into());
+                            *reader_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some("视频接收处理持续阻塞超过 30 秒".into());
                             break 'reading;
                         }
                     }
@@ -263,7 +269,7 @@ impl QuinnTransport {
             write_frame(&mut send, &request)
                 .await
                 .map_err(|e| e.to_string())?;
-            let ack = read_frame(&mut recv, Duration::from_secs(3))
+            let ack = read_frame(&mut recv, Duration::from_secs(5))
                 .await
                 .map_err(|e| e.to_string())?;
             if !matches!(ack.message, Some(Message::RemoteApplicationOpen(_))) {

@@ -551,7 +551,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     self.failure = self.status
                 }
             }
-        })
+        }, keyFrameNeeded: { plane.requestKey() })
         peer = remote; plane.setPeer(remote); plane.startHeartbeats(host: host); remote.start()
     }
     private func receive(_ message: RemoteMessage, token: UUID) async {

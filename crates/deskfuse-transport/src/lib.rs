@@ -3414,6 +3414,13 @@ fn build_quic_configs(
     let mut server_transport = quinn::TransportConfig::default();
     let idle = quinn::IdleTimeout::try_from(config.transport.idle_timeout_or_handshake())
         .map_err(|error| TransportError::Quic(error.to_string()))?;
+    // Remote application frames are compressed but can still be multi-megabyte
+    // key frames. Keep the control connection's stream and connection windows
+    // above one frame so QUIC flow control does not stall a media write while
+    // the peer is draining it. Input-only endpoints replace these values in
+    // `build_input_quic_configs` with their smaller LAN-specific windows.
+    server_transport.stream_receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    server_transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
     server_transport.max_idle_timeout(Some(idle));
     server_transport.max_concurrent_uni_streams(0_u8.into());
     server_transport.datagram_receive_buffer_size(None);
@@ -3435,6 +3442,8 @@ fn build_quic_configs(
             .map_err(|error| TransportError::Quic(error.to_string()))?,
     ));
     let mut client_transport = quinn::TransportConfig::default();
+    client_transport.stream_receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    client_transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
     client_transport.max_idle_timeout(Some(idle));
     client_transport.keep_alive_interval(Some(Duration::from_secs(10)));
     client_transport.max_concurrent_uni_streams(0_u8.into());
