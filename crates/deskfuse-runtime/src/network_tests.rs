@@ -807,7 +807,7 @@ async fn recipient_rejection_reason_reaches_inviter_without_trust() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn revoked_recipient_requires_local_repair_permission_then_fresh_approval() {
+async fn revoked_recipient_requires_local_unblock_then_fresh_approval() {
     use deskfuse_identity::MemoryTrustStore;
     let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
     let der = cert.cert.der().to_vec();
@@ -851,10 +851,10 @@ async fn revoked_recipient_requires_local_repair_permission_then_fresh_approval(
         .await
         .unwrap();
     wait(|| {
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
-            .pairing_recovery_peer_ids
+            .blocked_peer_ids
             .contains(&a.id)
     })
     .await;
@@ -866,21 +866,14 @@ async fn revoked_recipient_requires_local_repair_permission_then_fresh_approval(
             .is_none(),
         "allowing an invitation must not create a competing network"
     );
-    assert!(
-        b.runtime
-            .snapshot_view()
-            .device_network
-            .blocked_peer_ids
-            .contains(&a.id)
-    );
-    assert!(b.trust.get(&a.id).unwrap().unwrap().revoked);
+    assert!(b.trust.get(&a.id).unwrap().is_none());
     a.runtime
         .send(RuntimeCommand::RequestPairing { peer_id: b.id })
         .await
         .unwrap();
     let request = b.next_pairing().await;
     assert!(
-        b.trust.get(&a.id).unwrap().unwrap().revoked,
+        b.trust.get(&a.id).unwrap().is_none(),
         "fresh prompt is not approval"
     );
     assert!(!connected(&b, 1));
@@ -889,26 +882,14 @@ async fn revoked_recipient_requires_local_repair_permission_then_fresh_approval(
         .await
         .unwrap();
     wait(|| a.runtime.snapshot_view().device_network.pending.is_empty()).await;
-    assert!(b.trust.get(&a.id).unwrap().unwrap().revoked);
+    assert!(b.trust.get(&a.id).unwrap().is_none());
     assert!(
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
-            .pairing_recovery_peer_ids
-            .is_empty()
-    );
-    b.runtime
-        .send(RuntimeCommand::AllowPairing { peer_id: a.id })
-        .await
-        .unwrap();
-    wait(|| {
-        b.runtime
-            .snapshot_view()
-            .device_network
-            .pairing_recovery_peer_ids
+            .blocked_peer_ids
             .contains(&a.id)
-    })
-    .await;
+    );
     a.runtime
         .send(RuntimeCommand::RequestPairing { peer_id: b.id })
         .await
@@ -939,7 +920,7 @@ async fn revoked_recipient_requires_local_repair_permission_then_fresh_approval(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repair_permission_does_not_survive_restart_or_revoke() {
+async fn allowing_pairing_clears_revocation_and_survives_restart() {
     use deskfuse_identity::MemoryTrustStore;
     let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
     let der = cert.cert.der().to_vec();
@@ -963,13 +944,14 @@ async fn repair_permission_does_not_survive_restart_or_revoke() {
         .await
         .unwrap();
     wait(|| {
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
-            .pairing_recovery_peer_ids
+            .blocked_peer_ids
             .contains(&remote)
     })
     .await;
+    assert!(trust.get(&remote).unwrap().is_none());
     b.runtime
         .send(RuntimeCommand::RevokePeer { peer_id: remote })
         .await
@@ -978,41 +960,40 @@ async fn repair_permission_does_not_survive_restart_or_revoke() {
         b.runtime
             .snapshot_view()
             .device_network
-            .pairing_recovery_peer_ids
-            .is_empty()
+            .blocked_peer_ids
+            .contains(&remote)
     })
     .await;
-    assert!(trust.get(&remote).unwrap().unwrap().revoked);
+    wait(|| {
+        trust
+            .get(&remote)
+            .unwrap()
+            .is_some_and(|record| record.revoked)
+    })
+    .await;
     b.runtime
         .send(RuntimeCommand::AllowPairing { peer_id: remote })
         .await
         .unwrap();
     wait(|| {
-        b.runtime
-            .snapshot_view()
-            .device_network
-            .pairing_recovery_peer_ids
-            .contains(&remote)
-    })
-    .await;
-    b.runtime.shutdown_and_wait().await.unwrap();
-    let b = Node::with_trust(98, "recipient", &der, &key, trust).await;
-    wait(|| {
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
             .blocked_peer_ids
             .contains(&remote)
     })
     .await;
+    assert!(trust.get(&remote).unwrap().is_none());
+    b.runtime.shutdown_and_wait().await.unwrap();
+    let b = Node::with_trust(98, "recipient", &der, &key, trust).await;
     assert!(
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
-            .pairing_recovery_peer_ids
-            .is_empty()
+            .blocked_peer_ids
+            .contains(&remote)
     );
-    assert!(b.trust.get(&remote).unwrap().unwrap().revoked);
+    assert!(b.trust.get(&remote).unwrap().is_none());
     b.runtime.shutdown_and_wait().await.unwrap();
 }
 
@@ -1317,9 +1298,9 @@ async fn removed_device_remains_searchable_without_another_advertisement() {
             .any(|h| h.peer_id == c.id)
     })
     .await;
-    assert!(b.trust.get(&c.id).unwrap().unwrap().revoked);
+    assert!(b.trust.get(&c.id).unwrap().is_none());
     assert!(
-        b.runtime
+        !b.runtime
             .snapshot_view()
             .device_network
             .blocked_peer_ids

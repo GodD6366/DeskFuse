@@ -12,6 +12,7 @@
 #include <freerdp/client/channels.h>
 #include <freerdp/client/rail.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/crypto/certificate.h>
 #include <freerdp/gdi/gdi.h>
 
 #include <winpr/crt.h>
@@ -22,7 +23,10 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <ctype.h>
 #include <stdatomic.h>
+#include <limits.h>
 
 #define TAG "rdp.bridge"
 
@@ -42,6 +46,7 @@ struct rdp_bridge
 	char* rdp_file;
 	char* username;
 	char* password;
+	char* certificate_fingerprint;
 
 	rdp_bridge_callback cb;
 	void* userdata;
@@ -57,29 +62,87 @@ struct rdp_bridge
 	int frame_dirty;
 };
 
-static void notify(rdp_bridge* bridge, int event, const char* message)
+static void notify_detail(rdp_bridge* bridge, int event, const char* message,
+                          const char* fingerprint)
 {
 	if (bridge->cb)
-		bridge->cb(event, message, bridge->userdata);
+		bridge->cb(event, message, fingerprint, bridge->userdata);
+}
+
+static void notify(rdp_bridge* bridge, int event, const char* message)
+{
+	notify_detail(bridge, event, message, NULL);
+}
+
+static int valid_fingerprint(const char* fingerprint)
+{
+	if (!fingerprint || strlen(fingerprint) != 95)
+		return 0;
+	for (size_t index = 0; index < 95; index++)
+	{
+		if ((index % 3) == 2)
+		{
+			if (fingerprint[index] != ':')
+				return 0;
+		}
+		else if (!isxdigit((unsigned char)fingerprint[index]))
+			return 0;
+	}
+	return 1;
+}
+
+static int fingerprints_match(const char* expected, const char* actual)
+{
+	return valid_fingerprint(expected) && valid_fingerprint(actual) && _stricmp(expected, actual) == 0;
+}
+
+static BOOL bridge_set_certificate_store_path(rdpSettings* settings)
+{
+	const char* home = getenv("HOME");
+	char path[PATH_MAX];
+	int length;
+	if (!home || !*home)
+		return TRUE;
+	length = snprintf(path, sizeof(path), "%s/Library/Application Support/DeskFuse/remote-rdp", home);
+	if (length <= 0 || (size_t)length >= sizeof(path))
+		return FALSE;
+	return freerdp_settings_set_string(settings, FreeRDP_ConfigPath, path);
 }
 
 /* --- certificate / authentication ------------------------------------- */
 
-static DWORD bridge_verify_certificate_ex(freerdp* instance, const char* host, UINT16 port,
-                                          const char* common_name, const char* subject,
-                                          const char* issuer, const char* fingerprint, DWORD flags)
+static int bridge_verify_x509_certificate(freerdp* instance, const BYTE* data, size_t length,
+                                          const char* host, UINT16 port, DWORD flags)
 {
-	/* Accept for the LAN-paired-device milestone. The DeskFuse pairing proof is
-	 * the trust boundary; a persistent-certificate check is a follow-up. */
-	WINPR_UNUSED(instance);
-	WINPR_UNUSED(host);
+	char* pem = NULL;
+	rdpCertificate* certificate = NULL;
+	char* fingerprint = NULL;
+	int result = 0;
 	WINPR_UNUSED(port);
-	WINPR_UNUSED(common_name);
-	WINPR_UNUSED(subject);
-	WINPR_UNUSED(issuer);
-	WINPR_UNUSED(fingerprint);
 	WINPR_UNUSED(flags);
-	return 1; /* accept */
+	if (!instance || !instance->context || !data || length == 0 || length > 1024 * 1024)
+		return 0;
+	rdp_bridge* bridge = ((bridgeContext*)instance->context)->bridge;
+	if (!bridge)
+		return 0;
+	pem = (char*)calloc(length + 1, 1);
+	if (!pem)
+		return 0;
+	memcpy(pem, data, length);
+	certificate = freerdp_certificate_new_from_pem(pem);
+	if (certificate)
+		fingerprint = freerdp_certificate_get_fingerprint(certificate);
+	if (fingerprints_match(bridge->certificate_fingerprint, fingerprint))
+		result = 2; /* accept for this session; the app owns the persistent pin */
+	else
+	{
+		notify_detail(bridge, RDP_EVENT_CERTIFICATE_REJECTED,
+		              "RDP 服务器证书未获信任，请核对指纹后重试", fingerprint);
+	}
+	free(fingerprint);
+	freerdp_certificate_free(certificate);
+	free(pem);
+	return result;
 }
 
 static BOOL bridge_authenticate(freerdp* instance, char** username, char** password, char** domain)
@@ -111,6 +174,22 @@ static BOOL bridge_authenticate(freerdp* instance, char** username, char** passw
 	return TRUE;
 }
 
+/* RemoteApp sessions are bound to the paired host and its pinned certificate.
+ * FreeRDP can otherwise accept a redirection certificate through
+ * RedirectionAcceptedCert before VerifyX509Certificate runs.  A redirected
+ * farm target would therefore escape the application's single-host pin, so
+ * fail closed until explicit multi-host pinning is designed. */
+static BOOL bridge_redirect(freerdp* instance)
+{
+	if (instance && instance->context)
+	{
+		rdp_bridge* bridge = ((bridgeContext*)instance->context)->bridge;
+		if (bridge)
+			notify(bridge, RDP_EVENT_ERROR, "RDP 服务器请求重定向，DeskFuse 已拒绝");
+	}
+	return FALSE;
+}
+
 /* --- update callbacks -------------------------------------------------- */
 
 static BOOL bridge_begin_paint(rdpContext* context)
@@ -129,7 +208,9 @@ static BOOL bridge_end_paint(rdpContext* context)
 
 	if (!bridge || !gdi || !gdi->primary_buffer || gdi->width <= 0 ||
         gdi->height <= 0 || gdi->width > 8192 || gdi->height > 8192 ||
-        (size_t)gdi->stride * gdi->height > 256 * 1024 * 1024)
+	    gdi->stride <= 0 || (size_t)gdi->stride < (size_t)gdi->width * 4 ||
+	    (size_t)gdi->stride > SIZE_MAX / (size_t)gdi->height ||
+	    (size_t)gdi->stride * (size_t)gdi->height > 256 * 1024 * 1024)
 		return FALSE;
 
 	pthread_mutex_lock(&bridge->lock);
@@ -231,7 +312,11 @@ static BOOL bridge_pre_connect(freerdp* instance)
 {
 	rdpSettings* settings = instance->context->settings;
 
-	if (!freerdp_settings_set_bool(settings, FreeRDP_CertificateCallbackPreferPEM, TRUE))
+	if (!freerdp_settings_set_bool(settings, FreeRDP_ExternalCertificateManagement, TRUE) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, FALSE) ||
+	    !freerdp_settings_set_string(settings, FreeRDP_CertificateAcceptedFingerprints, NULL) ||
+	    !bridge_set_certificate_store_path(settings))
 		return FALSE;
 	PubSub_SubscribeChannelConnected(instance->context->pubSub, bridge_channel_connected);
 	PubSub_SubscribeChannelDisconnected(instance->context->pubSub, bridge_channel_disconnected);
@@ -269,8 +354,9 @@ static BOOL bridge_client_new(freerdp* instance, rdpContext* context)
 	instance->PreConnect = bridge_pre_connect;
 	instance->PostConnect = bridge_post_connect;
 	instance->PostDisconnect = bridge_post_disconnect;
-	instance->VerifyCertificateEx = bridge_verify_certificate_ex;
+	instance->VerifyX509Certificate = bridge_verify_x509_certificate;
 	instance->Authenticate = bridge_authenticate;
+	instance->Redirect = bridge_redirect;
 	return TRUE;
 }
 
@@ -353,7 +439,8 @@ static DWORD bridge_thread(LPVOID arg)
 /* --- public API -------------------------------------------------------- */
 
 rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const char* password,
-                              rdp_bridge_callback cb, void* userdata)
+                              const char* certificate_fingerprint, rdp_bridge_callback cb,
+                              void* userdata)
 {
 	rdp_bridge* bridge = NULL;
 
@@ -368,6 +455,7 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
 	bridge->rdp_file = _strdup(rdp_file);
 	bridge->username = username ? _strdup(username) : NULL;
 	bridge->password = password ? _strdup(password) : NULL;
+	bridge->certificate_fingerprint = certificate_fingerprint ? _strdup(certificate_fingerprint) : NULL;
 	bridge->cb = cb;
 	bridge->userdata = userdata;
 
@@ -386,9 +474,6 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
 		freerdp_settings_set_string(bridge->context->settings, FreeRDP_Username, bridge->username);
 	if (bridge->password)
 		freerdp_settings_set_string(bridge->context->settings, FreeRDP_Password, bridge->password);
-	freerdp_settings_set_bool(bridge->context->settings, FreeRDP_AutoAcceptCertificate, TRUE);
-	freerdp_settings_set_bool(bridge->context->settings, FreeRDP_CertificateCallbackPreferPEM, TRUE);
-
 	bridge->instance = bridge->context->instance;
 	return bridge;
 
@@ -399,13 +484,19 @@ fail:
 
 int rdp_bridge_start(rdp_bridge* bridge)
 {
-	if (!bridge || !bridge->context)
+	if (!bridge || !bridge->context || bridge->thread)
 		return -1;
+	atomic_store(&bridge->stop_requested, 0);
+	atomic_store(&bridge->connected, 0);
 	if (freerdp_client_start(bridge->context) != 0)
 		return -1;
 	bridge->thread = CreateThread(NULL, 0, bridge_thread, bridge, 0, NULL);
 	if (!bridge->thread)
+	{
+		freerdp_client_stop(bridge->context);
+		atomic_store(&bridge->stop_requested, 0);
 		return -1;
+	}
 	return 0;
 }
 
@@ -423,6 +514,15 @@ void rdp_bridge_stop(rdp_bridge* bridge)
 		CloseHandle(bridge->thread);
 		bridge->thread = NULL;
 	}
+	/* freerdp_client_start allocates client-side state which must be released
+	 * even when the connection thread exits before freerdp_connect succeeds. */
+	if (bridge->context)
+		freerdp_client_stop(bridge->context);
+	atomic_store(&bridge->connected, 0);
+	atomic_store(&bridge->stop_requested, 0);
+	pthread_mutex_lock(&bridge->lock);
+	bridge->frame_dirty = 0;
+	pthread_mutex_unlock(&bridge->lock);
 }
 
 int rdp_bridge_connected(rdp_bridge* bridge)
@@ -432,7 +532,7 @@ int rdp_bridge_connected(rdp_bridge* bridge)
 
 int rdp_bridge_frame_size(rdp_bridge* bridge, uint32_t* width, uint32_t* height)
 {
-	if (!bridge)
+	if (!bridge || !width || !height)
 		return -1;
 	pthread_mutex_lock(&bridge->lock);
 	if (bridge->frame_dirty && bridge->pixels)
@@ -461,9 +561,16 @@ int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride, si
 		pthread_mutex_unlock(&bridge->lock);
 		return -1;
 	}
+	if (bridge->width > UINT32_MAX / 4)
+	{
+		pthread_mutex_unlock(&bridge->lock);
+		return -1;
+	}
 	row_bytes = bridge->width * 4;
 	if (bridge->width != expected_width || bridge->height != expected_height ||
-        dst_stride < row_bytes || capacity / dst_stride < bridge->height)
+	    dst_stride < row_bytes || dst_stride == 0 ||
+        (size_t)dst_stride > SIZE_MAX / bridge->height ||
+        capacity < (size_t)dst_stride * bridge->height)
 	{
 		pthread_mutex_unlock(&bridge->lock);
 		return -1;
@@ -478,22 +585,32 @@ int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride, si
 	return 0;
 }
 
-void rdp_bridge_mouse(rdp_bridge* bridge, uint16_t x, uint16_t y, uint16_t flags)
+int rdp_bridge_mouse(rdp_bridge* bridge, uint16_t x, uint16_t y, uint16_t flags)
 {
-	if (bridge && bridge->context && bridge->context->input)
-		freerdp_input_send_mouse_event(bridge->context->input, flags, x, y);
+	if (!bridge || !atomic_load(&bridge->connected) || !bridge->context || !bridge->context->input)
+		return -1;
+	pthread_mutex_lock(&bridge->lock);
+	if (bridge->width == 0 || bridge->height == 0 || x >= bridge->width || y >= bridge->height)
+	{
+		pthread_mutex_unlock(&bridge->lock);
+		return -1;
+	}
+	pthread_mutex_unlock(&bridge->lock);
+	return freerdp_input_send_mouse_event(bridge->context->input, flags, x, y) ? 0 : -1;
 }
 
-void rdp_bridge_key(rdp_bridge* bridge, uint16_t flags, uint8_t scancode)
+int rdp_bridge_key(rdp_bridge* bridge, uint16_t flags, uint8_t scancode)
 {
-	if (bridge && bridge->context && bridge->context->input)
-		freerdp_input_send_keyboard_event(bridge->context->input, flags, scancode);
+	if (!bridge || !atomic_load(&bridge->connected) || !bridge->context || !bridge->context->input)
+		return -1;
+	return freerdp_input_send_keyboard_event(bridge->context->input, flags, scancode) ? 0 : -1;
 }
 
-void rdp_bridge_unicode(rdp_bridge* bridge, uint16_t flags, uint16_t code)
+int rdp_bridge_unicode(rdp_bridge* bridge, uint16_t flags, uint16_t code)
 {
-	if (bridge && bridge->context && bridge->context->input)
-		freerdp_input_send_unicode_keyboard_event(bridge->context->input, flags, code);
+	if (!bridge || !atomic_load(&bridge->connected) || !bridge->context || !bridge->context->input || code == 0)
+		return -1;
+	return freerdp_input_send_unicode_keyboard_event(bridge->context->input, flags, code) ? 0 : -1;
 }
 
 void rdp_bridge_free(rdp_bridge* bridge)
@@ -501,18 +618,18 @@ void rdp_bridge_free(rdp_bridge* bridge)
 	if (!bridge)
 		return;
 
-	rdp_bridge_stop(bridge);
+    rdp_bridge_stop(bridge);
 
-	if (bridge->context)
-	{
-		freerdp_client_stop(bridge->context);
-		freerdp_client_context_free(bridge->context);
-		bridge->context = NULL;
-	}
+    if (bridge->context)
+    {
+        freerdp_client_context_free(bridge->context);
+        bridge->context = NULL;
+    }
 
 	free(bridge->rdp_file);
 	free(bridge->username);
 	free(bridge->password);
+	free(bridge->certificate_fingerprint);
 	free(bridge->pixels);
 	pthread_mutex_destroy(&bridge->lock);
 	free(bridge);

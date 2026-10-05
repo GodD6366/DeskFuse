@@ -93,6 +93,23 @@ pub struct UpdateReceipt {
     #[prost(bytes = "vec", tag = "6")]
     pub sha256: Vec<u8>,
 }
+
+/// Ask a paired device to run its normal update check and installation flow.
+/// The receiver still chooses and verifies the release locally.
+#[derive(Clone, PartialEq, Message)]
+pub struct UpdateCommand {
+    /// Stable action code. `1` means download and install a compatible update.
+    #[prost(uint32, tag = "1")]
+    pub action: u32,
+}
+
+/// Acknowledgement for [`UpdateCommand`].
+#[derive(Clone, PartialEq, Message)]
+pub struct UpdateCommandAck {
+    /// `1` accepted, `2` unsupported, `3` busy/unavailable.
+    #[prost(uint32, tag = "1")]
+    pub status: u32,
+}
 fn id(value: &[u8]) -> bool {
     value.len() == 16 && value.iter().any(|v| *v != 0)
 }
@@ -154,6 +171,8 @@ pub(crate) fn validate(message: &crate::Message) -> Result<(), ProtocolError> {
                 && v.installed_build > 0
                 && v.sha256.len() == 32
         }
+        M::UpdateCommand(v) => v.action == 1,
+        M::UpdateCommandAck(v) => (1..=3).contains(&v.status),
         _ => false,
     };
     if valid {

@@ -6,7 +6,7 @@
 
 ## 1. 当前基线
 
-工作区：`/Users/godd/.worktrees/DeskFuse/windows`
+工作区：DeskFuse 仓库的 Windows 开发工作树
 分支：`windows`
 
 已完成或已有源码链路：

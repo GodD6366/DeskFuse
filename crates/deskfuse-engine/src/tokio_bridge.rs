@@ -195,6 +195,12 @@ pub enum TokioCommand {
     },
     CheckForUpdates,
     DownloadAndInstallUpdate,
+    TriggerPeerUpdate {
+        peer_id: deskfuse_core::DeviceId,
+    },
+    TriggerPeerUpdates {
+        peer_ids: Vec<deskfuse_core::DeviceId>,
+    },
     Runtime(RuntimeCommand),
     RefreshPermissions,
     Snapshot,
@@ -1647,6 +1653,7 @@ async fn run_worker(
 
     let public_updates = crate::github_update::is_public_bundle();
     let manual_updates = crate::github_update::is_manual_bundle();
+    let remote_update_requested = Arc::new(AtomicBool::new(false));
     let manual_update_view = deskfuse_runtime::updates::LanUpdateView {
         installed: deskfuse_update_platform::installer::current_bundle()
             .and_then(|bundle| deskfuse_update_platform::installer::installed_release(&bundle))
@@ -1676,8 +1683,27 @@ async fn run_worker(
         None
     };
     #[cfg(not(test))]
-    let updater = if public_updates || manual_updates {
+    let updater = if manual_updates {
         None
+    } else if public_updates {
+        let signal = remote_update_requested.clone();
+        let remote_trigger: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            signal.store(true, Ordering::Release);
+        });
+        match crate::app_update::start_github_with_trigger(runtime.clone(), Some(remote_trigger)) {
+            Ok(updater) => Some(updater),
+            Err(error) => {
+                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                    deskfuse_runtime::updates::LanUpdateView {
+                        github: Some(Default::default()),
+                        message: "局域网分发暂不可用".into(),
+                        error: Some(error),
+                        ..Default::default()
+                    },
+                ));
+                None
+            }
+        }
     } else {
         match crate::app_update::start(runtime.clone()) {
             Ok(updater) => Some(updater),
@@ -1944,30 +1970,71 @@ async fn run_worker(
                         emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
                     }
                     Some(TokioCommand::CheckForUpdates) => {
-                        if let Some(updater) = &mut github_updater {
-                            updater.check_now();
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else if let Some(updater) = &updater {
-                            updater.check_now();
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
+                        if github_updater.is_none() && updater.is_none() {
+                            command_error = Some(if manual_updates {
+                                "此版本仅支持手动安装更新"
+                            } else {
+                                "更新服务不可用"
+                            }.into());
+                        } else {
+                            if let Some(updater) = &mut github_updater {
+                                updater.check_now();
+                            }
+                            if let Some(updater) = &updater {
+                                updater.check_now();
+                            }
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                                merge_update_view(
+                                    github_updater.as_ref(),
+                                    updater.as_ref(),
+                                    Some(&manual_update_view),
+                                ),
+                            ));
+                        }
                     }
                     Some(TokioCommand::DownloadAndInstallUpdate) => {
-                        if let Some(updater) = &mut github_updater {
-                            updater.download_and_install_now();
+                        if github_updater.is_none() && updater.is_none() {
+                            command_error = Some(if manual_updates {
+                                "此版本仅支持手动安装更新"
+                            } else {
+                                "更新服务不可用"
+                            }.into());
+                        } else {
+                            if let Some(updater) = &mut github_updater {
+                                updater.download_and_install_now();
+                            }
+                            if let Some(updater) = &updater {
+                                updater.download_and_install_now();
+                            }
                             update_tick.reset_immediately();
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else if let Some(updater) = &updater {
-                            updater.download_and_install_now();
-                            update_tick.reset_immediately();
-                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                        } else { command_error = Some(if manual_updates { "此版本仅支持手动安装更新" } else { "更新服务不可用" }.into()); }
+                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                                merge_update_view(
+                                    github_updater.as_ref(),
+                                    updater.as_ref(),
+                                    Some(&manual_update_view),
+                                ),
+                            ));
+                        }
+                    }
+                    Some(TokioCommand::TriggerPeerUpdate { peer_id }) => {
+                        if let Err(error) = runtime.trigger_peer_update(peer_id).await {
+                            command_error = Some(error);
+                        }
+                    }
+                    Some(TokioCommand::TriggerPeerUpdates { peer_ids }) => {
+                        if let Err(error) = runtime.trigger_peer_updates(peer_ids).await {
+                            command_error = Some(error);
+                        }
                     }
                     Some(TokioCommand::Snapshot) => {
                         clipboard_history.publish(&ui_sender);
-                        if let Some(updater) = &github_updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
-                        else if let Some(updater) = &updater { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot())); }
-                        else if manual_updates { let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(manual_update_view.clone())); }
+                        let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(
+                            merge_update_view(
+                                github_updater.as_ref(),
+                                updater.as_ref(),
+                                Some(&manual_update_view),
+                            ),
+                        ));
                         file_policy.emit(&ui_sender,None);
                         let _ = ui_sender.unbounded_send(UiEvent::RuntimeView(runtime.snapshot_view()));
                     }
@@ -2638,87 +2705,163 @@ async fn run_worker(
                 }
             }
             _ = update_tick.tick() => {
+                if remote_update_requested.swap(false, Ordering::AcqRel)
+                    && let Some(updater) = &mut github_updater
+                {
+                    updater.download_and_install_now();
+                }
                 if let Some(updater) = &mut github_updater {
                     updater.poll().await;
-                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                }
+                if let Some(updater) = &updater {
+                    if stage_task.as_ref().is_some_and(|task| task.is_finished()) {
+                        match stage_task.take().expect("completed staging").await {
+                            Ok(Ok(())) => staged = true,
+                            other => updater.quarantine(format!("更新暂存失败：{}", match other {
+                                Ok(Err(error)) => error,
+                                Err(error) => error.to_string(),
+                                _ => unreachable!(),
+                            })),
+                        }
+                    }
+                    if !staged
+                        && stage_task.is_none()
+                        && !updater.install_abandoned()
+                    {
+                        if let Some((release, path)) = updater.ready()
+                            && let Some(status) = updater.snapshot().status
+                        {
+                            stage_task = Some(crate::app_update::stage(release, path, status));
+                        } else if let Some((offer, path)) = updater.github_ready()
+                            && let Some(status) = updater.snapshot().status
+                        {
+                            stage_task = Some(crate::app_update::stage_github_zip(
+                                offer.release,
+                                path,
+                                status,
+                            ));
+                        }
+                    }
+                }
+                let github_dmg_ready = github_updater
+                    .as_ref()
+                    .is_some_and(|updater| updater.ready() && !updater.install_abandoned());
+                let lan_payload_ready = updater.as_ref().is_some_and(|updater| {
+                    !updater.install_abandoned()
+                        && (updater.ready().is_some() || updater.github_ready().is_some())
+                });
+                if github_dmg_ready {
+                    let github = github_updater.as_mut().expect("github updater");
+                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                    {
                         install_handoff = None;
                         if let Some(mut helper) = install_helper.take() {
                             let _ = helper.kill();
                             let _ = helper.wait();
                         }
-                        if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
-                        updater.abandon_install(&format!(
+                        if let Ok(mut closed) = input_signals.update_admission.lock() {
+                            *closed = false;
+                        }
+                        github.abandon_install(&format!(
                             "更新安装未在 {} 秒内启动，安装器已取消",
                             INSTALL_HANDOFF.as_secs()
                         ));
                         input_coordinator.resume_after_update();
                     }
-                    if !updater.install_abandoned() && install_handoff.is_none() && updater.ready() {
-                        let force_install = updater.force_install();
-                        let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
-                            && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
-                            && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
-                        updater.installation_waiting(if force_install {
+                    if !github.install_abandoned()
+                        && install_handoff.is_none()
+                        && github.ready()
+                    {
+                        let force_install = github.force_install();
+                        let files_idle = force_install
+                            || (incoming_file_clipboards.is_empty()
+                                && outgoing_file_cancellations.is_empty()
+                                && !pending_incoming_file.load(Ordering::Acquire)
+                                && !paste_requested.load(Ordering::Acquire)
+                                && !(file_policy.update_busy()
+                                    || finder_pastes.busy()
+                                    || !finder_path_requests.is_empty())
+                                && commands.is_empty());
+                        github.installation_waiting(if force_install {
                             "正在立即安装，将跳过传输或粘贴等待"
                         } else if !files_idle {
                             "已请求安装，等待当前文件传输或粘贴完成"
                         } else {
                             "已请求安装，正在结束键鼠共享并等待本地导出完成"
                         });
-                        if files_idle {
-                            if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
-                                let admitted = {
-                                    let mut closed = input_signals.update_admission.lock().unwrap();
-                                    if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
-                                        *closed = true; true
-                                    } else { false }
-                                };
-                                if admitted {
-                                    match deskfuse_update_platform::installer::launch_helper() {
-                                        Ok(helper) => {
-                                            install_helper = Some(helper);
-                                            updater.installing();
-                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                                            let _ = ui_sender.unbounded_send(UiEvent::Quit);
-                                            install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
+                        if files_idle
+                            && input_coordinator
+                                .pause_for_update(github.snapshot().manual_requested)
+                        {
+                            let admitted = {
+                                let mut closed = input_signals.update_admission.lock().unwrap();
+                                if force_install
+                                    || (cache_leases.lock().unwrap().is_empty()
+                                        && commands.is_empty()
+                                        && !paste_requested.load(Ordering::Acquire))
+                                {
+                                    *closed = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if admitted {
+                                match deskfuse_update_platform::installer::launch_helper() {
+                                    Ok(helper) => {
+                                        install_helper = Some(helper);
+                                        github.installing();
+                                        let _ = ui_sender.unbounded_send(
+                                            UiEvent::UpdateSnapshot(merge_update_view(
+                                                Some(github),
+                                                updater.as_ref(),
+                                                Some(&manual_update_view),
+                                            )),
+                                        );
+                                        let _ = ui_sender.unbounded_send(UiEvent::Quit);
+                                        install_handoff = Some(
+                                            std::time::Instant::now() + INSTALL_HANDOFF,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        if let Ok(mut closed) =
+                                            input_signals.update_admission.lock()
+                                        {
+                                            *closed = false;
                                         }
-                                        Err(error) => {
-                                            if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
-                                            updater.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
-                                            input_coordinator.resume_after_update();
-                                        }
+                                        github.abandon_install(&format!(
+                                            "更新安装器无法启动，已保留当前版本：{error}"
+                                        ));
+                                        input_coordinator.resume_after_update();
                                     }
                                 }
                             }
-                        } else { input_coordinator.resume_after_update(); }
-                    }
-                    let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                } else if let Some(updater) = &updater {
-                    if stage_task.as_ref().is_some_and(|task| task.is_finished()) {
-                        match stage_task.take().expect("completed staging").await {
-                            Ok(Ok(())) => staged = true,
-                            other => updater.quarantine(format!("更新暂存失败：{}", match other { Ok(Err(error)) => error, Err(error) => error.to_string(), _ => unreachable!() })),
+                        } else if !files_idle {
+                            input_coordinator.resume_after_update();
                         }
                     }
-                    if !staged && stage_task.is_none() && !updater.install_abandoned()
-                        && let Some((release,path)) = updater.ready() && let Some(status) = updater.snapshot().status {
-                        stage_task = Some(crate::app_update::stage(release,path,status));
-                    }
+                } else if lan_payload_ready {
+                    let updater = updater.as_ref().expect("lan updater");
                     let force_install = updater.force_install();
-                    let files_idle = force_install || (incoming_file_clipboards.is_empty() && outgoing_file_cancellations.is_empty()
-                        && !pending_incoming_file.load(Ordering::Acquire) && !paste_requested.load(Ordering::Acquire)
-                        && !(file_policy.update_busy() || finder_pastes.busy() || !finder_path_requests.is_empty()) && commands.is_empty());
-                    // The helper waits for this process to exit before touching the
-                    // bundle. A handoff that has not ended the process by its deadline
-                    // must give the running app back, so the user keeps a working
-                    // version and can retry after a restart.
-                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    let files_idle = force_install
+                        || (incoming_file_clipboards.is_empty()
+                            && outgoing_file_cancellations.is_empty()
+                            && !pending_incoming_file.load(Ordering::Acquire)
+                            && !paste_requested.load(Ordering::Acquire)
+                            && !(file_policy.update_busy()
+                                || finder_pastes.busy()
+                                || !finder_path_requests.is_empty())
+                            && commands.is_empty());
+                    if install_handoff.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                    {
                         install_handoff = None;
                         if let Some(mut helper) = install_helper.take() {
                             let _ = helper.kill();
                             let _ = helper.wait();
                         }
-                        if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
+                        if let Ok(mut closed) = input_signals.update_admission.lock() {
+                            *closed = false;
+                        }
                         updater.abandon_install(&format!(
                             "更新安装未在 {} 秒内启动，安装器已取消",
                             INSTALL_HANDOFF.as_secs()
@@ -2726,53 +2869,73 @@ async fn run_worker(
                         input_coordinator.resume_after_update();
                     }
                     if !updater.install_abandoned() && install_handoff.is_none() {
-                        if updater.ready().is_some() {
-                            updater.installation_waiting(if !staged {
-                                "正在校验并准备安装，新版就绪后将重新启动"
-                            } else if force_install {
-                                "正在立即安装，将跳过传输或粘贴等待"
-                            } else if !files_idle {
-                                "已请求安装，等待当前文件传输或粘贴完成"
-                            } else {
-                                "已请求安装，正在结束键鼠共享并等待本地导出完成"
-                            });
-                        }
-                        if staged && files_idle {
-                            if input_coordinator.pause_for_update(updater.snapshot().manual_requested) {
-                                // Native exports and UI commands share this admission lock.
-                                let admitted = {
-                                    let mut closed = input_signals.update_admission.lock().unwrap();
-                                    if force_install || (cache_leases.lock().unwrap().is_empty() && commands.is_empty() && !paste_requested.load(Ordering::Acquire)) {
-                                        *closed = true; true
-                                    } else { false }
-                                };
-                                if admitted {
-                                    // The handoff starts only once the helper exists. A helper
-                                    // that cannot start leaves a usable app instead of a
-                                    // pending restart that never happens.
-                                    match deskfuse_update_platform::installer::launch_helper() {
-                                        Ok(helper) => {
-                                            install_helper = Some(helper);
-                                            updater.installing();
-                                            let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
-                                            // This worker stays alive to answer the shutdown that
-                                            // follows; the helper only replaces the bundle after
-                                            // this process is gone.
-                                            let _ = ui_sender.unbounded_send(UiEvent::Quit);
-                                            install_handoff = Some(std::time::Instant::now() + INSTALL_HANDOFF);
+                        updater.installation_waiting(if !staged {
+                            "正在校验并准备安装，新版就绪后将重新启动"
+                        } else if force_install {
+                            "正在立即安装，将跳过传输或粘贴等待"
+                        } else if !files_idle {
+                            "已请求安装，等待当前文件传输或粘贴完成"
+                        } else {
+                            "已请求安装，正在结束键鼠共享并等待本地导出完成"
+                        });
+                        if staged
+                            && files_idle
+                            && input_coordinator
+                                .pause_for_update(updater.snapshot().manual_requested)
+                        {
+                            let admitted = {
+                                let mut closed = input_signals.update_admission.lock().unwrap();
+                                if force_install
+                                    || (cache_leases.lock().unwrap().is_empty()
+                                        && commands.is_empty()
+                                        && !paste_requested.load(Ordering::Acquire))
+                                {
+                                    *closed = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if admitted {
+                                match deskfuse_update_platform::installer::launch_helper() {
+                                    Ok(helper) => {
+                                        install_helper = Some(helper);
+                                        updater.installing();
+                                        let _ = ui_sender.unbounded_send(
+                                            UiEvent::UpdateSnapshot(merge_update_view(
+                                                github_updater.as_ref(),
+                                                Some(updater),
+                                                Some(&manual_update_view),
+                                            )),
+                                        );
+                                        let _ = ui_sender.unbounded_send(UiEvent::Quit);
+                                        install_handoff = Some(
+                                            std::time::Instant::now() + INSTALL_HANDOFF,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        if let Ok(mut closed) =
+                                            input_signals.update_admission.lock()
+                                        {
+                                            *closed = false;
                                         }
-                                        Err(error) => {
-                                            if let Ok(mut closed) = input_signals.update_admission.lock() { *closed = false; }
-                                            updater.abandon_install(&format!("更新安装器无法启动，已保留当前版本：{error}"));
-                                            input_coordinator.resume_after_update();
-                                        }
+                                        updater.abandon_install(&format!(
+                                            "更新安装器无法启动，已保留当前版本：{error}"
+                                        ));
+                                        input_coordinator.resume_after_update();
                                     }
                                 }
                             }
-                        } else { input_coordinator.resume_after_update(); }
+                        } else {
+                            input_coordinator.resume_after_update();
+                        }
                     }
-                    let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(updater.snapshot()));
                 }
+                let _ = ui_sender.unbounded_send(UiEvent::UpdateSnapshot(merge_update_view(
+                    github_updater.as_ref(),
+                    updater.as_ref(),
+                    Some(&manual_update_view),
+                )));
             }
             _ = permission_tick.tick() => {
                 file_policy.expire_receivers(&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards,pasteboard.as_ref(),&pending_incoming_file,&paste_requested,&paste_target_pid).await;
@@ -4582,6 +4745,60 @@ fn event_requires_snapshot_refresh(event: &RuntimeEvent) -> bool {
     )
 }
 
+fn merge_update_view(
+    github: Option<&crate::github_update::GitHubUpdater>,
+    lan: Option<&deskfuse_runtime::updates::LanUpdater>,
+    manual: Option<&deskfuse_runtime::updates::LanUpdateView>,
+) -> deskfuse_runtime::updates::LanUpdateView {
+    use deskfuse_update::UpdatePhase;
+    if let Some(github) = github {
+        let mut view = github.snapshot();
+        let Some(lan) = lan else {
+            return view;
+        };
+        let lan_view = lan.snapshot();
+        view.peers = lan_view.peers;
+        let github_active = github.ready()
+            || view.checking
+            || view.status.as_ref().is_some_and(|status| {
+                matches!(
+                    status.phase,
+                    UpdatePhase::Downloading
+                        | UpdatePhase::Verifying
+                        | UpdatePhase::WaitingForIdle
+                        | UpdatePhase::Staged
+                        | UpdatePhase::Installing
+                )
+            });
+        let lan_active = lan.github_ready().is_some()
+            || lan_view.checking
+            || lan_view.status.as_ref().is_some_and(|status| {
+                matches!(
+                    status.phase,
+                    UpdatePhase::Downloading
+                        | UpdatePhase::Verifying
+                        | UpdatePhase::WaitingForIdle
+                        | UpdatePhase::Staged
+                        | UpdatePhase::Installing
+                )
+            });
+        view.manual_requested = view.manual_requested || lan_view.manual_requested;
+        if !github_active && lan_active {
+            view.checking = lan_view.checking;
+            view.status = lan_view.status;
+            view.message = lan_view.message;
+            if lan_view.error.is_some() {
+                view.error = lan_view.error;
+            }
+        }
+        view
+    } else if let Some(lan) = lan {
+        lan.snapshot()
+    } else {
+        manual.cloned().unwrap_or_default()
+    }
+}
+
 /// Motion datagrams are enabled by default; `reliable` is a diagnostic override.
 /// Path negotiation still decides whether a new control session can use hybrid mode.
 fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
@@ -4593,6 +4810,13 @@ fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
 }
 
 fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> RuntimeConfig {
+    // Public bundles run the LAN package server alongside the canonical GitHub
+    // checker. Manual bundles have no updater worker and stay opt-out.
+    let update_trigger = if crate::github_update::is_manual_bundle() {
+        Capabilities::NONE
+    } else {
+        Capabilities::LAN_UPDATE_TRIGGER
+    };
     RuntimeConfig {
         network: deskfuse_core::NetworkConfig::new()
             .with_mdns_enabled(true)
@@ -4605,6 +4829,7 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
             | Capabilities::DEVICE_NETWORK
             | Capabilities::INPUT_ACTIVATION
             | Capabilities::LAN_UPDATES
+            | update_trigger
             | Capabilities::INPUT_ENVIRONMENT
             | Capabilities::DEFERRED_FILE_CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
@@ -5080,6 +5305,7 @@ mod tests {
                 | Capabilities::DEVICE_NETWORK
                 | Capabilities::INPUT_ACTIVATION
                 | Capabilities::LAN_UPDATES
+                | Capabilities::LAN_UPDATE_TRIGGER
                 | Capabilities::INPUT_ENVIRONMENT
                 | Capabilities::DEFERRED_FILE_CLIPBOARD
                 | Capabilities::CLIPBOARD_SYNC_V2

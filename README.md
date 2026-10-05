@@ -6,7 +6,7 @@ DeskFuse 使用独立的应用身份、协议和数据目录。首次启动可�
 
 DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：在可信设备间同步剪贴板、传输文件、暂存并拖出文件，并提供独立开关的键鼠共享。交互约定见[当前界面与行为约定](design/current/README.md)。
 
-> 开发预发行：GitHub 提供 macOS arm64 和 macOS Intel 安装包；Windows 构建暂跳过，构建通过不代表真实两机验收。
+> 开发预发行：GitHub 提供 macOS arm64、macOS Intel 和 Windows x64 安装包；Windows 安装器必须通过 Authenticode 门禁，构建通过不代表安装、NLA 或真实两机验收。
 
 ## 能做什么
 
@@ -39,7 +39,7 @@ DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：
 | macOS 14+、Apple Silicon | 主平台，发行 arm64 DMG |
 | macOS 26+ | 导航与操作层使用原生 Liquid Glass，旧系统回退标准材质 |
 | Intel Mac | 发行 x86_64 DMG，功能和实机验收与 arm64 分开记录 |
-| Windows x64 | 暂不随 0.4.0 公开预发行提供安装包；完整跨平台协作和实机验收仍需单独验证 |
+| Windows x64 | 下一次候选发布提供 Authenticode 签名安装器；安装、SCM、NLA、RemoteApp 和实机验收单独记录 |
 | Linux | 不在首发范围 |
 
 ## 下载与安装
@@ -106,7 +106,7 @@ docs/           架构、功能契约、发布与支持边界
 
 ## 已知限制
 
-- Windows 安装器为实验性离线桌面包；安装、SCM、会话切换和跨平台功能需独立验收。
+- Windows 安装器为离线桌面包；安装、SCM、会话切换、NLA 和跨平台功能需独立验收。
 - 原生 Finder 粘贴、拖出、权限变化、Wi-Fi 键鼠跨屏和真实两机行为不能由 CI 代替。
 - GitHub CI 不签发局域网更新载荷；本机协调端正式包支持 macOS 局域网自动更新，旧版需先手动安装一次基础包，见[发行指南](docs/RELEASING.md)。
 - 日志只记录元数据、状态和哈希；提交问题前检查附件，不上传剪贴板内容、设备密钥或凭据。

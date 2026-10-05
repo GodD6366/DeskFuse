@@ -21,8 +21,17 @@ jobs:
       release_repository: ${{ steps.distribution.outputs.release_repository }}
       arm64_asset: ${{ steps.distribution.outputs.arm64_asset }}
       x86_64_asset: ${{ steps.distribution.outputs.x86_64_asset }}
+      windows_x64_asset: ${{ steps.distribution.outputs.windows_x64_asset }}
       cask_path: ${{ steps.distribution.outputs.cask_path }}
     steps:
+      - name: Require an existing version tag
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ ! "$RELEASE_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Select an existing vX.Y.Z tag when running this workflow manually; branches cannot be released. Use gh workflow run release.yml --ref vX.Y.Z."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: distribution
         run: python3 scripts/distribution-config.py --github-output "$GITHUB_OUTPUT"
@@ -40,8 +49,6 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.exists != 'true'
     uses: ./.github/workflows/ci.yml
-    with:
-      skip_windows: true
 
   macos-arm64:
     needs: [preflight, checks]
@@ -59,6 +66,8 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-apple-darwin
           rustup component add rust-src
+          source scripts/rust-toolchain-env.sh
+          dirname "$(command -v cargo)" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: deskfuse-macos
@@ -115,6 +124,8 @@ jobs:
           rustup show active-toolchain
           rustup target add x86_64-apple-darwin
           rustup component add rust-src
+          source scripts/rust-toolchain-env.sh
+          dirname "$(command -v cargo)" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: deskfuse-macos
@@ -155,12 +166,124 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-x64:
+    needs: [preflight, checks]
+    if: needs.preflight.outputs.exists != 'true'
+    name: Windows x64 installer
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Require NSIS and Authenticode signing tools
+        shell: pwsh
+        run: |
+          $makeNsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if (!$makeNsis) {
+            $nsisPath = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+            if (Test-Path -LiteralPath $nsisPath -PathType Leaf) { $makeNsis = Get-Item -LiteralPath $nsisPath }
+          }
+          if (!$makeNsis) { throw 'NSIS 3 (makensis.exe) is required; no installed copy was found and the release job will not download tools implicitly.' }
+
+          $signTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          if (!$signTool) {
+            $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
+              $signToolPath = Get-ChildItem -LiteralPath $kitsRoot -Filter signtool.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.Directory.Name -eq 'x64' } |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+              if ($signToolPath) { $signTool = Get-Item -LiteralPath $signToolPath }
+            }
+          }
+          if (!$signTool) { throw 'Windows SDK x64 signtool.exe is required; no installed copy was found and the release job will not download tools implicitly.' }
+          $makeNsisPath = if ($makeNsis.Source) { $makeNsis.Source } else { $makeNsis.FullName }
+          $signToolPath = if ($signTool.Source) { $signTool.Source } else { $signTool.FullName }
+          (Split-Path -Parent $makeNsisPath) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          (Split-Path -Parent $signToolPath) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Import Authenticode certificate
+        shell: pwsh
+        env:
+          WINDOWS_AUTHENTICODE_PFX_B64: ${{ secrets.WINDOWS_AUTHENTICODE_PFX_B64 }}
+          WINDOWS_AUTHENTICODE_PFX_PASSWORD: ${{ secrets.WINDOWS_AUTHENTICODE_PFX_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_AUTHENTICODE_PFX_B64)) { throw 'Missing WINDOWS_AUTHENTICODE_PFX_B64; refusing to publish an unsigned installer.' }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'deskfuse-authenticode.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_PFX_B64))
+          $password = ConvertTo-SecureString $env:WINDOWS_AUTHENTICODE_PFX_PASSWORD -AsPlainText -Force
+          $existingThumbprints = @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object { $_.Thumbprint })
+          try {
+            $imported = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+            $newThumbprints = @($imported | Where-Object { $_.Thumbprint -notin $existingThumbprints } | ForEach-Object { $_.Thumbprint } | Sort-Object -Unique)
+            $now = [DateTime]::UtcNow
+            $candidates = @($imported | Where-Object {
+              $certificate = $_
+              $codeSigningEku = @($certificate.Extensions | Where-Object {
+                $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]
+              } | ForEach-Object { $_.EnhancedKeyUsages } | ForEach-Object { $_ } | Where-Object {
+                $_.Value -eq '1.3.6.1.5.5.7.3.3'
+              }).Count -gt 0
+              $certificate.HasPrivateKey -and $certificate.NotBefore.ToUniversalTime() -le $now -and $certificate.NotAfter.ToUniversalTime() -gt $now -and $codeSigningEku
+            })
+            if ($candidates.Count -ne 1) { throw "Expected exactly one current code-signing certificate with a private key in the PFX, found $($candidates.Count)." }
+            "WINDOWS_AUTHENTICODE_THUMBPRINT=$($candidates[0].Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "WINDOWS_IMPORTED_CERT_THUMBPRINTS=$($newThumbprints -join ',')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            $currentThumbprints = @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object { $_.Thumbprint })
+            foreach ($thumbprint in @($currentThumbprints | Where-Object { $_ -notin $existingThumbprints })) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+            }
+            throw
+          }
+      - name: Build shared-metadata Windows installer
+        shell: pwsh
+        env:
+          WINDOWS_AUTHENTICODE_TIMESTAMP_URL: ${{ vars.WINDOWS_AUTHENTICODE_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          New-Item -ItemType Directory -Force dist\windows | Out-Null
+          & .\scripts\snapshot-windows-source.ps1 -ProjectRoot $env:GITHUB_WORKSPACE -OutputPath (Join-Path $env:GITHUB_WORKSPACE 'dist\source-snapshot.json')
+          & .\scripts\package-windows.ps1 -ProjectRoot $env:GITHUB_WORKSPACE -ReleaseMetadata (Join-Path $env:GITHUB_WORKSPACE 'release.json') -SourceSnapshot (Join-Path $env:GITHUB_WORKSPACE 'dist\source-snapshot.json') -OutputDirectory (Join-Path $env:GITHUB_WORKSPACE 'dist\windows') -AuthenticodeCertificateThumbprint $env:WINDOWS_AUTHENTICODE_THUMBPRINT -AuthenticodeTimestampUrl $env:WINDOWS_AUTHENTICODE_TIMESTAMP_URL
+          $built = @(Get-ChildItem dist\windows -Filter '*-windows-x64-setup.exe' -File)
+          if ($built.Count -ne 1) { throw "Expected exactly one Windows installer, found $($built.Count)" }
+          $target = Join-Path $built[0].DirectoryName $env:WINDOWS_ASSET
+          $sourceBase = $built[0].FullName
+          Move-Item -LiteralPath $built[0].FullName -Destination $target -Force
+          Move-Item -LiteralPath ($sourceBase + '.manifest.json') -Destination ($target + '.manifest.json') -Force
+          Remove-Item -LiteralPath ($sourceBase + '.sha256') -Force
+          $targetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+          "$targetHash  $env:WINDOWS_ASSET" | Set-Content -LiteralPath ($target + '.sha256') -Encoding ASCII
+          $manifest = Get-Content -Raw -LiteralPath ($target + '.manifest.json') | ConvertFrom-Json
+          if ($manifest.authenticode -ne 'Valid') { throw "Windows installer is not Authenticode-signed (status: $($manifest.authenticode)); refusing to publish." }
+          if ($manifest.release_signed -ne $true) { throw 'Windows installer payload is not fully Authenticode-signed; refusing to publish.' }
+          if ($manifest.installer_sha256 -ne $targetHash) { throw 'Windows installer manifest hash does not match the renamed release asset.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows-x64
+          path: |
+            dist/windows/${{ env.WINDOWS_ASSET }}
+            dist/windows/${{ env.WINDOWS_ASSET }}.manifest.json
+            dist/windows/${{ env.WINDOWS_ASSET }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove Authenticode certificate
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($thumbprint in @($env:WINDOWS_IMPORTED_CERT_THUMBPRINTS -split ',' | Where-Object { $_ })) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+          }
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'deskfuse-authenticode.pfx') -Force -ErrorAction SilentlyContinue
+
   publish:
-    needs: [preflight, macos-arm64, macos-x86_64]
+    needs: [preflight, macos-arm64, macos-x86_64, windows-x64]
     env:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
+      WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 20
     permissions:
@@ -175,11 +298,18 @@ jobs:
         with:
           name: release-macos-x86_64
           path: dist/x86_64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows-x64
+          path: dist/windows
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
+          source scripts/rust-toolchain-env.sh
           cp "dist/arm64/$ARM64_ASSET" dist/
           cp "dist/x86_64/$X86_64_ASSET" dist/
+          cp "dist/windows/$WINDOWS_ASSET" dist/
+          cp "dist/windows/$WINDOWS_ASSET.manifest.json" "dist/$WINDOWS_ASSET.manifest.json"
           cmp dist/arm64/release.json dist/x86_64/release.json
           cp dist/arm64/release.json dist/release.json
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64

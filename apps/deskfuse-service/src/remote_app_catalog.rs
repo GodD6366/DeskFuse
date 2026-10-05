@@ -3,6 +3,11 @@
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fmt::Write};
 
+pub const MAX_REMOTE_APP_NAME: usize = 128;
+pub const MAX_REMOTE_APP_FULL_NAME: usize = 1024;
+pub const MAX_REMOTE_APP_COMMAND_LINE: usize = 4096;
+pub const MAX_REMOTE_APP_ICON_PATH: usize = 32767;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteAppEntry {
     pub name: String,
@@ -19,6 +24,32 @@ pub struct RemoteAppEntry {
 pub struct InstalledApp {
     pub name: String,
     pub path: String,
+}
+
+/// Registry subkey names are also embedded in the `||<name>` RDP token. Keep
+/// them a single, bounded path component so unregister cannot delete a nested
+/// key and the generated line-oriented RDP document cannot be injected.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_REMOTE_APP_NAME
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\\' | '/' | ':' | '"'))
+}
+
+pub fn validate_entry(entry: &RemoteAppEntry) -> bool {
+    fn text(value: &str, max: usize) -> bool {
+        value.len() <= max
+            && !value
+                .chars()
+                .any(|c| c.is_control() || c == '\r' || c == '\n')
+    }
+    text(&entry.name, MAX_REMOTE_APP_NAME)
+        && valid_name(&entry.name)
+        && text(&entry.full_name, MAX_REMOTE_APP_FULL_NAME)
+        && executable_path(&entry.path)
+        && text(&entry.command_line, MAX_REMOTE_APP_COMMAND_LINE)
+        && text(&entry.icon_path, MAX_REMOTE_APP_ICON_PATH)
 }
 
 /// Only local, absolute executable paths, with no RDP line injection. Existence
@@ -44,7 +75,7 @@ pub fn merge_catalog(
     registered: Vec<RemoteAppEntry>,
     installed: Vec<InstalledApp>,
 ) -> Vec<RemoteAppEntry> {
-    let mut entries = registered;
+    let mut entries: Vec<_> = registered.into_iter().filter(validate_entry).collect();
     let mut paths: HashSet<_> = entries.iter().map(|e| path_key(&e.path)).collect();
     let mut names: HashSet<_> = entries.iter().map(|e| e.name.to_lowercase()).collect();
     for app in installed {
@@ -73,7 +104,13 @@ pub fn merge_catalog(
             show_in_tswa: 0,
         });
     }
-    entries.sort_by_key(|e| (e.full_name.to_lowercase(), e.name.clone()));
+    entries.sort_by_key(|e| {
+        (
+            e.full_name.to_lowercase(),
+            e.name.to_lowercase(),
+            path_key(&e.path),
+        )
+    });
     entries
 }
 
@@ -123,5 +160,59 @@ mod tests {
             merge_catalog(vec![manual.clone()], vec![installed("App", "c:/APP.exe")]),
             vec![manual]
         );
+    }
+
+    #[test]
+    fn rejects_injected_or_oversized_entry_fields() {
+        let base = RemoteAppEntry {
+            name: "app".into(),
+            full_name: "App".into(),
+            path: r"C:\app.exe".into(),
+            command_line: "".into(),
+            command_line_setting: 0,
+            icon_path: "".into(),
+            icon_index: 0,
+            show_in_tswa: 0,
+        };
+        assert!(validate_entry(&base));
+        for (field, value) in [
+            ("name", "app\r\nfoo"),
+            ("full", "x\ny"),
+            ("command", "x\r\ny"),
+            ("icon", "x\n"),
+        ] {
+            let mut candidate = base.clone();
+            match field {
+                "name" => candidate.name = value.into(),
+                "full" => candidate.full_name = value.into(),
+                "command" => candidate.command_line = value.into(),
+                _ => candidate.icon_path = value.into(),
+            }
+            assert!(!validate_entry(&candidate), "{field}");
+        }
+        let mut oversized = base;
+        oversized.command_line = "x".repeat(MAX_REMOTE_APP_COMMAND_LINE + 1);
+        assert!(!validate_entry(&oversized));
+    }
+
+    #[test]
+    fn rejects_invalid_registry_names() {
+        for name in ["", r"foo\bar", "foo/bar", "foo:bar", "foo\r\nbar"] {
+            assert!(!valid_name(name), "{name:?}");
+        }
+        assert!(valid_name("notepad"));
+    }
+
+    #[test]
+    fn catalog_order_is_stable_for_case_collisions() {
+        let entries = merge_catalog(
+            vec![],
+            vec![installed("z", r"C:\z.exe"), installed("A", r"C:\a.exe")],
+        );
+        let again = merge_catalog(
+            vec![],
+            vec![installed("A", r"C:\a.exe"), installed("z", r"C:\z.exe")],
+        );
+        assert_eq!(entries, again);
     }
 }

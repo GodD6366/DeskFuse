@@ -8,6 +8,8 @@ use deskfuse_update::Target;
 #[cfg(not(windows))]
 use deskfuse_update::installer;
 use std::path::PathBuf;
+#[cfg(not(test))]
+use std::sync::Arc;
 
 #[cfg(all(not(test), not(windows)))]
 fn macos_version() -> Result<semver::Version, String> {
@@ -79,10 +81,20 @@ pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
 /// so a peer can install it over the LAN update transport.
 #[cfg(all(not(test), not(windows)))]
 pub fn start_github(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
+    start_github_with_trigger(runtime, None)
+}
+
+/// Start the public-channel LAN package server and optionally notify the
+/// canonical GitHub updater when a paired device asks for an update.
+#[cfg(all(not(test), not(windows)))]
+pub fn start_github_with_trigger(
+    runtime: RuntimeHandle,
+    remote_trigger: Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<LanUpdater, String> {
     let bundle = installer::current_bundle()?;
     let installed = installer::installed_release(&bundle)?;
     let root = installer::update_root()?;
-    LanUpdater::start(
+    LanUpdater::start_with_remote_trigger(
         runtime,
         LanUpdateConfig {
             installed: installed.clone(),
@@ -95,6 +107,7 @@ pub fn start_github(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
             previous_failure: installer::previous_failure()?,
             channel: UpdateChannel::GitHub,
         },
+        remote_trigger,
     )
 }
 
@@ -147,6 +160,14 @@ pub fn start(_runtime: RuntimeHandle) -> Result<deskfuse_runtime::updates::LanUp
 #[cfg(all(not(test), windows))]
 pub fn start_github(
     _runtime: RuntimeHandle,
+) -> Result<deskfuse_runtime::updates::LanUpdater, String> {
+    Err("Windows GitHub updates require a signed machine-owned transaction".into())
+}
+
+#[cfg(all(not(test), windows))]
+pub fn start_github_with_trigger(
+    _runtime: RuntimeHandle,
+    _remote_trigger: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<deskfuse_runtime::updates::LanUpdater, String> {
     Err("Windows GitHub updates require a signed machine-owned transaction".into())
 }

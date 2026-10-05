@@ -31,6 +31,8 @@ pub struct Device {
     /// The far side reclaimed input locally; a new enable cycle is required.
     pub input_restart_required: bool,
     pub remote_app_rdp: bool,
+    /// The selected live route negotiated support for remote update triggers.
+    pub can_trigger_update: bool,
 }
 /// A discovered/cached route is a candidate, not proof of a live session.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -615,6 +617,12 @@ pub enum EngineCommand {
     },
     CheckUpdates,
     DownloadAndInstallUpdate,
+    TriggerPeerUpdate {
+        peer_id: String,
+    },
+    TriggerPeerUpdates {
+        peer_ids: Vec<String>,
+    },
     RefreshPermissions,
 }
 #[derive(Clone, Debug, uniffi::Enum)]
@@ -706,6 +714,12 @@ impl From<&EngineState> for EngineSnapshot {
                                 && route
                                     .capabilities
                                     .contains(core::Capabilities::REMOTE_APPLICATION_RDP)
+                        }),
+                        can_trigger_update: d.routes.iter().any(|route| {
+                            Some(route.id) == d.selected_route_id
+                                && route
+                                    .capabilities
+                                    .contains(core::Capabilities::LAN_UPDATE_TRIGGER)
                         }),
                     });
                 }

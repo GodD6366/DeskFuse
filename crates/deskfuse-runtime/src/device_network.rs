@@ -1055,6 +1055,12 @@ impl Actor {
         if let Some(incoming) = self.device_network.incoming.remove(&attempt) {
             let _ = incoming.reply.send(payload);
         }
+        // An explicit rejection completes the current invitation. Allow the
+        // user to make a fresh request without waiting for the anti-spam
+        // window; blocking remains a separate, durable action.
+        if !accepted {
+            self.device_network.incoming_rate.remove(&peer);
+        }
         self.finish_network_pairing(
             attempt,
             peer,

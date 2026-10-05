@@ -13,17 +13,25 @@ import DeskFuseRemoteApplication
     private(set) var unavailableReason: String?
     private(set) var launchedName: String?
     private(set) var bridgeState: RemoteRdpBridge.State = .idle
+    private(set) var certificateFingerprint: String?
+    private(set) var certificateTrustError: String?
+    private(set) var certificateTrustInProgress = false
     let engine: Engine
     let peerID: String
     let peerHost: String
     var savedCredential: RemoteRDPCredentialStore.Credential? {
         RemoteRDPCredentialStore.load(peerID: peerID)
     }
+    var savedCertificateFingerprint: String? {
+        RemoteRDPCredentialStore.loadCertificateFingerprint(peerID: peerID)
+    }
     @ObservationIgnored private var channel: RemoteApplicationChannel?
     @ObservationIgnored private var bridge: RemoteRdpBridge?
     @ObservationIgnored private var reader: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var credentials: (String?, String?)?
+    @ObservationIgnored private var lastCredentials: (String?, String?)?
+    @ObservationIgnored private var lastRdpFile: String?
     @ObservationIgnored private let writer = DispatchQueue(label: "DeskFuse.rdp.catalog.send")
 
     init(engine: Engine, peerID: String, peerHost: String) {
@@ -64,6 +72,8 @@ import DeskFuseRemoteApplication
     func launch(_ app: RemoteRdpApp, username: String?, password: String?) {
         guard channel != nil else { return }
         launchedName = app.name; credentials = (username, password)
+        lastCredentials = credentials
+        certificateTrustError = nil
         bridgeState = .connecting
         send(.launch(version: 1, name: app.name))
     }
@@ -77,8 +87,37 @@ import DeskFuseRemoteApplication
         }
     }
     func frame() -> RemoteRdpBridge.Frame? {
-        if let bridge { bridgeState = bridge.state }
+        if let bridge {
+            bridgeState = bridge.state
+            certificateFingerprint = bridge.certificateFingerprint
+        }
         return bridge?.frame()
+    }
+
+    func trustCurrentCertificate() {
+        guard let fingerprint = certificateFingerprint, let rdpFile = lastRdpFile,
+              let credentials = lastCredentials, !certificateTrustInProgress else { return }
+        do {
+            try RemoteRDPCredentialStore.saveCertificateFingerprint(fingerprint, peerID: peerID)
+            certificateTrustError = nil
+        } catch {
+            certificateTrustError = error.userFacingMessage
+            return
+        }
+        certificateTrustInProgress = true
+        let token = generation
+        let previous = bridge
+        Task.detached { [weak self, previous] in
+            // FreeRDP stop joins its native event-loop thread. Keep that wait
+            // off AppKit, then restart only if the viewer is still on the same
+            // connection generation.
+            previous?.stop()
+            await MainActor.run {
+                guard let self, self.generation == token else { return }
+                self.certificateTrustInProgress = false
+                self.startBridge(rdpFile: rdpFile, credentials: credentials)
+            }
+        }
     }
     func mouse(x: UInt16, y: UInt16, flags: UInt16) { bridge?.mouse(x: x, y: y, flags: flags) }
     func key(flags: UInt16, scancode: UInt8) { bridge?.key(flags: flags, scancode: scancode) }
@@ -92,6 +131,8 @@ import DeskFuseRemoteApplication
         // FreeRDP disconnect joins its native thread; never join on AppKit.
         if let previous { Task.detached { previous.stop() } }
         credentials = nil; apps = []; unavailableReason = nil
+        lastCredentials = nil; lastRdpFile = nil; certificateFingerprint = nil; certificateTrustError = nil
+        certificateTrustInProgress = false
         phase = .idle; bridgeState = .idle
     }
     private func fail(_ message: String, token: UUID) {
@@ -118,11 +159,22 @@ import DeskFuseRemoteApplication
         case .rdp(_, let rdp):
             guard let credentials else { return } // Ignore unsolicited/replayed launch replies.
             self.credentials = nil
-            let bridge = RemoteRdpBridge()
-            self.bridge = bridge
-            bridge.start(rdpFile: rdp.replacingOccurrences(of: "{host}", with: peerHost),
-                         username: credentials.0, password: credentials.1)
+            let resolved = rdp.replacingOccurrences(of: "{host}", with: peerHost)
+            lastRdpFile = resolved
+            startBridge(rdpFile: resolved, credentials: credentials)
         case .error(_, _, let message): fail(message, token: token)
         }
+    }
+
+    private func startBridge(rdpFile: String, credentials: (String?, String?)) {
+        let bridge = self.bridge ?? RemoteRdpBridge()
+        self.bridge = bridge
+        certificateFingerprint = nil
+        bridgeState = .connecting
+        bridge.start(
+            rdpFile: rdpFile,
+            username: credentials.0,
+            password: credentials.1,
+            expectedCertificateFingerprint: RemoteRDPCredentialStore.loadCertificateFingerprint(peerID: peerID))
     }
 }

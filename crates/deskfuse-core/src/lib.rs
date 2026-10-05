@@ -379,6 +379,8 @@ impl Capabilities {
     /// Signed, permanently automatic release distribution over authenticated physical LAN.
     /// Advertise only once a verified installer and runtime are connected.
     pub const LAN_UPDATES: Self = Self(1 << 8);
+    /// A paired peer may ask this device to run its updater immediately.
+    pub const LAN_UPDATE_TRIGGER: Self = Self(1 << 15);
     /// SSID controller arbitration on trusted physical input sessions.
     pub const INPUT_ENVIRONMENT: Self = Self(1 << 10);
 
@@ -1762,6 +1764,7 @@ mod tests {
             Capabilities::INPUT_ACTIVATION,
             Capabilities::DEFERRED_FILE_CLIPBOARD,
             Capabilities::LAN_UPDATES,
+            Capabilities::LAN_UPDATE_TRIGGER,
             Capabilities::INPUT_MOTION_DATAGRAM_V1,
             Capabilities::INPUT_ENVIRONMENT,
         ];

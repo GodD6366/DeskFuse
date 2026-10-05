@@ -46,7 +46,7 @@ pub enum Availability {
     },
 }
 
-pub use crate::remote_app_catalog::{InstalledApp, RemoteAppEntry};
+pub use crate::remote_app_catalog::{InstalledApp, RemoteAppEntry, valid_name, validate_entry};
 use crate::remote_app_catalog::{executable_path, merge_catalog};
 
 /// Whether the current edition can host RemoteApps. Home editions report an
@@ -99,16 +99,7 @@ pub fn register_app(app: &RemoteAppEntry) -> io::Result<()> {
     // Registry subkey names and RDP's `||program` token are not a shell
     // command line. Reject control characters, separators and oversized values
     // before they reach HKLM, and require an absolute executable path.
-    if app.name.is_empty()
-        || app.name.len() > 128
-        || app
-            .name
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '\\' | '/' | ':' | '"'))
-        || app.path.len() > 32767
-        || !executable_path(&app.path)
-        || app.full_name.chars().any(char::is_control)
-    {
+    if !validate_entry(app) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid RemoteApp registration",
@@ -140,7 +131,17 @@ pub fn register_app(app: &RemoteAppEntry) -> io::Result<()> {
 /// Returns an error when the allow-list key cannot be opened or the subkey
 /// cannot be deleted for a reason other than absence.
 pub fn unregister_app(name: &str) -> io::Result<()> {
-    let parent = open_allow_list(true)?;
+    if !valid_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid RemoteApp name",
+        ));
+    }
+    let parent = match open_allow_list(false) {
+        Ok(parent) => parent,
+        Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let name = security::wide(name);
     // SAFETY: terminated relative subkey under the opened allow-list handle.
     let result = unsafe { RegDeleteTreeW(parent, name.as_ptr()) };
@@ -218,7 +219,15 @@ fn launchable_apps() -> Vec<RemoteAppEntry> {
 /// Render a RemoteApp `.rdp` file. `full address` carries [`RDP_HOST_TOKEN`], to
 /// be replaced by the controller with the resolved peer IPv4 (plus `:3389`).
 #[must_use]
-pub fn rdp_file(app: &RemoteAppEntry) -> String {
+pub fn rdp_file(app: &RemoteAppEntry) -> io::Result<String> {
+    // Callers may construct entries directly. Do not rely on debug assertions:
+    // every field must be validated before reaching the line-oriented RDP file.
+    if !validate_entry(app) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid RemoteApp entry",
+        ));
+    }
     let mut lines = Vec::new();
     lines.push(format!("full address:s:{RDP_HOST_TOKEN}:3389"));
     lines.push("prompt for credentials on client:i:1".into());
@@ -233,7 +242,7 @@ pub fn rdp_file(app: &RemoteAppEntry) -> String {
     lines.push("audiomode:i:2".into());
     let mut rdp = lines.join("\r\n");
     rdp.push_str("\r\n");
-    rdp
+    Ok(rdp)
 }
 
 fn edition_id() -> Option<String> {
@@ -506,6 +515,8 @@ pub enum RemoteAppRequest {
     Launch { version: u32, name: String },
 }
 
+const MAX_REMOTE_APP_REQUEST_BYTES: usize = 64 * 1024;
+
 /// Serve one authenticated remote-app stream: advertise the catalog, then answer
 /// `catalog` (resend) and `launch` (return the `.rdp` file) requests until the
 /// peer closes the stream. Runs on a blocking thread; `receive` waits at most
@@ -548,6 +559,17 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
             Ok(Some(data)) => {
                 if !authorized() {
                     break;
+                }
+                if data.len() > MAX_REMOTE_APP_REQUEST_BYTES {
+                    let _ = send(
+                        &session,
+                        &RemoteAppMessage::Error {
+                            version: 1,
+                            code: "request_too_large".into(),
+                            message: "远程应用请求超过大小限制".into(),
+                        },
+                    );
+                    continue;
                 }
                 let Ok(request) = serde_json::from_slice::<RemoteAppRequest>(&data) else {
                     let _ = send(
@@ -592,8 +614,14 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                             );
                             continue;
                         };
-                        // Never accept paths from the peer, nor rewrite a manual registration.
-                        if !list_remote_apps().iter().any(|app| app.name == entry.name) {
+                        // Auto-discovered entries are intentionally read-only during
+                        // catalog enumeration, but RemoteApp requires a matching
+                        // TSAppAllowList key before rdpinit.exe can launch them.
+                        // Register only the freshly re-resolved local entry; never
+                        // accept a path or command line supplied by the controller.
+                        if !list_remote_apps().into_iter().any(|registered| {
+                            registered.name == entry.name && registered.path == entry.path
+                        }) {
                             if let Err(error) = register_app(&entry) {
                                 let _ = send(
                                     &session,
@@ -606,16 +634,24 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                                 continue;
                             }
                         }
-                        if send(
-                            &session,
-                            &RemoteAppMessage::Rdp {
-                                version: 1,
-                                rdp: rdp_file(&entry),
-                            },
-                        )
-                        .is_err()
-                        {
-                            break;
+                        match rdp_file(&entry) {
+                            Ok(rdp) => {
+                                if send(&session, &RemoteAppMessage::Rdp { version: 1, rdp })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                let _ = send(
+                                    &session,
+                                    &RemoteAppMessage::Error {
+                                        version: 1,
+                                        code: "invalid_entry".into(),
+                                        message: "应用注册信息无效，请刷新目录".into(),
+                                    },
+                                );
+                            }
                         }
                     }
                     _ => {

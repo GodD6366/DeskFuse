@@ -21,10 +21,12 @@ def load(root: Path = ROOT) -> dict:
     active = json.loads(active_path.read_text())
     if active["schema_version"] != 1:
         raise ValueError("unsupported distribution configuration schema")
-    if set(active["assets"]) != {"arm64", "x86_64"} or any(
-        not name.endswith(".dmg") for name in active["assets"].values()
-    ) or len(set(active["assets"].values())) != 2:
-        raise ValueError("distribution must define distinct arm64 and x86_64 DMG assets")
+    if set(active["assets"]) != {"arm64", "x86_64", "windows_x64"} or len(set(active["assets"].values())) != 3:
+        raise ValueError("distribution must define distinct arm64, x86_64, and Windows assets")
+    if not active["assets"]["arm64"].endswith(".dmg") or not active["assets"]["x86_64"].endswith(".dmg"):
+        raise ValueError("macOS distribution assets must be DMGs")
+    if not active["assets"]["windows_x64"].endswith(".exe"):
+        raise ValueError("Windows distribution asset must be an installer EXE")
     for key in ("source_repository", "release_repository", "homebrew_tap"):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", active[key]):
             raise ValueError(f"invalid {key}")
@@ -34,6 +36,25 @@ def load(root: Path = ROOT) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
             raise ValueError("invalid distribution filename or token")
     return active
+
+
+def release_tag(root: Path = ROOT) -> str:
+    descriptor = json.loads((root / "release.json").read_text())
+    version = descriptor.get("version")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("invalid release descriptor version")
+    return f"v{version}"
+
+
+def website_projection(active: dict, root: Path = ROOT) -> dict:
+    return {
+        "schema_version": 1,
+        "release_repository": active["release_repository"],
+        "homebrew_tap": active["homebrew_tap"],
+        "cask_token": active["cask_token"],
+        "assets": active["assets"],
+        "fallback_release_tag": release_tag(root),
+    }
 
 
 def main() -> None:
@@ -56,14 +77,7 @@ def main() -> None:
         print(value)
         return
     if args.website_output:
-        projection = {
-            "schema_version": 1,
-            "release_repository": active["release_repository"],
-            "homebrew_tap": active["homebrew_tap"],
-            "cask_token": active["cask_token"],
-            "assets": active["assets"],
-            "fallback_release_tag": active["fallback_release_tag"],
-        }
+        projection = website_projection(active)
         content = json.dumps(projection, indent=2) + "\n"
         if args.check:
             if args.website_output.read_text() != content:
@@ -77,6 +91,7 @@ def main() -> None:
             "release_repository": active["release_repository"],
             "arm64_asset": active["assets"]["arm64"],
             "x86_64_asset": active["assets"]["x86_64"],
+            "windows_x64_asset": active["assets"]["windows_x64"],
             "cask_path": f'Casks/{active["cask_token"]}.rb',
             "macos_runner": json.dumps(active["macos_runner"], separators=(",", ":")),
         }

@@ -1201,10 +1201,20 @@ impl State {
                         )),
                     ),
                 };
-                let apps = remote_app::list_remote_apps()
-                    .into_iter()
-                    .map(remote_app_info)
-                    .collect();
+                let apps = if available {
+                    remote_app::list_remote_apps()
+                        .into_iter()
+                        .filter(|entry| remote_app::validate_entry(entry))
+                        .filter(|entry| {
+                            std::fs::metadata(&entry.path)
+                                .map(|metadata| metadata.is_file())
+                                .unwrap_or(false)
+                        })
+                        .map(remote_app_info)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 ipc::Reply::RemoteApps {
                     available,
                     reason,
@@ -1223,10 +1233,29 @@ impl State {
                 path,
                 display_name,
             } => {
-                if name.trim().is_empty() || path.trim().is_empty() {
-                    return ipc::Reply::rejected(
-                        "invalid_request",
+                if !remote_app::valid_name(name.trim()) || path.trim().is_empty() {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::InvalidRequest,
                         "RemoteApp 名称与可执行文件路径不能为空",
+                    );
+                }
+                if let remote_app::Availability::UnsupportedEdition { edition } =
+                    remote_app::availability()
+                {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Unsupported,
+                        format!(
+                            "当前 Windows 版本（{edition}）不支持 RemoteApp；需要专业版或更高版本"
+                        ),
+                    );
+                }
+                if !std::fs::metadata(&path)
+                    .map(|metadata| metadata.is_file())
+                    .unwrap_or(false)
+                {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "RemoteApp 可执行文件路径必须指向实际文件",
                     );
                 }
                 let full_name = if display_name.trim().is_empty() {
@@ -1250,26 +1279,56 @@ impl State {
                 };
                 match remote_app::register_app(&entry) {
                     Ok(()) => ipc::Reply::queued(),
-                    Err(_) => {
-                        ipc::Reply::rejected("remote_app_unavailable", "无法写入 RemoteApp 注册表")
-                    }
+                    Err(_) => ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Native,
+                        "无法写入 RemoteApp 注册表",
+                    ),
                 }
             }
-            ipc::Command::UnregisterRemoteApp { name } => match remote_app::unregister_app(&name) {
-                Ok(()) => ipc::Reply::queued(),
-                Err(_) => {
-                    ipc::Reply::rejected("remote_app_unavailable", "无法移除 RemoteApp 注册项")
+            ipc::Command::UnregisterRemoteApp { name } => {
+                if let remote_app::Availability::UnsupportedEdition { edition } =
+                    remote_app::availability()
+                {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Unsupported,
+                        format!("当前 Windows 版本（{edition}）不支持 RemoteApp"),
+                    );
                 }
-            },
+                match remote_app::unregister_app(&name) {
+                    Ok(()) => ipc::Reply::queued(),
+                    Err(_) => ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Native,
+                        "无法移除 RemoteApp 注册项",
+                    ),
+                }
+            }
             ipc::Command::RemoteAppConnection { name } => {
-                let Some(entry) = remote_app::list_remote_apps()
-                    .into_iter()
-                    .find(|entry| entry.name == name)
-                else {
-                    return ipc::Reply::rejected("not_found", "该应用尚未注册为 RemoteApp");
+                if let remote_app::Availability::UnsupportedEdition { edition } =
+                    remote_app::availability()
+                {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Unsupported,
+                        format!("当前 Windows 版本（{edition}）不支持 RemoteApp"),
+                    );
+                }
+                let Some(entry) = remote_app::list_remote_apps().into_iter().find(|entry| {
+                    remote_app::validate_entry(entry)
+                        && entry.name == name
+                        && std::fs::metadata(&entry.path)
+                            .map(|metadata| metadata.is_file())
+                            .unwrap_or(false)
+                }) else {
+                    return ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "该应用尚未注册为 RemoteApp",
+                    );
                 };
-                ipc::Reply::RemoteAppConnection {
-                    rdp: remote_app::rdp_file(&entry),
+                match remote_app::rdp_file(&entry) {
+                    Ok(rdp) => ipc::Reply::RemoteAppConnection { rdp },
+                    Err(_) => ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::InvalidRequest,
+                        "该 RemoteApp 注册信息无效，请重新注册",
+                    ),
                 }
             }
             other => match runtime_command(other) {

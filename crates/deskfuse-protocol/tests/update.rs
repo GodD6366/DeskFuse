@@ -44,12 +44,33 @@ fn all_update_messages_roundtrip_independently_of_clipboard() {
             target: 1,
             sha256: vec![3; 32],
         }),
+        Message::UpdateCommand(UpdateCommand { action: 1 }),
+        Message::UpdateCommandAck(UpdateCommandAck { status: 1 }),
     ];
     for message in messages {
         let envelope = wrap(message);
         let bytes = encode_frame(&envelope).unwrap();
         assert_eq!(decode_frame(&bytes).unwrap(), envelope);
     }
+}
+
+#[test]
+fn update_trigger_rejects_unknown_actions_and_statuses() {
+    assert!(
+        wrap(Message::UpdateCommand(UpdateCommand { action: 0 }))
+            .validate()
+            .is_err()
+    );
+    assert!(
+        wrap(Message::UpdateCommandAck(UpdateCommandAck { status: 0 }))
+            .validate()
+            .is_err()
+    );
+    assert!(
+        wrap(Message::UpdateCommandAck(UpdateCommandAck { status: 4 }))
+            .validate()
+            .is_err()
+    );
 }
 #[test]
 fn update_chunks_are_bounded_and_redacted() {

@@ -102,7 +102,9 @@ fn validate_message(message: &Message) -> Result<(), ProtocolError> {
         | Message::UpdateChunk(_)
         | Message::UpdateCancel(_)
         | Message::UpdateStatus(_)
-        | Message::UpdateReceipt(_) => update::validate(message),
+        | Message::UpdateReceipt(_)
+        | Message::UpdateCommand(_)
+        | Message::UpdateCommandAck(_) => update::validate(message),
         Message::SessionProof(proof) => {
             if proof.signature.len() == 64 {
                 Ok(())

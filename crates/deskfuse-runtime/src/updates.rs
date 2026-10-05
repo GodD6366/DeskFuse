@@ -7,7 +7,8 @@ use crate::RuntimeHandle;
 use deskfuse_core::{Capabilities, ConnectionContext, ConnectionState, DeviceId, TrustState};
 use deskfuse_protocol::Message;
 use deskfuse_protocol::update::{
-    MAX_UPDATE_CHUNK, ReleaseInventory, UpdateChunk, UpdateReceipt, UpdateRequest,
+    MAX_UPDATE_CHUNK, ReleaseInventory, UpdateChunk, UpdateCommand, UpdateCommandAck,
+    UpdateReceipt, UpdateRequest,
 };
 use deskfuse_update::{
     GitHubPeerArtifact, Installation, ReleaseCache, ReleaseVersion, SignedReleaseManifest, Target,
@@ -30,6 +31,10 @@ use std::{
 
 /// Manual requests bypass this interval; automatic peer discovery stays infrequent.
 const AUTOMATIC_SCAN_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+const UPDATE_COMMAND_DOWNLOAD_AND_INSTALL: u32 = 1;
+const UPDATE_COMMAND_ACCEPTED: u32 = 1;
+const UPDATE_COMMAND_UNSUPPORTED: u32 = 2;
+const UPDATE_COMMAND_BUSY: u32 = 3;
 
 /// An install handoff that stopped short leaves the running version in place.
 const ABANDONED_INSTALL: &str = "更新未安装，当前版本保持可用；退出并重新启动 DeskFuse 后可重试";
@@ -129,6 +134,16 @@ pub struct LanUpdater {
 }
 impl LanUpdater {
     pub fn start(runtime: RuntimeHandle, config: LanUpdateConfig) -> Result<Self, String> {
+        Self::start_with_remote_trigger(runtime, config, None)
+    }
+    /// Start the updater and optionally notify another update source when a
+    /// trusted peer requests an update. Public bundles use this to wake their
+    /// canonical GitHub checker while retaining LAN package serving.
+    pub fn start_with_remote_trigger(
+        runtime: RuntimeHandle,
+        config: LanUpdateConfig,
+        remote_trigger: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, String> {
         fs::create_dir_all(&config.root).map_err(|e| e.to_string())?;
         if !config
             .root
@@ -215,6 +230,8 @@ impl LanUpdater {
                             config.clone(),
                             cache.clone(),
                             state.clone(),
+                            worker_wake.clone(),
+                            remote_trigger.clone(),
                         ));
                         // Prepare the local advertisement once, without scanning peers.
                         // A manual request during this work retains its Notify permit.
@@ -285,29 +302,7 @@ impl LanUpdater {
     /// Join the current download or wake discovery, then request installation.
     /// A request applies only to this attempt, never to a future release.
     pub fn download_and_install_now(&self) {
-        let mut state = self.shared.lock().unwrap();
-        if state.install_abandoned {
-            state.view.message = ABANDONED_INSTALL.into();
-            return;
-        }
-        let already_requested = state.view.manual_requested;
-        if !already_requested {
-            state.force_install = false;
-        }
-        state.view.manual_requested = true;
-        state.view.error = None;
-        if state.ready.is_some() {
-            if already_requested {
-                state.force_install = true;
-                state.view.message = "正在立即安装，将跳过传输或粘贴等待".into();
-            } else {
-                state.view.message = "正在准备主动安装，完成后将重新启动".into();
-            }
-        } else if !state.view.checking {
-            state.view.checking = true;
-            state.view.message = "正在查找并下载设备网络中的新版".into();
-            self.wake.notify_one();
-        }
+        request_download_and_install(&self.shared, &self.wake, false);
     }
     /// A handoff the running process never completed must stop claiming an
     /// install. Without this the client keeps showing a pending restart, rejects
@@ -383,6 +378,55 @@ impl LanUpdater {
         }
     }
 }
+
+/// Apply a local or remote request to the same coalescing state machine. A
+/// remote request only wakes the receiver's updater; it cannot choose a
+/// release or bypass verification.
+fn request_download_and_install(
+    shared: &Arc<Mutex<Shared>>,
+    wake: &Arc<tokio::sync::Notify>,
+    remote: bool,
+) -> u32 {
+    let mut state = shared.lock().unwrap();
+    if state.install_abandoned {
+        state.view.message = ABANDONED_INSTALL.into();
+        return UPDATE_COMMAND_BUSY;
+    }
+    let already_requested = state.view.manual_requested;
+    if !already_requested {
+        state.force_install = false;
+    }
+    state.view.manual_requested = true;
+    state.view.error = None;
+    if state.ready.is_some() {
+        if already_requested {
+            state.force_install = true;
+            state.view.message = if remote {
+                "已收到配对设备的更新请求，正在立即安装".into()
+            } else {
+                "正在立即安装，将跳过传输或粘贴等待".into()
+            };
+        } else {
+            state.view.message = if remote {
+                "已收到配对设备的更新请求，准备安装并重启".into()
+            } else {
+                "正在准备主动安装，完成后将重新启动".into()
+            };
+        }
+    } else if !state.view.checking {
+        state.view.checking = true;
+        state.view.message = if remote {
+            "已收到配对设备的更新请求，正在查找并下载新版".into()
+        } else {
+            "正在查找并下载设备网络中的新版".into()
+        };
+        wake.notify_one();
+    } else if remote {
+        state.view.message = "已收到配对设备的更新请求，正在处理当前更新任务".into();
+    }
+    UPDATE_COMMAND_ACCEPTED
+}
+
 impl Drop for LanUpdater {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -423,6 +467,104 @@ impl RuntimeHandle {
                 .input_contexts(peer)
                 .iter()
                 .any(|live| live == context)
+    }
+    pub fn update_trigger_allowed(&self, peer: DeviceId, context: &ConnectionContext) -> bool {
+        self.update_peer_allowed(peer, context)
+            && self
+                .update_transport
+                .input_capabilities(peer, context.session_id)
+                .contains(Capabilities::LAN_UPDATE_TRIGGER)
+    }
+    /// Ask one trusted, online paired device to start its own normal update
+    /// flow. The receiver still discovers and verifies the compatible package.
+    pub async fn trigger_peer_update(&self, peer: DeviceId) -> Result<(), String> {
+        let view = self.snapshot_view();
+        if !view
+            .device_network
+            .allows(view.snapshot.local_device_id, peer)
+            || !view.snapshot.peers.iter().any(|p| {
+                p.id == peer
+                    && p.trust == TrustState::Trusted
+                    && p.connection == ConnectionState::Connected
+            })
+        {
+            return Err("目标设备尚未连接或不受信任".into());
+        }
+        let _ = self
+            .update_transport
+            .ensure_input_link(peer, Vec::new(), deskfuse_core::RoutePreference::Automatic)
+            .await;
+        let context = self
+            .update_transport
+            .input_contexts(peer)
+            .into_iter()
+            .find(|context| self.update_trigger_allowed(peer, context))
+            .ok_or("目标设备不支持主动更新或当前链路不符合更新要求")?;
+        let reply = self
+            .update_exchange(
+                peer,
+                &context,
+                Message::UpdateCommand(UpdateCommand {
+                    action: UPDATE_COMMAND_DOWNLOAD_AND_INSTALL,
+                }),
+            )
+            .await?;
+        match reply {
+            Message::UpdateCommandAck(UpdateCommandAck { status })
+                if status == UPDATE_COMMAND_ACCEPTED =>
+            {
+                Ok(())
+            }
+            Message::UpdateCommandAck(UpdateCommandAck { status })
+                if status == UPDATE_COMMAND_BUSY =>
+            {
+                Err("目标设备正在安装更新，暂时无法再次触发".into())
+            }
+            Message::UpdateCommandAck(UpdateCommandAck { status })
+                if status == UPDATE_COMMAND_UNSUPPORTED =>
+            {
+                Err("目标设备不支持主动更新".into())
+            }
+            _ => Err("目标设备未确认更新请求".into()),
+        }
+    }
+    /// Ask several trusted, online paired devices concurrently. A partial
+    /// result is reported so one unavailable peer does not hide requests that
+    /// were accepted by the others.
+    pub async fn trigger_peer_updates(&self, peers: Vec<DeviceId>) -> Result<(), String> {
+        let mut peers = peers;
+        peers.sort();
+        peers.dedup();
+        if peers.is_empty() {
+            return Err("没有可触发更新的设备".into());
+        }
+        let results = futures::future::join_all(
+            peers
+                .iter()
+                .copied()
+                .map(|peer| self.trigger_peer_update(peer)),
+        )
+        .await;
+        let mut failed = Vec::new();
+        let mut accepted = 0usize;
+        for result in results {
+            match result {
+                Ok(()) => accepted += 1,
+                Err(error) => failed.push(error),
+            }
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            let failed_count = failed.len();
+            let details = failed.into_iter().take(4).collect::<Vec<_>>().join("；");
+            let summary = if accepted > 0 {
+                format!("已请求 {accepted} 台，{failed_count} 台失败")
+            } else {
+                format!("{failed_count} 台均失败")
+            };
+            Err(format!("批量触发更新部分失败：{summary}；原因：{details}"))
+        }
     }
     async fn update_exchange(
         &self,
@@ -508,10 +650,29 @@ async fn serve(
     config: LanUpdateConfig,
     cache: Arc<Mutex<ReleaseCache>>,
     state: Arc<Mutex<Shared>>,
+    wake: Arc<tokio::sync::Notify>,
+    remote_trigger: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
     let mut inbox = runtime.update_transport.update_messages();
     while let Some(request) = inbox.next().await {
         if !runtime.update_peer_allowed(request.peer_id, &request.context) {
+            continue;
+        }
+        if let Message::UpdateCommand(command) = &request.message {
+            let status = if command.action == UPDATE_COMMAND_DOWNLOAD_AND_INSTALL {
+                request_download_and_install(&state, &wake, true)
+            } else {
+                UPDATE_COMMAND_UNSUPPORTED
+            };
+            if status == UPDATE_COMMAND_ACCEPTED
+                && let Some(remote_trigger) = &remote_trigger
+            {
+                remote_trigger();
+            }
+            let response = Message::UpdateCommandAck(UpdateCommandAck { status });
+            if runtime.update_peer_allowed(request.peer_id, &request.context) {
+                let _ = request.reply.send(response);
+            }
             continue;
         }
         // Startup may still be importing the bundled payload. Prepare an empty
@@ -1434,6 +1595,49 @@ async fn download(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    fn empty_shared() -> Arc<Mutex<Shared>> {
+        Arc::new(Mutex::new(Shared {
+            inventory: None,
+            inventory_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            inventory_refreshed_at: None,
+            view: Default::default(),
+            ready: None,
+            github_packages: BTreeMap::new(),
+            github_ready: None,
+            force_install: false,
+            quarantined: BTreeSet::new(),
+            serving: BTreeMap::new(),
+            receipts: Vec::new(),
+            attempts: BTreeMap::new(),
+            reconnect_confirmed: false,
+            install_abandoned: false,
+        }))
+    }
+
+    #[test]
+    fn remote_update_command_coalesces_into_the_existing_install_flow() {
+        let state = empty_shared();
+        let wake = Arc::new(tokio::sync::Notify::new());
+        assert_eq!(
+            request_download_and_install(&state, &wake, true),
+            UPDATE_COMMAND_ACCEPTED
+        );
+        {
+            let state = state.lock().unwrap();
+            assert!(state.view.checking);
+            assert!(state.view.manual_requested);
+            assert!(state.view.message.contains("已收到配对设备的更新请求"));
+        }
+        // A duplicate request joins the same attempt instead of creating a
+        // second scan or download worker.
+        assert_eq!(
+            request_download_and_install(&state, &wake, true),
+            UPDATE_COMMAND_ACCEPTED
+        );
+        assert!(state.lock().unwrap().view.manual_requested);
+    }
+
     #[test]
     fn transfer_serves_original_chunks_and_only_acknowledges_the_exact_completed_task() {
         let dir = tempfile::tempdir().unwrap();

@@ -500,6 +500,15 @@ impl Engine {
             }
             EngineCommand::CheckUpdates => TokioCommand::CheckForUpdates,
             EngineCommand::DownloadAndInstallUpdate => TokioCommand::DownloadAndInstallUpdate,
+            EngineCommand::TriggerPeerUpdate { peer_id } => TokioCommand::TriggerPeerUpdate {
+                peer_id: device(&peer_id)?,
+            },
+            EngineCommand::TriggerPeerUpdates { peer_ids } => TokioCommand::TriggerPeerUpdates {
+                peer_ids: peer_ids
+                    .into_iter()
+                    .map(|peer_id| device(&peer_id))
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
             EngineCommand::RefreshPermissions => TokioCommand::RefreshPermissions,
         };
         self.pending.lock().map_err(failure)?.insert(id);

@@ -20,6 +20,8 @@ struct DevicesView: View {
     @State private var confirmBlock = false
     @State private var blockTarget: String?
     @State private var confirmLeave = false
+    @State private var confirmBatchUpdate = false
+    @State private var batchUpdateIDs: [String] = []
     @FocusState private var searchFocused: Bool
 
     private var matches: [Device] {
@@ -38,6 +40,9 @@ struct DevicesView: View {
     }
 
     private var paired: [Device] { matches.filter { $0.trusted && !$0.blocked } }
+    private var batchUpdateCandidates: [Device] {
+        paired.filter { $0.connected && $0.canTriggerUpdate }
+    }
     private var nearby: [Device] { matches.filter { !$0.trusted && !$0.blocked } }
     private var blocked: [Device] { matches.filter(\.blocked) }
     private var localMatches: Bool {
@@ -86,6 +91,14 @@ struct DevicesView: View {
         } message: {
             Text("这会解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
         }
+        .confirmationDialog("批量触发设备更新？", isPresented: $confirmBatchUpdate) {
+            Button("触发 \(batchUpdateIDs.count) 台设备") {
+                store.send(.triggerPeerUpdates(peerIds: batchUpdateIDs))
+                batchUpdateIDs = []
+            }
+        } message: {
+            Text("将请求当前在线且支持主动更新的配对设备开始各自的更新流程。每台设备仍按本地版本和安全条件执行。")
+        }
     }
 
     private var deviceListPane: some View {
@@ -123,6 +136,23 @@ struct DevicesView: View {
                     .controlSize(.large)
                     .help("刷新设备")
                     .accessibilityLabel("刷新设备")
+                    if !showsApplications {
+                        Button {
+                            let ids = batchUpdateCandidates.map(\.id)
+                            guard !ids.isEmpty else { return }
+                            batchUpdateIDs = ids
+                            confirmBatchUpdate = true
+                        } label: {
+                            Image(systemName: "arrow.down.app")
+                                .font(.system(size: 15, weight: .medium))
+                                .frame(width: 34, height: 34)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .disabled(batchUpdateCandidates.isEmpty)
+                        .help("批量触发 \(batchUpdateCandidates.count) 台设备更新")
+                        .accessibilityLabel("批量触发设备更新")
+                    }
                 }
 
                 HStack(spacing: 8) {
@@ -663,6 +693,14 @@ struct DevicesView: View {
                         confirmForget = true
                     }
                     .buttonStyle(.bordered)
+                    Button("触发更新", systemImage: "arrow.down.app") {
+                        store.send(.triggerPeerUpdate(peerId: device.id))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!device.connected || !device.canTriggerUpdate)
+                    .help(device.canTriggerUpdate
+                          ? "请求 \(device.name) 立即检查并安装可用更新"
+                          : "对端尚未声明支持主动更新")
                 }
                 if !device.blocked {
                     Button("拉黑设备", systemImage: "hand.raised", role: .destructive) {

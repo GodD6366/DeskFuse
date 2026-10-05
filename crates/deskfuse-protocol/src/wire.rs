@@ -6,7 +6,8 @@
 //! protobuf encoder/decoder at runtime.
 
 use crate::update::{
-    ReleaseInventory, UpdateCancel, UpdateChunk, UpdateReceipt, UpdateRequest, UpdateStatus,
+    ReleaseInventory, UpdateCancel, UpdateChunk, UpdateCommand, UpdateCommandAck, UpdateReceipt,
+    UpdateRequest, UpdateStatus,
 };
 use prost::Message;
 
@@ -26,7 +27,7 @@ pub struct Envelope {
     /// The message carried by this envelope.
     #[prost(
         oneof = "envelope::Message",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 40, 41, 42, 43, 44, 45, 46"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 40, 41, 42, 43, 44, 45, 46, 47, 48"
     )]
     pub message: Option<envelope::Message>,
 }
@@ -36,7 +37,8 @@ pub mod envelope {
         ClipboardUpdate, DisplayInfo, Error, Goodbye, Hello, HelloAck, InputEndpoints,
         InputEventBatch, InputSharing, NetworkControl, PairingDecision, PairingRequest, PeerInfo,
         Ping, Pong, ReleaseInventory, RemoteApplicationOpen, SessionProof, UpdateCancel,
-        UpdateChunk, UpdateReceipt, UpdateRequest, UpdateStatus, WorkflowSync,
+        UpdateChunk, UpdateCommand, UpdateCommandAck, UpdateReceipt, UpdateRequest, UpdateStatus,
+        WorkflowSync,
     };
     use prost::Oneof;
 
@@ -92,6 +94,10 @@ pub mod envelope {
         /// Bounded, authenticated workflow-catalog anti-entropy frame.
         #[prost(message, tag = "46")]
         WorkflowSync(WorkflowSync),
+        #[prost(message, tag = "47")]
+        UpdateCommand(UpdateCommand),
+        #[prost(message, tag = "48")]
+        UpdateCommandAck(UpdateCommandAck),
     }
 }
 

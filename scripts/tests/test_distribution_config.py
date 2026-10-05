@@ -23,7 +23,7 @@ class DistributionConfigTests(unittest.TestCase):
             "homebrew_tap": "owner/deskfuse",
             "app_bundle": "DeskFuse.app",
             "cask_token": "deskfuse",
-            "assets": {"arm64": "DeskFuse-arm64.dmg", "x86_64": "DeskFuse-x86_64.dmg"},
+            "assets": {"arm64": "DeskFuse-arm64.dmg", "x86_64": "DeskFuse-x86_64.dmg", "windows_x64": "DeskFuse-windows-x64-setup.exe"},
         }
 
     def load(self):
@@ -70,7 +70,25 @@ class DistributionConfigTests(unittest.TestCase):
     def test_rejects_non_dmg_assets(self):
         self.active["assets"]["arm64"] = "DeskFuse-arm64.zip"
         with self.assertRaises(ValueError):
+                self.load()
+
+    def test_rejects_non_exe_windows_asset(self):
+        self.active["assets"]["windows_x64"] = "DeskFuse-windows-x64.zip"
+        with self.assertRaises(ValueError):
             self.load()
+
+    def test_website_fallback_uses_release_descriptor_version(self):
+        (self.root / "release.json").write_text(json.dumps({"version": "0.4.5"}))
+
+        projection = MODULE["website_projection"](self.active, self.root)
+
+        self.assertEqual(projection["fallback_release_tag"], "v0.4.5")
+
+    def test_website_fallback_rejects_invalid_release_version(self):
+        for version in (None, "v0.4.5", "0.4", "0.4.5\noutput=bad"):
+            (self.root / "release.json").write_text(json.dumps({"version": version}))
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                MODULE["website_projection"](self.active, self.root)
 
 
 if __name__ == "__main__":

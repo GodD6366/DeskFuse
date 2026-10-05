@@ -14,6 +14,7 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::unused_async)]
 
+mod control_executor;
 mod input;
 pub mod input_executor;
 pub mod motion_diag;
@@ -1447,6 +1448,12 @@ fn forget_input_dialer(local: SocketAddr, endpoint: &Arc<quinn::Endpoint>) {
 
 #[derive(Clone)]
 struct QuinnShared {
+    /// All QUIC listener work runs on the process-wide I/O executor. The
+    /// application bridge creates the transport on its own single-thread
+    /// runtime, but that runtime must not own the control accept loop: a
+    /// synchronous bridge operation would otherwise make 42424 stop
+    /// answering while the standalone input service on 42425 stays alive.
+    io_executor: tokio::runtime::Handle,
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
@@ -1510,6 +1517,7 @@ impl QuinnShared {
 /// identity checks.
 #[derive(Clone)]
 pub struct QuinnTransport {
+    io_executor: Option<tokio::runtime::Handle>,
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
@@ -1564,6 +1572,11 @@ impl Drop for PendingControlConnection {
 impl QuinnTransport {
     fn shared_state(&self) -> QuinnShared {
         QuinnShared {
+            io_executor: self
+                .io_executor
+                .as_ref()
+                .expect("bound transport has a QUIC I/O executor")
+                .clone(),
             identity: self.identity.clone(),
             network: self.network.clone(),
             remote_app: self.remote_app.clone(),
@@ -1594,6 +1607,7 @@ impl QuinnTransport {
         let (inbound, _) = broadcast::channel(256);
         let (control_peers, _) = broadcast::channel(64);
         Self {
+            io_executor: None,
             identity: Arc::default(),
             network: network::NetworkHub::new(),
             remote_app: remote_application::RemoteHub::new(),
@@ -1740,13 +1754,27 @@ impl QuinnTransport {
     ) -> Result<Self, TransportError> {
         local_hello.verify()?;
         let (server_config, client_config) = build_quic_configs(&config)?;
-        let mut endpoint = quinn::Endpoint::server(
-            server_config,
-            if config.input_service {
-                SocketAddr::from(([127, 0, 0, 1], 0))
-            } else {
-                config.bind_addr
-            },
+        let io_executor = if config.input_service {
+            input_executor::handle()
+        } else {
+            control_executor::handle()
+        }
+        .map_err(|error| TransportError::Quic(format!("QUIC I/O runtime: {error}")))?;
+        let bind_addr = if config.input_service {
+            SocketAddr::from(([127, 0, 0, 1], 0))
+        } else {
+            config.bind_addr
+        };
+        let socket = std::net::UdpSocket::bind(bind_addr)
+            .map_err(|error| TransportError::Quic(error.to_string()))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| TransportError::Quic(error.to_string()))?;
+        let mut endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            socket,
+            Arc::new(control_executor::ControlQuicRuntime(io_executor.clone())),
         )
         .map_err(|error| TransportError::Quic(error.to_string()))?;
         endpoint.set_default_client_config(client_config);
@@ -1802,6 +1830,7 @@ impl QuinnTransport {
         let lan_tasks = Arc::new(Mutex::new(Vec::new()));
         let stopping = Arc::new(AtomicBool::new(false));
         let shared = QuinnShared {
+            io_executor: io_executor.clone(),
             identity: Arc::clone(&identity),
             network: network.clone(),
             remote_app: remote_app.clone(),
@@ -1829,10 +1858,12 @@ impl QuinnTransport {
             .iter()
         {
             let mut state = shared.clone();
+            state.io_executor = input_executor::handle()
+                .map_err(|error| TransportError::Quic(error.to_string()))?;
             state.bound_addr = *address;
             state.bound_interface = Some(interface.clone());
             let endpoint = endpoint.clone();
-            let task = tokio::spawn(async move {
+            let task = state.io_executor.clone().spawn(async move {
                 accept_loop(endpoint, state).await;
             });
             lan_tasks
@@ -1844,9 +1875,11 @@ impl QuinnTransport {
             .capabilities
             .contains(Capabilities::INPUT_SHARING)
         {
-            let state = shared.clone();
+            let mut state = shared.clone();
+            state.io_executor = input_executor::handle()
+                .map_err(|error| TransportError::Quic(error.to_string()))?;
             let refresh_config = config.clone();
-            let task = tokio::spawn(async move {
+            let task = state.io_executor.clone().spawn(async move {
                 refresh_lan_listeners(state, refresh_config).await;
             });
             lan_tasks
@@ -1858,11 +1891,12 @@ impl QuinnTransport {
         let accept_task = if config.input_service {
             None
         } else {
-            Some(tokio::spawn(async move {
+            Some(io_executor.spawn(async move {
                 accept_loop(accept_endpoint, shared).await;
             }))
         };
         Ok(Self {
+            io_executor: Some(io_executor),
             identity,
             network,
             remote_app,
@@ -2492,10 +2526,11 @@ impl QuinnTransport {
                 ));
             }
         } else {
-            tokio::spawn(serve_connection(
+            let shared = self.shared_state();
+            shared.io_executor.clone().spawn(serve_connection(
                 connection.clone(),
                 peer,
-                self.shared_state(),
+                shared,
                 negotiated,
             ));
         }
@@ -2809,6 +2844,7 @@ impl TransportConfig {
 /// Reconcile physical-IP listeners after cable hotplug or DHCP changes.
 /// Existing sockets and ordinary clipboard connections are retained.
 async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig) {
+    let input_executor = input_executor::handle().ok();
     let mut interval = time::interval(Duration::from_secs(2));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     interval.tick().await;
@@ -2883,9 +2919,12 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
                 listeners.insert(address, (interface.clone(), endpoint.clone()));
             }
             let mut state = shared.clone();
+            if let Some(executor) = input_executor.clone() {
+                state.io_executor = executor;
+            }
             state.bound_addr = address;
             state.bound_interface = Some(interface);
-            let task = tokio::spawn(async move {
+            let task = state.io_executor.clone().spawn(async move {
                 accept_loop(endpoint, state).await;
             });
             if let Ok(mut tasks) = shared.lan_tasks.lock() {
@@ -2906,7 +2945,7 @@ async fn accept_loop(endpoint: Arc<quinn::Endpoint>, shared: QuinnShared) {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break; };
                 let state = shared.clone();
-                tokio::spawn(async move {
+                shared.io_executor.spawn(async move {
                     if let Ok(Ok(connection)) = time::timeout(
                         state.config.handshake_timeout,
                         incoming,

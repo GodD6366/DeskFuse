@@ -260,7 +260,10 @@ impl InputHub {
         let (update_tx, update_rx) = mpsc::channel(32);
         Self {
             executor: crate::input_executor::handle().ok(),
-            background: tokio::runtime::Handle::try_current().ok(),
+            // Input-session route watchers must not inherit the bridge
+            // runtime that constructs the transport. The bridge can perform
+            // synchronous clipboard/UI work while QUIC input stays live.
+            background: crate::input_executor::handle().ok(),
             update_tx,
             update_rx: Arc::new(Mutex::new(Some(update_rx))),
             sessions: Arc::default(),

@@ -22,6 +22,8 @@ pub fn is_update_message(message: &Message) -> bool {
             | Message::UpdateStatus(_)
             | Message::UpdateCancel(_)
             | Message::UpdateReceipt(_)
+            | Message::UpdateCommand(_)
+            | Message::UpdateCommandAck(_)
     )
 }
 

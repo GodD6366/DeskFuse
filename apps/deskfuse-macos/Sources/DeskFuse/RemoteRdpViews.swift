@@ -188,7 +188,10 @@ private struct RemoteRdpViewer: View {
     var body: some View {
         ZStack {
             RemoteRdpCanvas(session: session)
-            if case .failed(let message) = session.phase { notice(message) }
+            if let fingerprint = session.certificateFingerprint,
+               case .failed = session.bridgeState {
+                certificateNotice(fingerprint)
+            } else if case .failed(let message) = session.phase { notice(message) }
             else if case .failed(let message) = session.bridgeState { notice(message) }
             else if session.bridgeState == .disconnected { notice("RDP 已断开。关闭此窗口后从应用列表重新打开。") }
             else if session.bridgeState != .connected { ProgressView("正在连接 Windows RDP…").padding().background(.regularMaterial) }
@@ -196,6 +199,35 @@ private struct RemoteRdpViewer: View {
     }
     private func notice(_ text: String) -> some View {
         Text(text).textSelection(.enabled).padding().background(.regularMaterial)
+    }
+
+    private func certificateNotice(_ fingerprint: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Windows RDP 服务器证书未获信任")
+                .font(.headline)
+            Text("目标：\(session.peerHost):3389")
+                .font(.caption)
+            Text("请确认这是目标 Windows 主机的证书指纹。信任后会按此指纹固定，证书变化时连接会再次拒绝。")
+                .fixedSize(horizontal: false, vertical: true)
+            Text(fingerprint)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+            if let saved = session.savedCertificateFingerprint, saved.caseInsensitiveCompare(fingerprint) != .orderedSame {
+                Text("已保存的指纹：\(saved)")
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                Text("证书已变化；只有在确认 Windows 主机更换证书后，才替换已保存指纹。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let error = session.certificateTrustError { Text(error).foregroundStyle(.orange) }
+            Button(session.savedCertificateFingerprint == nil ? "核对后信任并重试" : "核对后替换指纹并重试") { session.trustCurrentCertificate() }
+                .buttonStyle(.borderedProminent)
+                .disabled(session.certificateTrustInProgress)
+        }
+        .padding()
+        .frame(maxWidth: 560)
+        .background(.regularMaterial)
     }
 }
 

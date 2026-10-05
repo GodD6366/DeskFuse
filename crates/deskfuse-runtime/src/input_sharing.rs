@@ -335,8 +335,11 @@ impl InputActor {
             && view.snapshot.peers.iter().any(|p| {
                 p.id == peer
                     && p.trust == TrustState::Trusted
-                    && (self.transport.independent_input()
-                        || p.connection == ConnectionState::Connected)
+                    // The input transport has its own socket, but it belongs
+                    // to the same device session. A live 42425 socket must
+                    // not keep mouse sharing active after the device's
+                    // 42424 control session has gone offline.
+                    && p.connection == ConnectionState::Connected
                     && p.routes
                         .iter()
                         .any(|r| r.capabilities.contains(Capabilities::INPUT_SHARING))
@@ -1645,11 +1648,16 @@ mod tests {
         pub(super) sent: Mutex<Vec<(DeviceId, TransportSessionId, InputShareMessage)>>,
         pub(super) capabilities: Mutex<BTreeMap<TransportSessionId, Capabilities>>,
         ensured: Mutex<Vec<DeviceId>>,
+        pub(super) independent: AtomicBool,
         pub(super) motion_ready: AtomicBool,
         pub(super) motion_sent: Mutex<Vec<MotionDatagram>>,
         pub(super) motion_cancelled: Mutex<Vec<InputSessionId>>,
     }
     impl TransportProvider for TestTransport {
+        fn independent_input(&self) -> bool {
+            self.independent.load(Ordering::Acquire)
+        }
+
         fn connect(
             &self,
             _hello: deskfuse_protocol::Hello,
@@ -1862,6 +1870,17 @@ mod tests {
             transport,
             receiver,
         )
+    }
+
+    #[test]
+    fn independent_input_still_requires_the_device_control_connection() {
+        let (mut actor, peer, _, transport, _) = setup(true);
+        transport.independent.store(true, Ordering::Release);
+        let mut view = actor.network.borrow().clone();
+        view.snapshot.peers[0].connection = ConnectionState::Disconnected;
+        let (_, network) = watch::channel(view);
+        actor.network = network;
+        assert!(!actor.network_allowed(peer));
     }
     #[tokio::test]
     async fn local_controller_choice_preempts_existing_receiver() {

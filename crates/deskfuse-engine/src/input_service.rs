@@ -43,9 +43,9 @@ fn view(
             && !authority.network.blocked_peer_ids.contains(&p.id)
     });
     for peer in &mut peers {
-        // Ordinary control-session state is deliberately ignored. The input actor
-        // verifies its own signed physical connection before granting any lease.
-        peer.connection = ConnectionState::Disconnected;
+        // The input transport is physically separate, but it is not an
+        // independent device session. Keep the host control state so a failed
+        // device connection cannot leave mouse sharing active.
         peer.selected_route = None;
         peer.routes = routes.get(&peer.id).cloned().unwrap_or_default();
     }

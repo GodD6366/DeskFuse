@@ -20,25 +20,33 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let lock = NSLock()
     private var _state: State = .idle
+    private var _certificateFingerprint: String?
     private let handleLock = NSRecursiveLock()
 
     public var state: State {
         lock.withLock { _state }
     }
 
+    /// Fingerprint reported by the most recent rejected RDP certificate.
+    /// It is exposed only so the UI can show it for an explicit trust choice.
+    public var certificateFingerprint: String? {
+        lock.withLock { _certificateFingerprint }
+    }
+
     public init() {}
 
     /// Starts a connection. `rdpFile` must have `full address` already resolved
     /// (the `{host}` token replaced with the peer IPv4 and `:3389`).
-    public func start(rdpFile: String, username: String?, password: String?) {
+    public func start(rdpFile: String, username: String?, password: String?, expectedCertificateFingerprint: String? = nil) {
         handleLock.lock(); defer { handleLock.unlock() }
         stop()
-        lock.withLock { _state = .connecting }
+        lock.withLock { _state = .connecting; _certificateFingerprint = nil }
         let selfPointer = Unmanaged.passUnretained(self).toOpaque()
         handle = rdp_bridge_create(
             rdpFile,
             username,
             password,
+            expectedCertificateFingerprint,
             RemoteRdpBridge.callback,
             selfPointer)
         guard handle != nil, rdp_bridge_start(handle) == 0 else {
@@ -106,7 +114,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
         rdp_bridge_unicode(handle, flags, code)
     }
 
-    private func handle(event: Int, message: String?) {
+    private func handle(event: Int, message: String?, fingerprint: String?) {
         lock.withLock {
             switch event {
             case RDP_EVENT_CONNECTED:
@@ -118,6 +126,9 @@ public final class RemoteRdpBridge: @unchecked Sendable {
                 _state = .connecting
             case RDP_EVENT_ERROR:
                 _state = .failed(message ?? "RDP 连接失败")
+            case RDP_EVENT_CERTIFICATE_REJECTED:
+                _certificateFingerprint = fingerprint
+				_state = .failed(message ?? "RDP 服务器证书未获信任，请核对指纹后选择信任")
             default:
                 break
             }
@@ -131,10 +142,11 @@ public final class RemoteRdpBridge: @unchecked Sendable {
     /// Non-capturing trampoline so Swift can hand a C function pointer to the
     /// bridge; the Swift object is recovered through `userdata`.
     private static let callback: @convention(c) (
-        Int32, UnsafePointer<CChar>?, UnsafeMutableRawPointer?
-    ) -> Void = { event, message, userdata in
+        Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?
+    ) -> Void = { event, message, fingerprint, userdata in
         guard let userdata else { return }
         let bridge = Unmanaged<RemoteRdpBridge>.fromOpaque(userdata).takeUnretainedValue()
-        bridge.handle(event: Int(event), message: message.map { String(cString: $0) })
+        bridge.handle(event: Int(event), message: message.map { String(cString: $0) },
+                      fingerprint: fingerprint.map { String(cString: $0) })
     }
 }

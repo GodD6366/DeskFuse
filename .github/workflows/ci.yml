@@ -6,11 +6,6 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
-    inputs:
-      skip_windows:
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -34,6 +29,8 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-apple-darwin
           rustup component add rust-src
+          source scripts/rust-toolchain-env.sh
+          dirname "$(command -v cargo)" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: deskfuse-macos
@@ -70,6 +67,8 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-apple-darwin
           rustup component add rust-src
+          source scripts/rust-toolchain-env.sh
+          dirname "$(command -v cargo)" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: deskfuse-macos
@@ -97,9 +96,7 @@ jobs:
           retention-days: 14
 
   windows:
-    # Temporarily paused: set the ENABLE_WINDOWS_CI repository variable to opt back in.
-    if: ${{ vars.ENABLE_WINDOWS_CI == 'true' && !inputs.skip_windows }}
-    name: Windows experimental adapters and service
+    name: Windows adapters, service, and catalog checks
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -115,6 +112,9 @@ jobs:
           shared-key: deskfuse-windows
           key: check
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Validate shared release metadata and workspace version
+        shell: pwsh
+        run: python scripts/release.py validate
       - name: Native adapter checks (no real input or clipboard)
         run: ./scripts/check-windows-native.ps1
       - name: Service checks (no SCM installation)

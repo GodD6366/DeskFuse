@@ -146,12 +146,13 @@ fn reject_unknown_payload_tags(payload: &[u8]) -> Result<(), ProtocolError> {
         let field = key >> 3;
         let wire_type = (key & 0x07) as u8;
         // Payload oneof tags: 10..=18 (control) and 20..=22 (clipboard/input/
-        // display app messages). Future unknown tags are rejected on purpose.
+        // display app messages, workflow and update control). Future unknown
+        // tags are rejected on purpose.
         if field >= 10
             && !(10..=18).contains(&field)
             && !(20..=22).contains(&field)
             && !(30..=34).contains(&field)
-            && !(40..=45).contains(&field)
+            && !(40..=48).contains(&field)
         {
             return Err(ProtocolError::UnknownPayload);
         }

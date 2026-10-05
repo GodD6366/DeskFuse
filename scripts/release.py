@@ -24,6 +24,7 @@ DISTRIBUTION = runpy.run_path(str(ROOT / "scripts/distribution-config.py"))["loa
 ASSETS = (
     DISTRIBUTION["assets"]["arm64"],
     DISTRIBUTION["assets"]["x86_64"],
+    DISTRIBUTION["assets"]["windows_x64"],
     "release.json",
     "build-info.json",
     "SHA256SUMS",
@@ -31,7 +32,13 @@ ASSETS = (
 TARGET_ASSETS = {
     DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
     DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
+    DISTRIBUTION["assets"]["windows_x64"]: "win-x64",
 }
+LEGACY_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items() if name != DISTRIBUTION["assets"]["windows_x64"]}
+# v0.4.5 was published before the Windows asset became part of the public
+# distribution contract. Keep it probeable so a retry does not try to replace
+# an already-published two-DMG release; every later release must include it.
+LEGACY_RELEASE_VERSIONS = {"0.4.5"}
 
 
 def version(root: Path = ROOT) -> str:
@@ -117,12 +124,24 @@ def inventory(directory: Path, commit: str) -> None:
                 "notarized": notarized,
             }
         else:
+            manifest_path = directory / f"{name}.manifest.json"
+            authenticode = "unknown"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+                if (manifest.get("target") != target
+                        or manifest.get("installer_sha256") != checksum(directory / name)
+                        or any(manifest.get(key) != value for key, value in release.items())):
+                    raise ValueError("Windows installer manifest conflicts with asset")
+                authenticode = manifest.get("authenticode", "unknown")
+                if manifest.get("release_signed") is not True:
+                    raise ValueError("Windows installer payload is not release signed")
             target_info = {
                 "asset": name,
                 "target": target,
                 "sha256": checksum(directory / name),
-                "signing": "not-signed",
+                "signing": "authenticode" if authenticode == "Valid" else "not-signed",
                 "notarized": False,
+                "authenticode": authenticode,
             }
         targets.append(target_info)
     rustc = "unavailable"
@@ -138,38 +157,46 @@ def inventory(directory: Path, commit: str) -> None:
 
 
 def verify_inventory(directory: Path, release: dict, commit: str) -> None:
-    expected = {name for name in ASSETS if name != "SHA256SUMS"}
+    all_expected = {name for name in ASSETS if name != "SHA256SUMS"}
+    legacy_expected = all_expected - {DISTRIBUTION["assets"]["windows_x64"]}
     actual = {}
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9._-]+)", line)
-        if not match or match[2] not in expected or match[2] in actual:
+        if not match or match[2] not in all_expected or match[2] in actual:
             raise ValueError("invalid checksum manifest")
         actual[match[2]] = match[1]
+    expected = all_expected if DISTRIBUTION["assets"]["windows_x64"] in actual else legacy_expected
+    if expected == legacy_expected and release["version"] not in LEGACY_RELEASE_VERSIONS:
+        raise ValueError("Windows installer required for this release")
     if set(actual) != expected or any(checksum(directory / name) != digest for name, digest in actual.items()):
         raise ValueError("release assets failed checksum verification")
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
     info = json.loads((directory / "build-info.json").read_text())
     targets = info.get("targets")
-    if not isinstance(targets, list) or len(targets) != len(TARGET_ASSETS):
+    target_map = TARGET_ASSETS if expected == all_expected else LEGACY_TARGET_ASSETS
+    if not isinstance(targets, list) or len(targets) != len(target_map):
         raise ValueError("existing build information conflicts with source")
     by_asset = {}
     for target_info in targets:
         if not isinstance(target_info, dict):
             raise ValueError("existing build information conflicts with source")
         asset = target_info.get("asset")
-        if asset in by_asset or asset not in TARGET_ASSETS:
+        if asset in by_asset or asset not in target_map:
             raise ValueError("existing build information conflicts with source")
-        if target_info.get("target") != TARGET_ASSETS[asset] or target_info.get("sha256") != actual[asset]:
+        if target_info.get("target") != target_map[asset] or target_info.get("sha256") != actual[asset]:
             raise ValueError("existing build information conflicts with source")
-        if target_info.get("signing") not in {"ad-hoc", "apple-development", "developer-id", "not-signed"}:
+        if target_info.get("signing") not in {"ad-hoc", "apple-development", "developer-id", "authenticode", "not-signed"}:
             raise ValueError("existing build information conflicts with source")
         if not isinstance(target_info.get("notarized"), bool):
             raise ValueError("existing build information conflicts with source")
         if target_info["notarized"] and target_info["signing"] != "developer-id":
             raise ValueError("existing build information conflicts with source")
+        if asset == DISTRIBUTION["assets"]["windows_x64"]:
+            if target_info.get("signing") != "authenticode" or target_info.get("authenticode") != "Valid":
+                raise ValueError("Windows installer signing metadata is invalid")
         by_asset[asset] = target_info
-    if set(by_asset) != set(TARGET_ASSETS):
+    if set(by_asset) != set(target_map):
         raise ValueError("existing build information conflicts with source")
     if (info.get("commit") != commit or info.get("release") != release
             or info.get("dmg_sha256") != actual[ASSETS[0]]):
@@ -204,7 +231,13 @@ def probe(repo: str, tag: str, commit: str) -> bool:
         return False
     if remote["draft"]:
         raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
-    if not remote["prerelease"] or {item["name"] for item in remote["assets"]} != set(ASSETS):
+    if not remote["prerelease"]:
+        raise ValueError("existing release is not a prerelease; refusing to overwrite")
+    remote_assets = {item["name"] for item in remote["assets"]}
+    expected_assets = set(ASSETS)
+    legacy_assets = expected_assets - {DISTRIBUTION["assets"]["windows_x64"]}
+    if remote_assets != expected_assets and not (
+            remote_assets == legacy_assets and release["version"] in LEGACY_RELEASE_VERSIONS):
         raise ValueError("existing release type/assets conflict; refusing to overwrite")
     with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)

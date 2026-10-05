@@ -13,6 +13,8 @@ Set-Location $ProjectRoot
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
 & cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets
 if ($LASTEXITCODE -ne 0) { throw 'Service tests failed' }
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service remote_app_catalog
+if ($LASTEXITCODE -ne 0) { throw 'RemoteApp catalog tests failed' }
 & cargo clippy --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { throw 'Service lint failed' }
 & cargo build --locked --release --target x86_64-pc-windows-msvc -p deskfuse-service --bins

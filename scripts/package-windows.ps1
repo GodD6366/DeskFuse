@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory=$true)][string]$SourceSnapshot,
     [string]$OutputDirectory = '',
     [string]$MakeNSIS = '',
+    [string]$AuthenticodeCertificateThumbprint = '',
+    [string]$AuthenticodeTimestampUrl = 'http://timestamp.digicert.com',
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
@@ -28,6 +30,22 @@ if (!$MakeNSIS) {
     if ($command) { $MakeNSIS = $command.Source } else { $MakeNSIS = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
 }
 if (!(Test-Path -LiteralPath $MakeNSIS -PathType Leaf)) { throw 'NSIS 3 is required; install it before packaging.' }
+$signTool = $null
+if ($AuthenticodeCertificateThumbprint) {
+    if ($AuthenticodeCertificateThumbprint -notmatch '^[A-Fa-f0-9]{40}$') { throw 'Authenticode certificate thumbprint must be a SHA-1 hex string.' }
+    $signTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if (!$signTool) {
+        $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+        if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
+            $signToolPath = Get-ChildItem -LiteralPath $kitsRoot -Filter signtool.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.Directory.Name -eq 'x64' } |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+            if ($signToolPath) { $signTool = Get-Command -Name $signToolPath -ErrorAction Stop }
+        }
+    }
+    if (!$signTool) { throw 'signtool.exe is required when Authenticode signing is requested; no x64 Windows SDK copy was found.' }
+}
 $sourceBytesHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SourceSnapshot).Hash
 # PowerShell 5.1 emits a top-level JSON array as one pipeline object.
 $source = @(Get-Content -Raw -LiteralPath $SourceSnapshot | ConvertFrom-Json | ForEach-Object { $_ })
@@ -100,6 +118,17 @@ function Assert-ExecutableImports([string]$Path, [string]$PayloadDirectory) {
     }
     return ,$imports
 }
+function Sign-Authenticode([string]$Path) {
+    if (!$signTool) { return }
+    $arguments = @('sign', '/sha1', $AuthenticodeCertificateThumbprint, '/fd', 'SHA256')
+    if ($AuthenticodeTimestampUrl) { $arguments += @('/tr', $AuthenticodeTimestampUrl, '/td', 'SHA256') }
+    $signToolPath = if ($signTool.Source) { $signTool.Source } else { $signTool.FullName }
+    & $signToolPath @arguments $Path
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $Path" }
+    if ((Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString() -ne 'Valid') {
+        throw "Authenticode verification failed: $Path"
+    }
+}
 
 Assert-Snapshot
 if ($release.version -notmatch '^\d+\.\d+\.\d+$' -or $release.build_number -lt 0 -or $release.build_number -gt 65535) { throw 'Invalid Windows release version/build' }
@@ -120,6 +149,9 @@ try {
     foreach ($name in @('coreclr.dll', 'hostfxr.dll', 'DeskFuse.Windows.runtimeconfig.json', 'DeskFuse.Windows.dll')) {
         if (!(Test-Path -LiteralPath (Join-Path $payload $name) -PathType Leaf)) { throw "Incomplete self-contained payload: $name" }
     }
+    foreach ($file in Get-ChildItem -LiteralPath $payload -File -Recurse | Where-Object { $_.Extension -match '(?i)^\.(?:exe|dll)$' }) {
+        Sign-Authenticode $file.FullName
+    }
     Copy-Item -LiteralPath $SourceSnapshot -Destination (Join-Path $payload 'source-snapshot.json')
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'installer\windows\README.md') -Destination (Join-Path $payload 'INSTALLATION.md')
     $artifacts = @()
@@ -127,7 +159,7 @@ try {
     foreach ($file in Get-ChildItem -LiteralPath $payload -File -Recurse) {
         $relative = $file.FullName.Substring($payload.Length + 1)
         if ($relative -notmatch '^[A-Za-z0-9_.\\-]+$') { throw "Unexpected payload filename: $relative" }
-        $signature = if ($file.Extension -in @('.exe', '.dll')) { (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() } else { 'NotApplicable' }
+        $signature = if ($file.Extension -match '(?i)^\.(?:exe|dll)$') { (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status.ToString() } else { 'NotApplicable' }
         $artifacts += [ordered]@{ path=$relative; bytes=$file.Length; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant(); authenticode=$signature }
         $deletes += 'Delete "$INSTDIR\' + $relative + '"'
     }
@@ -137,13 +169,16 @@ try {
     $installer = Join-Path $stage "DeskFuse-$($release.version)-build$($release.build_number)-windows-x64-setup.exe"
     & $MakeNSIS '/V3' "/DPAYLOAD_DIR=$payload" "/DOUTPUT_FILE=$installer" "/DDELETE_INCLUDE=$deleteInclude" "/DVERSION=$($release.version)" "/DBUILD_NUMBER=$($release.build_number)" (Join-Path $ProjectRoot 'installer\windows\DeskFuse.nsi')
     if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $installer)) { throw 'NSIS packaging failed' }
+    Sign-Authenticode $installer
     Assert-Snapshot
     $installerSignature = (Get-AuthenticodeSignature -LiteralPath $installer).Status.ToString()
     $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
     # This metadata is descriptive only. LAN eligibility remains false until an
     # external release manifest signs the installer and the service-owned helper
     # admission/self-test protocol is enabled.
-    $manifest = [ordered]@{ schema_version=1; kind='windows-desktop-offline-installer'; version=$release.version; build_number=$release.build_number; release_id=$release.release_id; target='win-x64'; source_snapshot_sha256=$sourceBytesHash.ToLowerInvariant(); source_file_count=$source.Count; created_at=[DateTime]::UtcNow.ToString('o'); is_installer=$true; release_signed=$false; lan_update_eligible=$false; updater_helper_present=$true; updater_helper_enabled=$false; authenticode=$installerSignature; installer_sha256=$installerHash; installer_bytes=(Get-Item -LiteralPath $installer).Length; payload=$artifacts; executable_imports=$executableImports; verification=@{ build=$true; pe_x64=$true; executable_imports=$true; installation=$false; functional_tests=$false; two_machine=$false; updater_admission=$false; updater_self_test=$false; updater_rollback=$false } }
+    $unsignedPE = @($artifacts | Where-Object { $_.path -match '(?i)\.(?:exe|dll)$' -and $_.authenticode -ne 'Valid' })
+    $releaseSigned = $installerSignature -eq 'Valid' -and $unsignedPE.Count -eq 0
+    $manifest = [ordered]@{ schema_version=1; kind='windows-desktop-offline-installer'; version=$release.version; build_number=$release.build_number; release_id=$release.release_id; target='win-x64'; source_snapshot_sha256=$sourceBytesHash.ToLowerInvariant(); source_file_count=$source.Count; created_at=[DateTime]::UtcNow.ToString('o'); is_installer=$true; release_signed=$releaseSigned; lan_update_eligible=$false; updater_helper_present=$true; updater_helper_enabled=$false; authenticode=$installerSignature; installer_sha256=$installerHash; installer_bytes=(Get-Item -LiteralPath $installer).Length; payload=$artifacts; executable_imports=$executableImports; verification=@{ build=$true; pe_x64=$true; executable_imports=$true; installation=$false; functional_tests=$false; two_machine=$false; updater_admission=$false; updater_self_test=$false; updater_rollback=$false } }
     [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
     $destination = Join-Path $OutputDirectory ([IO.Path]::GetFileName($installer))
     Copy-Item -LiteralPath $installer -Destination $destination -Force
@@ -151,6 +186,6 @@ try {
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath ($destination + '.manifest.json') -Encoding UTF8
     "$installerHash  $([IO.Path]::GetFileName($destination))" | Set-Content -LiteralPath ($destination + '.sha256') -Encoding ASCII
     Write-Output "Installer: $destination"
-    Write-Output "SHA-256: $installerHash; Authenticode: $installerSignature; LAN updater eligible: false"
+    Write-Output "SHA-256: $installerHash; Authenticode: $installerSignature; Release signed: $releaseSigned; LAN updater eligible: false"
     Write-Output 'Built and packaged only. Installation, GUI, Explorer, input and two-machine behavior remain unverified.'
 } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }

@@ -34,7 +34,7 @@ def main() -> int:
     for name in sorted(files):
         path = ROOT / name
         if (name.startswith(forbidden) or "/target/" in name or name.endswith((".p12", ".p8", ".pfx", ".keychain-db", ".DS_Store"))
-                or (name.endswith("Cargo.lock") and name != "Cargo.lock") or name in {"AGENTS.md", "CLAUDE.md", "docs/INPUT_DATAGRAM_PLAN.md", "docs/NATIVE_MIGRATION.md", "skills-lock.json", "node", ".codesign-identity", "identity.key", "signing-key.hex", "scripts/probe-finder-applescript.sh", "scripts/probe-finder-directory.py"}
+                or (name.endswith("Cargo.lock") and name != "Cargo.lock") or name in {"CLAUDE.md", "docs/INPUT_DATAGRAM_PLAN.md", "docs/NATIVE_MIGRATION.md", "skills-lock.json", "node", ".codesign-identity", "identity.key", "signing-key.hex", "scripts/probe-finder-applescript.sh", "scripts/probe-finder-directory.py"}
                 or any(part in {".build", ".swiftpm", "__pycache__"} for part in path.parts)
                 or path.name in {".env", "identity.key", "signing-key.hex"}
                 or (path.name.startswith(".env.") and path.name != ".env.example")):

@@ -28,7 +28,7 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 
 ### Mac 侧（C + Swift）
 - `scripts/build-freerdp-macos.sh`：构建 FreeRDP 3.14.1（headless、静态、仅 RemoteApp 相关 channel）+ 编译 RdpBridge → `apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/lib/libdeskfuse-rdp.a`（本机已验证，见下）。
-- `RemoteApplication/Sources/DeskFuseRemoteApplication/RdpBridge/RdpBridge.c` / `.h`：FreeRDP 无头客户端桥（连接线程、GDI 帧缓冲拷贝、鼠标/键盘/Unicode 注入、证书自动接受、NLA 凭据回调）。
+- `RemoteApplication/Sources/DeskFuseRemoteApplication/RdpBridge/RdpBridge.c` / `.h`：FreeRDP 无头客户端桥（连接线程、GDI 帧缓冲拷贝、鼠标/键盘/Unicode 注入、证书指纹 pinning、NLA 凭据回调）。
 - `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpBridge.swift`：`RdpBridge.c` 的 Swift 包装（帧拷贝 + 输入 + 状态）。
 - `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpCatalog.swift`：目录协议 JSON 类型（`RemoteRdpMessage`/`RemoteRdpRequest`/`RemoteRdpApp`）。
 - `Sources/DeskFuse/RemoteRdpSession.swift`：主控端编排（取目录 → 发 launch → 收 `.rdp` → 替换 `{host}` → 启动桥）。
@@ -52,7 +52,7 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 .\scripts\snapshot-windows-source.ps1 -OutputPath "$env:TEMP\deskfuse-source.json"
 .\scripts\package-windows.ps1 -SourceSnapshot "$env:TEMP\deskfuse-source.json"
 ```
-安装后：把要共享的应用注册进 RemoteApp（当前通过桌面 IPC 命令；GUI 管理页是后续项）。确认 Windows 为 Pro/Enterprise/Server（Home 不支持）。
+安装后：确认 Windows 为 Pro/Enterprise/Server（Home 不支持）。服务会在目录启动时重新发现本机应用，并在首次 Launch 前按需写入 `TSAppAllowList`；已有人工注册仍可通过桌面 IPC 管理。
 
 ### 2. Mac（主控 A）
 ```sh
@@ -65,7 +65,7 @@ RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
 
 - `Device` 的活动路由能力宣告包含 `REMOTE_APPLICATION_RDP` 时，`RemoteApplicationManager` 进入 Windows RDP picker；没有该能力的设备继续使用 Mac↔Mac PropertyList 媒体会话。不会根据设备名猜测平台，也不会把两种首帧协议混在一条会话中。
 - `RemoteRdpPicker` 展示 Windows 注册目录、NLA 用户名/密码字段和可用性错误；每个应用建立自己的 `RemoteRdpSession` 与原生 RDP 窗口。RDP framebuffer 按服务端实际 resize 动态分配并在 C mutex 下复核尺寸。
-- RDP 输入映射包含鼠标、滚轮、键盘扫描码和 Unicode；凭据只传给本次 FreeRDP 连接，不写入 DeskFuse。RDP 证书仍按配对 LAN 边界自动接受。
+- RDP 输入映射包含鼠标、滚轮、键盘扫描码和 Unicode；凭据只传给本次 FreeRDP 连接，不写入 DeskFuse。RDP 证书不会因 DeskFuse 配对而自动信任；未知证书默认拒绝，UI 展示规范化指纹，用户明确点击信任后按配对设备保存 pin，证书变化时再次拒绝。当前 RemoteApp 只支持配对 Windows 主机的直连 `:3389`；FreeRDP 的 RDP 重定向请求会被拒绝，避免重定向目标绕过该主机的证书 pin。
 
 RDP RemoteApp 是 Windows 原生 `rdpinit.exe`/NLA 会话，不等价于 Mac↔Mac 的 ScreenCaptureKit 编码流：没有媒体协议的暂停、HEVC/H.264 偏好、Surface layout 或共享控制租约。UI 明确标注该差异，不能宣称跨平台能力完全相同。
 
@@ -74,7 +74,7 @@ Windows 桌面端通过 `RemoteAppWindow` 调用受认证的服务 IPC 管理 `T
 
 ## 已知边界
 
-- 证书当前**自动接受**（LAN 配对设备信任边界内）；持久化证书固定是后续项。
+- RDP 证书不继承 QUIC 配对信任；首次连接需用户核对并明确 pin 指纹，保存于 macOS 钥匙串的独立条目。
 - Home/Core 版 Windows 不支持 RemoteApp（服务端 `availability()` 返回不支持并拒绝目录）。
 - RDP 凭据只由 Mac 端 RDP 客户端处理，DeskFuse 服务不读 Windows 账户凭据。
 

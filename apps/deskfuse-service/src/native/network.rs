@@ -56,14 +56,16 @@ impl Network {
         let cache = directory.transfer_cache_path();
         file_transfer::open_transfer_cache(&cache)?;
         file_transfer::set_cache_root(cache);
-        let control_capabilities = Capabilities::NETWORK
+        let mut control_capabilities = Capabilities::NETWORK
             | Capabilities::DEVICE_NETWORK
             | Capabilities::CLIPBOARD
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::DEFERRED_FILE_CLIPBOARD
-            | Capabilities::REMOTE_APPLICATION
-            | Capabilities::REMOTE_APPLICATION_RDP
             | Capabilities::WORKFLOW_SYNC;
+        if remote_app::availability() == remote_app::Availability::Available {
+            control_capabilities |=
+                Capabilities::REMOTE_APPLICATION | Capabilities::REMOTE_APPLICATION_RDP;
+        }
         let config = RuntimeConfig {
             network: NetworkConfig::new()
                 .with_mdns_enabled(true)
@@ -207,9 +209,7 @@ impl Network {
     pub fn serve_remote_applications(&self) {
         while let Some(session) = self.remote_app_transport.take_remote_application() {
             let peer = session.peer;
-            if remote_app::availability() == remote_app::Availability::Available
-                && self.remote_app_authorized(peer)
-            {
+            if self.remote_app_authorized(peer) {
                 let runtime = self.runtime.clone();
                 tokio::task::spawn_blocking(move || {
                     remote_app::serve(session, || {

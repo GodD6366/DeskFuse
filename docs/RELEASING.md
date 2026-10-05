@@ -6,8 +6,9 @@
 | --- | --- |
 | `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
 | `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
+| `dist/DeskFuse-windows-x64-setup.exe` | Windows x64 NSIS 安装包；发布 job 要求 Authenticode 有效签名，安装、SCM、GUI 和双机行为单独记录 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
-| `dist/build-info.json` | 源 commit、工具链、两个 macOS 目标、签名状态和资产哈希 |
+| `dist/build-info.json` | 源 commit、工具链、macOS/Windows 目标、签名状态和资产哈希 |
 | `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
 | `dist/DeskFuse-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
@@ -108,20 +109,25 @@ python3 scripts/release.py inventory --directory dist --commit "$(git rev-parse 
 准备工作完成并决定公开发布时，由维护者提交、推送源码，再创建和推送同名 tag。以下为维护者明确决定创建预发行时使用的操作（普通源码 push 不会创建 Release）：
 
 ```sh
-git tag -a v0.4.0 -m 'DeskFuse 0.4.0 prerelease'
 git push origin main
-git push origin v0.4.0
+# 等待 main CI 通过后，在包含完整版本文件的最新提交上创建 tag。
+git tag -a vX.Y.Z -m 'DeskFuse X.Y.Z prerelease'
+git push origin vX.Y.Z
 ```
 
+手动重试相同源码时，在 Actions 中选择已有的 `vX.Y.Z` tag，或运行 `gh workflow run release.yml --ref vX.Y.Z`。选择 `main` 等分支会在 preflight 立即失败；手动入口不会创建或移动 tag。
+
+`scripts/check.sh` 与 macOS 构建入口都会通过 `scripts/rust-toolchain-env.sh` 选择仓库固定的 Rust 工具链；CI 也会将该工具链加入后续步骤的 PATH，避免 Homebrew 的 `cargo`/`rustc` 抢先。检查日志同时记录实际使用的 `rustc` 和 `cargo` 版本。
+
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
-2. 调用 macOS CI 检查；本次发布通过 `self-hosted`, `macOS`, `ARM64`, `deskfuse-macos`, `xcode-27` runner。Windows 检查与构建默认跳过：`ci.yml` 的 `windows` job 只在仓库变量 `ENABLE_WINDOWS_CI=true` 时运行，发布工作流另外传入 `skip_windows`。
+2. 调用 macOS 和 Windows CI 检查。Windows job 在 `windows-2022` 上运行固定 Rust/MSVC、服务与目录测试，并构建 x64 服务/桌面输入适配器；发布 job 还必须使用 `WINDOWS_AUTHENTICODE_PFX_B64` / `WINDOWS_AUTHENTICODE_PFX_PASSWORD` 签署 Windows 安装包，缺少签名会 fail closed。
 3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
 
 当前 `xcode-27` 是 GitHub 的预览镜像，用于满足已使用的 SDK 27 API；发布前须确认该镜像可用并检查实际运行结果。
 
-Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首次远端运行必须独立检查结果，不能拿本地通过替代。Windows 安装、SCM、Explorer、剪贴板、键鼠和两机行为仍需独立验收。
+Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首次远端运行必须独立检查结果，不能拿本地通过替代。Windows 安装、SCM、Explorer、剪贴板、键鼠和两机行为仍需独立验收；跨编译与 Authenticode 通过不等价于这些实机结论。
 
 ### Homebrew cask
 

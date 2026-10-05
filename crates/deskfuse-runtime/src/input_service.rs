@@ -299,6 +299,51 @@ mod build_identity_tests {
         assert_eq!(accept_identity("has space"), None);
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn authority_preserves_control_connection_for_input_gate() {
+        use crate::{NetworkSnapshot, SnapshotView, input_service::Authority};
+        use deskfuse_core::{
+            Capabilities, ConnectionState, DeviceId, Endpoint, LivenessState, PeerSnapshot,
+            RouteCandidate, RouteHealth, RouteSource, TrustState,
+        };
+        let local = DeviceId::from_public_key([1; 32]).unwrap();
+        let peer = DeviceId::from_public_key([2; 32]).unwrap();
+        let route = RouteCandidate::new(
+            Endpoint::new("10.0.0.2", 42424).unwrap(),
+            RouteSource::Mdns,
+            RouteHealth::Healthy,
+            Capabilities::INPUT_SHARING,
+        );
+        let snapshot = NetworkSnapshot::new(
+            1,
+            local,
+            vec![
+                PeerSnapshot::new(
+                    peer,
+                    "peer",
+                    [2; 32],
+                    LivenessState::Online,
+                    TrustState::Trusted,
+                    ConnectionState::Connected,
+                    vec![route],
+                    None,
+                )
+                .unwrap(),
+            ],
+            false,
+        )
+        .unwrap();
+        let view = SnapshotView {
+            snapshot,
+            discovered_peers: vec![],
+            device_network: Default::default(),
+        };
+        assert_eq!(
+            Authority::from_view(&view).peers[0].connection,
+            ConnectionState::Connected
+        );
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ServiceOptions {
@@ -323,8 +368,9 @@ impl Authority {
             .iter()
             .cloned()
             .map(|mut p| {
-                // Generic application connectivity is NOT an input authorization signal.
-                p.connection = ConnectionState::Disconnected;
+                // The input socket is separate, but mouse sharing follows the
+                // host device session. Preserve the control state so the input
+                // actor can release leases when the device goes offline.
                 p.liveness = deskfuse_core::LivenessState::Unknown;
                 p.selected_route = None;
                 p.routes.retain(|r| !r.source.is_public());
