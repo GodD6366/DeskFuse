@@ -6,7 +6,7 @@ DeskFuse has its own application identity, protocol and data directory. First la
 
 A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
 
-> Early prerelease: GitHub ships macOS arm64 and Intel installers; Windows builds are temporarily skipped, and a passing build is not two-device acceptance.
+> Early prerelease: GitHub ships macOS arm64 and Intel installers; Windows support is Beta, and a passing build is not two-device acceptance.
 
 ## What it does
 
@@ -15,6 +15,7 @@ A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipb
 - Transfer files on demand, with optional early transfer for small files; names and folder structure are preserved, and the history cache has a size limit and cleanup receipts.
 - A file shelf: drag files in to stage them, drag them out in batches, or send them to another device.
 - A separate keyboard/mouse sharing workspace: real display layout, device activation, permission state and emergency reclaim.
+- Beta: remote applications (macOS windows and Windows RemoteApp).
 
 Behavior is defined by the [file transfer contract](docs/FILE_TRANSFER.md), [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md).
 
@@ -39,7 +40,7 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 | macOS 14+, Apple Silicon | Main platform, arm64 DMG |
 | macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
 | Intel Mac | x86_64 DMG is released; behavior and device acceptance are tracked separately from arm64 |
-| Windows x64 | No installer in the 0.4.0 prerelease; full cross-platform collaboration and device acceptance still require separate validation |
+| Windows x64 | Beta; Authenticode-signed installer; installation, SCM, NLA, RemoteApp and device acceptance are tracked separately |
 | Linux | Not a first-release target |
 
 ## Download and install

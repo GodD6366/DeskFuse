@@ -105,7 +105,9 @@ import Testing
     #expect(fitted == CGRect(x: 2560, y: 30, width: 480, height: 200))
     #expect(RemoteDesktopGeometry.contains(fitted, in: screen))
     #expect(!RemoteDesktopGeometry.contains(dialog, in: screen))
-    #expect(RemoteDesktopGeometry.fit(CGRect(x: -3000, y: -1000, width: 6000, height: 4000), inside: screen) == screen)
+    let oversized = RemoteDesktopGeometry.fit(CGRect(x: -3000, y: -1000, width: 6000, height: 4000), inside: screen)
+    #expect(oversized == CGRect(x: 2560, y: 25, width: 1582.5, height: 1055))
+    #expect(RemoteDesktopGeometry.contains(oversized, in: screen))
     #expect(!RemoteDesktopGeometry.contains(.zero, in: screen))
 }
 

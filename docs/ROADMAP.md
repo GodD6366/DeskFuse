@@ -6,6 +6,7 @@
 
 - macOS arm64 主应用：设备发现和配对、剪贴板历史／同步、文件按需传输、缓存管理、文件暂存抽屉、独立键鼠共享工作区。
 - 工程：workspace 分层、固定依赖图、macOS／Windows CI、GitHub prerelease；公开包在配置凭据后走 Developer ID 与公证。
+- Beta：远程应用（macOS 窗口与 Windows RemoteApp）。
 - Windows：发行实验性 x64 离线安装器；原生适配器、SCM 服务及跨平台行为仍分阶段验收。
 
 ## 后续交付

@@ -6,7 +6,7 @@ DeskFuse 使用独立的应用身份、协议和数据目录。首次启动可�
 
 DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：在可信设备间同步剪贴板、传输文件、暂存并拖出文件，并提供独立开关的键鼠共享。交互约定见[当前界面与行为约定](design/current/README.md)。
 
-> 开发预发行：GitHub 提供 macOS arm64、macOS Intel 和 Windows x64 安装包；Windows 安装器必须通过 Authenticode 门禁，构建通过不代表安装、NLA 或真实两机验收。
+> 开发预发行：GitHub 提供 macOS arm64、macOS Intel 和 Windows x64 安装包；Windows x64 为 Beta，安装器必须通过 Authenticode 门禁，构建通过不代表安装、NLA 或真实两机验收。
 
 ## 能做什么
 
@@ -15,6 +15,7 @@ DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：
 - 文件按需传输，可选小文件提前传输，保留名称与文件夹结构；历史缓存有容量限制和清理回执。
 - 文件暂存抽屉：拖入暂存、整批拖出，也可发送给其他设备。
 - 独立的键鼠共享工作区：真实显示器布局、设备激活、权限状态与紧急收回。
+- Beta：远程应用（macOS 窗口与 Windows RemoteApp）。
 
 行为以[文件传输契约](docs/FILE_TRANSFER.md)、[架构](docs/ARCHITECTURE.md)和[路线图](docs/ROADMAP.md)为准。
 
@@ -39,7 +40,7 @@ DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：
 | macOS 14+、Apple Silicon | 主平台，发行 arm64 DMG |
 | macOS 26+ | 导航与操作层使用原生 Liquid Glass，旧系统回退标准材质 |
 | Intel Mac | 发行 x86_64 DMG，功能和实机验收与 arm64 分开记录 |
-| Windows x64 | 下一次候选发布提供 Authenticode 签名安装器；安装、SCM、NLA、RemoteApp 和实机验收单独记录 |
+| Windows x64 | Beta；提供 Authenticode 签名安装器；安装、SCM、NLA、RemoteApp 和实机验收单独记录 |
 | Linux | 不在首发范围 |
 
 ## 下载与安装

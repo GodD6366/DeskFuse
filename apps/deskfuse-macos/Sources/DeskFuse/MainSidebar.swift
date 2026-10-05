@@ -13,7 +13,8 @@ struct MainSidebar: View {
                 .listRowSeparator(.hidden, edges: .all)
                 .listRowBackground(Color.clear)
             ForEach([Page.clipboard, .input, .remoteApplications]) { page in
-                SidebarNavRow(title: page.rawValue, symbol: page.symbol, selected: store.selectedPage == page)
+                SidebarNavRow(title: page.rawValue, symbol: page.symbol, selected: store.selectedPage == page,
+                              badge: page == .remoteApplications ? "Beta" : nil)
                     .tag(page)
                     .listRowSeparator(.hidden, edges: .all)
                     .listRowBackground(Color.clear)

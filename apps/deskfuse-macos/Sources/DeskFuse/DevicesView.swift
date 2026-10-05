@@ -106,8 +106,11 @@ struct DevicesView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(showsApplications ? "远程应用" : "设备")
-                            .font(.system(size: 27, weight: .bold))
+                        HStack(spacing: 8) {
+                            Text(showsApplications ? "远程应用" : "设备")
+                                .font(.system(size: 27, weight: .bold))
+                            if showsApplications { FeatureBadge() }
+                        }
                         Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
                             .font(.callout)
                             .foregroundStyle(.secondary)

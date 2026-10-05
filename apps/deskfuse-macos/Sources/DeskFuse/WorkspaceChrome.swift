@@ -108,6 +108,7 @@ struct SidebarNavRow: View {
     let title: String
     let symbol: String
     let selected: Bool
+    var badge: String? = nil
 
     var body: some View {
         HStack(spacing: 9) {
@@ -120,6 +121,9 @@ struct SidebarNavRow: View {
                 .font(.system(size: 16, weight: selected ? .semibold : .regular))
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
                 .lineLimit(1)
+            if let badge {
+                FeatureBadge(text: badge)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
@@ -129,5 +133,26 @@ struct SidebarNavRow: View {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .background(NativeListSelection())
         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+    }
+}
+
+struct FeatureBadge: View {
+    let text: String
+
+    init(text: String = "Beta") {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.orange.opacity(0.12), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.orange.opacity(0.28), lineWidth: 0.5)
+            }
+            .accessibilityLabel(text)
     }
 }

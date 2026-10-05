@@ -9,9 +9,13 @@ enum RemoteDesktopGeometry {
     }
 
     static func fit(_ frame: CGRect, inside bounds: CGRect) -> CGRect {
-        let size = CGSize(width: min(frame.width, bounds.width), height: min(frame.height, bounds.height))
-        return CGRect(x: min(max(frame.minX, bounds.minX), bounds.maxX - size.width),
-                      y: min(max(frame.minY, bounds.minY), bounds.maxY - size.height),
+        guard frame.width > 0, frame.height > 0, bounds.width > 0, bounds.height > 0 else { return frame }
+        // AX window frames are logical points. Clamp with one scale factor so
+        // restoring or moving a window never changes its aspect ratio.
+        let scale = min(1, bounds.width / frame.width, bounds.height / frame.height)
+        let size = CGSize(width: frame.width * scale, height: frame.height * scale)
+        return CGRect(x: min(max(frame.minX, bounds.minX), max(bounds.minX, bounds.maxX - size.width)),
+                      y: min(max(frame.minY, bounds.minY), max(bounds.minY, bounds.maxY - size.height)),
                       width: size.width, height: size.height)
     }
 
@@ -123,9 +127,8 @@ struct RemoteDesktopReservations {
             throw RemoteApplicationError.unsupported("远程应用专用屏幕不可用或处于镜像模式")
         }
         displayReady = true
-        let bounds = RemoteDesktopGeometry.quartzFrame(screen.visibleFrame,
-            primaryHeight: CGDisplayBounds(CGMainDisplayID()).height)
-        let displayBounds = CGDisplayBounds(displayID)
+        let bounds = Self.quartzFrame(screen, visible: true)
+        let displayBounds = Self.quartzFrame(screen)
         preparationStage = "display_bounds"
         guard !bounds.isEmpty else { throw RemoteApplicationError.noWindow }
         guard !gestureActive else { return }
@@ -149,7 +152,7 @@ struct RemoteDesktopReservations {
                 if minimized { AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse) }
                 // Preserve the window's proportion of its original screen;
                 // moving into a dedicated screen must not maximize the app.
-                let sourceScreen = NSScreen.screens.map { CGDisplayBounds(Self.id($0)) }
+                let sourceScreen = NSScreen.screens.map { Self.quartzFrame($0) }
                     .max { a, b in
                         func area(_ rect: CGRect) -> CGFloat {
                             let intersection = frame.intersection(rect)
@@ -207,7 +210,7 @@ struct RemoteDesktopReservations {
         guard native != nil else { return 0 }
         let fallback = NSScreen.screens.filter { Self.id($0) != displayID }
             .filter { CGDisplayVendorNumber(Self.id($0)) != 0x4453 || CGDisplayModelNumber(Self.id($0)) != 0x5241 }
-            .map { RemoteDesktopGeometry.quartzFrame($0.visibleFrame, primaryHeight: CGDisplayBounds(CGMainDisplayID()).height) }
+            .map { Self.quartzFrame($0, visible: true) }
         var failures = 0
         if !process.isTerminated {
             for window in windows {
@@ -233,6 +236,17 @@ struct RemoteDesktopReservations {
 
     private static func id(_ screen: NSScreen) -> CGDirectDisplayID {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+
+    /// Convert AppKit's bottom-left logical-point coordinates to the Quartz
+    /// top-left logical-point coordinates used by AXUIElement window frames.
+    /// Keep the work-area calculation in the same logical coordinate space as
+    /// the accessibility window frames, including when the Dock changes it.
+    private static func quartzFrame(_ screen: NSScreen, visible: Bool = false) -> CGRect {
+        let primaryHeight = NSScreen.screens.first(where: { id($0) == CGMainDisplayID() })?.frame.maxY
+            ?? screen.frame.maxY
+        return RemoteDesktopGeometry.quartzFrame(visible ? screen.visibleFrame : screen.frame,
+            primaryHeight: primaryHeight)
     }
 
     private func arrange(_ display: CGDirectDisplayID) throws {

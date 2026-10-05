@@ -24,6 +24,7 @@ struct RemoteRdpPicker: View {
                     .font(.system(size: 22))
                     .foregroundStyle(.secondary)
                 Text("Windows 远程应用").font(.title2.weight(.semibold))
+                FeatureBadge()
                 Spacer()
                 if session.phase == .connecting { ProgressView() }
                 Button("刷新") { session.refresh() }
