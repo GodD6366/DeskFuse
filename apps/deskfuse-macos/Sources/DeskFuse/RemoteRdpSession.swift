@@ -48,12 +48,12 @@ import DeskFuseRemoteApplication
                         let message = try JSONDecoder().decode(RemoteRdpMessage.self, from: data)
                         await self?.handle(message, token: token)
                     } catch {
-                        await self?.fail(error.localizedDescription, token: token)
+                        await self?.fail(Self.displayMessage(for: error), token: token)
                         return
                     }
                 }
             }
-        } catch { fail(error.localizedDescription, token: token) }
+        } catch { fail(Self.displayMessage(for: error), token: token) }
     }
 
     func refresh() {
@@ -73,7 +73,7 @@ import DeskFuseRemoteApplication
         let token = generation
         writer.async { [weak self] in
             do { try channel.send(bytes: JSONEncoder().encode(request)) }
-            catch { Task { @MainActor [weak self] in self?.fail(error.localizedDescription, token: token) } }
+            catch { Task { @MainActor [weak self] in self?.fail(Self.displayMessage(for: error), token: token) } }
         }
     }
     func frame() -> RemoteRdpBridge.Frame? {
@@ -97,6 +97,17 @@ import DeskFuseRemoteApplication
     private func fail(_ message: String, token: UUID) {
         guard generation == token else { return }
         stop(); phase = .failed(message)
+    }
+    private nonisolated static func displayMessage(for error: Error) -> String {
+        let message = error.userFacingMessage
+        if message.localizedCaseInsensitiveContains("stream reset by peer")
+            || message.contains("视频通道读取失败")
+            || message.contains("视频通道消息不完整")
+            || message.contains("远程应用通道读取失败")
+            || message.contains("远程应用通道消息不完整") {
+            return "Windows 应用连接已断开，请点击“刷新”重试。"
+        }
+        return message
     }
     private func handle(_ message: RemoteRdpMessage, token: UUID) {
         guard token == generation else { return }

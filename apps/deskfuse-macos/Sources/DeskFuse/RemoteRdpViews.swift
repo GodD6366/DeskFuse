@@ -9,6 +9,7 @@ import DeskFuseRemoteApplication
 @available(macOS 14.2, *)
 struct RemoteRdpPicker: View {
     @Bindable var session: RemoteRdpSession
+    var embedded = false
     var launch: (RemoteRdpApp, String?, String?) -> Void
     @State private var username = ""
     @State private var password = ""
@@ -17,72 +18,24 @@ struct RemoteRdpPicker: View {
     @State private var selected: RemoteRdpApp?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
                 Image(systemName: "windowslogo")
                     .font(.system(size: 22))
                     .foregroundStyle(.secondary)
-                Text("Windows 远程应用").font(.title2)
+                Text("Windows 远程应用").font(.title2.weight(.semibold))
                 Spacer()
                 if session.phase == .connecting { ProgressView() }
                 Button("刷新") { session.refresh() }
                     .disabled(session.phase == .connecting)
             }
-            if case .failed(let message) = session.phase {
-                Text(message).foregroundStyle(.red).textSelection(.enabled)
-            } else if let reason = session.unavailableReason {
-                ContentUnavailableView("Windows 不支持 RemoteApp", systemImage: "network.slash", description: Text(reason))
-            } else if session.apps.isEmpty {
-                ContentUnavailableView("没有可用的远程应用", systemImage: "square.grid.2x2", description: Text("Windows 尚未提供可用应用。新版服务会自动发现应用并在首次打开时注册；旧版服务仍需手动注册。"))
-            } else {
-                Form {
-                    TextField("Windows 用户名", text: $username)
-                    SecureField("Windows 密码", text: $password)
-                    Toggle("使用 macOS 钥匙串记住此设备的登录凭据", isOn: $rememberCredentials)
-                        .onChange(of: rememberCredentials) { _, remember in
-                            if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
-                        }
-                    if let credentialsMessage {
-                        Text(credentialsMessage).font(.caption).foregroundStyle(.orange)
-                    }
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
-                        ForEach(session.apps, id: \.name) { app in
-                            Button {
-                                selected = app
-                                let credential = RemoteRDPCredentialStore.Credential(username: username, password: password)
-                                if rememberCredentials {
-                                    do {
-                                        try RemoteRDPCredentialStore.save(credential, peerID: session.peerID)
-                                        credentialsMessage = nil
-                                    } catch { credentialsMessage = error.localizedDescription }
-                                } else {
-                                    RemoteRDPCredentialStore.remove(peerID: session.peerID)
-                                }
-                                launch(app, username.isEmpty ? nil : username, password.isEmpty ? nil : password)
-                            } label: {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "app.fill").font(.system(size: 28)).foregroundStyle(.secondary)
-                                    Text(app.displayName.isEmpty ? app.name : app.displayName).lineLimit(2)
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 86)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(username.isEmpty || password.isEmpty)
-                            .help(app.path)
-                    }
-                    }
-                }
-                .formStyle(.grouped)
-                Text("使用 Windows 账户密码（不是 PIN）。凭据按设备保存在 macOS 钥匙串（可关闭）；不会发送到 DeskFuse 服务端。需已启用远程桌面和相应防火墙规则。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let selected, session.launchedName == selected.name {
-                Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Divider().padding(.top, 14)
+            content
         }
-        .padding(24)
-        .frame(minWidth: 620, minHeight: 420)
+        .padding(.horizontal, embedded ? 20 : 24)
+        .padding(.vertical, embedded ? 16 : 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             if let credential = session.savedCredential {
                 username = credential.username
@@ -91,6 +44,96 @@ struct RemoteRdpPicker: View {
             }
             if session.phase == .idle { await session.connect() }
         }
+    }
+
+    @ViewBuilder private var content: some View {
+        if case .failed(let message) = session.phase {
+            statusView("无法读取 Windows 应用", systemImage: "exclamationmark.triangle", message: message)
+        } else if let reason = session.unavailableReason {
+            statusView("Windows 不支持 RemoteApp", systemImage: "network.slash", message: reason)
+        } else if session.phase == .idle || session.phase == .connecting {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("正在读取 Windows 应用…").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if session.apps.isEmpty {
+            statusView("没有可用的远程应用", systemImage: "square.grid.2x2",
+                message: "Windows 尚未提供可用应用。新版服务会自动发现应用并在首次打开时注册；旧版服务仍需手动注册。")
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    credentials
+                    Text("选择应用")
+                        .font(.headline)
+                        .padding(.top, 4)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 12)], spacing: 12) {
+                        ForEach(session.apps, id: \.name) { app in
+                            appButton(app)
+                        }
+                    }
+                    Text("使用 Windows 账户密码（不是 PIN）。凭据按设备保存在 macOS 钥匙串（可关闭）；不会发送到 DeskFuse 服务端。需已启用远程桌面和相应防火墙规则。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let selected, session.launchedName == selected.name {
+                        Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var credentials: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Windows 用户名", text: $username)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Windows 密码", text: $password)
+                .textFieldStyle(.roundedBorder)
+            Toggle("使用 macOS 钥匙串记住此设备的登录凭据", isOn: $rememberCredentials)
+                .onChange(of: rememberCredentials) { _, remember in
+                    if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
+                }
+            if let credentialsMessage {
+                Text(credentialsMessage).font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func appButton(_ app: RemoteRdpApp) -> some View {
+        Button {
+            selected = app
+            let credential = RemoteRDPCredentialStore.Credential(username: username, password: password)
+            if rememberCredentials {
+                do {
+                    try RemoteRDPCredentialStore.save(credential, peerID: session.peerID)
+                    credentialsMessage = nil
+                } catch { credentialsMessage = error.userFacingMessage }
+            } else {
+                RemoteRDPCredentialStore.remove(peerID: session.peerID)
+            }
+            launch(app, username.isEmpty ? nil : username, password.isEmpty ? nil : password)
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: "app.fill").font(.system(size: 28)).foregroundStyle(.secondary)
+                Text(app.displayName.isEmpty ? app.name : app.displayName)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, minHeight: 86)
+        }
+        .buttonStyle(.bordered)
+        .disabled(username.isEmpty || password.isEmpty)
+        .help(app.path)
+    }
+
+    private func statusView(_ title: String, systemImage: String, message: String) -> some View {
+        ContentUnavailableView(title, systemImage: systemImage, description: Text(message))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -104,6 +147,7 @@ struct RemoteRdpPicker: View {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Windows 远程应用 — \(peerName)"
+        window.contentMinSize = NSSize(width: 620, height: 420)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self

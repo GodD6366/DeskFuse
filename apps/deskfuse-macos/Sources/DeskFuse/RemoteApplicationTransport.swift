@@ -29,7 +29,7 @@ final class RemotePeer: @unchecked Sendable {
             while !self.lock.withLock({ self.stopped }) {
                 do {
                     if let data = try self.channel.receive(waitMs: 250) { self.receive(try RemoteWire.decode(data)) }
-                } catch { self.fail(error.localizedDescription); break }
+                } catch { self.fail(self.displayMessage(for: error)); break }
             }
         }
     }
@@ -99,7 +99,7 @@ final class RemotePeer: @unchecked Sendable {
                     lock.withLock { maximumSendWaitMs = max(maximumSendWaitMs, elapsed) }
                 }
             }
-            catch { fail(error.localizedDescription); return }
+            catch { fail(displayMessage(for: error)); return }
         }
     }
     private func fail(_ message: String) {
@@ -107,6 +107,17 @@ final class RemotePeer: @unchecked Sendable {
             guard !stopped else { return false }; stopped = true; pending.removeAll(); return true
         }
         if first { channel.close(); state(message, false) }
+    }
+    private func displayMessage(for error: Error) -> String {
+        let message = error.userFacingMessage
+        if message.localizedCaseInsensitiveContains("stream reset by peer")
+            || message.contains("视频通道读取失败")
+            || message.contains("视频通道消息不完整")
+            || message.contains("远程应用通道读取失败")
+            || message.contains("远程应用通道消息不完整") {
+            return "远程画面连接已断开，请点击“重新连接”再试。"
+        }
+        return message
     }
     func stop() { lock.withLock { stopped = true; pending.removeAll() }; channel.close() }
 }

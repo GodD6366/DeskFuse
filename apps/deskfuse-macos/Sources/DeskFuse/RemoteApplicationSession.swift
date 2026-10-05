@@ -73,7 +73,7 @@ final class SessionDataPlane: @unchecked Sendable {
                 guard let self, self.lock.withLock({ self.connectionToken == token && self.identity == surface.identity }) else { return }
                 switch result {
                 case .success(let frame): self.frames.publish(frame)
-                case .failure(let error): self.release(); failed(error.localizedDescription)
+                case .failure(let error): self.release(); failed(error.userFacingMessage)
                 }
             })
         var accepted = false
@@ -460,7 +460,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                                 try self.plane.input.start(processID: process.processIdentifier)
                                 self.running = true
                                 try await self.refreshCapture(token: token)
-                            } catch { await self.stopCapture(); self.sendError(error.localizedDescription) }
+                            } catch { await self.stopCapture(); self.sendError(error.userFacingMessage) }
                             self.busy = false
                         }
                     }
@@ -488,7 +488,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                                 await self.stopCapture(); self.sendError(RemoteApplicationError.noWindow.localizedDescription)
                             }
                         }
-                        catch { await self.stopCapture(); self.sendError(error.localizedDescription) }
+                        catch { await self.stopCapture(); self.sendError(error.userFacingMessage) }
                     }
                     ticks += 1
                     guard ticks % 4 == 0 else { continue }
@@ -501,7 +501,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         } catch {
             guard operation == token else { return }
             await stop()
-            if !recoverStartupConnection() { status = error.localizedDescription; failure = status }
+            if !recoverStartupConnection() { status = error.userFacingMessage; failure = status }
         }
     }
     private func attach(_ channel: RemoteApplicationChannel, token: UUID) {
@@ -518,7 +518,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     }
                 } catch {
                     plane.release()
-                    Task { @MainActor [weak self] in self?.status = error.localizedDescription }; return
+                    Task { @MainActor [weak self] in self?.status = error.userFacingMessage }; return
                 }
             }
             if plane.receive(message, host: host) {
@@ -592,7 +592,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     try await waitForInitialCapture(token: token)
                 } catch {
                     guard operation == token else { return }
-                    await stopCapture(); sendError(error.localizedDescription)
+                    await stopCapture(); sendError(error.userFacingMessage)
                 }
             case .acquire:
                 guard running, message.identity == lastSurface?.identity, let process, let surface = lastSurface?.identity else {
@@ -626,7 +626,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     _ = try displayMode.captureDisplayID(assigned: hostDesktop?.displayID)
                     try hostDesktop?.prepareWindows()
                 } catch {
-                    if operation == token, controlRequest == request { denyControl(error.localizedDescription) }
+                    if operation == token, controlRequest == request { denyControl(error.userFacingMessage) }
                     return
                 }
                 diagnostic("control_activate")
@@ -767,7 +767,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         autoAcquire = false
         status = "正在申请控制权…"
         do { try RemoteApplicationManager.shared.claimViewerControl(self) }
-        catch { status = error.localizedDescription; return }
+        catch { status = error.userFacingMessage; return }
         controlPending = true; pendingClick.removeAll()
         let request = UUID(); controlRequest = request
         let engine = engine
@@ -950,7 +950,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                         Task { @MainActor [weak self] in
                             guard let self, self.operation == token, self.lastSurface?.identity == identity else { return }
                             await self.stopCapture()
-                            self.sendError(error.localizedDescription)
+                            self.sendError(error.userFacingMessage)
                         }
                     }
                 }

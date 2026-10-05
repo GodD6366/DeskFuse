@@ -33,7 +33,7 @@ struct RemoteApplicationCatalog: View {
             .padding(24)
             Divider()
             if let rdpSession {
-                RemoteRdpPicker(session: rdpSession) { application, username, password in
+                RemoteRdpPicker(session: rdpSession, embedded: true) { application, username, password in
                     RemoteApplicationManager.shared.openWindowsApplication(application,
                         session: rdpSession, username: username, password: password)
                 }
@@ -46,6 +46,11 @@ struct RemoteApplicationCatalog: View {
                     description: Text("请等待引擎就绪，或重新选择设备。"))
             }
         }
+        // The application pane is given the full split-view height. Without an
+        // explicit top-leading alignment SwiftUI centers this ideal-sized
+        // catalog in the pane, which leaves a large blank area above it in the
+        // workspace layout.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .textBackgroundColor))
         .task(id: "\(device.id):\(device.remoteAppRdp):\(device.connected)") {
             let manager = RemoteApplicationManager.shared
