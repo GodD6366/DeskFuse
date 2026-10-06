@@ -43,10 +43,9 @@ TARGET_ASSETS = {
 }
 MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
                        if target.endswith("-apple-darwin")}
-LEGACY_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items() if name != DISTRIBUTION["assets"]["windows_x64"]}
 # v0.4.5 was published before the Windows asset became part of the public
 # distribution contract. Keep it probeable so a retry does not try to replace
-# an already-published two-DMG release; every later release must include it.
+# an already-published two-DMG release unless --macos-only is explicit.
 LEGACY_RELEASE_VERSIONS = {"0.4.5"}
 
 
@@ -254,7 +253,8 @@ def probe(repo: str, tag: str, commit: str, include_windows: bool = True) -> boo
         raise ValueError("existing release type/assets conflict; refusing to overwrite")
     with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
-        verify_inventory(Path(temporary), release, commit, include_windows=include_windows)
+        verify_inventory(Path(temporary), release, commit,
+                         include_windows=DISTRIBUTION["assets"]["windows_x64"] in remote_assets)
     return True
 
 

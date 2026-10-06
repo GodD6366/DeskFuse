@@ -12,9 +12,6 @@ permissions:
 
 # Windows CI is opt-in while the Windows installer remains Beta. Set the
 # DESKFUSE_RUN_WINDOWS_CI repository variable to `true` to re-enable it.
-env:
-  DESKFUSE_RUN_WINDOWS_CI: ${{ vars.DESKFUSE_RUN_WINDOWS_CI || 'false' }}
-
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -102,7 +99,7 @@ jobs:
 
   windows:
     name: Windows adapters, service, and catalog checks
-    if: env.DESKFUSE_RUN_WINDOWS_CI == 'true'
+    if: vars.DESKFUSE_RUN_WINDOWS_CI == 'true'
     runs-on: windows-2022
     timeout-minutes: 90
     steps:

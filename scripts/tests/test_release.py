@@ -158,10 +158,33 @@ class ReleaseTests(unittest.TestCase):
                     self.assertTrue(release.probe("owner/repo", f"v{candidate}", self.commit))
                     download.assert_called_once()
                     verify.assert_called_once()
+                    self.assertFalse(verify.call_args.kwargs["include_windows"])
                 else:
                     with self.assertRaisesRegex(ValueError, "assets conflict"):
                         release.probe("owner/repo", f"v{candidate}", self.commit)
                     download.assert_not_called()
+
+    def test_probe_macos_only_release_requires_explicit_mode(self):
+        remote = {"draft": False, "prerelease": True,
+                  "assets": [{"name": name} for name in release.MACOS_ASSETS]}
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release.subprocess, "run") as download, patch.object(release, "verify_inventory") as verify:
+            self.assertTrue(release.probe("owner/repo", "v0.1.0", self.commit, include_windows=False))
+            download.assert_called_once()
+            self.assertFalse(verify.call_args.kwargs["include_windows"])
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release.subprocess, "run") as download:
+            with self.assertRaisesRegex(ValueError, "assets conflict"):
+                release.probe("owner/repo", "v0.1.0", self.commit)
+            download.assert_not_called()
+
+    def test_publish_macos_only_uploads_only_selected_assets(self):
+        self.make_macos_inventory()
+        (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory") as verify:
+            release.publish(self.root, "owner/repo", "v0.1.0", self.commit, include_windows=False)
+            upload = next(call.args[0] for call in runner.call_args_list if call.args[0][2] == "upload")
+            self.assertEqual({Path(path).name for path in upload[6:]}, set(release.MACOS_ASSETS))
+            self.assertTrue(all(call.kwargs["include_windows"] is False for call in probe.call_args_list))
+            self.assertTrue(all(call.kwargs["include_windows"] is False for call in verify.call_args_list))
 
     def test_missing_asset(self):
         self.make_inventory()
