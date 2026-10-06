@@ -310,7 +310,9 @@ jobs:
       WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
       INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
-    timeout-minutes: 20
+    # Artifact downloads on the self-hosted runner can be slow; keep enough
+    # time for both DMGs before the public inventory is assembled.
+    timeout-minutes: 90
     permissions:
       contents: write
     steps:
