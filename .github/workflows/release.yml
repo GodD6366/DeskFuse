@@ -369,6 +369,11 @@ jobs:
   # cask is written only to the public distribution repository.
   cask:
     needs: [preflight, publish]
+    if: >-
+      always() &&
+      needs.preflight.result == 'success' &&
+      needs.publish.result == 'success' &&
+      needs.preflight.outputs.exists != 'true'
     env:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
