@@ -533,14 +533,14 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-bindgen"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "uniffi",
 ]
 
 [[package]]
 name = "deskfuse-collaboration"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "deskfuse-core",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-content-library"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-collaboration",
  "deskfuse-store-library",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "serde",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-discovery"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "libc",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-engine"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-extension-update"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-collaboration",
  "deskfuse-update",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-ffi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "deskfuse-engine",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-identity"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "ed25519-dalek",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-input"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "getrandom 0.4.3",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-input-macos"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-collaboration",
  "deskfuse-platform",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-input-windows"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-collaboration",
  "deskfuse-platform",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-lan-web"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "deskfuse-collaboration",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-platform"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "deskfuse-core",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-platform-macos"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "block2",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-platform-windows"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "deskfuse-input",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-probe"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "deskfuse-discovery",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "deskfuse-core",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-sdk"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-service"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "bincode",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-store"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "deskfuse-identity",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-store-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "rusqlite",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-store-library"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-transfer"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "deskfuse-platform-windows",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-transport"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "deskfuse-core",
@@ -934,7 +934,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-update"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-core",
  "ed25519-dalek",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-update-platform"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-update",
  "hex",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "deskfuse-workflow"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "deskfuse-collaboration",
  "deskfuse-platform",

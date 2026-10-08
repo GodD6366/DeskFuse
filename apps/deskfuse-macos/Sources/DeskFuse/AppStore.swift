@@ -147,6 +147,8 @@ import DeskFuseEngine
                 transferWindow?.reconcile(value.transfers)
                 pairingWindow?.reconcile(value.pairing)
             }
+        case .clipboardLibraryChanged(let revision):
+            ClipboardLibraryStore.shared.libraryChanged(revision)
         case .commandApplied(let id):
             if pendingRequests.remove(id) == nil { earlyResults[id] = .applied }
             failureHandlers.removeValue(forKey: id)

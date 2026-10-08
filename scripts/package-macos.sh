@@ -496,18 +496,13 @@ fi
 # --auto: replace the running instance with the freshly packaged app. Only the
 # LAN local-delivery flow reaches this point; homebrew mode rejects --auto.
 if [[ "$AUTO_INSTALL" == 1 ]]; then
+  source "$ROOT_DIR/scripts/macos-app-lifecycle.sh"
   echo "auto install: stopping running DeskFuse processes"
-  pkill -x "$BINARY_NAME" 2>/dev/null || true
-  pkill -x "deskfuse-input-service" 2>/dev/null || true
-  # Give the app a moment to release the input-service child and file handles.
-  for ((wait_round = 0; wait_round < 20; wait_round++)); do
-    pgrep -x "$BINARY_NAME" >/dev/null 2>&1 || break
-    sleep 0.5
-  done
+  deskfuse_stop_for_install "$BINARY_NAME"
   INSTALL_PATH="/Applications/DeskFuse.app"
   rm -rf "$INSTALL_PATH"
   ditto "$APP_BUNDLE" "$INSTALL_PATH"
   codesign --verify --deep --strict "$INSTALL_PATH"
   echo "auto install: $INSTALL_PATH"
-  open "$INSTALL_PATH"
+  deskfuse_open_installed_app "$INSTALL_PATH"
 fi

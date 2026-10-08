@@ -840,6 +840,20 @@ impl FilePolicy {
         }
         self.paste_leases = retained;
     }
+    /// Restoration already owns the exact file URLs. Do not read all native
+    /// image/text representations back from the pasteboard merely to pin files.
+    pub fn protect_prepared_clipboard(&mut self, pasteboard: &dyn Pasteboard, paths: &[String]) {
+        self.protect_offers();
+        self.clipboard_change_count = pasteboard.change_count().ok();
+        if self.clipboard_paths != paths {
+            if !self.clipboard_pins.is_empty() {
+                self.paste_leases
+                    .push((Instant::now(), std::mem::take(&mut self.clipboard_pins)));
+            }
+            self.clipboard_pins = self.cache.pin_sources(paths);
+            self.clipboard_paths = paths.to_vec();
+        }
+    }
     pub fn finish_outgoing(&mut self, id: TransferId) {
         if let Some(pins) = self.outgoing_pins.remove(&id)
             && !pins.is_empty()

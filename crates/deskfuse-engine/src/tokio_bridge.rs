@@ -86,6 +86,7 @@ const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug)]
 pub enum UiEvent {
+    ClipboardLibraryChanged(u64),
     FilePasteAcquiring {
         paste_id: TransferId,
         transfer_id: TransferId,
@@ -708,6 +709,7 @@ struct ClipboardPrepared {
     result: Result<PasteboardSnapshot, String>,
 }
 struct ClipboardPreparation {
+    started: std::time::Instant,
     id: u64,
     session: String,
     baseline: i64,
@@ -759,6 +761,7 @@ impl ClipboardPreparations {
         self.jobs.insert(
             token,
             ClipboardPreparation {
+                started: std::time::Instant::now(),
                 id,
                 session,
                 baseline,
@@ -1558,6 +1561,7 @@ async fn run_worker(
         .unwrap_or_else(|e| e.into_inner()) = input_service.clone();
 
     if let Ok(library) = crate::clipboard_library::global() {
+        library.subscribe_changes(ui_sender.clone());
         let _ = library.set_local_device(runtime.snapshot_view().snapshot.local_device_id.to_hex());
     }
     let workflow_catalog = crate::workflow_catalog::global().ok();
@@ -1905,9 +1909,9 @@ async fn run_worker(
                         let count=pasteboard.change_count().map_err(|e|e.to_string())?;
                         clipboard_last_change_count=Some(count);
                         clipboard_sync.invalidate_copy(&ui_sender);
-                        file_policy.protect_clipboard(pasteboard.as_ref());
+                        file_policy.protect_prepared_clipboard(pasteboard.as_ref(),&snapshot.file_urls);
                         if job.cancel.load(Ordering::Acquire)||pasteboard.change_count().ok()!=Some(count){return Err("剪贴板已被其他复制替换，未发出粘贴请求".into())}
-                        crate::clipboard_library::global()?.mark_used(job.id)?;
+                        if let Ok(library) = crate::clipboard_library::global() { library.defer_used(job.id); }
                         Ok(count)
                     });
                     if let Some(destination)=job.destination.take() {
@@ -1916,6 +1920,9 @@ async fn run_worker(
                         file_policy.emit(&ui_sender,None);
                     }
                     let error=result.as_ref().err().cloned();
+                    if deskfuse_core::debug_logging::enabled() {
+                        diagnostics.record_with_metadata(DiagnosticLevel::Info,"clipboard_library","prepare_paste",Some(token.to_string()),Some(job.started.elapsed().as_millis() as u64),Some(format!("succeeded={}",result.is_ok())),None);
+                    }
                     if let Some(reply)=job.reply.take(){let _=reply.send(result);}
                     if let Some(request_id)=job.tracked {let _=ui_sender.unbounded_send(UiEvent::CommandResult{request_id,error:error.clone()});}
                     if let Some(error)=error {emit_clipboard_error(&ui_sender,&diagnostics,error);}

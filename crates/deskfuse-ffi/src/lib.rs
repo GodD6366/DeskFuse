@@ -244,6 +244,7 @@ impl Engine {
         }else if !p.accessibility().is_granted(){paste_monitor=None;}
        }
        let notification=match &event{
+        UiEvent::ClipboardLibraryChanged(revision)=>Some(EngineEvent::ClipboardLibraryChanged{revision:*revision}),
         UiEvent::CommandResult{request_id,error}=>{event_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(request_id);Some(match error{Some(message)=>EngineEvent::CommandFailed{request_id:*request_id,message:message.clone()},None=>EngineEvent::CommandApplied{request_id:*request_id}})},
         UiEvent::RuntimeEvent(deskfuse_runtime::RuntimeEvent::PairingDecisionFailed{request_id,reason})=>Some(EngineEvent::PairingFailed{request_id:request_id.to_string(),message:reason.clone()}),
         UiEvent::PasteReady{target_pid,expected_change_count}=>Some(EngineEvent::PasteReady{target_pid:*target_pid,change_count:*expected_change_count}),

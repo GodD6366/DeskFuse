@@ -16,6 +16,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "clipboard_library_query.rs"]
+mod query;
+#[path = "clipboard_library_storage.rs"]
+mod storage;
+#[path = "clipboard_library_work.rs"]
+mod work;
+
+#[cfg(test)]
+#[path = "clipboard_library_tests.rs"]
+mod performance_regressions;
+
 type Result<T> = std::result::Result<T, String>;
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -140,7 +151,6 @@ struct QueryRow {
     id: u64,
     member_id: String,
     summary: String,
-    search_text: String,
     available: bool,
     title: String,
     ocr_text: String,
@@ -162,7 +172,6 @@ impl QueryRow {
                 global_id
             },
             summary: row.get(2)?,
-            search_text: row.get(3)?,
             available: row.get(4)?,
             title: row.get(6)?,
             ocr_text: row.get(7)?,
@@ -177,7 +186,7 @@ impl QueryRow {
     }
 }
 
-const QUERY_SELECT: &str = "SELECT i.id,i.global_id,i.summary,i.search_text,i.payload IS NOT NULL,i.ordinary,COALESCE(i.title,''),COALESCE(i.ocr_text,''),COALESCE(i.ocr_version,0),COALESCE(i.remote,0),MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) FROM cl_items i";
+const QUERY_SELECT: &str = "SELECT i.id,i.global_id,i.summary,'',i.payload IS NOT NULL,i.ordinary,COALESCE(i.title,''),COALESCE(i.ocr_text,''),COALESCE(i.ocr_version,0),COALESCE(i.remote,0),MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) FROM cl_items i";
 // Keep original records and manual-list membership intact. Ordinary history
 // presents one exact image, preferring a usable native image over a file alias
 // or a remote index that has not downloaded its payload.
@@ -197,11 +206,26 @@ CREATE INDEX IF NOT EXISTS cl_items_metadata_page ON cl_items(
     global_id,summary,search_text,(payload IS NOT NULL),ordinary,
     title,ocr_text,ocr_version,remote,digest,search_index);
 ";
+const OPERATION_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS cl_records_member_item ON cl_records(
+    json_extract(value,'$.item_id'),json_extract(value,'$.list_id')) WHERE deleted=0 AND key GLOB 'member:*';
+CREATE INDEX IF NOT EXISTS cl_records_member_list ON cl_records(json_extract(value,'$.list_id'),json_extract(value,'$.item_id')) WHERE key GLOB 'member:*';
+CREATE INDEX IF NOT EXISTS cl_operations_author_revision ON cl_operations(
+    json_extract(body,'$.author'),json_extract(body,'$.revision'));
+CREATE INDEX IF NOT EXISTS cl_operations_revision ON cl_operations(json_extract(body,'$.revision'));
+";
 pub struct Library {
     db: Mutex<Connection>,
+    readers: Vec<Mutex<Connection>>,
+    next_reader: AtomicU64,
+    foreground_writers: Arc<AtomicU64>,
+    work: Arc<work::Queue>,
+    metadata_ready: std::sync::atomic::AtomicBool,
+    query_cancellations: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    listener: Mutex<Option<futures::channel::mpsc::UnboundedSender<crate::tokio_bridge::UiEvent>>>,
     device: Mutex<String>,
     generation: AtomicU64,
-    last_prune_ms: AtomicU64,
+    counts_generation: AtomicU64,
     state_cache: Mutex<Option<(u64, String)>>,
     // Drop the connection before removing its test database directory.
     #[cfg(test)]
@@ -222,14 +246,22 @@ pub fn global() -> Result<Arc<Library>> {
         return Ok(v.clone());
     }
     let lib = Arc::new(Library::open()?);
+    work::start(&lib);
+    lib.reconcile_index()?;
     let _ = LIBRARY.set(lib);
     Ok(LIBRARY.get().unwrap().clone())
 }
 impl Library {
+    #[cfg(test)]
     fn open() -> Result<Self> {
+        Self::open_database(tempfile::tempdir().map_err(err)?)
+    }
+    #[cfg(not(test))]
+    fn open() -> Result<Self> {
+        Self::open_database()
+    }
+    fn open_database(#[cfg(test)] test_directory: tempfile::TempDir) -> Result<Self> {
         // Ensure the canonical store has performed its own versioned migrations first.
-        #[cfg(test)]
-        let test_directory = tempfile::tempdir().map_err(err)?;
         #[cfg(test)]
         let database_path = test_directory.path().join("state.sqlite3");
         #[cfg(not(test))]
@@ -237,6 +269,7 @@ impl Library {
         let _canonical = deskfuse_store::SQLiteStore::open(&database_path).map_err(err)?;
         let mut db = Connection::open(&database_path).map_err(err)?;
         deskfuse_store::configure_connection(&mut db).map_err(err)?;
+        query::configure(&db)?;
         db.execute_batch("PRAGMA foreign_keys=ON;
    CREATE TABLE IF NOT EXISTS cl_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_items(id INTEGER PRIMARY KEY AUTOINCREMENT,global_id TEXT UNIQUE NOT NULL,digest TEXT NOT NULL,summary TEXT NOT NULL,payload BLOB,search_text TEXT NOT NULL DEFAULT '',search_index TEXT NOT NULL DEFAULT '',copied INTEGER,imported INTEGER NOT NULL,ordinary INTEGER NOT NULL DEFAULT 1,blob_hash TEXT,origin_device TEXT);
@@ -247,6 +280,7 @@ impl Library {
    CREATE TABLE IF NOT EXISTS cl_operations(seq INTEGER PRIMARY KEY AUTOINCREMENT,op_id TEXT UNIQUE NOT NULL,body TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_blobs(hash TEXT PRIMARY KEY,bytes BLOB NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_clocks(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS cl_pending_publications(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL);
    CREATE INDEX IF NOT EXISTS cl_operations_key ON cl_operations(json_extract(body,'$.key'));
   ").map_err(err)?;
         // Additive migrations for per-record user data on existing stores.
@@ -328,25 +362,45 @@ END;").map_err(err)?;
             tx.commit().map_err(err)?;
         }
         db.execute_batch(QUERY_INDEXES).map_err(err)?;
+        db.execute_batch(OPERATION_INDEXES).map_err(err)?;
+        storage::install_clocks(&db)?;
+        let metadata_ready = storage::install(&db)?;
+        let readers = (0..3)
+            .map(|_| {
+                let mut reader = Connection::open(&database_path).map_err(err)?;
+                deskfuse_store::configure_connection(&mut reader).map_err(err)?;
+                query::configure(&reader)?;
+                reader
+                    .pragma_update(None, "query_only", true)
+                    .map_err(err)?;
+                Ok(Mutex::new(reader))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let this = Self {
             #[cfg(test)]
             _test_directory: test_directory,
             db: Mutex::new(db),
+            readers,
+            next_reader: AtomicU64::new(0),
+            foreground_writers: Arc::new(AtomicU64::new(0)),
+            work: Arc::new(work::Queue::default()),
+            metadata_ready: storage::ready(metadata_ready),
+            query_cancellations: Mutex::new(HashMap::new()),
+            listener: Mutex::new(None),
             device: Mutex::new(String::new()),
             generation: AtomicU64::new(1),
-            last_prune_ms: AtomicU64::new(0),
+            counts_generation: AtomicU64::new(1),
             state_cache: Mutex::new(None),
         };
         this.import_legacy()?;
         this.migrate_image_digests()?;
         this.seed_default_lists()?;
-        this.prune()?;
-        this.last_prune_ms.store(now_ms(), Ordering::Release);
+        #[cfg(test)]
         this.reconcile_index()?;
         Ok(this)
     }
     fn migrate_image_digests(&self) -> Result<()> {
-        let mut db = self.db.lock().map_err(err)?;
+        let mut db = self.writer()?;
         if db
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='image_digest_v1')",
@@ -364,7 +418,7 @@ END;").map_err(err)?;
         // Stream payloads one at a time; never load the image history into RAM.
         for id in ids {
             let bytes: Vec<u8> = tx
-                .query_row("SELECT payload FROM cl_items WHERE id=?1", [id], |r| {
+                .query_row("SELECT COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE id=?1", [id], |r| {
                     r.get(0)
                 })
                 .map_err(err)?;
@@ -424,7 +478,7 @@ END;").map_err(err)?;
         self.merge_operations(operations)
     }
     fn import_legacy(&self) -> Result<()> {
-        let mut db = self.db.lock().map_err(err)?;
+        let mut db = self.writer()?;
         let done: Option<String> = db
             .query_row(
                 "SELECT value FROM cl_meta WHERE key='imported_v1'",
@@ -478,43 +532,132 @@ END;").map_err(err)?;
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
+    fn reader(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        let index = self.next_reader.fetch_add(1, Ordering::Relaxed) as usize % self.readers.len();
+        // Counts/media never force a page to queue behind a busy reader.
+        for offset in 0..self.readers.len() {
+            if let Ok(db) = self.readers[(index + offset) % self.readers.len()].try_lock() {
+                return Ok(db);
+            }
+        }
+        self.readers[index].lock().map_err(err)
+    }
+    fn writer(&self) -> Result<storage::Writer<'_>> {
+        self.foreground_writers.fetch_add(1, Ordering::AcqRel);
+        match self.db.lock() {
+            Ok(db) => Ok(storage::Writer {
+                db,
+                foreground: &self.foreground_writers,
+            }),
+            Err(error) => {
+                self.foreground_writers.fetch_sub(1, Ordering::AcqRel);
+                Err(err(error))
+            }
+        }
+    }
+    /// Optional history bookkeeping never delays a successful pasteboard write.
+    pub fn defer_used(&self, id: u64) {
+        self.work.used(id);
+    }
+    fn publication_intent_db(&self, db: &Connection, id: u64) -> Result<()> {
+        if !self.work.is_running() {
+            return Ok(());
+        }
+        let revision: u64 = db.query_row("INSERT INTO cl_meta VALUES('publication_counter','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) RETURNING CAST(value AS INTEGER)", [], |r| r.get(0)).map_err(err)?;
+        db.execute("INSERT INTO cl_pending_publications VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision", params![id,revision]).map_err(err)?;
+        Ok(())
+    }
+    fn publication_committed(&self, id: u64) -> Result<()> {
+        if self.work.is_running() {
+            self.work.wake();
+            Ok(())
+        } else {
+            self.publish_index_for(id)
+        }
+    }
+    fn publish_index_later(&self, id: u64) -> Result<()> {
+        if self.work.is_running() {
+            let mut db = self.writer()?;
+            let tx = db.transaction().map_err(err)?;
+            self.publication_intent_db(&tx, id)?;
+            tx.commit().map_err(err)?;
+        }
+        self.publication_committed(id)
+    }
     fn changed(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.counts_generation.fetch_add(1, Ordering::AcqRel);
+        self.changed_order();
+    }
+    fn changed_order(&self) {
+        let revision = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         if let Ok(mut cache) = self.state_cache.lock() {
             *cache = None;
+        }
+        if let Ok(listener) = self.listener.lock()
+            && let Some(listener) = listener.as_ref()
+        {
+            let _ = listener.unbounded_send(crate::tokio_bridge::UiEvent::ClipboardLibraryChanged(
+                revision,
+            ));
+        }
+    }
+    pub fn subscribe_changes(
+        &self,
+        listener: futures::channel::mpsc::UnboundedSender<crate::tokio_bridge::UiEvent>,
+    ) {
+        if let Ok(mut current) = self.listener.lock() {
+            *current = Some(listener);
         }
     }
     /// Local reuse changes ordering, never the original source/copy metadata.
     /// Called only after the native pasteboard write has succeeded.
     pub fn mark_used(&self, id: u64) -> Result<()> {
-        let db = self.db.lock().map_err(err)?;
-        let updated = db.execute(
-            "UPDATE cl_items SET last_used=MAX(?1,COALESCE((SELECT MAX(last_used)+1 FROM cl_items),0)) WHERE id=?2",
-            params![now_ms(), id],
-        ).map_err(err)?;
+        self.mark_used_at(id, now_ms())
+    }
+    fn mark_used_at(&self, id: u64, time: u64) -> Result<()> {
+        let mut db = self.writer()?;
+        let tx = db.transaction().map_err(err)?;
+        let time: u64 = tx.query_row("INSERT INTO cl_meta(key,value) VALUES('usage_clock',?1) ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER)+1,CAST(excluded.value AS INTEGER)) AS TEXT) RETURNING CAST(value AS INTEGER)", [time.to_string()], |r| r.get(0)).map_err(err)?;
+        let updated = tx
+            .execute(
+                "UPDATE cl_items SET last_used=?1 WHERE id=?2",
+                params![time, id],
+            )
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
         if updated > 0 {
-            self.changed();
+            self.changed_order();
         }
         Ok(())
     }
 
     pub fn set_local_device(&self, id: String) -> Result<()> {
         *self.device.lock().map_err(err)? = id;
+        if self.work.is_running() {
+            self.writer()?
+                .execute(
+                    "INSERT OR REPLACE INTO cl_meta VALUES('publish_backfill_cursor','0')",
+                    [],
+                )
+                .map_err(err)?;
+            self.work.wake();
+            return Ok(());
+        }
         // Publish migrated hashes through normal sync operations, so old remote
         // index rows acquire the same identity without deleting anyone's data.
         let ids = {
-            let db = self.db.lock().map_err(err)?;
+            let db = self.writer()?;
             db.prepare("SELECT i.id FROM cl_items i LEFT JOIN cl_records r ON r.key='index:' || i.global_id WHERE i.ordinary=1 AND i.remote=0 AND i.digest LIKE 'image-v1:%' AND (r.key IS NULL OR COALESCE(json_extract(r.value,'$.digest'),'')<>i.digest)")
                 .map_err(err)?.query_map([], |r| r.get::<_, u64>(0)).map_err(err)?
                 .collect::<std::result::Result<Vec<_>, _>>().map_err(err)?
         };
         for id in ids {
-            self.publish_index_for(id)?;
+            self.publish_index_later(id)?;
         }
         Ok(())
     }
     pub fn settings(&self) -> Result<Settings> {
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
         settings_db(&db)
     }
     pub fn origin(&self, snapshot: &PasteboardSnapshot, source: &str) -> Origin {
@@ -563,7 +706,7 @@ END;").map_err(err)?;
     pub fn ingest(&self, snapshot: &PasteboardSnapshot, source: &str) -> Result<Option<u64>> {
         let id = self.ingest_record(snapshot, source)?;
         if let Some(id) = id {
-            self.publish_index_for(id)?;
+            self.publication_committed(id)?;
         }
         Ok(id)
     }
@@ -577,7 +720,7 @@ END;").map_err(err)?;
     ) -> Result<Option<u64>> {
         let id = self.ingest_record_with_image_digest(snapshot, source, image_digest)?;
         if let Some(id) = id {
-            self.publish_index_for(id)?;
+            self.publication_committed(id)?;
         }
         Ok(id)
     }
@@ -589,7 +732,7 @@ END;").map_err(err)?;
         source: &str,
     ) -> Result<(Option<u64>, Option<String>)> {
         let id = self.ingest_record(snapshot, source)?;
-        let warning = id.and_then(|id| self.publish_index_for(id).err());
+        let warning = id.and_then(|id| self.publication_committed(id).err());
         Ok((id, warning))
     }
     fn ingest_record(&self, snapshot: &PasteboardSnapshot, source: &str) -> Result<Option<u64>> {
@@ -621,11 +764,11 @@ END;").map_err(err)?;
         fingerprint: String,
     ) -> Result<Option<u64>> {
         let bytes = encode(snapshot, source)?;
-        let mut db = self.db.lock().map_err(err)?;
+        let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
         let mut found: Option<u64> = tx
             .query_row(
-                "SELECT id FROM cl_items WHERE digest=?1 AND ordinary=1 ORDER BY payload IS NOT NULL DESC,COALESCE(json_extract(summary,'$.file_count'),0)=0 DESC,id DESC LIMIT 1",
+                "SELECT id FROM cl_items WHERE digest=?1 AND ordinary=1 ORDER BY (payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=cl_items.blob_hash)) DESC,COALESCE(json_extract(summary,'$.file_count'),0)=0 DESC,id DESC LIMIT 1",
                 [&fingerprint],
                 |r| r.get(0),
             )
@@ -634,7 +777,7 @@ END;").map_err(err)?;
         if let Some(id) = found
             && fingerprint.starts_with("image-v1:")
             && !snapshot.file_urls.is_empty()
-            && tx.query_row("SELECT payload IS NOT NULL AND COALESCE(json_extract(summary,'$.file_count'),0)=0 FROM cl_items WHERE id=?1", [id], |r| r.get::<_, bool>(0)).map_err(err)?
+            && tx.query_row("SELECT (payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=cl_items.blob_hash)) AND COALESCE(json_extract(summary,'$.file_count'),0)=0 FROM cl_items WHERE id=?1", [id], |r| r.get::<_, bool>(0)).map_err(err)?
         {
             // Handoff's file alias must not replace a durable, directly pasteable
             // image with a cache path that may later disappear.
@@ -691,7 +834,13 @@ END;").map_err(err)?;
             .next()
             .map(|text| crate::clipboard_echo::normalize_clipboard_text(&text).to_lowercase())
             .unwrap_or_default();
-        tx.execute("UPDATE cl_items SET payload=?1,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7,digest=?9,remote=0 WHERE id=?8",params![bytes,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id,fingerprint]).map_err(err)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
+            params![blob_hash, bytes],
+        )
+        .map_err(err)?;
+        tx.execute("UPDATE cl_items SET payload=NULL,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7,digest=?9,remote=0 WHERE id=?8",params![Option::<Vec<u8>>::None,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id,fingerprint]).map_err(err)?;
+        self.publication_intent_db(&tx, id)?;
         tx.commit().map_err(err)?;
         drop(db);
         self.changed();
@@ -708,34 +857,25 @@ END;").map_err(err)?;
         if !self.settings()?.sync_index {
             return Ok(());
         }
-        let (gid, digest, summary, blob_hash, title, ocr_text, search_text): (
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = {
-            let db = self.db.lock().map_err(err)?;
-            db.query_row(
-                "SELECT global_id,digest,summary,COALESCE(blob_hash,''),title,ocr_text,COALESCE(search_text,'') FROM cl_items WHERE id=?1",
-                [id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                    ))
-                },
-            )
+        let row = {
+            let db = self.reader()?;
+            let sql = self.metadata_sql("SELECT i.global_id,i.digest,i.summary,COALESCE(i.blob_hash,''),i.title,i.ocr_text,COALESCE(i.search_text,'') FROM cl_items i WHERE i.id=?1");
+            db.query_row(&sql, [id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })
             .optional()
             .map_err(err)?
-            .ok_or("内容不存在")?
+        };
+        let Some((gid, digest, summary, blob_hash, title, ocr_text, search_text)) = row else {
+            return Ok(());
         };
         if digest.is_empty() {
             return Ok(());
@@ -762,19 +902,24 @@ END;").map_err(err)?;
         if !self.settings()?.sync_index {
             return Ok(());
         }
-        let mut db = self.db.lock().map_err(err)?;
+        if self.work.is_running() {
+            self.writer()?.execute_batch("INSERT OR REPLACE INTO cl_meta VALUES('index_reconcile_cursor',''); INSERT OR REPLACE INTO cl_meta VALUES('publish_backfill_cursor','0');").map_err(err)?;
+            self.work.wake();
+            return Ok(());
+        }
+        let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
         reconcile_index_db(&tx)?;
         tx.commit().map_err(err)
     }
 
     pub fn snapshot(&self, id: u64) -> Result<PasteboardSnapshot> {
-        self.prune()?;
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
+        let cutoff = now_ms().saturating_sub(settings_db(&db)?.retention_days as u64 * 86400000);
         let row: Option<(Option<Vec<u8>>, Option<String>, String)> = db
             .query_row(
-                "SELECT payload,summary,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1",
-                [id],
+                "SELECT COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)),summary,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1 AND (ordinary=0 OR (COALESCE(copied,imported)>=?2 AND id>?3))",
+                params![id, cutoff, cleared_history_id(&db)?],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -828,7 +973,7 @@ END;").map_err(err)?;
                 snapshot = local;
             }
         }
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
         let raw: String = db
             .query_row("SELECT summary FROM cl_items WHERE id=?1", [id], |r| {
                 r.get(0)
@@ -859,15 +1004,31 @@ END;").map_err(err)?;
         &self,
         limit: usize,
     ) -> Result<Vec<(u64, PasteboardSnapshot, String, Option<u64>)>> {
-        self.prune()?;
-        let db = self.db.lock().map_err(err)?;
-        let mut statement = db.prepare(&format!("SELECT i.id,i.payload,i.summary FROM cl_items i WHERE i.ordinary=1 AND i.payload IS NOT NULL AND {UNIQUE_IMAGE_ROW} ORDER BY MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) DESC,i.id DESC LIMIT ?1")).map_err(err)?;
-        let mut rows = statement.query([limit]).map_err(err)?;
+        let rows = {
+            let db = self.reader()?;
+            let cutoff =
+                now_ms().saturating_sub(settings_db(&db)?.retention_days as u64 * 86400000);
+            let unique = UNIQUE_IMAGE_ROW.replace(
+                "d.ordinary=1 AND",
+                &format!(
+                    "d.ordinary=1 AND d.id>{} AND COALESCE(d.copied,d.imported)>={cutoff} AND",
+                    cleared_history_id(&db)?
+                ),
+            );
+            let sql = self.metadata_sql(&format!("SELECT i.id,i.summary FROM cl_items i WHERE i.ordinary=1 AND i.id>?3 AND i.payload IS NOT NULL AND COALESCE(i.copied,i.imported)>=?2 AND {unique} ORDER BY {QUERY_ORDER} LIMIT ?1"));
+            db.prepare(&sql)
+                .map_err(err)?
+                .query_map(params![limit, cutoff, cleared_history_id(&db)?], |r| {
+                    Ok((r.get::<_, u64>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(err)?
+        };
         let mut recent = Vec::new();
         let mut retained_bytes = 0usize;
-        while let Some(row) = rows.next().map_err(err)? {
-            let bytes: Vec<u8> = row.get(1).map_err(err)?;
-            let snapshot = decode(&bytes)?;
+        for (id, raw) in rows {
+            let snapshot = self.snapshot(id)?;
             let size = crate::tokio_bridge::clipboard_snapshot_bytes(&snapshot);
             if !recent.is_empty()
                 && retained_bytes.saturating_add(size)
@@ -875,93 +1036,78 @@ END;").map_err(err)?;
             {
                 break;
             }
-            let raw: String = row.get(2).map_err(err)?;
             let summary: Summary = serde_json::from_str(&raw).map_err(err)?;
-            recent.push((
-                row.get(0).map_err(err)?,
-                snapshot,
-                summary.source,
-                summary.copied_at_ms,
-            ));
+            recent.push((id, snapshot, summary.source, summary.copied_at_ms));
             retained_bytes = retained_bytes.saturating_add(size);
         }
         Ok(recent)
     }
     pub fn prune(&self) -> Result<()> {
-        let mut db = self.db.lock().map_err(err)?;
+        let mut db = self.writer()?;
         let cutoff = now_ms().saturating_sub(settings_db(&db)?.retention_days as u64 * 86400000);
         let tx = db.transaction().map_err(err)?;
         let n = tx
             .execute(
-                "DELETE FROM cl_items WHERE ordinary=1 AND COALESCE(copied,imported)<?1",
-                [cutoff],
+                "DELETE FROM cl_items WHERE id IN (SELECT id FROM cl_items WHERE ordinary=1 AND (COALESCE(copied,imported)<?1 OR id<=?2) LIMIT 32)",
+                params![cutoff,cleared_history_id(&tx)?],
             )
             .map_err(err)?;
         tx.commit().map_err(err)?;
         if n > 0 {
             self.changed()
         }
-        self.last_prune_ms.store(now_ms(), Ordering::Release);
         Ok(())
     }
     pub fn clear_history(&self) -> Result<()> {
-        self.db
-            .lock()
-            .map_err(err)?
-            .execute("DELETE FROM cl_items WHERE ordinary=1", [])
-            .map_err(err)?;
+        // A single watermark makes bulk removal immediately visible. Reclaim
+        // native bytes in cancellable background batches, preserving archives.
+        self.writer()?.execute("INSERT INTO cl_meta SELECT 'cleared_history_id',CAST(COALESCE(MAX(id),0) AS TEXT) FROM cl_items WHERE true ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).map_err(err)?;
         self.changed();
+        self.work.cleanup();
         Ok(())
     }
     pub fn query(&self, request: &str) -> Result<String> {
-        self.maybe_prune()?;
         let q: Value = serde_json::from_str(request).map_err(err)?;
+        if q["op"] == "cancel_query" {
+            if let Some(id) = q["query_id"].as_str() {
+                let mut cancellations = self.query_cancellations.lock().map_err(err)?;
+                if cancellations.len() >= 512 {
+                    cancellations.retain(|_, flag| !flag.load(Ordering::Acquire));
+                }
+                cancellations
+                    .entry(id.into())
+                    .or_insert_with(|| Arc::new(std::sync::atomic::AtomicBool::new(false)))
+                    .store(true, Ordering::Release);
+            }
+            return Ok("{}".into());
+        }
+        if q["op"] == "revision" {
+            return Ok(json!({"revision": self.generation()}).to_string());
+        }
         if q["op"] == "state" {
             return self.state();
         }
-        if q["op"] == "counts" {
-            let db = self.db.lock().map_err(err)?;
-            let lists = lists_db(&db)?;
-            let requests = q["requests"].as_array().ok_or("计数请求无效")?;
-            if requests.len() != lists.len() + 1 {
-                return Err("列表已变化，请刷新".into());
-            }
-            let mut counts = std::collections::BTreeMap::new();
-            for request in requests {
-                let key = request["list_id"].as_str().unwrap_or("all").to_string();
-                // Navigation totals deliberately ignore search, device and pagination.
-                let mut filter = request.clone();
-                filter["query"] = json!("");
-                filter["source"] = Value::Null;
-                filter["kind"] = json!("all");
-                filter["count_only"] = json!(true);
-                let result: Value =
-                    serde_json::from_str(&self.query_items_db(&db, filter)?).map_err(err)?;
-                counts.insert(key, result["total"].clone());
-            }
-            return serde_json::to_string(&counts).map_err(err);
-        }
         self.query_items(q)
     }
-    /// Retention cleanup is maintenance work. Running it before every keystroke
-    /// turns a search into a full write transaction, so keep the query path
-    /// bounded and let the explicit maintenance call do the immediate cleanup.
-    fn maybe_prune(&self) -> Result<()> {
-        let now = now_ms();
-        let last = self.last_prune_ms.load(Ordering::Acquire);
-        if now.saturating_sub(last) < 60_000 {
-            return Ok(());
+    fn query_counts_db(&self, db: &Connection, q: &Value) -> Result<String> {
+        let lists = lists_db(db)?;
+        let requests = q["requests"].as_array().ok_or("计数请求无效")?;
+        if requests.len() != lists.len() + 1 {
+            return Err("列表已变化，请刷新".into());
         }
-        if self
-            .last_prune_ms
-            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            && let Err(error) = self.prune()
-        {
-            self.last_prune_ms.store(0, Ordering::Release);
-            return Err(error);
+        let mut counts = std::collections::BTreeMap::new();
+        for request in requests {
+            let key = request["list_id"].as_str().unwrap_or("all").to_string();
+            let mut filter = request.clone();
+            filter["query"] = json!("");
+            filter["source"] = Value::Null;
+            filter["kind"] = json!("all");
+            filter["count_only"] = json!(true);
+            let result: Value =
+                serde_json::from_str(&self.query_items_db(db, filter)?).map_err(err)?;
+            counts.insert(key, result["total"].clone());
         }
-        Ok(())
+        serde_json::to_string(&counts).map_err(err)
     }
     fn state(&self) -> Result<String> {
         let generation = self.generation();
@@ -970,44 +1116,106 @@ END;").map_err(err)?;
         {
             return Ok(value.clone());
         }
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
         let lists = lists_db(&db)?;
         let settings = settings_db(&db)?;
-        let mut apps = std::collections::BTreeMap::new();
-        let mut devices = std::collections::BTreeMap::new();
-        let mut stmt=db.prepare("SELECT DISTINCT json_extract(summary,'$.source_app_id'),json_extract(summary,'$.source_app_name'),json_extract(summary,'$.source_device_id'),json_extract(summary,'$.source') FROM cl_items").map_err(err)?;
-        let rows = stmt
+        let apps = db
+            .prepare("SELECT id,name FROM cl_source_apps ORDER BY id")
+            .map_err(err)?
             .query_map([], |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
+                Ok(json!({"bundle_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?}))
             })
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(err)?;
-        for row in rows {
-            let (a, n, d, s) = row.map_err(err)?;
-            if let Some(a) = a {
-                apps.insert(
-                    a.clone(),
-                    json!({"bundle_id":a,"name":n.unwrap_or_else(||a.clone())}),
-                );
-            }
-            if let Some(d) = d {
-                devices.insert(d.clone(), json!({"id":d,"name":s}));
-            }
-        }
-        let value = serde_json::to_string(&json!({"lists":lists,"settings":settings,"apps":apps.values().collect::<Vec<_>>(),"devices":devices.values().collect::<Vec<_>>(),"revision":generation})).map_err(err)?;
+        let devices = db
+            .prepare("SELECT id,name FROM cl_source_devices ORDER BY id")
+            .map_err(err)?
+            .query_map([], |r| {
+                Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?}))
+            })
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(err)?;
+        let value = serde_json::to_string(&json!({"lists":lists,"settings":settings,"apps":apps,"devices":devices,"revision":generation,"counts_revision":self.counts_generation.load(Ordering::Acquire)})).map_err(err)?;
         *self.state_cache.lock().map_err(err)? = Some((generation, value.clone()));
         Ok(value)
     }
     fn query_items(&self, q: Value) -> Result<String> {
-        let db = self.db.lock().map_err(err)?;
-        self.query_items_db(&db, q)
+        let id = q["query_id"].as_str().map(str::to_owned);
+        let started = std::time::Instant::now();
+        let mut cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(id) = &id {
+            cancel = self
+                .query_cancellations
+                .lock()
+                .map_err(err)?
+                .entry(id.clone())
+                .or_insert(cancel)
+                .clone();
+        }
+        let db = match self.reader() {
+            Ok(db) => db,
+            Err(error) => {
+                if let Some(id) = &id {
+                    self.query_cancellations.lock().map_err(err)?.remove(id);
+                }
+                return Err(error);
+            }
+        };
+        let progress_cancel = cancel.clone();
+        db.progress_handler(1000, Some(move || progress_cancel.load(Ordering::Acquire)));
+        let result = if cancel.load(Ordering::Acquire) {
+            Err("查询已取消".into())
+        } else if q["op"] == "counts" {
+            self.query_counts_db(&db, &q)
+        } else {
+            self.query_items_db(&db, q)
+        };
+        db.progress_handler(0, None::<fn() -> bool>);
+        let canceled = if let Some(id) = &id {
+            let mut queries = self.query_cancellations.lock().map_err(err)?;
+            let canceled = cancel.load(Ordering::Acquire);
+            queries.remove(id);
+            canceled
+        } else {
+            false
+        };
+        let result = if canceled {
+            Err("查询已取消".into())
+        } else {
+            result
+        };
+        self.record_duration("query", id, started, result.is_ok());
+        result
+    }
+    fn record_duration(
+        &self,
+        operation: &str,
+        request: Option<String>,
+        started: std::time::Instant,
+        succeeded: bool,
+    ) {
+        if deskfuse_core::debug_logging::enabled() {
+            static PERFORMANCE: OnceLock<crate::diagnostics::Diagnostics> = OnceLock::new();
+            PERFORMANCE
+                .get_or_init(|| crate::diagnostics::Diagnostics::new(128))
+                .record_with_metadata(
+                    crate::diagnostics::DiagnosticLevel::Info,
+                    "clipboard_library",
+                    operation,
+                    request,
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(format!("succeeded={succeeded}")),
+                    None,
+                );
+        }
     }
 
     fn query_items_db(&self, db: &Connection, q: Value) -> Result<String> {
+        let revision = self.generation();
+        let cutoff = now_ms().saturating_sub(settings_db(db)?.retention_days as u64 * 86400000);
+        let cleared = cleared_history_id(db)?;
         let count_only = q["count_only"].as_bool().unwrap_or(false);
         let list_id = q["list_id"].as_str();
         let lists = lists_db(db)?;
@@ -1031,11 +1239,6 @@ END;").map_err(err)?;
             .or_else(|| q["cursor_id"].as_u64());
         let cursor = cursor_sort_at_ms.zip(cursor_id);
         let manual = selected.is_some_and(|list| list.kind == "manual");
-        // These two cases can be answered entirely by SQLite. Smart-list rules
-        // still need Summary decoding, but the iterator remains streaming and
-        // never builds a 100k-row Rust collection.
-        let fast_path = (selected.is_none() || manual) && kind == "all";
-
         let mut clauses: Vec<String> = Vec::with_capacity(5);
         let mut filter_params: Vec<SqlValue> = Vec::with_capacity(8);
         if manual {
@@ -1045,29 +1248,18 @@ END;").map_err(err)?;
             clauses.push("EXISTS(SELECT 1 FROM cl_records m WHERE m.key='member:' || ? || ':' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END AND m.deleted=0)".into());
             clauses.push("NOT EXISTS(SELECT 1 FROM cl_records tombstone WHERE tombstone.key='item:' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END AND tombstone.deleted=1)".into());
             filter_params.push(SqlValue::Text(list_id.unwrap_or_default().to_string()));
+            clauses.push("i.id IN (SELECT a.id FROM cl_items a JOIN cl_records m ON a.global_id=json_extract(m.value,'$.item_id') WHERE m.key GLOB 'member:*' AND m.deleted=0 AND json_extract(m.value,'$.list_id')=? UNION SELECT base.id FROM cl_items base JOIN cl_records m ON base.global_id=substr(json_extract(m.value,'$.item_id'),9) WHERE m.key GLOB 'member:*' AND m.deleted=0 AND json_extract(m.value,'$.list_id')=? AND base.ordinary=1)".into());
+            filter_params
+                .extend((0..2).map(|_| SqlValue::Text(list_id.unwrap_or_default().to_string())));
         } else {
-            clauses.push(UNIQUE_IMAGE_ROW.into());
+            clauses.push(UNIQUE_IMAGE_ROW.replace("d.ordinary=1 AND", &format!("d.ordinary=1 AND d.id>{cleared} AND COALESCE(d.copied,d.imported)>={cutoff} AND")));
             // An archive with a live ordinary source is hidden outside manual
             // lists. The old per-row SELECT EXISTS is now one indexed predicate.
-            clauses.push("NOT (i.ordinary=0 AND i.global_id LIKE 'archive:%' AND EXISTS(SELECT 1 FROM cl_items base WHERE base.global_id=substr(i.global_id,9) AND base.ordinary=1))".into());
+            clauses.push(format!("NOT (i.ordinary=0 AND i.global_id LIKE 'archive:%' AND EXISTS(SELECT 1 FROM cl_items base WHERE base.global_id=substr(i.global_id,9) AND base.ordinary=1 AND base.id>{cleared} AND COALESCE(base.copied,base.imported)>={cutoff}))"));
             // Orphaned archive rows are never shown. Restrict the membership
             // probe to active list IDs so deleted-list tombstones stay hidden
             // without materializing every membership in Rust.
-            if lists.is_empty() {
-                clauses.push("i.ordinary=1".into());
-            } else {
-                let active_memberships = lists
-                    .iter()
-                    .map(|_| {
-                        "m.key='member:' || ? || ':' || CASE WHEN i.ordinary=1 THEN 'archive:' || i.global_id ELSE i.global_id END"
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" OR ");
-                clauses.push(format!(
-                    "(i.ordinary=1 OR EXISTS(SELECT 1 FROM cl_records m WHERE m.deleted=0 AND ({active_memberships})))"
-                ));
-                filter_params.extend(lists.iter().map(|list| SqlValue::Text(list.id.clone())));
-            }
+            clauses.push("(i.ordinary=1 OR EXISTS(SELECT 1 FROM cl_records m JOIN cl_records l ON l.key='list:' || json_extract(m.value,'$.list_id') AND l.deleted=0 WHERE m.key GLOB 'member:*' AND m.deleted=0 AND json_extract(m.value,'$.item_id')=i.global_id))".into());
         }
         if let Some(source) = source {
             clauses.push("(json_extract(i.summary,'$.source_device_id')=? OR json_extract(i.summary,'$.source')=?)".into());
@@ -1083,23 +1275,58 @@ END;").map_err(err)?;
                 // Trigram candidates can contain the same trigrams in a
                 // different order. Keep the original substring predicate as
                 // the exact, low-memory verification step.
-                clauses.push("i.search_index LIKE '%' || ? || '%' COLLATE NOCASE".into());
+                clauses.push("instr(unicode_lower(i.search_index),?)>0".into());
                 filter_params.push(SqlValue::Text(query.clone()));
             } else {
-                clauses.push("i.search_index LIKE '%' || ? || '%' COLLATE NOCASE".into());
+                if self.metadata_ready.load(Ordering::Acquire) {
+                    clauses.push("i.id IN (SELECT item_id FROM cl_short_terms WHERE term=? UNION SELECT item_id FROM cl_short_pending)".into());
+                    filter_params.push(SqlValue::Text(query.clone()));
+                }
+                clauses.push("instr(unicode_lower(i.search_index),?)>0".into());
                 filter_params.push(SqlValue::Text(query.clone()));
             }
         }
+        clauses.push(format!(
+            "(i.ordinary=0 OR (i.id>{cleared} AND COALESCE(i.copied,i.imported)>=?))"
+        ));
+        filter_params.push(SqlValue::Integer(cutoff.min(i64::MAX as u64) as i64));
+        if kind != "all" {
+            clauses.push(format!("({} = ?)", query::KIND));
+            filter_params.push(SqlValue::Text(kind.to_string()));
+        }
+        if let Some(list) = selected.filter(|list| list.kind == "smart") {
+            let rules = list
+                .rules
+                .iter()
+                .enumerate()
+                .map(|(index, rule)| query::rule(index, rule, &q, &mut filter_params))
+                .collect::<Vec<_>>();
+            if !rules.is_empty() {
+                clauses.push(format!(
+                    "({})",
+                    rules.join(if list.match_mode == "any" {
+                        " OR "
+                    } else {
+                        " AND "
+                    })
+                ));
+            }
+        }
         let where_sql = clauses.join(" AND ");
-
-        if fast_path {
+        let include_total = count_only || q["include_total"].as_bool().unwrap_or(true);
+        {
             let count_sql = format!("SELECT COUNT(*) FROM cl_items i WHERE {where_sql}");
-            let total: usize = db
-                .query_row(&count_sql, params_from_iter(filter_params.iter()), |row| {
-                    row.get::<_, i64>(0)
-                })
+            let total: usize = if include_total {
+                db.query_row(
+                    &self.metadata_sql(&count_sql),
+                    params_from_iter(filter_params.iter()),
+                    |row| row.get::<_, i64>(0),
+                )
                 .map_err(err)?
-                .max(0) as usize;
+                .max(0) as usize
+            } else {
+                0
+            };
 
             if count_only {
                 return Ok(json!({"total": total}).to_string());
@@ -1122,7 +1349,7 @@ END;").map_err(err)?;
             page_params.push(SqlValue::Integer(
                 if cursor.is_some() { 0 } else { offset } as i64
             ));
-            let mut stmt = db.prepare(&page_sql).map_err(err)?;
+            let mut stmt = db.prepare(&self.metadata_sql(&page_sql)).map_err(err)?;
             let rows = stmt
                 .query_map(params_from_iter(page_params.iter()), QueryRow::from_row)
                 .map_err(err)?
@@ -1132,16 +1359,24 @@ END;").map_err(err)?;
             let mut page = rows;
             page.truncate(limit);
             let memberships = memberships_for(db, &page, &lists)?;
+            let related_ids = self.related_item_ids(db, &page)?;
             let items = page
                 .iter()
                 .map(|row| {
-                    self.query_item_value(
+                    let mut value = self.query_item_value(
                         row,
                         memberships
                             .get(row.member_id())
                             .cloned()
                             .unwrap_or_default(),
-                    )
+                    )?;
+                    value["related_ids"] = json!(
+                        related_ids
+                            .get(row.member_id())
+                            .cloned()
+                            .unwrap_or_else(|| vec![row.id])
+                    );
+                    Ok(value)
                 })
                 .collect::<Result<Vec<_>>>()?;
             let next_cursor = if has_more {
@@ -1150,115 +1385,45 @@ END;").map_err(err)?;
             } else {
                 None
             };
-            return serde_json::to_string(&json!({
+            serde_json::to_string(&json!({
                 "items": items,
                 "total": total,
+                "total_exact": include_total,
                 "next_offset": has_more.then_some(offset.saturating_add(limit)),
                 "next_cursor": next_cursor,
-                "revision": self.generation()
+                "revision": revision
             }))
-            .map_err(err);
+            .map_err(err)
         }
+    }
 
-        // Smart lists have arbitrary rule combinations. Keep their existing
-        // semantics, but stream the SQL rows and apply cursor/offset after the
-        // rule match so `total` remains the full result count.
-        let sql = format!("{QUERY_SELECT} WHERE {where_sql} ORDER BY {QUERY_ORDER}");
-        let mut stmt = db.prepare(&sql).map_err(err)?;
-        let rows = stmt
-            .query_map(params_from_iter(filter_params.iter()), QueryRow::from_row)
+    /// Return action identities from small metadata rows, never native bodies.
+    /// Deleting an archive must also hide its ordinary history in the hot UI.
+    fn related_item_ids(
+        &self,
+        db: &Connection,
+        rows: &[QueryRow],
+    ) -> Result<HashMap<String, Vec<u64>>> {
+        let mut result = HashMap::<String, Vec<u64>>::new();
+        let mut statement =
+            db.prepare(&self.metadata_sql(
+                "SELECT i.id FROM cl_items i WHERE i.global_id=?1 OR i.global_id=?2",
+            ))
             .map_err(err)?;
-        let mut total = 0usize;
-        let mut after_cursor = cursor.is_none();
-        let mut visible_count = 0usize;
-        let page_offset = if cursor.is_some() { 0 } else { offset };
-        let mut page: Vec<(QueryRow, Summary)> = Vec::with_capacity(limit);
-        let mut has_more = false;
         for row in rows {
-            let row = row.map_err(err)?;
-            let mut summary: Summary = serde_json::from_str(&row.summary).map_err(err)?;
-            project_image_file(&mut summary);
-            if kind != "all" && kind != summary.kind {
+            let key = row.member_id();
+            if result.contains_key(key) {
                 continue;
             }
-            let title_lower = row.title.to_lowercase();
-            let ocr_lower = row.ocr_text.to_lowercase();
-            if let Some(list) = selected {
-                let matches = |(index, rule): (usize, &Rule)| {
-                    matches_rule(
-                        index,
-                        rule,
-                        &summary,
-                        &row.search_text,
-                        &title_lower,
-                        &ocr_lower,
-                        &q,
-                    )
-                };
-                let matches = if list.match_mode == "any" {
-                    list.rules.iter().enumerate().any(matches)
-                } else {
-                    list.rules.iter().enumerate().all(matches)
-                };
-                if !matches {
-                    continue;
-                }
-            }
-            total = total.saturating_add(1);
-            if count_only {
-                continue;
-            }
-            if let Some((cursor_sort, cursor_row_id)) = cursor
-                && !after_cursor
-            {
-                let row_sort = row.sort_at_ms.max(0) as u64;
-                if row_sort < cursor_sort || (row_sort == cursor_sort && row.id < cursor_row_id) {
-                    after_cursor = true;
-                } else {
-                    continue;
-                }
-            }
-            if visible_count < page_offset {
-                visible_count += 1;
-                continue;
-            }
-            if page.len() < limit {
-                page.push((row, summary));
-                visible_count += 1;
-            } else {
-                has_more = true;
-            }
+            let base = key.strip_prefix("archive:").unwrap_or(key);
+            let ids = statement
+                .query_map(params![key, base], |r| r.get::<_, u64>(0))
+                .map_err(err)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(err)?;
+            result.insert(key.to_owned(), ids);
         }
-        if count_only {
-            return Ok(json!({"total": total}).to_string());
-        }
-        let page_rows: Vec<QueryRow> = page.iter().map(|(row, _)| row.clone()).collect();
-        let memberships = memberships_for(db, &page_rows, &lists)?;
-        let items = page
-            .into_iter()
-            .map(|(row, mut summary)| {
-                let member = memberships
-                    .get(row.member_id())
-                    .cloned()
-                    .unwrap_or_default();
-                query_item_value_with_summary(&row, &mut summary, member)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let next_cursor = if has_more {
-            page_rows
-                .last()
-                .map(|row| json!({"sort_at_ms": row.sort_at_ms.max(0) as u64, "id": row.id}))
-        } else {
-            None
-        };
-        serde_json::to_string(&json!({
-            "items": items,
-            "total": total,
-            "next_offset": has_more.then_some(offset.saturating_add(limit)),
-            "next_cursor": next_cursor,
-            "revision": self.generation()
-        }))
-        .map_err(err)
+        Ok(result)
     }
 
     fn query_item_value(&self, row: &QueryRow, memberships: Vec<String>) -> Result<Value> {
@@ -1270,6 +1435,7 @@ END;").map_err(err)?;
         let q: Value = serde_json::from_str(request).map_err(err)?;
         match q["op"].as_str().unwrap_or("") {
             "settings" => {
+                let was_syncing = self.settings()?.sync_index;
                 let mut current = serde_json::to_value(self.settings()?).map_err(err)?;
                 for (k, v) in q["settings"].as_object().ok_or("设置无效")? {
                     current[k] = v.clone()
@@ -1281,10 +1447,10 @@ END;").map_err(err)?;
                 s.excluded_apps
                     .sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
                 s.excluded_apps.dedup_by(|a, b| a.bundle_id == b.bundle_id);
-                self.db.lock().map_err(err)?.execute("INSERT INTO cl_meta VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(&s).map_err(err)?]).map_err(err)?;
+                self.writer()?.execute("INSERT INTO cl_meta VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(&s).map_err(err)?]).map_err(err)?;
                 self.changed();
                 // Re-enabling index sync re-materializes already-stored records.
-                if s.sync_index {
+                if s.sync_index && !was_syncing {
                     self.reconcile_index()?;
                 }
             }
@@ -1308,20 +1474,29 @@ END;").map_err(err)?;
             "reorder" => {
                 let ids = q["ids"].as_array().ok_or("列表顺序无效")?;
                 let lists = {
-                    let db = self.db.lock().map_err(err)?;
+                    let db = self.writer()?;
                     lists_db(&db)?
                 };
+                let by_id = lists
+                    .iter()
+                    .map(|l| (l.id.as_str(), l))
+                    .collect::<HashMap<_, _>>();
+                let mut changes = Vec::new();
                 for (i, id) in ids.iter().enumerate() {
-                    if let Some(l) = lists.iter().find(|l| Some(l.id.as_str()) == id.as_str()) {
+                    if let Some(l) = id.as_str().and_then(|id| by_id.get(id).copied()) {
+                        if l.position == i as i64 {
+                            continue;
+                        }
                         let mut l = l.clone();
                         l.position = i as i64;
-                        self.local_record(
+                        changes.push((
                             format!("list:{}", l.id),
                             serde_json::to_value(l).map_err(err)?,
                             false,
-                        )?;
+                        ));
                     }
                 }
+                self.local_records_with_delete(changes, &[])?;
             }
             "membership" => {
                 let list = q["list_id"].as_str().ok_or("列表 ID 无效")?;
@@ -1346,7 +1521,7 @@ END;").map_err(err)?;
                 let mut archived = std::collections::BTreeSet::new();
                 let mut bases = std::collections::BTreeSet::new();
                 {
-                    let db = self.db.lock().map_err(err)?;
+                    let db = self.writer()?;
                     for id in ids {
                         let row: Option<(String, bool)> = db
                             .query_row(
@@ -1379,9 +1554,10 @@ END;").map_err(err)?;
                 }
                 // Persist valid archive tombstones before removing local rows. A
                 // rejected operation must not leave deleted data behind a cached state.
+                let mut changes = Vec::new();
                 for global_id in archived {
                     let members = {
-                        let db = self.db.lock().map_err(err)?;
+                        let db = self.writer()?;
                         let mut stmt = db.prepare(
                             "SELECT key,value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0 AND json_extract(value,'$.item_id')=?1"
                         ).map_err(err)?;
@@ -1393,23 +1569,11 @@ END;").map_err(err)?;
                         .map_err(err)?
                     };
                     for (key, value) in members {
-                        self.local_record(key, serde_json::from_str(&value).map_err(err)?, true)?;
+                        changes.push((key, serde_json::from_str(&value).map_err(err)?, true));
                     }
-                    self.local_record(format!("item:{global_id}"), json!({"id": global_id}), true)?;
+                    changes.push((format!("item:{global_id}"), json!({"id": global_id}), true));
                 }
-                {
-                    let mut db = self.db.lock().map_err(err)?;
-                    let tx = db.transaction().map_err(err)?;
-                    for base in bases {
-                        tx.execute(
-                            "DELETE FROM cl_items WHERE global_id=?1 OR global_id=?2",
-                            params![base, format!("archive:{base}")],
-                        )
-                        .map_err(err)?;
-                    }
-                    tx.commit().map_err(err)?;
-                }
-                self.changed();
+                self.local_records_with_delete(changes, &bases.into_iter().collect::<Vec<_>>())?;
             }
             "set_item_title" => {
                 let id = q["id"].as_u64().ok_or("内容 ID 无效")? as i64;
@@ -1421,19 +1585,22 @@ END;").map_err(err)?;
                     .take(200)
                     .collect();
                 let stored = if title.is_empty() { None } else { Some(title) };
-                let db = self.db.lock().map_err(err)?;
-                let updated = db
+                let mut db = self.writer()?;
+                let tx = db.transaction().map_err(err)?;
+                let updated = tx
                     .execute(
                         "UPDATE cl_items SET title=?1 WHERE id=?2",
                         params![stored, id],
                     )
                     .map_err(err)?;
-                drop(db);
                 if updated == 0 {
                     return Err("内容不存在".into());
                 }
+                self.publication_intent_db(&tx, id as u64)?;
+                tx.commit().map_err(err)?;
+                drop(db);
                 self.changed();
-                self.publish_index_for(id as u64)?;
+                self.publication_committed(id as u64)?;
             }
             "set_item_ocr" => {
                 let id = q["id"].as_u64().ok_or("内容 ID 无效")? as i64;
@@ -1445,24 +1612,27 @@ END;").map_err(err)?;
                     .take(20_000)
                     .collect();
                 let version = q["version"].as_u64().unwrap_or(0) as i64;
-                let db = self.db.lock().map_err(err)?;
-                let updated = db
+                let mut db = self.writer()?;
+                let tx = db.transaction().map_err(err)?;
+                let updated = tx
                     .execute(
                         "UPDATE cl_items SET ocr_text=?1,ocr_version=?2 WHERE id=?3",
                         params![if text.is_empty() { None } else { Some(text) }, version, id],
                     )
                     .map_err(err)?;
-                drop(db);
                 if updated == 0 {
                     return Err("内容不存在".into());
                 }
+                self.publication_intent_db(&tx, id as u64)?;
+                tx.commit().map_err(err)?;
+                drop(db);
                 self.changed();
-                self.publish_index_for(id as u64)?;
+                self.publication_committed(id as u64)?;
             }
             "want_item_payload" => {
                 let id = q["id"].as_u64().ok_or("内容 ID 无效")? as i64;
                 let hash: String = {
-                    let db = self.db.lock().map_err(err)?;
+                    let db = self.writer()?;
                     db.query_row(
                         "SELECT COALESCE(blob_hash,'') FROM cl_items WHERE id=?1",
                         [id],
@@ -1477,7 +1647,7 @@ END;").map_err(err)?;
                 }
             }
             "clear_remote_index" => {
-                let db = self.db.lock().map_err(err)?;
+                let db = self.writer()?;
                 db.execute("DELETE FROM cl_items WHERE remote=1", [])
                     .map_err(err)?;
                 drop(db);
@@ -1485,26 +1655,40 @@ END;").map_err(err)?;
             }
             _ => return Err("未知剪贴板操作".into()),
         }
-        self.state()
+        if q["compact"].as_bool().unwrap_or(false) {
+            let mut response = json!({"revision":self.generation(),"counts_revision":self.counts_generation.load(Ordering::Acquire)});
+            let op = q["op"].as_str().unwrap_or("");
+            if matches!(op, "save_list" | "delete_list" | "reorder") {
+                let db = self.reader()?;
+                response["lists"] = serde_json::to_value(lists_db(&db)?).map_err(err)?;
+            }
+            if op == "settings" {
+                response["settings"] = serde_json::to_value(self.settings()?).map_err(err)?;
+            }
+            Ok(response.to_string())
+        } else {
+            self.state()
+        }
     }
     fn membership(&self, list: &str, id: u64, present: bool) -> Result<()> {
-        let (gid, summary, payload, ordinary) = {
-            let db = self.db.lock().map_err(err)?;
-            if !lists_db(&db)?
-                .iter()
-                .any(|l| l.id == list && l.kind == "manual")
-            {
+        let (gid, summary, ordinary, body_hash) = {
+            let db = self.writer()?;
+            let manual: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cl_records WHERE key=?1 AND deleted=0 AND json_extract(value,'$.kind')='manual')",
+                [format!("list:{list}")], |r| r.get(0),
+            ).map_err(err)?;
+            if !manual {
                 return Err("只能加入手动列表".into());
             }
             db.query_row(
-                "SELECT global_id,summary,payload,ordinary FROM cl_items WHERE id=?1",
+                "SELECT global_id,summary,ordinary,blob_hash FROM cl_items WHERE id=?1",
                 [id],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
-                        r.get::<_, Option<Vec<u8>>>(2)?,
-                        r.get::<_, bool>(3)?,
+                        r.get::<_, bool>(2)?,
+                        r.get::<_, Option<String>>(3)?,
                     ))
                 },
             )
@@ -1516,7 +1700,7 @@ END;").map_err(err)?;
             gid
         };
         let existing_archive = if present {
-            let db = self.db.lock().map_err(err)?;
+            let db = self.writer()?;
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM cl_items WHERE global_id=?1 AND ordinary=0)",
                 [&gid],
@@ -1526,7 +1710,6 @@ END;").map_err(err)?;
         } else {
             false
         };
-        let mut archive_blob = None;
         // Reuse the frozen archive across lists. A refreshed ordinary row can
         // have a different app/date; it must not replace already pinned content.
         // A metadata-only remote archive can join another list while its original
@@ -1534,40 +1717,67 @@ END;").map_err(err)?;
         if present && !existing_archive {
             // A short synced text is complete in its summary; freeze that text
             // instead of failing until the richer payload transfer arrives.
-            let snapshot = match payload {
-                Some(bytes) => decode(&bytes)?,
-                None => {
-                    let summary: Summary = serde_json::from_str(&summary).map_err(err)?;
-                    reconstructed_text_snapshot(&summary).ok_or("内容尚未同步")?
+            let summary_value: Value = serde_json::from_str(&summary).map_err(err)?;
+            if summary_value["file_count"].as_u64().unwrap_or(0) == 0
+                && let Some(hash) = body_hash
+            {
+                let available: bool = self
+                    .reader()?
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM cl_blobs WHERE hash=?1)",
+                        [&hash],
+                        |r| r.get(0),
+                    )
+                    .map_err(err)?;
+                if available {
+                    return self.local_records_with_delete(
+                        vec![
+                            (
+                                format!("item:{gid}"),
+                                json!({"id":gid,"summary":summary_value,"blob_hash":hash}),
+                                false,
+                            ),
+                            (
+                                format!("member:{list}:{gid}"),
+                                json!({"list_id":list,"item_id":gid}),
+                                false,
+                            ),
+                        ],
+                        &[],
+                    );
                 }
-            };
+            }
+            let snapshot = self.snapshot(id)?;
             let device = self.device.lock().map_err(err)?.clone();
             let snapshot = crate::library_files::register(&snapshot, &device)?;
             let bytes = encode(&snapshot, "归档")?;
             let hash = hex::encode(Sha256::digest(&bytes));
             self.write_blob(&hash, &bytes)?;
             let summary: Value = serde_json::from_str(&summary).map_err(err)?;
-            self.local_record(
-                format!("item:{gid}"),
-                json!({"id":gid,"summary":summary,"blob_hash":hash}),
-                false,
-            )?;
-            archive_blob = Some((hash, bytes));
+            return self.local_records_with_delete(
+                vec![
+                    (
+                        format!("item:{gid}"),
+                        json!({"id":gid,"summary":summary,"blob_hash":hash}),
+                        false,
+                    ),
+                    (
+                        format!("member:{list}:{gid}"),
+                        json!({"list_id":list,"item_id":gid}),
+                        false,
+                    ),
+                ],
+                &[],
+            );
         }
         self.local_record(
             format!("member:{list}:{gid}"),
             json!({"list_id":list,"item_id":gid}),
             !present,
-        )?;
-        // A former remove may be reconciled between the item and causal re-add.
-        // Hydrate again after the membership exists so re-adding cannot lose data.
-        if let Some((hash, bytes)) = archive_blob {
-            self.write_blob(&hash, &bytes)?;
-        }
-        Ok(())
+        )
     }
     pub fn export_operations(&self, after: u64, limit: usize) -> Result<Vec<Value>> {
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
         let mut stmt = db
             .prepare("SELECT seq,body FROM cl_operations WHERE seq>?1 ORDER BY seq LIMIT ?2")
             .map_err(err)?;
@@ -1585,15 +1795,25 @@ END;").map_err(err)?;
         .collect()
     }
     fn local_record(&self, key: String, value: Value, deleted: bool) -> Result<()> {
+        self.local_records_with_delete(vec![(key, value, deleted)], &[])
+    }
+    fn local_records_with_delete(
+        &self,
+        changes: Vec<(String, Value, bool)>,
+        bases: &[String],
+    ) -> Result<()> {
+        if changes.is_empty() {
+            return self.merge_operations_with_delete(Vec::new(), bases);
+        }
         let author = self.device.lock().map_err(err)?.clone();
         if author.is_empty() {
             return Err("设备身份尚未就绪".into());
         }
-        let mut db = self.db.lock().map_err(err)?;
+        let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
         let previous: u64 = tx
             .query_row(
-                "SELECT COALESCE(MAX(json_extract(body,'$.revision')),0) FROM cl_operations",
+                "SELECT COALESCE(MAX(revision),0) FROM cl_author_clocks",
                 [],
                 |r| r.get(0),
             )
@@ -1606,35 +1826,44 @@ END;").map_err(err)?;
             .map_err(err)?
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let revision = previous
-            .max(local)
-            .checked_add(1)
-            .filter(|v| *v <= i64::MAX as u64)
-            .ok_or("列表版本已溢出")?;
-        tx.execute("INSERT INTO cl_meta VALUES('counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[revision.to_string()]).map_err(err)?;
+        let mut revision = previous.max(local);
         let mut clock = std::collections::BTreeMap::<String, u64>::new();
         {
-            let mut stmt=tx.prepare("SELECT json_extract(body,'$.author'),MAX(json_extract(body,'$.revision')) FROM cl_operations GROUP BY json_extract(body,'$.author')").map_err(err)?;
-            for row in stmt
+            let mut statement = tx
+                .prepare("SELECT author,revision FROM cl_author_clocks")
+                .map_err(err)?;
+            for row in statement
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))
                 .map_err(err)?
             {
-                let (a, r) = row.map_err(err)?;
-                clock.insert(a, r);
+                let (author, revision) = row.map_err(err)?;
+                clock.insert(author, revision);
             }
         }
-        clock.insert(author.clone(), revision);
+        let mut operations = Vec::with_capacity(changes.len());
+        for (key, value, deleted) in changes {
+            revision = revision
+                .checked_add(1)
+                .filter(|v| *v <= i64::MAX as u64)
+                .ok_or("列表版本已溢出")?;
+            clock.insert(author.clone(), revision);
+            operations.push(json!({"op_id":uuid::Uuid::new_v4().to_string(),"key":key,"revision":revision,"author":author,"clock":clock,"deleted":deleted,"value":value}));
+        }
+        tx.execute("INSERT INTO cl_meta VALUES('counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[revision.to_string()]).map_err(err)?;
         tx.commit().map_err(err)?;
         drop(db);
-        self.merge_operations(vec![json!({"op_id":uuid::Uuid::new_v4().to_string(),"key":key,"revision":revision,"author":author,"clock":clock,"deleted":deleted,"value":value})])
+        self.merge_operations_with_delete(operations, bases)
     }
 
     pub fn merge_operations(&self, ops: Vec<Value>) -> Result<()> {
-        let mut db = self.db.lock().map_err(err)?;
+        self.merge_operations_with_delete(ops, &[])
+    }
+    fn merge_operations_with_delete(&self, ops: Vec<Value>, bases: &[String]) -> Result<()> {
+        let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
         let sync_index = settings_db(&tx)?.sync_index;
         let mut changed = false;
-        let mut needs_reconcile = false;
+        let mut reconcile_items = HashSet::new();
         for mut op in ops {
             op.as_object_mut().ok_or("同步操作无效")?.remove("seq");
             let op_id = op["op_id"].as_str().ok_or("同步操作缺少ID")?;
@@ -1682,7 +1911,7 @@ END;").map_err(err)?;
             if inserted == 0 {
                 continue;
             }
-            changed = true;
+            changed |= !key.starts_with("index:");
             let previous: Option<(u64, String, bool)> = tx
                 .query_row(
                     "SELECT revision,author,deleted FROM cl_records WHERE key=?1",
@@ -1707,11 +1936,13 @@ END;").map_err(err)?;
                 // be concurrent with a previously losing removal. Recompute the
                 // causal frontier from durable operations, then remove wins only
                 // among concurrent maxima; a causally newer add may restore it.
-                let winner = member_winner(&tx, key)?;
+                let winner = member_winner(&tx, key, &op)?;
                 tx.execute("INSERT INTO cl_clocks VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, serde_json::to_string(&winner["clock"]).map_err(err)?]).map_err(err)?;
                 tx.execute("INSERT INTO cl_records VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,author=excluded.author,deleted=excluded.deleted,value=excluded.value",
                     params![key, winner["revision"].as_u64(), winner["author"].as_str(), winner["deleted"].as_bool(), serde_json::to_string(&winner["value"]).map_err(err)?]).map_err(err)?;
-                needs_reconcile = true;
+                if let Some(id) = value["item_id"].as_str() {
+                    reconcile_items.insert(id.to_string());
+                }
                 continue;
             }
             let old_clock: std::collections::BTreeMap<String, u64> = tx
@@ -1743,19 +1974,45 @@ END;").map_err(err)?;
             });
 
             if accept {
-                needs_reconcile |= key.starts_with("item:") || key.starts_with("list:");
+                if let Some(id) = key.strip_prefix("item:") {
+                    reconcile_items.insert(id.to_string());
+                }
+                if let Some(list) = key.strip_prefix("list:")
+                    && previous
+                        .as_ref()
+                        .is_none_or(|(_, _, old_deleted)| *old_deleted != deleted)
+                {
+                    let mut members = tx.prepare("SELECT json_extract(value,'$.item_id') FROM cl_records WHERE key GLOB 'member:*' AND json_extract(value,'$.list_id')=?1").map_err(err)?;
+                    for item in members
+                        .query_map([list], |r| r.get::<_, String>(0))
+                        .map_err(err)?
+                    {
+                        reconcile_items.insert(item.map_err(err)?);
+                    }
+                }
                 tx.execute("INSERT INTO cl_clocks VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(&clock).map_err(err)?]).map_err(err)?;
                 tx.execute("INSERT INTO cl_records VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,author=excluded.author,deleted=excluded.deleted,value=excluded.value",params![key,revision,author,deleted,serde_json::to_string(value).map_err(err)?]).map_err(err)?;
                 if key.starts_with("item:") && !deleted {
                     materialize(&tx, value)?;
                 }
                 if key.starts_with("index:") && !deleted && sync_index {
+                    let before = tx.total_changes();
                     materialize_index(&tx, value, author)?;
+                    changed |= tx.total_changes() > before;
                 }
             }
         }
-        if needs_reconcile {
-            reconcile_archives(&tx)?;
+        if !reconcile_items.is_empty() {
+            reconcile_archives(&tx, &reconcile_items)?;
+        }
+        for base in bases {
+            changed |= tx
+                .execute(
+                    "DELETE FROM cl_items WHERE global_id=?1 OR global_id=?2",
+                    params![base, format!("archive:{base}")],
+                )
+                .map_err(err)?
+                > 0;
         }
         tx.commit().map_err(err)?;
         drop(db);
@@ -1765,7 +2022,7 @@ END;").map_err(err)?;
         Ok(())
     }
     pub fn read_blob(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let db = self.db.lock().map_err(err)?;
+        let db = self.reader()?;
         let archived: Option<Vec<u8>> = db
             .query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [id], |r| {
                 r.get(0)
@@ -1790,20 +2047,16 @@ END;").map_err(err)?;
         if hex::encode(Sha256::digest(bytes)) != id {
             return Err("归档内容校验失败".into());
         }
-        let _ = decode(bytes)?;
-        let db = self.db.lock().map_err(err)?;
+        let text = decode(bytes)?.text.unwrap_or_default().to_lowercase();
+        let db = self.writer()?;
         db.execute(
             "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
             params![id, bytes],
         )
         .map_err(err)?;
         db.execute(
-            "UPDATE cl_items SET payload=?1,search_text=?3 WHERE blob_hash=?2",
-            params![
-                bytes,
-                id,
-                decode(bytes)?.text.unwrap_or_default().to_lowercase()
-            ],
+            "UPDATE cl_items SET payload=NULL,search_text=?2 WHERE blob_hash=?1 AND (payload IS NOT NULL OR search_text IS NOT ?2)",
+            params![id,text],
         )
         .map_err(err)?;
         drop(db);
@@ -1817,7 +2070,7 @@ END;").map_err(err)?;
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("内容摘要无效".into());
         }
-        let db = self.db.lock().map_err(err)?;
+        let db = self.writer()?;
         let raw: Option<String> = db
             .query_row(
                 "SELECT value FROM cl_meta WHERE key='wanted_blobs'",
@@ -1848,7 +2101,7 @@ END;").map_err(err)?;
     /// Take and clear the pending fetch list. Called by the library sync worker
     /// on its tick; clearing avoids re-requesting the same blob every tick.
     pub fn take_wanted_blobs(&self) -> Result<Vec<String>> {
-        let db = self.db.lock().map_err(err)?;
+        let db = self.writer()?;
         let raw: Option<String> = db
             .query_row(
                 "SELECT value FROM cl_meta WHERE key='wanted_blobs'",
@@ -1864,6 +2117,17 @@ END;").map_err(err)?;
             .map_err(err)?;
         Ok(serde_json::from_str(&raw).unwrap_or_default())
     }
+}
+fn cleared_history_id(db: &Connection) -> Result<u64> {
+    Ok(db
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM cl_meta WHERE key='cleared_history_id'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(err)?
+        .unwrap_or(0))
 }
 fn fts_query(query: &str) -> Option<String> {
     let chars: Vec<char> = query.chars().collect();
@@ -1925,7 +2189,7 @@ fn memberships_for(
     // row. The returned values are still bounded by the page's item IDs.
     let predicates = item_ids
         .iter()
-        .map(|_| "key LIKE ?")
+        .map(|_| "json_extract(value,'$.item_id')=?")
         .collect::<Vec<_>>()
         .join(" OR ");
     let sql = format!(
@@ -1933,7 +2197,7 @@ fn memberships_for(
     );
     let params = item_ids
         .iter()
-        .map(|item_id| SqlValue::Text(format!("member:%:{item_id}")))
+        .map(|item_id| SqlValue::Text(item_id.clone()))
         .collect::<Vec<_>>();
     let mut stmt = db.prepare(&sql).map_err(err)?;
     for raw in stmt
@@ -1981,22 +2245,6 @@ fn lists_db(db: &Connection) -> Result<Vec<List>> {
     lists.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
     Ok(lists)
 }
-fn members_db(db: &Connection) -> Result<Vec<(String, String)>> {
-    let lists = lists_db(db)?;
-    let mut stmt = db
-        .prepare("SELECT value FROM cl_records WHERE key GLOB 'member:*' AND deleted=0")
-        .map_err(err)?;
-    let mut out = vec![];
-    for raw in stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)? {
-        let v: Value = serde_json::from_str(&raw.map_err(err)?).map_err(err)?;
-        if let (Some(l), Some(i)) = (v["list_id"].as_str(), v["item_id"].as_str())
-            && lists.iter().any(|s| s.id == l)
-        {
-            out.push((l.into(), i.into()));
-        }
-    }
-    Ok(out)
-}
 fn materialize(db: &Connection, v: &Value) -> Result<()> {
     let gid = v["id"].as_str().ok_or("归档ID无效")?;
     let hash = v["blob_hash"].as_str().ok_or("归档摘要无效")?;
@@ -2006,7 +2254,7 @@ fn materialize(db: &Connection, v: &Value) -> Result<()> {
     let mut s: Summary = serde_json::from_value(v["summary"].clone()).map_err(err)?;
     let existing: Option<(u64, Option<String>, bool)> = db
         .query_row(
-            "SELECT id,blob_hash,payload IS NOT NULL FROM cl_items WHERE global_id=?1",
+            "SELECT id,blob_hash,(payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE global_id=?1",
             [gid],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -2017,26 +2265,38 @@ fn materialize(db: &Connection, v: &Value) -> Result<()> {
     {
         s.id = id;
         db.execute(
-            "UPDATE cl_items SET summary=?1,copied=?2 WHERE id=?3",
+            "UPDATE cl_items SET summary=?1,copied=?2 WHERE id=?3 AND (summary IS NOT ?1 OR copied IS NOT ?2)",
             params![serde_json::to_string(&s).map_err(err)?, s.copied_at_ms, id],
         )
         .map_err(err)?;
         return Ok(());
     }
-    let bytes: Option<Vec<u8>> = db
-        .query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [hash], |r| {
-            r.get(0)
-        })
+    let existing_text: Option<String> = db
+        .query_row(
+            "SELECT search_text FROM cl_items WHERE blob_hash=?1 LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(err)?;
-    let text = bytes
-        .as_deref()
-        .map(decode)
-        .transpose()?
-        .and_then(|s| s.text)
-        .unwrap_or_default()
-        .to_lowercase();
-    db.execute("INSERT OR IGNORE INTO cl_items(global_id,digest,summary,payload,search_text,copied,imported,ordinary,blob_hash,origin_device) VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?9)",params![gid,hash,serde_json::to_string(&s).map_err(err)?,bytes,text,s.copied_at_ms,now_ms(),hash,s.source_device_id]).map_err(err)?;
+    let text = if let Some(text) = existing_text {
+        text
+    } else {
+        let bytes: Option<Vec<u8>> = db
+            .query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [hash], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(err)?;
+        bytes
+            .as_deref()
+            .map(decode)
+            .transpose()?
+            .and_then(|s| s.text)
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    db.execute("INSERT OR IGNORE INTO cl_items(global_id,digest,summary,payload,search_text,copied,imported,ordinary,blob_hash,origin_device) VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?9)",params![gid,hash,serde_json::to_string(&s).map_err(err)?,Option::<Vec<u8>>::None,text,s.copied_at_ms,now_ms(),hash,s.source_device_id]).map_err(err)?;
     s.id = db
         .query_row("SELECT id FROM cl_items WHERE global_id=?1", [gid], |r| {
             r.get(0)
@@ -2044,7 +2304,7 @@ fn materialize(db: &Connection, v: &Value) -> Result<()> {
         .map_err(err)?;
     db.execute(
         "UPDATE cl_items SET summary=?1,payload=?3,search_text=?4,blob_hash=?5,digest=?5,copied=?6,origin_device=?7 WHERE global_id=?2",
-        params![serde_json::to_string(&s).map_err(err)?, gid, bytes, text, hash, s.copied_at_ms, s.source_device_id],
+        params![serde_json::to_string(&s).map_err(err)?, gid, Option::<Vec<u8>>::None, text, hash, s.copied_at_ms, s.source_device_id],
     )
     .map_err(err)?;
     Ok(())
@@ -2181,6 +2441,7 @@ fn validate_list(l: &List) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 fn matches_rule(
     index: usize,
     r: &Rule,
@@ -2467,21 +2728,7 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
 
 // Rebuild active member projections after out-of-order delivery; reclaim only archives
 // with observed membership operations, never items waiting for their first membership.
-fn reconcile_archives(db: &Connection) -> Result<()> {
-    let active = members_db(db)?;
-    let mut seen = std::collections::BTreeSet::new();
-    {
-        let mut stmt = db
-            .prepare("SELECT value FROM cl_records WHERE key GLOB 'member:*'")
-            .map_err(err)?;
-        for raw in stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)? {
-            let v: Value = serde_json::from_str(&raw.map_err(err)?).map_err(err)?;
-            if let Some(id) = v["item_id"].as_str() {
-                seen.insert(id.to_string());
-            }
-        }
-    }
-    let mut retired_hashes = std::collections::BTreeSet::new();
+fn reconcile_archives(db: &Connection, seen: &HashSet<String>) -> Result<()> {
     for id in seen {
         let deleted: bool = db
             .query_row(
@@ -2490,7 +2737,8 @@ fn reconcile_archives(db: &Connection) -> Result<()> {
                 |row| row.get(0),
             )
             .map_err(err)?;
-        if !deleted && active.iter().any(|(_, i)| i == &id) {
+        let active: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM cl_records m JOIN cl_records l ON l.key='list:' || json_extract(m.value,'$.list_id') AND l.deleted=0 WHERE m.key GLOB 'member:*' AND m.deleted=0 AND json_extract(m.value,'$.item_id')=?1)", [id], |r| r.get(0)).map_err(err)?;
+        if !deleted && active {
             let raw: Option<String> = db
                 .query_row(
                     "SELECT value FROM cl_records WHERE key=?1 AND deleted=0",
@@ -2503,18 +2751,6 @@ fn reconcile_archives(db: &Connection) -> Result<()> {
                 materialize(db, &serde_json::from_str(&raw).map_err(err)?)?;
             }
         } else {
-            let hash: Option<String> = db
-                .query_row(
-                    "SELECT blob_hash FROM cl_items WHERE global_id=?1 AND ordinary=0",
-                    [&id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(err)?
-                .flatten();
-            if let Some(hash) = hash {
-                retired_hashes.insert(hash);
-            }
             db.execute(
                 "DELETE FROM cl_items WHERE global_id=?1 AND ordinary=0",
                 [id],
@@ -2522,29 +2758,41 @@ fn reconcile_archives(db: &Connection) -> Result<()> {
             .map_err(err)?;
         }
     }
-    for hash in retired_hashes {
-        db.execute("DELETE FROM cl_blobs WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM cl_items WHERE blob_hash=?1)", [hash]).map_err(err)?;
-    }
     Ok(())
 }
 
 /// Return the remove-wins register value over the maximal causal operations.
 /// The query is indexed by record key and never loads clipboard payloads.
-fn member_winner(db: &Connection, key: &str) -> Result<Value> {
+fn member_winner(db: &Connection, key: &str, incoming: &Value) -> Result<Value> {
     type Clock = std::collections::BTreeMap<String, u64>;
     let mut frontier: Vec<(Value, Clock)> = Vec::new();
-    let mut statement = db
-        .prepare("SELECT body FROM cl_operations WHERE json_extract(body,'$.key')=?1 ORDER BY seq")
+    let ready: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM cl_member_frontier_state WHERE key=?1)",
+            [key],
+            |r| r.get(0),
+        )
         .map_err(err)?;
-    let rows = statement
+    let sql = if ready {
+        "SELECT body FROM cl_member_frontier WHERE key=?1"
+    } else {
+        "SELECT body FROM cl_operations WHERE json_extract(body,'$.key')=?1 ORDER BY seq"
+    };
+    let mut statement = db.prepare(sql).map_err(err)?;
+    let mut rows = statement
         .query_map([key], |row| row.get::<_, String>(0))
+        .map_err(err)?
+        .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(err)?;
+    if ready {
+        rows.push(serde_json::to_string(incoming).map_err(err)?);
+    }
     let dominates = |a: &Clock, b: &Clock| {
         b.iter()
             .all(|(device, revision)| a.get(device).unwrap_or(&0) >= revision)
     };
     for row in rows {
-        let value: Value = serde_json::from_str(&row.map_err(err)?).map_err(err)?;
+        let value: Value = serde_json::from_str(&row).map_err(err)?;
         let clock: Clock = serde_json::from_value(value["clock"].clone()).map_err(err)?;
         if frontier
             .iter()
@@ -2555,6 +2803,24 @@ fn member_winner(db: &Connection, key: &str) -> Result<Value> {
         frontier.retain(|(_, old)| !dominates(&clock, old) || old == &clock);
         frontier.push((value, clock));
     }
+    db.execute("DELETE FROM cl_member_frontier WHERE key=?1", [key])
+        .map_err(err)?;
+    for (value, _) in &frontier {
+        db.execute(
+            "INSERT INTO cl_member_frontier VALUES(?1,?2,?3)",
+            params![
+                key,
+                value["op_id"].as_str(),
+                serde_json::to_string(value).map_err(err)?
+            ],
+        )
+        .map_err(err)?;
+    }
+    db.execute(
+        "INSERT OR IGNORE INTO cl_member_frontier_state VALUES(?1)",
+        [key],
+    )
+    .map_err(err)?;
     frontier
         .into_iter()
         .map(|(value, _)| value)

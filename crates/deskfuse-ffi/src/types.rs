@@ -651,6 +651,9 @@ pub enum EngineEvent {
         target_pid: i32,
         change_count: i64,
     },
+    ClipboardLibraryChanged {
+        revision: u64,
+    },
     StageFiles {
         paths: Vec<String>,
     },

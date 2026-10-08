@@ -30,17 +30,21 @@ struct ClipboardView: View {
     @State private var presentation = ClipboardPagePresentation()
     @State private var nextOffset: Int?
     @State private var nextCursor: ClipboardLibraryCursor?
-    @State private var total = 0
+    @State private var total: Int?
+    @State private var pageRevision: UInt64?
+    @State private var countTask: Task<Void, Never>?
     @State private var searching = false
     @State private var pageRequest = UUID()
     @State private var paginationGeneration = UUID()
     @State private var queryRevision = 0
+    @State private var debouncedSearch = ""
+    private var filterKey: String { "\(listID ?? "")|\(search)|\(source ?? "")" }
     @State private var copyToken: String?
     @State private var copyError: String?
     @State private var copiedID: UInt64?
 
     private var items: [HistoryItem] { presentation.items }
-    private var queryKey: String { "\(listID ?? "")|\(search)|\(source ?? "")|\(library.revision)|\(snapshot.history.map(\.id))|\(queryRevision)" }
+    private var queryKey: String { "\(listID ?? "")|\(search)|\(source ?? "")|\(library.revision)|\(library.reloadRevision)|\(snapshot.history.map(\.id))|\(queryRevision)" }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -53,7 +57,7 @@ struct ClipboardView: View {
                     selected: $selected, search: $search, source: $source,
                     displayMode: $displayMode,
                     searchRequest: searchRequest, searching: searching,
-                    historyIsEmpty: total == 0 && search.isEmpty && listID == nil,
+                    historyIsEmpty: items.isEmpty && !searching && search.isEmpty && listID == nil,
                     syncEnabled: Binding(get: { snapshot.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
                     selectedImage: content?.id == selected ? previewImage : nil,
                     client: store.client,
@@ -62,10 +66,15 @@ struct ClipboardView: View {
                     metas: presentation.metas,
                     onRename: { id, title in library.rename(id, title: title) },
                     onDelete: { ids in
+                        for item in items where ids.contains(item.id) {
+                            library.remember(item, memberships: presentation.memberships[item.id] ?? [], title: presentation.titles[item.id])
+                        }
                         library.delete(ids)
+                        rebuildPresentation()
+                        if let id = selected, library.isLocallyDeleted(id) { selected = items.first?.id }
                         cancelCopy(); copyError = nil; copiedID = nil
                     },
-                    listID: $listID, total: total, memberships: presentation.memberships,
+                    listID: $listID, total: search.isEmpty && source == nil ? library.counts[listID ?? "all"] ?? total : total, memberships: presentation.memberships,
                     hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, loadMore: { Task { await loadPage(append: true) } }
                 )
             } detail: {
@@ -87,13 +96,20 @@ struct ClipboardView: View {
         .task {
             while !Task.isCancelled {
                 await library.refresh()
-                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
         .task(id: queryKey) {
             rebuildPresentation()
             await loadPage(append: false)
         }
+        .onChange(of: library.presentationRevision) { _, _ in rebuildPresentation() }
+        .onChange(of: filterKey) { _, _ in
+            let cached = library.cachedPage(listID: listID, search: search, source: source)
+            pageItems = cached?.items ?? []; pageRevision = cached?.revision
+            rebuildPresentation()
+        }
+        .onDisappear { countTask?.cancel() }
         .onChange(of: snapshot.history.map(\.id)) { _, _ in rebuildPresentation() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in queryRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in queryRevision += 1 }
@@ -202,6 +218,7 @@ struct ClipboardView: View {
     /// Selection, focus, preview and copy state now reuse these arrays instead
     /// of walking every loaded history row on each SwiftUI body evaluation.
     @MainActor private func rebuildPresentation() {
+        let pageItems = library.project(pageItems, revision: pageRevision, listID: listID, search: search, source: source)
         var seen = Set<UInt64>()
         var page = pageItems.compactMap { item -> HistoryItem? in
             let display = library.displayItem(item, snapshot: snapshot)
@@ -217,7 +234,7 @@ struct ClipboardView: View {
         // while the first library page is arriving. It is merged only for the
         // unfiltered history view; smart lists and searches remain query-driven.
         if search.isEmpty, source == nil, listID == nil, !snapshot.history.isEmpty {
-            let fresh = snapshot.history.filter { seen.insert($0.id).inserted }
+            let fresh = snapshot.history.filter { !library.isLocallyDeleted($0.id) && seen.insert($0.id).inserted }
             if !fresh.isEmpty {
                 for item in fresh { order[item.id] = item.copiedAtMs ?? 0 }
                 page.append(contentsOf: fresh)
@@ -265,10 +282,19 @@ struct ClipboardView: View {
         let request = UUID(); pageRequest = request
         if !append { paginationGeneration = UUID() }
         searching = true
+        if !append {
+            countTask?.cancel()
+            if let cached = library.cachedPage(listID: listID, search: search, source: source) {
+                pageItems = cached.items; pageRevision = cached.revision; rebuildPresentation()
+            }
+        }
         defer { if pageRequest == request { searching = false } }
         do {
             // Debounce typing, not window presentation or history refresh.
-            if !append && !search.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
+            if !append, !search.isEmpty, debouncedSearch != search {
+                debouncedSearch = search
+                try await Task.sleep(for: .milliseconds(120))
+            } else if search.isEmpty { debouncedSearch = "" }
             let result = try await library.query(
                 listID: listID,
                 search: search,
@@ -284,10 +310,21 @@ struct ClipboardView: View {
                     pageItems.removeFirst(pageItems.count - ClipboardPaging.maxLoadedItems)
                 }
             } else { pageItems = result.items }
-            total = result.total; nextOffset = result.next_offset; nextCursor = result.next_cursor
+            pageRevision = append ? min(pageRevision ?? 0, result.revision ?? 0) : result.revision
+            if result.total_exact != false { total = result.total }
+            nextOffset = result.next_offset; nextCursor = result.next_cursor
             rebuildPresentation()
             scheduleOCR(result.items)
             if let target = navigationSelected, pageItems.contains(where: { $0.id == target }) { selected = target; navigationSelected = nil }
+            if !append {
+                total = nil
+                let list = listID, query = search, device = source
+                countTask = Task(priority: .utility) {
+                    guard let value = try? await library.queryTotal(listID: list, search: query, source: device),
+                          !Task.isCancelled, queryKey == key else { return }
+                    total = value
+                }
+            }
         } catch { if !Task.isCancelled, pageRequest == request, key == queryKey { store.error = error.userFacingMessage } }
     }
 

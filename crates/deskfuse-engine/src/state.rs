@@ -41,6 +41,7 @@ impl EngineState {
     pub fn apply(&mut self, event: UiEvent) -> bool {
         let model = &mut self.model;
         let changed = match event {
+            UiEvent::ClipboardLibraryChanged(_) => false,
             UiEvent::FilePasteAcquiring {
                 paste_id,
                 transfer_id,

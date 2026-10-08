@@ -1,0 +1,562 @@
+//! Regression cases exercise the old store, interrupted jobs and causal merges.
+use super::*;
+
+fn text(library: &Library, value: &str) -> u64 {
+    library
+        .ingest(
+            &PasteboardSnapshot {
+                text: Some(value.into()),
+                ..Default::default()
+            },
+            "local",
+        )
+        .unwrap()
+        .unwrap()
+}
+fn page(library: &Library, query: &str) -> Value {
+    serde_json::from_str(
+        &library
+            .query(&json!({"op":"items","query":query,"include_total":false}).to_string())
+            .unwrap(),
+    )
+    .unwrap()
+}
+fn finish_metadata(library: &Library) {
+    while !library.metadata_ready.load(Ordering::Acquire) {
+        library.storage_step().unwrap();
+    }
+}
+
+#[test]
+fn membership_archives_once_and_returns_both_action_ids() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library.mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#).unwrap();
+    let id = text(&library, "one atomic group action");
+    let before = library.generation();
+    library.membership("group", id, true).unwrap();
+    assert_eq!(library.generation(), before + 1);
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let archived = manual["items"][0]["id"].as_u64().unwrap();
+    assert_ne!(archived, id);
+    let aliases = manual["items"][0]["related_ids"].as_array().unwrap();
+    assert!(aliases.contains(&json!(id)));
+    assert!(aliases.contains(&json!(archived)));
+    assert_eq!(
+        library.snapshot(archived).unwrap().text.as_deref(),
+        Some("one atomic group action")
+    );
+    library
+        .mutate(&json!({"op":"delete_items","ids":[archived],"compact":true}).to_string())
+        .unwrap();
+    assert!(page(&library, "")["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn normalized_payload_survives_legacy_backfill_and_metadata_edits() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, "complete native content");
+    let bytes = encode(&library.snapshot(id).unwrap(), "local").unwrap();
+    let hash = hex::encode(Sha256::digest(&bytes));
+    {
+        let db = library.writer().unwrap();
+        // Restore the actual old representation, including an incomplete
+        // projection. A crash/restart can resume from the persisted cursor.
+        db.execute(
+            "UPDATE cl_items SET payload=?1,blob_hash=NULL WHERE id=?3",
+            params![bytes, hash, id],
+        )
+        .unwrap();
+        db.execute("DELETE FROM cl_blobs WHERE hash=?1", [&hash])
+            .unwrap();
+        db.execute("DELETE FROM cl_item_metadata", []).unwrap();
+    }
+    assert_eq!(
+        library.snapshot(id).unwrap().text.as_deref(),
+        Some("complete native content")
+    );
+    finish_metadata(&library);
+    library.migrate_payload_step().unwrap();
+    library
+        .mutate(
+            &json!({"op":"set_item_title","id":id,"title":"changed","compact":true}).to_string(),
+        )
+        .unwrap();
+    assert_eq!(
+        library.snapshot(id).unwrap().text.as_deref(),
+        Some("complete native content")
+    );
+    let db = library.reader().unwrap();
+    assert!(
+        db.query_row(
+            "SELECT payload IS NULL FROM cl_items WHERE id=?1",
+            [id],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        db.query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [hash], |r| r
+            .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn short_unicode_search_is_exact_during_backfill_and_after_edits() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, &format!("{}A测试İ literal%_", "x".repeat(510)));
+    finish_metadata(&library);
+    for needle in ["测", "测试", "%_", "i\u{307}", "A测"] {
+        assert_eq!(
+            page(&library, needle)["items"].as_array().unwrap().len(),
+            1,
+            "pending {needle}"
+        );
+    }
+    while library.storage_step().unwrap() {}
+    for needle in ["测", "测试", "%_", "i\u{307}", "a测"] {
+        assert_eq!(
+            page(&library, needle)["items"][0]["id"],
+            id,
+            "indexed {needle}"
+        );
+    }
+    assert!(
+        page(&library, "不存在")["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    library
+        .mutate(&json!({"op":"set_item_title","id":id,"title":"分组","compact":true}).to_string())
+        .unwrap();
+    assert_eq!(page(&library, "分组")["items"][0]["id"], id);
+    while library.storage_step().unwrap() {}
+    library
+        .mutate(&json!({"op":"set_item_title","id":id,"title":"","compact":true}).to_string())
+        .unwrap();
+    assert!(
+        page(&library, "分组")["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(page(&library, "测试")["total_exact"], false);
+}
+
+#[test]
+fn expiry_hides_rows_before_any_cleanup_and_usage_does_not_recount() {
+    let library = Library::open().unwrap();
+    let id = text(&library, "expired");
+    let before = library.counts_generation.load(Ordering::Acquire);
+    library.mark_used(id).unwrap();
+    assert_eq!(library.counts_generation.load(Ordering::Acquire), before);
+    library
+        .writer()
+        .unwrap()
+        .execute("UPDATE cl_items SET copied=1,imported=1 WHERE id=?1", [id])
+        .unwrap();
+    assert!(page(&library, "")["items"].as_array().unwrap().is_empty());
+    assert!(library.snapshot(id).is_err());
+    assert!(library.prune_step().unwrap());
+}
+
+#[test]
+fn smart_predicates_match_reference_for_missing_sources_unicode_and_dates() {
+    let library = Library::open().unwrap();
+    let id = text(&library, "数据库 test");
+    library
+        .writer()
+        .unwrap()
+        .execute(
+            "UPDATE cl_items SET title='Résumé',ocr_text='OCR文字' WHERE id=?1",
+            [id],
+        )
+        .unwrap();
+    let db = library.reader().unwrap();
+    let raw: String = db
+        .query_row("SELECT summary FROM cl_items WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let s: Summary = serde_json::from_str(&raw).unwrap();
+    let q = json!({"day_start_ms":0,"day_end_ms":u64::MAX,"rule_windows":{"0":{"start":0,"end":u64::MAX}}});
+    for (field, op, value) in [
+        ("app", "is_not", "unknown"),
+        ("device", "is", "unknown"),
+        ("kind", "is", "text"),
+        ("text", "contains", "数据库"),
+        ("text", "contains", "RÉSUMÉ"),
+        ("text", "not_contains", "missing"),
+        ("date", "today", ""),
+    ] {
+        let r = Rule {
+            field: field.into(),
+            op: op.into(),
+            value: value.into(),
+            value2: String::new(),
+        };
+        let mut params = vec![];
+        let predicate = query::rule(0, &r, &q, &mut params);
+        let actual: bool = db
+            .query_row(
+                &format!("SELECT COALESCE({predicate},0) FROM cl_items i WHERE i.id={id}"),
+                params_from_iter(params.iter()),
+                |row| row.get(0),
+            )
+            .unwrap();
+        let expected = matches_rule(0, &r, &s, "数据库 test", "résumé", "ocr文字", &q);
+        assert_eq!(actual, expected, "{field}/{op}/{value}");
+    }
+}
+
+#[test]
+fn member_frontier_keeps_concurrent_removal_and_causal_readd_for_all_orders() {
+    let make = |author: &str, deleted, clock: Value| json!({"op_id":author,"key":"member:list:archive:item","revision":1,"author":author,"clock":clock,"deleted":deleted,"value":{"list_id":"list","item_id":"archive:item"}});
+    let ops = [
+        make("a", false, json!({"a":1})),
+        make("b", true, json!({"b":1})),
+        make("c", false, json!({"a":1,"c":1})),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let library = Library::open().unwrap();
+        for index in order {
+            library.merge_operations(vec![ops[index].clone()]).unwrap();
+        }
+        {
+            let db = library.reader().unwrap();
+            assert!(
+                db.query_row(
+                    "SELECT deleted FROM cl_records WHERE key='member:list:archive:item'",
+                    [],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM cl_member_frontier", [], |r| r
+                    .get::<_, u64>(0))
+                    .unwrap(),
+                2
+            );
+        }
+        library.merge_operations(vec![json!({"op_id":"again","key":"member:list:archive:item","revision":2,"author":"a","clock":{"a":2,"b":1,"c":1},"deleted":false,"value":{"list_id":"list","item_id":"archive:item"}})]).unwrap();
+        let db = library.reader().unwrap();
+        assert!(
+            !db.query_row(
+                "SELECT deleted FROM cl_records WHERE key='member:list:archive:item'",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM cl_member_frontier", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn canceled_counts_stop_sql_and_do_not_block_an_interactive_page() {
+    let library = Arc::new(Library::open().unwrap());
+    let id = text(&library, "visible");
+    finish_metadata(&library);
+    {
+        let db = library.writer().unwrap();
+        db.execute_batch("WITH RECURSIVE n(x) AS (VALUES(2) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO cl_item_metadata(id,global_id,digest,summary,payload,search_text,search_index,copied,imported,ordinary,remote) SELECT x,'row:'||x,'digest:'||x,'{\"kind\":\"text\",\"preview\":\"test\"}',1,'test','test',9223372036854770000,0,1,0 FROM n;").unwrap();
+    }
+    let state: Value = serde_json::from_str(&library.state().unwrap()).unwrap();
+    let requests = std::iter::once(json!({"list_id":null}))
+        .chain(
+            state["lists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| json!({"list_id":v["id"]})),
+        )
+        .collect::<Vec<_>>();
+    // Hold the readers until registration and cancellation have happened. A
+    // scheduler pause after observing the key must not let SQL finish first.
+    let readers = library
+        .readers
+        .iter()
+        .map(|reader| reader.lock().unwrap())
+        .collect::<Vec<_>>();
+    let worker = library.clone();
+    let thread = std::thread::spawn(move || {
+        worker
+            .query(&json!({"op":"counts","query_id":"cancel-test","requests":requests}).to_string())
+    });
+    while !library
+        .query_cancellations
+        .lock()
+        .unwrap()
+        .contains_key("cancel-test")
+    {
+        std::thread::yield_now();
+    }
+    library
+        .query("{\"op\":\"cancel_query\",\"query_id\":\"cancel-test\"}")
+        .unwrap();
+    drop(readers);
+    assert!(thread.join().unwrap().is_err());
+    assert!(library.query_cancellations.lock().unwrap().is_empty());
+    assert_eq!(page(&library, "visible")["items"][0]["id"], id);
+}
+
+/// Repeatable scale probe; separate from correctness tests and from real-device
+/// acceptance. Bodies are shared, so this measures metadata cardinality only.
+#[test]
+#[ignore = "explicit scale benchmark"]
+fn scale_benchmark() {
+    let rows = std::env::var("DESKFUSE_CLIPBOARD_BENCH_ROWS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100_000);
+    let library = Library::open().unwrap();
+    finish_metadata(&library);
+    let now = now_ms();
+    {
+        let mut db = library.writer().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute_batch(&format!("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{rows}) INSERT INTO cl_item_metadata(id,global_id,digest,summary,payload,search_text,search_index,copied,imported,ordinary,remote) SELECT x,'row:'||x,'digest:'||x,json_object('id',x,'kind','text','mime','text/plain','length',20,'preview',CASE WHEN x%997=0 THEN '测试 benchmark' ELSE 'ordinary text' END,'source','local','file_count',0,'has_image',json('false'),'copied_at_ms',{now}),1,'ordinary text',CASE WHEN x%997=0 THEN '测试 benchmark' ELSE 'ordinary text' END,{now}+x,0,1,0 FROM n;
+            INSERT INTO cl_items_fts(rowid,search_index) SELECT id,search_index FROM cl_item_metadata;
+            INSERT INTO cl_short_terms SELECT '测试',id FROM cl_item_metadata WHERE id%997=0;")).unwrap();
+        for i in 0..1000 {
+            tx.execute(
+                "INSERT INTO cl_records VALUES(?1,1,'bench',0,?2)",
+                params![
+                    format!("list:group:{i}"),
+                    json!({"id":format!("group:{i}"),"name":"group","kind":"manual","position":i})
+                        .to_string()
+                ],
+            )
+            .unwrap();
+        }
+        tx.execute("INSERT INTO cl_item_metadata SELECT ?1,'archive:row:1',digest,summary,payload,search_text,search_index,copied,imported,0,blob_hash,origin_device,title,ocr_text,ocr_version,remote,last_used FROM cl_item_metadata WHERE id=1", [rows+1]).unwrap();
+        tx.execute("INSERT INTO cl_records VALUES('member:group:999:archive:row:1',1,'bench',0,'{\"list_id\":\"group:999\",\"item_id\":\"archive:row:1\"}')", []).unwrap();
+        tx.commit().unwrap();
+    }
+    for (label, query) in [
+        ("page", json!({"include_total":false})),
+        (
+            "short-search",
+            json!({"query":"测试","include_total":false}),
+        ),
+        (
+            "fts-search",
+            json!({"query":"benchmark","include_total":false}),
+        ),
+        (
+            "sparse-group",
+            json!({"list_id":"group:999","include_total":false}),
+        ),
+    ] {
+        let mut times = Vec::new();
+        let mut cursor = Value::Null;
+        for _ in 0..20 {
+            let mut request = query.clone();
+            request["op"] = json!("items");
+            if label == "page" {
+                request["cursor"] = cursor.clone();
+            }
+            let start = std::time::Instant::now();
+            let reply: Value =
+                serde_json::from_str(&library.query(&request.to_string()).unwrap()).unwrap();
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+            cursor = reply["next_cursor"].clone();
+            if label == "sparse-group" {
+                assert_eq!(reply["items"].as_array().unwrap().len(), 1);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "clipboard-scale rows={rows} groups=1000 operation={label} p50_ms={:.2} p95_ms={:.2}",
+            times[10], times[18]
+        );
+        assert!(times[18] < 300.0, "{label} took {:.2} ms", times[18]);
+    }
+}
+
+#[test]
+#[ignore = "explicit read-only source database clone benchmark"]
+fn database_clone_benchmark() {
+    let source = std::env::var("DESKFUSE_CLIPBOARD_BENCH_DATABASE")
+        .expect("supply a source SQLite database");
+    let directory = tempfile::tempdir().unwrap();
+    // SQLite backup includes committed WAL data. The original is read-only;
+    // migrations, sorting and title edits only touch this temporary clone.
+    let result = std::process::Command::new("python3").args(["-c", "import sqlite3,sys,pathlib; a=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro',uri=True); b=sqlite3.connect(sys.argv[2]); a.backup(b); b.close(); a.close()", &source, directory.path().join("state.sqlite3").to_str().unwrap()]).status().unwrap();
+    assert!(result.success());
+    let started = std::time::Instant::now();
+    let library = Library::open_database(directory).unwrap();
+    eprintln!(
+        "clipboard-clone startup_ms={:.2}",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    library
+        .set_local_device("isolated-benchmark".into())
+        .unwrap();
+    let id: u64=library.reader().unwrap().query_row("SELECT id FROM cl_items WHERE ordinary=1 AND json_extract(summary,'$.kind')='text' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+    let started = std::time::Instant::now();
+    library.snapshot(id).unwrap();
+    eprintln!(
+        "clipboard-clone initial_text_restore_ms={:.2}",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    finish_metadata(&library);
+    library.mutate(r#"{"op":"save_list","list":{"id":"bench-group","name":"bench-group","kind":"manual"},"compact":true}"#).unwrap();
+    for label in ["page", "text-restore", "usage", "rename", "membership"] {
+        let mut times = Vec::new();
+        for n in 0..20 {
+            let started = std::time::Instant::now();
+            match label {
+                "page" => {
+                    page(&library, "");
+                }
+                "text-restore" => {
+                    library.snapshot(id).unwrap();
+                }
+                "usage" => library.mark_used(id).unwrap(),
+                "rename" => {
+                    library.mutate(&json!({"op":"set_item_title","id":id,"title":format!("benchmark-{n}"),"compact":true}).to_string()).unwrap();
+                }
+                "membership" => library.membership("bench-group", id, n % 2 == 0).unwrap(),
+                _ => unreachable!(),
+            }
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "clipboard-clone operation={label} p50_ms={:.2} p95_ms={:.2}",
+            times[10], times[18]
+        );
+        assert!(times[18] < 300.0, "{label} took {:.2} ms", times[18]);
+    }
+    let ids: Vec<u64> = library
+        .reader()
+        .unwrap()
+        .prepare("SELECT id FROM cl_items WHERE ordinary=1 ORDER BY id DESC LIMIT 20")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    let mut times = Vec::new();
+    for id in ids {
+        let started = std::time::Instant::now();
+        library
+            .mutate(&json!({"op":"delete_items","ids":[id],"compact":true}).to_string())
+            .unwrap();
+        times.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    times.sort_by(f64::total_cmp);
+    let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
+    eprintln!("clipboard-clone operation=delete p95_ms={p95:.2}");
+    assert!(p95 < 300.0);
+}
+
+#[test]
+fn clear_history_is_immediate_preserves_archives_and_allows_new_copies() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library
+        .mutate(
+            &json!({"op":"save_list","list":{"id":"keep","name":"keep","kind":"manual"}})
+                .to_string(),
+        )
+        .unwrap();
+    let original = text(&library, "preserved archive");
+    library.membership("keep", original, true).unwrap();
+    let other = text(&library, "remove ordinary");
+    let archive: Value = serde_json::from_str(
+        &library
+            .query("{\"op\":\"items\",\"list_id\":\"keep\"}")
+            .unwrap(),
+    )
+    .unwrap();
+    let archived = archive["items"][0]["id"].as_u64().unwrap();
+    library.clear_history().unwrap();
+    assert!(library.snapshot(original).is_err());
+    assert!(library.snapshot(other).is_err());
+    assert!(library.snapshot(archived).is_ok());
+    assert_eq!(page(&library, "")["items"][0]["id"], archived);
+    while library.prune_step().unwrap() {}
+    let newer = text(&library, "new after clear");
+    assert!(library.snapshot(newer).is_ok());
+    assert_eq!(page(&library, "new after clear")["items"][0]["id"], newer);
+}
+
+#[test]
+fn batched_group_changes_rollback_together_and_publish_one_revision() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    for (i, id) in ["first", "second"].iter().enumerate() {
+        library
+            .mutate(
+                &json!({"op":"save_list","list":{"id":id,"name":id,"kind":"manual","position":i}})
+                    .to_string(),
+            )
+            .unwrap();
+    }
+    let before = library.generation();
+    library
+        .mutate("{\"op\":\"reorder\",\"ids\":[\"second\",\"first\"],\"compact\":true}")
+        .unwrap();
+    assert_eq!(library.generation(), before + 1);
+    {
+        let db = library.writer().unwrap();
+        db.execute_batch("CREATE TRIGGER reject_second BEFORE UPDATE ON cl_records WHEN new.key='list:second' BEGIN SELECT RAISE(FAIL,'injected write failure'); END;").unwrap();
+    }
+    assert!(
+        library
+            .mutate("{\"op\":\"reorder\",\"ids\":[\"first\",\"second\"],\"compact\":true}")
+            .is_err()
+    );
+    let lists = lists_db(&library.reader().unwrap()).unwrap();
+    assert_eq!(lists.iter().find(|l| l.id == "second").unwrap().position, 0);
+    assert_eq!(lists.iter().find(|l| l.id == "first").unwrap().position, 1);
+}
+
+#[test]
+fn background_publication_intent_failure_rolls_back_metadata() {
+    let library = Arc::new(Library::open().unwrap());
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, "durable update");
+    // Run the actual maintenance queue, then reject only the intent insertion.
+    work::start(&library);
+    library.writer().unwrap().execute_batch("CREATE TRIGGER reject_intent BEFORE INSERT ON cl_pending_publications BEGIN SELECT RAISE(FAIL,'injected queue failure'); END;").unwrap();
+    assert!(
+        library
+            .mutate(
+                &json!({"op":"set_item_title","id":id,"title":"should rollback","compact":true})
+                    .to_string()
+            )
+            .is_err()
+    );
+    let title: Option<String> = library
+        .reader()
+        .unwrap()
+        .query_row("SELECT title FROM cl_items WHERE id=?1", [id], |r| r.get(0))
+        .unwrap();
+    assert!(title.is_none());
+}

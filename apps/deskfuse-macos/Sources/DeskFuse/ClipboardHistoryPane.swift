@@ -30,7 +30,7 @@ struct ClipboardHistoryPane: View {
     @State private var pendingDeletion: [UInt64] = []
     @State private var confirmingDeletion = false
     @Binding var listID: String?
-    let total: Int
+    let total: Int?
     let memberships: [UInt64: [String]]
     let hasMore: Bool
     let paginationOffset: Int
@@ -111,8 +111,10 @@ struct ClipboardHistoryPane: View {
                 .accessibilityLabel("来源设备")
                 .help("按来源设备筛选历史")
                 Spacer(minLength: 8)
-                Text("\(total) 条").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    .accessibilityLabel("共 \(total) 条历史")
+                if let total {
+                    Text("\(total) 条").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        .accessibilityLabel("共 \(total) 条历史")
+                }
                 ClipboardDisplayModePicker(mode: $displayMode)
             }
             HStack(spacing: 8) {

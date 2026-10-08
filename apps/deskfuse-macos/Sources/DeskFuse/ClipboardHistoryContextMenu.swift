@@ -70,6 +70,7 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
         private func showMenu(_ event: NSEvent) {
             let value = configuration.context
             let item = value.item
+            ClipboardLibraryStore.shared.remember(item, memberships: value.memberships, title: value.title)
             let menu = NSMenu()
             menu.autoenablesItems = false
             var targets: [MenuAction] = []
