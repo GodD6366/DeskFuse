@@ -315,21 +315,34 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-macos-arm64
-          path: dist/arm64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-macos-x86_64
-          path: dist/x86_64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-windows-x64
-          path: dist/windows
-        if: needs.preflight.outputs.include_windows == 'true'
+      - name: Download complete release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-macos-arm64 --dir dist/arm64 &
+          arm64_download_pid=$!
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-macos-x86_64 --dir dist/x86_64 &
+          intel_download_pid=$!
+          download_failed=0
+          wait "$arm64_download_pid" || download_failed=1
+          wait "$intel_download_pid" || download_failed=1
+          test "$download_failed" = 0
+          if [[ "$INCLUDE_WINDOWS" == "true" ]]; then
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-windows-x64 --dir dist/windows
+          fi
+          test -s dist/arm64/signing-arm64.txt
+          test -s dist/x86_64/signing-x86_64.txt
+      - name: Verify downloaded macOS DMGs
+        env:
+          DESKFUSE_REQUIRE_NOTARIZE: '1'
+          DESKFUSE_DMG_FINDER_LAYOUT: '0'
+        run: |
+          DESKFUSE_MACOS_ARCH=arm64 ./scripts/verify-dmg.sh "dist/arm64/$ARM64_ASSET"
+          DESKFUSE_MACOS_ARCH=x86_64 ./scripts/verify-dmg.sh "dist/x86_64/$X86_64_ASSET"
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
