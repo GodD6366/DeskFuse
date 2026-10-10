@@ -50,7 +50,9 @@ import DeskFuseEngine
         let screen = (panel.isVisible ? panel.screen : NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) })
             ?? NSScreen.main
         guard let frame = screen?.visibleFrame else { return }
-        let height = min(CGFloat(active.count) * 100 + 16, max(100, frame.height - 32))
+        // Per-pill footprint: 76 pt pill + 8 pt stack spacing, matching the
+        // fixed height inside TransferProgressPill.
+        let height = min(CGFloat(active.count) * 84 + 16, max(100, frame.height - 32))
         panel.setFrame(NSRect(x: frame.maxX - 332, y: frame.maxY - height - 16,
                               width: 316, height: height), display: true)
         if !panel.isVisible { panel.orderFrontRegardless() }
@@ -123,6 +125,7 @@ struct TransferProgressOverlay: View {
 }
 
 private struct TransferProgressPill: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let task: Transfer
     let cancel: () -> Void
 
@@ -133,54 +136,124 @@ private struct TransferProgressPill: View {
         return min(1.0, Double(bytes) / Double(total))
     }
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: task.outgoing ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(task.outgoing ? Color.accentColor : Color.green)
-                .symbolEffect(.pulse, isActive: task.phase != .failed && task.phase != .cancelled)
+    /// Direction color identifies send/receive; it leaves the neutral palette
+    /// only for failure, keeping status color rare per the material rules.
+    private var tint: Color {
+        switch task.phase {
+        case .failed: .orange
+        case .cancelled: .secondary
+        default: task.outgoing ? .accentColor : .green
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 4) {
+    private var active: Bool { task.phase != .failed && task.phase != .cancelled }
+
+    private var statusTitle: String {
+        [.sending, .receiving, .delivering].contains(task.phase) ? "\(task.phaseTitle) \(Int(fraction * 100))%" : task.phaseTitle
+    }
+
+    private var detailTitle: String {
+        if [.sending, .receiving].contains(task.phase), fraction < 1 {
+            return "\(byteCount(task.transferred)) / \(byteCount(task.total))"
+        }
+        return task.detail
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: task.outgoing ? "arrow.up" : "arrow.down")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.14), in: Circle())
+                .symbolEffect(.pulse, isActive: active && !reduceMotion)
+                .accessibilityLabel(task.outgoing ? "发送" : "接收")
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
                     Text(task.name)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(maxWidth: 150, alignment: .leading)
-                    Spacer(minLength: 4)
-                    Text([.sending, .receiving, .delivering].contains(task.phase) ? "\(task.phaseTitle) \(Int(fraction * 100))%" : task.phaseTitle)
-                        .font(.system(size: 11, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Text(statusTitle)
+                        .font(.system(size: 11, weight: .medium))
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(task.phase == .failed ? Color.orange : .secondary)
+                        .fixedSize()
+                    Button(action: cancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(task.phase == .failed || task.phase == .cancelled ? "关闭提示" : "取消传输")
+                    .accessibilityLabel(task.phase == .failed || task.phase == .cancelled ? "关闭提示" : "取消传输")
                 }
 
-                if task.phase == .queued || task.phase == .verifying {
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                } else {
-                    ProgressView(value: fraction)
-                        .progressViewStyle(.linear)
-                        .tint(task.outgoing ? Color.accentColor : Color.green)
-                        .animation(.easeInOut(duration: 0.25), value: fraction)
-                }
+                TransferProgressBar(fraction: fraction, tint: tint, indeterminate: task.phase == .queued || task.phase == .verifying)
+                    .animation(.easeInOut(duration: 0.25), value: fraction)
 
-                Text(task.phase == .queued || task.phase == .verifying || task.phase == .delivering || task.phase == .failed || task.phase == .cancelled || fraction >= 1 ? task.detail : "\(byteCount(task.transferred)) / \(byteCount(task.total))")
-                    .lineLimit(1)
-                    .help(task.detail)
-                    .font(.system(size: 10))
+                Text(detailTitle)
+                    .font(.system(size: 10.5))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(task.detail)
             }
-            Button(action: cancel) {
-                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help(task.phase == .failed || task.phase == .cancelled ? "关闭提示" : "取消传输")
-            .accessibilityLabel(task.phase == .failed || task.phase == .cancelled ? "关闭提示" : "取消传输")
+            .padding(.top, 1)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(width: 300, height: 92)
-        .modifier(NativeGlassBackdrop(cornerRadius: 14))
+        .padding(.vertical, 12)
+        // Fixed height: the panel sizes itself from a per-pill constant, so the
+        // pill must not grow or shrink with state wording.
+        .frame(width: 300, height: 76)
+        .modifier(NativeGlassBackdrop(cornerRadius: 16))
+    }
+}
+
+/// A 4 pt capsule bar. The system linear ProgressView reads as a chunky gray
+/// stripe on glass; the slim capsule keeps the track quiet and the tint on the
+/// moving part only. Indeterminate sweeps a single segment across the track.
+private struct TransferProgressBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let fraction: Double
+    let tint: Color
+    let indeterminate: Bool
+    @State private var sweep: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.10))
+                if indeterminate {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: geometry.size.width * 0.38)
+                        .offset(x: (geometry.size.width * 1.38) * sweep - geometry.size.width * 0.38)
+                } else {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(4, geometry.size.width * fraction))
+                }
+            }
+        }
+        .frame(height: 4)
+        .clipShape(Capsule())
+        .onAppear { updateSweep() }
+        .onChange(of: indeterminate) { updateSweep() }
+    }
+
+    private func updateSweep() {
+        guard indeterminate, !reduceMotion else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { sweep = 0 }
+            return
+        }
+        sweep = 0
+        withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { sweep = 1 }
     }
 }
