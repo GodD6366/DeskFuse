@@ -31,11 +31,25 @@ pub(crate) fn inspect(
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
 ) -> ConnectionContext {
-    port.and_then(|port| {
-        port.transport_context(session_id, local_addr, remote_addr)
-            .ok()
-    })
-    .unwrap_or_else(|| unknown(session_id, local_addr, remote_addr))
+    inspect_with_error(port, session_id, local_addr, remote_addr).0
+}
+
+pub(crate) fn inspect_with_error(
+    port: Option<&dyn LanWebPort>,
+    session_id: TransportSessionId,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+) -> (ConnectionContext, Option<String>) {
+    match port.map(|port| port.transport_context(session_id, local_addr, remote_addr)) {
+        Some(Ok(context)) => (context, None),
+        result => (
+            unknown(session_id, local_addr, remote_addr),
+            Some(match result {
+                Some(Err(error)) => error.to_string().chars().take(320).collect(),
+                _ => "LAN inspection port unavailable".into(),
+            }),
+        ),
+    }
 }
 
 pub(crate) fn listener_sockets_on(

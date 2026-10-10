@@ -171,8 +171,23 @@ pub fn transport_context(
         .arg("-listallhardwareports")
         .output()
         .map_err(|error| format!("networksetup: {error}"))?;
-    if !route.status.success() || !interfaces.status.success() || !hardware.status.success() {
-        return Ok(context);
+    for (name, result) in [
+        ("route", &route),
+        ("ifconfig", &interfaces),
+        ("networksetup", &hardware),
+    ] {
+        if !result.status.success() {
+            // Preserve why attestation failed. The transport still returns an
+            // unknown, unusable context, but no longer loses the command error.
+            return Err(format!(
+                "{name}: exit={:?} stderr={}",
+                result.status.code(),
+                String::from_utf8_lossy(&result.stderr)
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            ));
+        }
     }
     let route = String::from_utf8_lossy(&route.stdout);
     let interfaces = String::from_utf8_lossy(&interfaces.stdout);

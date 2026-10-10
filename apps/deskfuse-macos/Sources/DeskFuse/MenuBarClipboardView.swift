@@ -44,6 +44,9 @@ struct MenuBarClipboardView: View {
     @State private var previewTask: Task<Void, Never>?
     @State private var followTask: Task<Void, Never>?
     @State private var followID: UInt64?
+    @AppStorage(wrappedValue: ClipboardOCRIndexer.defaultAutomaticIndexing,
+                 ClipboardOCRIndexer.automaticIndexingKey)
+    private var automaticOCR: Bool
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
     /// Every record the panel may show, deduplicated and ordered newest first.
@@ -480,8 +483,10 @@ struct MenuBarClipboardView: View {
             pageRevision = append ? min(pageRevision ?? 0, result.revision ?? 0) : result.revision
             nextOffset = result.next_offset
             nextCursor = result.next_cursor
-            for item in result.items where item.has_image && (item.ocr_version ?? 0) < ClipboardOCRIndexer.version {
-                ClipboardOCRIndexer.shared.schedule(item.id, client: store.client)
+            if automaticOCR {
+                for item in result.items where item.has_image && (item.ocr_version ?? 0) < ClipboardOCRIndexer.version {
+                    ClipboardOCRIndexer.shared.schedule(item.id, client: store.client)
+                }
             }
             if selectedID.map({ id in items.contains(where: { $0.id == id }) }) != true { selectedID = items.first?.id }
         } catch {

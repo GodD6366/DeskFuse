@@ -33,7 +33,6 @@ import DeskFuseEngine
     static let keepAwakeDefaultsKey = "deskfuse.keepAwake"
     private let caffeineController = CaffeineController()
     @ObservationIgnored private let displayWallpaperPublisher = DisplayWallpaperPublisher()
-    @ObservationIgnored private var wallpaperTask: Task<Void, Never>?
     var localDisplayWallpapers: [String: NSImage] = [:]
     var clipboardNavigation: ClipboardNavigationRequest?
     /// One-shot request from the sidebar footer to show the local device in the
@@ -103,7 +102,6 @@ import DeskFuseEngine
                 }
                 try await client.listen(relay)
                 recordStartup("listener_ready")
-                startWallpaperRefresh()
                 transferWindow = TransferProgressWindowController(store: self)
                 transferWindow?.reconcile(snapshot?.transfers ?? [])
                 shelf = ShelfController(store: self)
@@ -114,20 +112,22 @@ import DeskFuseEngine
             } catch { self.error = error.userFacingMessage; starting = false }
         }
     }
-    private func startWallpaperRefresh() {
-        wallpaperTask?.cancel()
-        wallpaperTask = Task { [weak self] in
-            while !Task.isCancelled {
-                if let self {
-                    let updates = await self.displayWallpaperPublisher.refresh()
-                    for (id, preview) in updates {
-                        self.localDisplayWallpapers[id] = preview.image
-                        self.send(.publishDisplayWallpaper(displayId: id, jpeg: preview.jpeg))
-                    }
-                }
-                try? await Task.sleep(for: .seconds(5))
-            }
+
+    /// Capture local wallpaper previews for one presentation of the layout UI.
+    /// The view owns the task, so closing the page releases temporary images and
+    /// reopening it performs one fresh capture.
+    func refreshDisplayWallpapers() async {
+        guard !Task.isCancelled, let result = await displayWallpaperPublisher.refresh() else { return }
+        guard !Task.isCancelled else { return }
+        localDisplayWallpapers = localDisplayWallpapers.filter { result.activeDisplayIDs.contains($0.key) }
+        for (id, preview) in result.previews {
+            localDisplayWallpapers[id] = preview.image
+            self.send(.publishDisplayWallpaper(displayId: id, jpeg: preview.jpeg))
         }
+    }
+
+    func clearDisplayWallpapers() {
+        localDisplayWallpapers.removeAll(keepingCapacity: false)
     }
 
     func consume(_ event: EngineEvent) {

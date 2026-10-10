@@ -1,4 +1,7 @@
-use super::{Deadline, SYNTHETIC_SHARING_EVENT_MARKER, permission_result};
+use super::{
+    CAPS_LOCK_KEYCODE, CAPS_LOCK_STATELESS_FLAGS, Deadline, SYNTHETIC_SHARING_EVENT_MARKER,
+    permission_result,
+};
 use crate::{PlatformError, PlatformResult};
 #[cfg(not(test))]
 use core_graphics::event::CGEventTapLocation;
@@ -850,22 +853,28 @@ impl NativeInjector {
                 modifiers,
                 repeat,
             } => {
-                self.set_modifiers(*modifiers)?;
+                let caps_event = *code == CAPS_LOCK_KEYCODE;
+                self.set_modifiers(*modifiers, caps_event.then_some(*code))?;
 
                 let event = CGEvent::new_keyboard_event(self.source.clone(), *code, *pressed)
                     .map_err(|()| PlatformError::InputInjectionFailed)?;
+                if caps_event {
+                    event.set_type(CGEventType::FlagsChanged);
+                }
                 event.set_integer_value_field(
                     EventField::KEYBOARD_EVENT_AUTOREPEAT,
                     i64::from(*repeat),
                 );
                 self.post(event);
-                if *pressed {
-                    self.keys.insert(*code);
-                } else {
-                    self.keys.remove(code);
+                if !caps_event {
+                    if *pressed {
+                        self.keys.insert(*code);
+                    } else {
+                        self.keys.remove(code);
+                    }
                 }
             }
-            SharedInputEvent::Modifiers { modifiers } => self.set_modifiers(*modifiers)?,
+            SharedInputEvent::Modifiers { modifiers } => self.set_modifiers(*modifiers, None)?,
             SharedInputEvent::Scroll { dx, dy } => {
                 // Point-delta fields are integers, while fixed-point fields
                 // preserve 16.16 fractions. Carry fractional points for clients
@@ -938,12 +947,13 @@ impl NativeInjector {
         self.post(event);
         Ok(())
     }
-    fn set_modifiers(&mut self, flags: u64) -> PlatformResult<()> {
+    fn set_modifiers(&mut self, flags: u64, event_key: Option<u16>) -> PlatformResult<()> {
         let target = modifier_keycodes(flags);
         let changes = self
             .modifier_keys
             .symmetric_difference(&target)
             .copied()
+            .filter(|code| Some(*code) != event_key)
             .collect::<Vec<_>>();
         self.modifiers = flags;
         for code in changes {
@@ -953,6 +963,15 @@ impl NativeInjector {
             event.set_type(CGEventType::FlagsChanged);
             self.post(event);
             if down {
+                self.modifier_keys.insert(code);
+            } else {
+                self.modifier_keys.remove(&code);
+            }
+        }
+        // The caller posts this key's physical event. Keep its state in sync
+        // so a subsequent flags snapshot cannot replay the same transition.
+        if let Some(code) = event_key {
+            if target.contains(&code) {
                 self.modifier_keys.insert(code);
             } else {
                 self.modifier_keys.remove(&code);
@@ -978,7 +997,7 @@ impl NativeInjector {
                 self.buttons.remove(&button);
             }
         }
-        if let Err(e) = self.set_modifiers(0) {
+        if let Err(e) = self.set_modifiers(0, None) {
             error = Some(e);
         }
         self.clicks.clear();
@@ -1028,8 +1047,8 @@ pub(super) fn modifier_keycodes(flags: u64) -> BTreeSet<u16> {
             }
         }
     }
-    if flags & (1 << 16) != 0 {
-        keys.insert(57);
+    if flags & ((1 << 16) | CAPS_LOCK_STATELESS_FLAGS) != 0 {
+        keys.insert(CAPS_LOCK_KEYCODE);
     }
     if flags & (1 << 23) != 0 {
         keys.insert(63);
@@ -1448,6 +1467,172 @@ mod tests {
             BTreeSet::from([55, 59])
         );
         assert!(modifier_keycodes(0).is_empty());
+    }
+    #[test]
+    fn native_modifier_pairs_release_one_side_without_releasing_the_other() {
+        for (aggregate, left_bit, right_bit, left, right) in [
+            (1 << 17, 0x2, 0x4, 56, 60),
+            (1 << 18, 0x1, 0x2000, 59, 62),
+            (1 << 19, 0x20, 0x40, 58, 61),
+            (1 << 20, 0x8, 0x10, 55, 54),
+        ] {
+            let mut n = NativeInjector::new().unwrap();
+            let d = display();
+            let both = aggregate | left_bit | right_bit;
+            n.inject(&d, &SharedInputEvent::Modifiers { modifiers: both })
+                .unwrap();
+            n.inject(&d, &SharedInputEvent::Modifiers { modifiers: both })
+                .unwrap();
+            assert_eq!(n.posted.borrow().len(), 2);
+            let remaining = aggregate | right_bit;
+            n.inject(
+                &d,
+                &SharedInputEvent::Modifiers {
+                    modifiers: remaining,
+                },
+            )
+            .unwrap();
+            n.inject(&d, &SharedInputEvent::Modifiers { modifiers: 0 })
+                .unwrap();
+            let events = n.posted.borrow();
+            assert_eq!(events.len(), 4);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.get_type() as u32 == CGEventType::FlagsChanged as u32)
+            );
+            let downs: BTreeSet<_> = events[..2]
+                .iter()
+                .map(|event| event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
+                .collect();
+            assert_eq!(downs, BTreeSet::from([left, right]));
+            assert_eq!(
+                events[2].get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                left
+            );
+            assert_eq!(events[2].get_flags().bits(), remaining);
+            assert_eq!(
+                events[3].get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                right
+            );
+            assert!(events[3].get_flags().is_empty());
+            assert!(n.modifier_keys.is_empty());
+        }
+    }
+    #[test]
+    fn native_fn_globe_press_and_release_keep_their_native_key_identity() {
+        let mut n = NativeInjector::new().unwrap();
+        let flags = 1 << 23;
+        for modifiers in [flags, flags, 0] {
+            n.inject(&display(), &SharedInputEvent::Modifiers { modifiers })
+                .unwrap();
+        }
+        let events = n.posted.borrow();
+        assert_eq!(events.len(), 2);
+        for event in events.iter() {
+            assert_eq!(event.get_type() as u32, CGEventType::FlagsChanged as u32);
+            assert_eq!(
+                event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                63
+            );
+        }
+        assert_eq!(events[0].get_flags().bits(), flags);
+        assert!(events[1].get_flags().is_empty());
+    }
+    #[test]
+    fn caps_physical_flags_are_independent_of_the_uppercase_latch() {
+        for flags in [0x80, 1 << 24, 1 << 16, CAPS_LOCK_STATELESS_FLAGS] {
+            assert_eq!(
+                modifier_keycodes(flags),
+                BTreeSet::from([CAPS_LOCK_KEYCODE])
+            );
+        }
+    }
+    #[test]
+    fn native_caps_short_presses_and_latched_releases_are_posted_once() {
+        let mut n = NativeInjector::new().unwrap();
+        let d = display();
+        let alpha_shift = 1 << 16;
+        let command = (1 << 20) | 0x10;
+        n.inject(&d, &SharedInputEvent::Modifiers { modifiers: command })
+            .unwrap();
+        n.posted.borrow_mut().clear();
+        for flags in [
+            0x80,
+            0,
+            1 << 24,
+            0,
+            CAPS_LOCK_STATELESS_FLAGS,
+            CAPS_LOCK_STATELESS_FLAGS | alpha_shift,
+            alpha_shift,
+            alpha_shift,
+        ] {
+            let before = n.posted.borrow().len();
+            let modifiers = flags | command;
+            n.inject(
+                &d,
+                &SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    pressed: flags & CAPS_LOCK_STATELESS_FLAGS != 0,
+                    modifiers,
+                    repeat: false,
+                },
+            )
+            .unwrap();
+            n.inject(&d, &SharedInputEvent::Modifiers { modifiers })
+                .unwrap();
+            let events = n.posted.borrow();
+            assert_eq!(events.len(), before + 1, "Caps must not be duplicated");
+            let event = events.last().unwrap();
+            assert_eq!(event.get_type() as u32, CGEventType::FlagsChanged as u32);
+            assert_eq!(
+                event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                i64::from(CAPS_LOCK_KEYCODE)
+            );
+            assert_eq!(event.get_flags().bits(), modifiers);
+            assert_eq!(
+                event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
+                SYNTHETIC_SHARING_EVENT_MARKER
+            );
+            assert!(!n.keys.contains(&CAPS_LOCK_KEYCODE));
+        }
+        let before = n.posted.borrow().len();
+        n.release_all().unwrap();
+        let events = n.posted.borrow();
+        let releases = &events[before..];
+        assert_eq!(releases.len(), 2);
+        assert!(releases.iter().all(|event| {
+            event.get_type() as u32 == CGEventType::FlagsChanged as u32
+                && event.get_flags().is_empty()
+        }));
+        assert!(n.modifier_keys.is_empty());
+    }
+    #[test]
+    fn release_all_releases_caps_when_only_the_physical_key_is_down() {
+        let mut n = NativeInjector::new().unwrap();
+        n.inject(
+            &display(),
+            &SharedInputEvent::Key {
+                code: CAPS_LOCK_KEYCODE,
+                pressed: true,
+                modifiers: 0x80,
+                repeat: false,
+            },
+        )
+        .unwrap();
+        n.release_all().unwrap();
+        let events = n.posted.borrow();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1].get_type() as u32,
+            CGEventType::FlagsChanged as u32
+        );
+        assert_eq!(
+            events[1].get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+            i64::from(CAPS_LOCK_KEYCODE)
+        );
+        assert!(events[1].get_flags().is_empty());
+        assert!(n.modifier_keys.is_empty());
     }
     #[test]
     fn side_buttons_use_other_native_events() {

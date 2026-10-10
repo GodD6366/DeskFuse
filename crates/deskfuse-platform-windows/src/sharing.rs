@@ -10,8 +10,8 @@ use crate::{
     capture::{CaptureEvent as NativeCaptureEvent, CaptureFault, CapturePoll, WindowsInputCapture},
     display::{NativeDisplay, native_displays},
     hid::{
-        hid_modifiers_to_legacy, keyboard_usage_to_legacy_keycode,
-        legacy_keycode_to_keyboard_usage, legacy_modifiers_to_hid,
+        LegacyCapsLock, keyboard_usage_to_legacy_keycode, legacy_keycode_to_keyboard_usage,
+        legacy_modifiers_to_hid,
     },
     input::{MouseButton, OrdinaryDesktopInjector, VirtualDesktopPixels},
 };
@@ -132,6 +132,7 @@ pub struct WindowsSharingCapture {
     notification: Arc<Notify>,
     lease: SessionLease,
     last_position: Option<(f64, f64)>,
+    caps_lock: LegacyCapsLock,
 }
 impl WindowsSharingCapture {
     #[must_use]
@@ -141,6 +142,7 @@ impl WindowsSharingCapture {
             notification: Arc::new(Notify::new()),
             lease: SessionLease::default(),
             last_position: None,
+            caps_lock: LegacyCapsLock::default(),
         }
     }
 }
@@ -161,6 +163,7 @@ impl SharedInputCapture for WindowsSharingCapture {
             )
             .map_err(|_| PlatformError::InputCaptureUnavailable)?,
         );
+        self.caps_lock = LegacyCapsLock::new(self.native.as_ref().unwrap().initial_caps_lock());
         Ok(())
     }
     fn stop(&mut self) -> PlatformResult<()> {
@@ -269,15 +272,18 @@ impl WindowsSharingCapture {
                 down,
                 repeat,
                 modifiers,
-            } => SharedInputEvent::Key {
-                code: keyboard_usage_to_legacy_keycode(usage)
-                    .ok_or(PlatformError::InputCaptureUnavailable)?,
-                pressed: down,
-                modifiers: hid_modifiers_to_legacy(modifiers),
-                repeat,
-            },
+            } => {
+                self.caps_lock.observe_key(usage, down, repeat);
+                SharedInputEvent::Key {
+                    code: keyboard_usage_to_legacy_keycode(usage)
+                        .ok_or(PlatformError::InputCaptureUnavailable)?,
+                    pressed: down,
+                    modifiers: self.caps_lock.flags(modifiers),
+                    repeat,
+                }
+            }
             NativeCaptureEvent::Modifiers(modifiers) => SharedInputEvent::Modifiers {
-                modifiers: hid_modifiers_to_legacy(modifiers),
+                modifiers: self.caps_lock.flags(modifiers),
             },
         };
         Ok(CaptureEvent::Input(CaptureSample {
@@ -692,6 +698,41 @@ fn inject_batch(
 mod tests {
     use super::*;
 
+    #[test]
+    fn caps_capture_preserves_lock_and_physical_flags_through_the_adapter() {
+        use crate::hid::HidModifiers;
+        let mut capture = WindowsSharingCapture::new();
+        for (usage, down, repeat, expected_flags) in [
+            (0x39, true, false, 0x10080),
+            (0x39, true, true, 0x10080),
+            (0x39, false, false, 0x10000),
+            (0x04, true, false, 0x10000),
+            (0x04, false, false, 0x10000),
+            (0x39, true, false, 0x80),
+            (0x39, false, false, 0),
+        ] {
+            let event = capture
+                .convert(NativeCaptureEvent::Key {
+                    usage,
+                    down,
+                    repeat,
+                    modifiers: HidModifiers(0),
+                })
+                .unwrap();
+            let CaptureEvent::Input(sample) = event else {
+                panic!("expected key");
+            };
+            assert_eq!(
+                sample.event,
+                SharedInputEvent::Key {
+                    code: keyboard_usage_to_legacy_keycode(usage).unwrap(),
+                    pressed: down,
+                    repeat,
+                    modifiers: expected_flags,
+                }
+            );
+        }
+    }
     #[test]
     fn expired_session_cannot_be_rearmed() {
         let lease = SessionLease::default();

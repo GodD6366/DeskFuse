@@ -34,6 +34,9 @@ struct ClipboardView: View {
     @State private var pageRevision: UInt64?
     @State private var countTask: Task<Void, Never>?
     @State private var searching = false
+    @AppStorage(wrappedValue: ClipboardOCRIndexer.defaultAutomaticIndexing,
+                 ClipboardOCRIndexer.automaticIndexingKey)
+    private var automaticOCR: Bool
     @State private var pageRequest = UUID()
     @State private var paginationGeneration = UUID()
     @State private var queryRevision = 0
@@ -314,7 +317,9 @@ struct ClipboardView: View {
             if result.total_exact != false { total = result.total }
             nextOffset = result.next_offset; nextCursor = result.next_cursor
             rebuildPresentation()
-            scheduleOCR(result.items)
+            if automaticOCR {
+                scheduleOCR(result.items)
+            }
             if let target = navigationSelected, pageItems.contains(where: { $0.id == target }) { selected = target; navigationSelected = nil }
             if !append {
                 total = nil

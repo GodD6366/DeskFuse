@@ -40,7 +40,7 @@ struct GeneralSettingsView: View {
                             .disabled(!ready || exportingDiagnostics)
                     }
                     Divider()
-                    Text("日志默认开启，按小时保存，自动删除超过 7 天的日志；开关仅本次运行有效。\n关闭后仍记录错误；不包含剪贴板正文、文件内容或凭据。磁盘日志位于 ~/Library/Logs/DeskFuse。")
+                    Text("日志默认开启，按小时保存，自动删除超过 7 天的日志；导出诊断会附带当前进程、OCR helper 的 RSS/physical footprint 和已链接框架。开关仅本次运行有效。\n关闭后仍记录错误；不包含剪贴板正文、文件内容或凭据。磁盘日志位于 ~/Library/Logs/DeskFuse。")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 560, alignment: .leading)

@@ -25,8 +25,11 @@ struct RemoteApplicationDisplayModeToggle: View {
     @Bindable private var remote = RemoteApplicationManager.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("虚拟屏幕模式（实验性）", isOn: $remote.virtualDisplayEnabled)
-                .toggleStyle(.switch).controlSize(.small)
+            HStack(spacing: 7) {
+                Toggle("虚拟屏幕模式", isOn: $remote.virtualDisplayEnabled)
+                    .toggleStyle(.switch).controlSize(.small)
+                FeatureBadge(text: "实验性")
+            }
                 .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
             Text("下次打开或重新连接时生效")
                 .font(.caption).foregroundStyle(.secondary)
@@ -59,7 +62,6 @@ struct RemoteApplicationPicker: View {
     var body: some View {
         VStack(spacing: 0) {
             header.padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 12)
-            RemoteApplicationDisplayModeToggle().padding(.horizontal, 20).padding(.bottom, 10)
             Divider().padding(.horizontal, 20)
             categories.padding(.horizontal, 20).padding(.vertical, 10)
             if !session.applicationsLoaded {
@@ -135,6 +137,14 @@ struct RemoteApplicationPicker: View {
             Menu {
                 Button("刷新应用列表") { session.refreshApplications() }
                 Button("搜索应用") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
+                Divider()
+                Toggle(isOn: $remote.virtualDisplayEnabled) {
+                    HStack(spacing: 6) {
+                        Text("虚拟屏幕模式")
+                        FeatureBadge(text: "实验性")
+                    }
+                }
+                .help("开启后，每个远程应用使用专属虚拟屏幕；下次打开或重新连接时生效")
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 16))
             }.menuStyle(.borderlessButton).fixedSize().help("应用列表操作")

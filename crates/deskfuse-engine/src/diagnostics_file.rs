@@ -98,17 +98,19 @@ fn start() -> Option<SyncSender<DiagnosticRecord>> {
                 let dropped = DROPPED.swap(0, Ordering::Relaxed);
                 let result = (|| -> std::io::Result<()> {
                     if dropped > 0 {
-                        writeln!(
-                            file,
-                            "{}",
-                            serde_json::json!({
-                                "timestamp_seconds": now, "subsystem": "diagnostics",
-                                "event": "bounded_queue_overflow", "dropped_records": dropped
-                            })
-                        )?;
+                        let mut overflow = serde_json::to_vec(&serde_json::json!({
+                            "timestamp_seconds": now, "subsystem": "diagnostics",
+                            "event": "bounded_queue_overflow", "dropped_records": dropped
+                        }))?;
+                        overflow.push(b'\n');
+                        file.write_all(&overflow)?;
                     }
-                    serde_json::to_writer(&mut *file, &record)?;
-                    file.write_all(b"\n")
+                    // Parent and input helper append to the same hourly file.
+                    // Append each complete JSONL line in one write rather than
+                    // interleaving the serializer's fragments across processes.
+                    let mut line = serde_json::to_vec(&record)?;
+                    line.push(b'\n');
+                    file.write_all(&line)
                 })();
                 if let Err(error) = result {
                     eprintln!("DeskFuse: log write failed ({:?})", error.kind());

@@ -9,7 +9,12 @@ struct ClipboardLibrarySettingsView: View {
     @State private var recording = false
     @State private var status: String?
     @State private var failure: String?
-    private var dirty: Bool { original != nil && draft != original }
+    @AppStorage(wrappedValue: ClipboardOCRIndexer.defaultAutomaticIndexing,
+                 ClipboardOCRIndexer.automaticIndexingKey)
+    private var automaticOCR: Bool
+    @State private var draftAutomaticOCR = ClipboardOCRIndexer.defaultAutomaticIndexing
+    @State private var originalAutomaticOCR = ClipboardOCRIndexer.defaultAutomaticIndexing
+    private var dirty: Bool { original != nil && (draft != original || draftAutomaticOCR != originalAutomaticOCR) }
     private var shortcut: WorkflowKey? {
         let value = draft.shortcut ?? ClipboardLibraryShortcut()
         return value.enabled ? WorkflowKey(key_code: value.key_code, modifiers: value.modifiers) : nil
@@ -42,6 +47,11 @@ struct ClipboardLibrarySettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("清除已同步的远端索引") { library.clearRemoteIndex() }
                     Text("清除其它设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("图片文字识别") {
+                    Toggle("自动识别图片文字", isOn: $draftAutomaticOCR)
+                    Text("默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("排除 App") {
@@ -77,11 +87,16 @@ struct ClipboardLibrarySettingsView: View {
             SettingsSaveFooter(dirty: dirty, saving: saving,
                 canSave: original != nil && !recording && (dirty || failure != nil),
                 canRevert: dirty && !recording, status: status, error: failure,
-                revert: { if let original { draft = original }; failure = nil; status = nil },
+                revert: {
+                    if let original { draft = original }
+                    draftAutomaticOCR = originalAutomaticOCR
+                    failure = nil; status = nil
+                },
                 save: save)
         }
         .task { if original == nil { await load() } }
         .onChange(of: draft) { _, _ in status = nil; failure = nil }
+        .onChange(of: draftAutomaticOCR) { _, _ in status = nil; failure = nil }
     }
 
     private func load() async {
@@ -92,6 +107,7 @@ struct ClipboardLibrarySettingsView: View {
             settings.shortcut = settings.shortcut ?? ClipboardLibraryShortcut()
             settings.sync_index = settings.sync_index ?? true
             draft = settings; original = settings
+            draftAutomaticOCR = automaticOCR; originalAutomaticOCR = automaticOCR
         } catch { failure = error.userFacingMessage }
     }
 
@@ -104,6 +120,7 @@ struct ClipboardLibrarySettingsView: View {
             failure = conflict; return
         }
         let submitted = draft
+        let submittedAutomaticOCR = draftAutomaticOCR
         saving = true; failure = nil; status = nil
         Task {
             defer { saving = false }
@@ -113,6 +130,9 @@ struct ClipboardLibrarySettingsView: View {
                 saved.shortcut = saved.shortcut ?? ClipboardLibraryShortcut()
                 // Preserve the local ordering; the backend normalizes excluded apps.
                 original = submitted
+                automaticOCR = submittedAutomaticOCR
+                originalAutomaticOCR = submittedAutomaticOCR
+                if !submittedAutomaticOCR { ClipboardOCRIndexer.shared.cancelPending() }
                 let value = saved.shortcut ?? ClipboardLibraryShortcut()
                 ClipboardPanelController.shared.configure(value.enabled
                     ? WorkflowKey(key_code: value.key_code, modifiers: value.modifiers) : nil)

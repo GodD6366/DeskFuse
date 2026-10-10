@@ -151,7 +151,14 @@ struct SettingsView: View, Equatable {
             }
             Task { @MainActor in
                 defer { exportingDiagnostics = false }
-                do { try await client.exportDiagnostics(url.path) }
+                do {
+                    try await client.exportDiagnostics(url.path)
+                    let memory = await MemoryDiagnostics.capture(ocr: ClipboardOCRIndexer.shared.diagnostics())
+                    let handle = try FileHandle(forWritingTo: url)
+                    handle.seekToEndOfFile()
+                    handle.write(memory)
+                    try handle.close()
+                }
                 catch { store.error = error.userFacingMessage }
             }
         }

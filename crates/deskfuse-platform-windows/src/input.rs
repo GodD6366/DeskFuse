@@ -170,6 +170,11 @@ mod native {
             }
             let scan =
                 keyboard_usage_to_scan_code(usage).ok_or(InputError::UnsupportedUsage(usage))?;
+            // Lock keys toggle on down, and must not toggle again when a Mac
+            // reports another flagsChanged event during the same held press.
+            if down && matches!(usage, 0x39 | 0x47 | 0x53) && self.keys.contains(&scan) {
+                return Ok(InjectionOutcome::Unchanged);
+            }
             self.key(scan, down)
         }
 

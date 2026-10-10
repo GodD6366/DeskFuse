@@ -72,13 +72,24 @@ let deskfuseTargets: [Target] = [
         dependencies: applicationDependencies,
         linkerSettings: applicationLinkerSettings
     ),
+    .executableTarget(
+        name: "DeskFuseOCRHelper",
+        path: "Sources/DeskFuseOCRHelper",
+        linkerSettings: [
+            .linkedFramework("ImageIO"),
+            .linkedFramework("Vision"),
+        ]
+    ),
     .testTarget(name: "DeskFuseTests", dependencies: ["DeskFuse", "DeskFuseEngine"], path: "Tests/DeskFuseTests"),
 ]
 
 let package = Package(
     name: "DeskFuse",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "deskfuse-app", targets: ["DeskFuse"])],
+    products: [
+        .executable(name: "deskfuse-app", targets: ["DeskFuse"]),
+        .executable(name: "deskfuse-ocr-helper", targets: ["DeskFuseOCRHelper"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/jaywcjlove/PermissionFlow.git", from: "2.11.2"),
     ],

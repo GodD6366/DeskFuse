@@ -365,7 +365,9 @@ END;").map_err(err)?;
         db.execute_batch(OPERATION_INDEXES).map_err(err)?;
         storage::install_clocks(&db)?;
         let metadata_ready = storage::install(&db)?;
-        let readers = (0..3)
+        // Two readers keep UI/count queries concurrent while avoiding a third
+        // long-lived SQLite page cache and file-descriptor set.
+        let readers = (0..2)
             .map(|_| {
                 let mut reader = Connection::open(&database_path).map_err(err)?;
                 deskfuse_store::configure_connection(&mut reader).map_err(err)?;

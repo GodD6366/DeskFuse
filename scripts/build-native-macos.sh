@@ -120,6 +120,9 @@ DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}"
 SWIFT_OUTPUT="$(DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --show-bin-path)"
 fi
 cp "$SWIFT_OUTPUT/deskfuse-app" "$DESTINATION/deskfuse-app"
+DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --product deskfuse-ocr-helper
+OCR_HELPER_OUTPUT="$(DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --product deskfuse-ocr-helper --show-bin-path)"
+cp "$OCR_HELPER_OUTPUT/deskfuse-ocr-helper" "$DESTINATION/deskfuse-ocr-helper"
 cp "$RUST_OUTPUT/deskfuse-input-service" "$DESTINATION/deskfuse-input-service"
 write_build_identity "$DESTINATION/build-id"
 LINKED_SDK="$(xcrun vtool -show-build "$DESTINATION/deskfuse-app" | awk '$1 == "sdk" { print $2; exit }')"

@@ -121,6 +121,14 @@ mod build_identity_tests {
     }
 
     #[test]
+    fn environment_layout_save_is_forwarded_to_input_service() {
+        use super::*;
+        let command = RuntimeCommand::SaveEnvironmentLayout { name: None };
+        assert!(command.is_input());
+        assert!(host_command_allowed(&command));
+    }
+
+    #[test]
     fn wallpaper_crosses_both_input_service_ipc_directions() {
         use super::*;
         let peer = DeviceId::from_public_key([7; 32]).unwrap();
@@ -490,6 +498,7 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::ChooseEnvironmentController { .. }
             | RuntimeCommand::ForgetControllerEnvironment { .. }
             | RuntimeCommand::SaveInputSharingScene { .. }
+            | RuntimeCommand::SaveEnvironmentLayout { .. }
             | RuntimeCommand::ApplyInputSharingScene { .. }
             | RuntimeCommand::RenameInputSharingScene { .. }
             | RuntimeCommand::DeleteInputSharingScene { .. }

@@ -78,6 +78,7 @@ fn lease_now_ms() -> u64 {
 }
 
 struct InputActor {
+    diagnostic_states: BTreeMap<(DeviceId, &'static str), (String, Instant)>,
     links: recovery::Links,
     environment: environment::Environment,
     layout_persistence: layout::LayoutPersistence,
@@ -137,6 +138,7 @@ pub(crate) async fn run(
         .unwrap_or_default();
     let mut inbox = transport.input_messages();
     let mut actor = InputActor {
+        diagnostic_states: BTreeMap::new(),
         links: recovery::Links::default(),
         environment: environment::Environment::default(),
         layout_persistence: layout::LayoutPersistence::default(),
@@ -956,6 +958,9 @@ impl InputActor {
                 session_id,
                 reason,
             } => {
+                self.activation_diagnostic(peer_id, "input_link_invalidated", || {
+                    format!("transport={session_id} reason={reason}")
+                });
                 self.activation_invalidated(peer_id, session_id, &reason);
                 let ids = self
                     .leases
@@ -977,6 +982,19 @@ impl InputActor {
                     || !self.network_allowed(peer_id)
                     || !self.context_live(peer_id, &context)
                 {
+                    if matches!(
+                        &message,
+                        InputShareMessage::Activate { .. }
+                            | InputShareMessage::Activated { .. }
+                            | InputShareMessage::Deactivate { .. }
+                    ) {
+                        let valid = message.validate().is_ok();
+                        let allowed = self.network_allowed(peer_id);
+                        let live = self.context_live(peer_id, &context);
+                        self.activation_diagnostic(peer_id, "activation_dropped", || {
+                            format!("transport={} valid={valid} network_allowed={allowed} context_live={live}", context.session_id)
+                        });
+                    }
                     return;
                 }
                 let hybrid_request = matches!(&message, InputShareMessage::RequestHybrid { .. });
@@ -1818,6 +1836,7 @@ mod tests {
         let activation = Activation::ready_fixture(peer, context.clone());
         (
             InputActor {
+                diagnostic_states: BTreeMap::new(),
                 links: recovery::Links::default(),
                 environment: environment::Environment::default(),
                 layout_persistence: layout::LayoutPersistence::default(),

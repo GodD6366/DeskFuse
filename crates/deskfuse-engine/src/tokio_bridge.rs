@@ -2529,6 +2529,12 @@ async fn run_worker(
                             }
                         }
                     }
+                    RuntimeEvent::InputDiagnostic { stage, detail } => {
+                        crate::diagnostics::record!(diagnostics,
+                            DiagnosticLevel::Info, "input_activation", stage,
+                            Some(format!("pid={} {detail}", platform.runtime().process_id())), None,
+                        );
+                    }
                     RuntimeEvent::ConnectionRecovery { peer_id, phase, route_id, attempt, retry_after_secs, reason } => {
                         crate::diagnostics::record!(diagnostics,
                             DiagnosticLevel::Info, "runtime", "control_recovery",

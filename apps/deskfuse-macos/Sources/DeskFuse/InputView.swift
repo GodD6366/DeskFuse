@@ -61,6 +61,13 @@ struct InputView: View {
         .onChange(of: snapshot.input.displays.filter(\.ready).map(\.deviceId)) { _, ready in
             reconnectingDevices.subtract(Set(ready))
         }
+        .task(id: snapshot.input.canConfigure) {
+            guard snapshot.input.canConfigure else { return }
+            await store.refreshDisplayWallpapers()
+        }
+        .onDisappear {
+            store.clearDisplayWallpapers()
+        }
     }
 
     private var receiverState: some View {
@@ -227,6 +234,7 @@ struct InputView: View {
             HStack(alignment: .center, spacing: 12) {
                 Text("\(snapshot.input.displays.count) 个屏幕").font(.callout).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
+                saveEnvironmentLayoutButton
                 layoutMenu
             }
             DisplayLayout(store: store, snapshot: snapshot, onRemoveDevice: { id in
@@ -238,15 +246,35 @@ struct InputView: View {
         }.frame(maxWidth: .infinity)
     }
 
+    /// The Wi-Fi-bound layout is a frequent action, so keep it beside the
+    /// canvas instead of requiring a trip through Settings or a secondary menu.
+    @ViewBuilder
+    private var saveEnvironmentLayoutButton: some View {
+        if let ssid = snapshot.input.ssid {
+            WorkspaceChromeButton(
+                boundScene == nil ? "保存到当前 Wi-Fi" : "更新当前 Wi-Fi 布局",
+                systemImage: "wifi",
+                help: boundScene == nil
+                    ? "把当前屏幕排布保存到「\(ssid)」；以后回到这个网络时自动恢复。"
+                    : "更新「\(ssid)」保存的屏幕排布。",
+                prominent: false
+            ) {
+                store.error = nil
+                store.send(.saveEnvironmentLayout(name: nil))
+            }
+        } else {
+            WorkspaceChromeButton(
+                "保存到当前 Wi-Fi",
+                systemImage: "wifi.slash",
+                help: "尚未取得唯一的 Wi-Fi 名称，暂时无法按网络保存布局。"
+            ) {}
+            .disabled(true)
+        }
+    }
+
     /// 布局既能随 Wi-Fi 自动保存/恢复，也能另存为独立布局。
     private var layoutMenu: some View {
         Menu {
-            if let ssid = snapshot.input.ssid {
-                Button(boundScene == nil ? "保存布局到「\(ssid)」" : "更新「\(ssid)」布局") {
-                    store.error = nil
-                    store.send(.saveEnvironmentLayout(name: nil))
-                }
-            }
             Button("另存为新布局…") { layoutName = ""; showSaveLayout = true }
             if !snapshot.input.scenes.isEmpty {
                 Divider()
@@ -256,8 +284,13 @@ struct InputView: View {
             }
         } label: {
             Label("布局", systemImage: "square.on.square")
+                .modifier(WorkspaceControlLabel())
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .frame(minHeight: WorkspaceControlMetrics.height)
+        .modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
         .disabled(updatingSettings)
         .help("保存或应用屏幕布局；绑定 Wi-Fi 的布局会在回到该网络时自动恢复。")
     }

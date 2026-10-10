@@ -6,6 +6,9 @@ use deskfuse_core::{DeviceId, DisplayDescriptor, DisplayKey, EdgeSwitchMode, Sha
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SHARING_MODIFIERS: u64 = (1 << 18) | (1 << 19) | (1 << 20);
+/// Caps Lock uses the key packet to retain its native flagsChanged identity,
+/// but remains a modifier across device handovers.
+pub const CAPS_LOCK_KEYCODE: u16 = 57;
 const CHORD_MASK: u64 = SHARING_MODIFIERS | (1 << 17);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HotkeyChord {
@@ -295,16 +298,22 @@ impl SharingController {
                 }
                 return actions;
             }
-            if pressed {
-                self.held_keys.insert(code);
-            } else {
-                self.held_keys.remove(&code);
+            // Ordinary held keys wait for release before reaching a new peer.
+            // Caps is synchronized in the crossing's modifier snapshot, so its
+            // release must reach that peer even if pressed on the old device.
+            if code != CAPS_LOCK_KEYCODE {
+                if pressed {
+                    self.held_keys.insert(code);
+                } else {
+                    self.held_keys.remove(&code);
+                }
             }
             if !pressed && self.consumed_keys.remove(&code) {
                 return actions;
             }
             if pressed
-                && (self.consumed_keys.contains(&code) || self.hotkeys.matches(code, modifiers))
+                && (self.consumed_keys.contains(&code)
+                    || (!repeat && self.hotkeys.matches(code, modifiers)))
             {
                 self.consumed_keys.insert(code);
                 if repeat {
@@ -926,6 +935,61 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_key_repeat_cannot_become_a_hotkey_and_lose_its_release() {
+        for code in [123, 124, 125, 126, 37, 53] {
+            let mut c = controller(EdgeSwitchMode::Instant);
+            motion(&mut c, 99.0, 50.0, 0.0, 0.0, 0);
+            let target = c.active_display().unwrap().clone();
+            for (pressed, modifiers, repeat) in [
+                (true, 0, false),
+                (true, SHARING_MODIFIERS, true),
+                (false, 0, false),
+            ] {
+                let event = SharedInputEvent::Key {
+                    code,
+                    pressed,
+                    modifiers,
+                    repeat,
+                };
+                assert_eq!(
+                    c.handle_input(event.clone(), Point::new(99.0, 50.0), Vector2::default(), 1,),
+                    vec![SharingAction::Route {
+                        target: target.clone(),
+                        event,
+                    }],
+                    "an ordinary held key must keep its repeat/release stream"
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_hotkey_started_with_its_chord_still_consumes_repeats_and_release() {
+        let mut c = controller(EdgeSwitchMode::Instant);
+        motion(&mut c, 99.0, 50.0, 0.0, 0.0, 0);
+        let key = |pressed, repeat| SharedInputEvent::Key {
+            code: 37,
+            pressed,
+            modifiers: SHARING_MODIFIERS,
+            repeat,
+        };
+        assert_eq!(
+            c.handle_input(key(true, false), Point::default(), Vector2::default(), 1),
+            vec![SharingAction::LockChanged(true)]
+        );
+        for (pressed, repeat) in [(true, true), (true, true), (false, false)] {
+            assert!(
+                c.handle_input(
+                    key(pressed, repeat),
+                    Point::default(),
+                    Vector2::default(),
+                    2
+                )
+                .is_empty()
+            );
+        }
+        assert!(c.is_locked());
+    }
+    #[test]
     fn only_chord_escape_reclaims_and_lock_blocks() {
         let mut c = controller(EdgeSwitchMode::Instant);
         motion(&mut c, 99.0, 50.0, 0.0, 0.0, 0);
@@ -1025,6 +1089,49 @@ mod tests {
         let mut layout = c.displays.values().cloned().collect::<Vec<_>>();
         layout[2].x += 1.0;
         assert!(c.set_layout(layout).is_err());
+    }
+    #[test]
+    fn caps_release_after_mouse_crossing_reaches_the_new_peer() {
+        for latch in [0, 1 << 16] {
+            let mut c = controller(EdgeSwitchMode::Instant);
+            let flags = 0x80 | latch;
+            c.handle_input(
+                SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    pressed: true,
+                    modifiers: flags,
+                    repeat: false,
+                },
+                Point::new(50.0, 50.0),
+                Vector2::default(),
+                0,
+            );
+            let actions = motion(&mut c, 99.0, 50.0, 0.0, 0.0, 1);
+            assert!(crossed(&actions));
+            assert!(actions.iter().any(|action| {
+                matches!(action, SharingAction::Route { event: SharedInputEvent::Modifiers { modifiers }, .. } if *modifiers == flags)
+            }));
+            let release = SharedInputEvent::Key {
+                code: CAPS_LOCK_KEYCODE,
+                pressed: false,
+                modifiers: latch,
+                repeat: false,
+            };
+            let actions = c.handle_input(
+                release.clone(),
+                Point::new(99.0, 50.0),
+                Vector2::default(),
+                2,
+            );
+            assert_eq!(
+                actions,
+                vec![SharingAction::Route {
+                    target: c.active_display().unwrap().clone(),
+                    event: release,
+                }],
+                "Caps is a modifier edge, so crossing must not swallow its release"
+            );
+        }
     }
     #[test]
     fn modifiers_cross_before_click_and_ordinary_held_key_does_not_repeat_on_new_peer() {

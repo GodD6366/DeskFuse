@@ -12,6 +12,7 @@ pub use capture::{
     CaptureEvent, CaptureMode, CaptureSample, MacOSSharingCapture,
     restore_pointer_after_service_exit, warp_pointer,
 };
+use deskfuse_input::sharing::CAPS_LOCK_KEYCODE;
 pub use injector::MacOSSharingInjector;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -20,6 +21,11 @@ use std::{
 
 /// Distinct from the file-paste marker; every synthetic sharing event is tagged.
 pub const SYNTHETIC_SHARING_EVENT_MARKER: i64 = 0x5544_5348;
+
+// IOLLEvent.h: NX_ALPHASHIFT_STATELESS_MASK and
+// NX_DEVICE_ALPHASHIFT_STATELESS_MASK describe the physical Caps key, not
+// the latched NX_ALPHASHIFTMASK used for uppercase text.
+const CAPS_LOCK_STATELESS_FLAGS: u64 = 0x0100_0080;
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightPostEventAccess() -> u8;

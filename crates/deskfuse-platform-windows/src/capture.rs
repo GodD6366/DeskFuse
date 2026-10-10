@@ -167,6 +167,7 @@ struct Shared {
     origin: Instant,
     stop: AtomicBool,
     alive: AtomicBool,
+    initial_caps_lock: AtomicBool,
     heartbeat_ms: AtomicU64,
     fault: AtomicU8,
     suppression: Mutex<SuppressionState>,
@@ -178,6 +179,7 @@ impl Shared {
             origin: Instant::now(),
             stop: AtomicBool::new(false),
             alive: AtomicBool::new(false),
+            initial_caps_lock: AtomicBool::new(false),
             heartbeat_ms: AtomicU64::new(0),
             fault: AtomicU8::new(0),
             suppression: Mutex::new(SuppressionState::default()),
@@ -334,8 +336,9 @@ impl Shared {
     }
 }
 
-fn emergency_chord(usage: u16, down: bool, modifiers: HidModifiers) -> bool {
-    down && usage == 0x29
+fn emergency_chord(usage: u16, down: bool, repeat: bool, modifiers: HidModifiers) -> bool {
+    down && !repeat
+        && usage == 0x29
         && modifiers.control()
         && modifiers.alt()
         && modifiers.0 & (HidModifiers::LEFT_GUI | HidModifiers::RIGHT_GUI) != 0
@@ -370,9 +373,9 @@ mod native {
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
             Input::KeyboardAndMouse::{
-                GetAsyncKeyState, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-                VK_MBUTTON, VK_PAUSE, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
-                VK_XBUTTON1, VK_XBUTTON2,
+                GetAsyncKeyState, GetKeyState, VK_CAPITAL, VK_LBUTTON, VK_LCONTROL, VK_LMENU,
+                VK_LSHIFT, VK_LWIN, VK_MBUTTON, VK_PAUSE, VK_RBUTTON, VK_RCONTROL, VK_RMENU,
+                VK_RSHIFT, VK_RWIN, VK_XBUTTON1, VK_XBUTTON2,
             },
             WindowsAndMessaging::{
                 CallNextHookEx, DispatchMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT,
@@ -466,6 +469,12 @@ mod native {
         }
         pub fn poll(&self) -> CapturePoll {
             self.shared.poll(&self.receiver)
+        }
+        /// Caps Lock's toggle state sampled when this capture thread's input
+        /// queue was created, before any captured physical edges.
+        #[must_use]
+        pub fn initial_caps_lock(&self) -> bool {
+            self.shared.initial_caps_lock.load(Ordering::Acquire)
         }
         pub fn status(&self) -> CaptureStatus {
             if self.thread.as_ref().is_some_and(JoinHandle::is_finished)
@@ -574,6 +583,10 @@ mod native {
         unsafe {
             PeekMessageW(&raw mut message, null_mut(), 0, 0, PM_NOREMOVE);
         }
+        // SAFETY: read a valid virtual key on the fresh input/message queue,
+        // rather than the coordinator's potentially stale thread-local state.
+        let caps_lock = unsafe { GetKeyState(i32::from(VK_CAPITAL)) } & 1 != 0;
+        shared.initial_caps_lock.store(caps_lock, Ordering::Release);
         if shared.stop.load(Ordering::Acquire) {
             return Err(CaptureError::Stopped);
         }
@@ -751,7 +764,7 @@ mod native {
             let repeat = down && self.keys[usize::from(usage)];
             self.keys[usize::from(usage)] = down;
             let modifiers = self.modifiers();
-            if emergency_chord(usage, down, modifiers) {
+            if emergency_chord(usage, down, repeat, modifiers) {
                 self.shared.trip(CaptureFault::EmergencyReclaim);
                 return false;
             }
@@ -1092,6 +1105,42 @@ mod native {
                 Some(CaptureFault::UnsupportedKeyboardMapping)
             );
         }
+        #[test]
+        fn ordinary_escape_repeat_with_later_modifiers_does_not_reclaim() {
+            let (mut context, receiver) = context(8);
+            let escape = raw_key(1);
+            assert!(!context.keyboard(WM_KEYDOWN, &escape));
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(CaptureEvent::Key {
+                    usage: 0x29,
+                    repeat: false,
+                    ..
+                })
+            ));
+            context.keys[0xe0] = true;
+            context.keys[0xe2] = true;
+            context.keys[0xe3] = true;
+            assert!(!context.keyboard(WM_KEYDOWN, &escape));
+            assert!(context.shared.fault().is_none());
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(CaptureEvent::Key {
+                    usage: 0x29,
+                    repeat: true,
+                    ..
+                })
+            ));
+            assert!(!context.keyboard(WM_KEYUP, &escape));
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(CaptureEvent::Key {
+                    usage: 0x29,
+                    down: false,
+                    ..
+                })
+            ));
+        }
     }
 }
 
@@ -1166,12 +1215,14 @@ mod tests {
         let modifiers = HidModifiers(
             HidModifiers::RIGHT_CONTROL | HidModifiers::LEFT_ALT | HidModifiers::RIGHT_GUI,
         );
-        assert!(emergency_chord(0x29, true, modifiers));
-        assert!(!emergency_chord(0x29, false, modifiers));
-        assert!(!emergency_chord(4, true, modifiers));
+        assert!(emergency_chord(0x29, true, false, modifiers));
+        assert!(!emergency_chord(0x29, true, true, modifiers));
+        assert!(!emergency_chord(0x29, false, false, modifiers));
+        assert!(!emergency_chord(4, true, false, modifiers));
         assert!(!emergency_chord(
             0x29,
             true,
+            false,
             HidModifiers(modifiers.0 & !HidModifiers::RIGHT_GUI)
         ));
     }

@@ -153,6 +153,77 @@ pub const LEGACY_CONTROL: u64 = 1 << 18;
 pub const LEGACY_OPTION: u64 = 1 << 19;
 pub const LEGACY_COMMAND: u64 = 1 << 20;
 
+const CAPS_LOCK_USAGE: u16 = 0x39;
+#[cfg(any(windows, test))]
+const LEGACY_CAPS_LOCK: u64 = 1 << 16;
+#[cfg(any(windows, test))]
+const LEGACY_CAPS_DOWN: u64 = 0x80;
+
+/// Keep the uppercase latch separate from the physical Caps key when adapting
+/// Windows key events to the current Quartz flags contract.
+#[derive(Default)]
+#[cfg(any(windows, test))]
+pub(crate) struct LegacyCapsLock {
+    locked: bool,
+    down: bool,
+}
+#[cfg(any(windows, test))]
+impl LegacyCapsLock {
+    pub(crate) fn new(locked: bool) -> Self {
+        Self {
+            locked,
+            down: false,
+        }
+    }
+
+    pub(crate) fn observe_key(&mut self, usage: u16, down: bool, repeat: bool) {
+        if usage == CAPS_LOCK_USAGE {
+            if down && !self.down && !repeat {
+                self.locked = !self.locked;
+            }
+            self.down = down;
+        }
+    }
+
+    pub(crate) fn flags(&self, modifiers: HidModifiers) -> u64 {
+        hid_modifiers_to_legacy(modifiers)
+            | if self.locked { LEGACY_CAPS_LOCK } else { 0 }
+            | if self.down { LEGACY_CAPS_DOWN } else { 0 }
+    }
+}
+
+// Quartz aggregate and device-specific side bits (IOLLEvent.h).
+const LEGACY_MODIFIER_SIDES: [(u64, u64, u64, u8, u8); 4] = [
+    (
+        LEGACY_SHIFT,
+        0x2,
+        0x4,
+        HidModifiers::LEFT_SHIFT,
+        HidModifiers::RIGHT_SHIFT,
+    ),
+    (
+        LEGACY_CONTROL,
+        0x1,
+        0x2000,
+        HidModifiers::LEFT_CONTROL,
+        HidModifiers::RIGHT_CONTROL,
+    ),
+    (
+        LEGACY_OPTION,
+        0x20,
+        0x40,
+        HidModifiers::LEFT_ALT,
+        HidModifiers::RIGHT_ALT,
+    ),
+    (
+        LEGACY_COMMAND,
+        0x8,
+        0x10,
+        HidModifiers::LEFT_GUI,
+        HidModifiers::RIGHT_GUI,
+    ),
+];
+
 /// Bridge the current Quartz-keycode wire contract at the Windows adapter edge.
 /// The protocol remains physical: layout and IME interpretation stay on the receiver.
 const LEGACY_KEYS: &[(u16, u16)] = &[
@@ -209,6 +280,8 @@ const LEGACY_KEYS: &[(u16, u16)] = &[
     (0x35, 50),
     (0x2a, 51),
     (0x29, 53),
+    (CAPS_LOCK_USAGE, 57),
+    (0x6c, 64),
     (0x63, 65),
     (0x55, 67),
     (0x57, 69),
@@ -216,6 +289,8 @@ const LEGACY_KEYS: &[(u16, u16)] = &[
     (0x54, 75),
     (0x58, 76),
     (0x56, 78),
+    (0x6d, 79),
+    (0x6e, 80),
     (0x62, 82),
     (0x59, 83),
     (0x5a, 84),
@@ -224,6 +299,7 @@ const LEGACY_KEYS: &[(u16, u16)] = &[
     (0x5d, 87),
     (0x5e, 88),
     (0x5f, 89),
+    (0x6f, 90),
     (0x60, 91),
     (0x61, 92),
     (0x3e, 96),
@@ -239,7 +315,7 @@ const LEGACY_KEYS: &[(u16, u16)] = &[
     (0x43, 109),
     (0x45, 111),
     (0x6a, 113),
-    (0x75, 114),
+    (0x49, 114), // PC Insert corresponds to the Mac Help key position.
     (0x4a, 115),
     (0x4b, 116),
     (0x4c, 117),
@@ -271,17 +347,16 @@ pub fn legacy_keycode_to_keyboard_usage(keycode: u16) -> Option<u16> {
 #[must_use]
 pub fn hid_modifiers_to_legacy(modifiers: HidModifiers) -> u64 {
     let mut legacy = 0;
-    if modifiers.0 & (HidModifiers::LEFT_SHIFT | HidModifiers::RIGHT_SHIFT) != 0 {
-        legacy |= LEGACY_SHIFT;
-    }
-    if modifiers.0 & (HidModifiers::LEFT_CONTROL | HidModifiers::RIGHT_CONTROL) != 0 {
-        legacy |= LEGACY_CONTROL;
-    }
-    if modifiers.0 & (HidModifiers::LEFT_ALT | HidModifiers::RIGHT_ALT) != 0 {
-        legacy |= LEGACY_OPTION;
-    }
-    if modifiers.0 & (HidModifiers::LEFT_GUI | HidModifiers::RIGHT_GUI) != 0 {
-        legacy |= LEGACY_COMMAND;
+    for (aggregate, left_flag, right_flag, left_hid, right_hid) in LEGACY_MODIFIER_SIDES {
+        if modifiers.0 & (left_hid | right_hid) != 0 {
+            legacy |= aggregate;
+        }
+        if modifiers.0 & left_hid != 0 {
+            legacy |= left_flag;
+        }
+        if modifiers.0 & right_hid != 0 {
+            legacy |= right_flag;
+        }
     }
     legacy
 }
@@ -289,17 +364,17 @@ pub fn hid_modifiers_to_legacy(modifiers: HidModifiers) -> u64 {
 #[must_use]
 pub fn legacy_modifiers_to_hid(modifiers: u64) -> HidModifiers {
     let mut hid = 0;
-    if modifiers & LEGACY_SHIFT != 0 {
-        hid |= HidModifiers::LEFT_SHIFT;
-    }
-    if modifiers & LEGACY_CONTROL != 0 {
-        hid |= HidModifiers::LEFT_CONTROL;
-    }
-    if modifiers & LEGACY_OPTION != 0 {
-        hid |= HidModifiers::LEFT_ALT;
-    }
-    if modifiers & LEGACY_COMMAND != 0 {
-        hid |= HidModifiers::LEFT_GUI;
+    for (aggregate, left_flag, right_flag, left_hid, right_hid) in LEGACY_MODIFIER_SIDES {
+        if modifiers & aggregate != 0 {
+            // Older peers may send only the aggregate flag. Preserve their
+            // left-side fallback while honoring either/both explicit sides.
+            if modifiers & left_flag != 0 || modifiers & (left_flag | right_flag) == 0 {
+                hid |= left_hid;
+            }
+            if modifiers & right_flag != 0 {
+                hid |= right_hid;
+            }
+        }
     }
     HidModifiers(hid)
 }
@@ -429,15 +504,95 @@ mod tests {
             HidModifiers::RIGHT_CONTROL | HidModifiers::LEFT_ALT | HidModifiers::RIGHT_GUI,
         );
         let legacy = hid_modifiers_to_legacy(hid);
-        assert_eq!(legacy, LEGACY_CONTROL | LEGACY_OPTION | LEGACY_COMMAND);
+        assert_eq!(
+            legacy,
+            LEGACY_CONTROL | LEGACY_OPTION | LEGACY_COMMAND | 0x2000 | 0x20 | 0x10
+        );
         assert!(legacy_modifiers_to_hid(legacy).control());
         assert!(legacy_modifiers_to_hid(legacy).alt());
-        assert_ne!(
-            legacy_modifiers_to_hid(legacy).0 & HidModifiers::LEFT_GUI,
-            0
-        );
+        assert_eq!(legacy_modifiers_to_hid(legacy), hid);
     }
 
+    #[test]
+    fn caps_latch_is_preserved_on_release_and_only_toggles_on_a_fresh_press() {
+        for initial in [false, true] {
+            let mut caps = LegacyCapsLock::new(initial);
+            let right_alt = HidModifiers(HidModifiers::RIGHT_ALT);
+            let side_flags = LEGACY_OPTION | 0x40;
+            assert_eq!(
+                caps.flags(right_alt),
+                side_flags | if initial { LEGACY_CAPS_LOCK } else { 0 }
+            );
+            caps.observe_key(CAPS_LOCK_USAGE, true, false);
+            let pressed =
+                side_flags | LEGACY_CAPS_DOWN | if !initial { LEGACY_CAPS_LOCK } else { 0 };
+            assert_eq!(caps.flags(right_alt), pressed);
+            caps.observe_key(CAPS_LOCK_USAGE, true, true);
+            caps.observe_key(0x04, true, false);
+            assert_eq!(caps.flags(right_alt), pressed);
+            caps.observe_key(CAPS_LOCK_USAGE, false, false);
+            assert_eq!(caps.flags(right_alt), pressed & !LEGACY_CAPS_DOWN);
+            caps.observe_key(CAPS_LOCK_USAGE, true, false);
+            caps.observe_key(CAPS_LOCK_USAGE, false, false);
+            assert_eq!(
+                caps.flags(right_alt),
+                side_flags | if initial { LEGACY_CAPS_LOCK } else { 0 }
+            );
+        }
+        assert_eq!(keyboard_usage_to_legacy_keycode(CAPS_LOCK_USAGE), Some(57));
+        assert_eq!(legacy_keycode_to_keyboard_usage(57), Some(CAPS_LOCK_USAGE));
+        assert!(keyboard_usage_to_scan_code(CAPS_LOCK_USAGE).is_some());
+    }
+    #[test]
+    fn legacy_bridge_function_keys_and_insert_have_injectable_scan_codes() {
+        for (usage, keycode) in [
+            (0x3a, 122),
+            (0x3b, 120),
+            (0x3c, 99),
+            (0x3d, 118),
+            (0x3e, 96),
+            (0x3f, 97),
+            (0x40, 98),
+            (0x41, 100),
+            (0x42, 101),
+            (0x43, 109),
+            (0x44, 103),
+            (0x45, 111),
+            (0x68, 105),
+            (0x69, 107),
+            (0x6a, 113),
+            (0x6b, 106),
+            (0x6c, 64),
+            (0x6d, 79),
+            (0x6e, 80),
+            (0x6f, 90),
+            (0x49, 114),
+        ] {
+            assert_eq!(keyboard_usage_to_legacy_keycode(usage), Some(keycode));
+            assert_eq!(legacy_keycode_to_keyboard_usage(keycode), Some(usage));
+            assert!(keyboard_usage_to_scan_code(usage).is_some());
+        }
+    }
+    #[test]
+    fn legacy_bridge_round_trips_every_left_right_modifier_combination() {
+        for bits in 0..=u8::MAX {
+            let modifiers = HidModifiers(bits);
+            assert_eq!(
+                legacy_modifiers_to_hid(hid_modifiers_to_legacy(modifiers)),
+                modifiers,
+                "modifier sides must survive the current wire adapter"
+            );
+        }
+        assert_eq!(
+            legacy_modifiers_to_hid(LEGACY_SHIFT | LEGACY_CONTROL | LEGACY_OPTION | LEGACY_COMMAND),
+            HidModifiers(
+                HidModifiers::LEFT_SHIFT
+                    | HidModifiers::LEFT_CONTROL
+                    | HidModifiers::LEFT_ALT
+                    | HidModifiers::LEFT_GUI
+            )
+        );
+    }
     #[test]
     fn unsupported_and_complex_keys_are_rejected() {
         for usage in [1, 2, 3, 0x48, 0x66, 0x67, 0x87, 0xffff] {

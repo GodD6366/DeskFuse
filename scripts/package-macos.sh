@@ -260,12 +260,13 @@ TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 
 CARGO_OUTPUT_DIR="$TARGET_DIR"
 UPDATE_HELPER="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper"
 HISTORY_FILES="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files"
+OCR_HELPER="$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-ocr-helper"
 # Cargo owns incremental invalidation for the packaging helpers too; a helper
 # fingerprint here would only duplicate (and desynchronise) its bookkeeping.
 "$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --target "$TARGET_TRIPLE" \
   --package deskfuse-update --bin deskfuse-update-helper \
   --package deskfuse-engine --bin deskfuse-history-files
-for helper in "$UPDATE_HELPER" "$HISTORY_FILES"; do
+for helper in "$UPDATE_HELPER" "$HISTORY_FILES" "$OCR_HELPER"; do
   if [[ ! -x "$helper" ]]; then
     echo "error: expected helper not found or not executable: $helper" >&2
     exit 1
@@ -294,6 +295,8 @@ cp "$ROOT_DIR/apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/NOTICES.txt" 
 ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/Metadata.appintents"
 cp "$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-input-service"
 deskfuse_codesign --identifier com.deskfuse.app.input-service "$CONTENTS_DIR/MacOS/deskfuse-input-service"
+cp "$OCR_HELPER" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
+deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files" "$CONTENTS_DIR/MacOS/deskfuse-history-files"

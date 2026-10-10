@@ -1375,6 +1375,11 @@ impl DeviceNetworkSnapshot {
 /// Events emitted to all runtime subscribers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeEvent {
+    /// Rate-limited input lifecycle metadata, without input payloads or lease tokens.
+    InputDiagnostic {
+        stage: &'static str,
+        detail: String,
+    },
     #[cfg(unix)]
     InputServiceStatus(input_service::NativeStatus),
     ClipboardSent {

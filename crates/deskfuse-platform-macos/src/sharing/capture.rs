@@ -1,4 +1,7 @@
-use super::{Deadline, SYNTHETIC_SHARING_EVENT_MARKER, may_capture};
+use super::{
+    CAPS_LOCK_KEYCODE, CAPS_LOCK_STATELESS_FLAGS, Deadline, SYNTHETIC_SHARING_EVENT_MARKER,
+    may_capture,
+};
 use crate::{PlatformError, PlatformResult, SYNTHETIC_PASTE_EVENT_MARKER};
 use core_foundation::{
     base::TCFType,
@@ -35,9 +38,11 @@ fn capture_hotkey_matches(
     controller_enabled: bool,
     code: u16,
     modifiers: u64,
+    repeat: bool,
 ) -> bool {
-    bindings.is_reclaim(code, modifiers)
-        || (controller_enabled && bindings.matches(code, modifiers))
+    !repeat
+        && (bindings.is_reclaim(code, modifiers)
+            || (controller_enabled && bindings.matches(code, modifiers)))
 }
 const QUEUE_SIZE: usize = 512;
 
@@ -946,7 +951,16 @@ unsafe extern "C" fn tap_callback(
         let modifiers = unsafe { CGEventGetFlags(event) };
         if context.last_modifiers != Some(modifiers) {
             context.last_modifiers = Some(modifiers);
-            if !context.shared.push(CaptureSample {
+            // A Caps event carries its flags together with the key identity.
+            // Sending a separate snapshot first would synthesize a duplicate
+            // Caps event on the receiver before the physical edge arrives.
+            if !matches!(
+                sample.event,
+                SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    ..
+                }
+            ) && !context.shared.push(CaptureSample {
                 captured_at: sample.captured_at,
                 event: SharedInputEvent::Modifiers { modifiers },
                 global_x: sample.global_x,
@@ -963,7 +977,7 @@ unsafe extern "C" fn tap_callback(
             code,
             pressed,
             modifiers,
-            ..
+            repeat,
         } = sample.event
         {
             if pressed
@@ -973,6 +987,7 @@ unsafe extern "C" fn tap_callback(
                         context.shared.controller_hotkeys.load(Ordering::Acquire),
                         code,
                         modifiers,
+                        repeat,
                     ))
             {
                 context.consumed.insert(code);
@@ -981,14 +996,17 @@ unsafe extern "C" fn tap_callback(
             if !pressed && context.consumed.remove(&code) {
                 hotkey = true;
             }
-            if !context.shared.exclusive.load(Ordering::Acquire) && !hotkey {
+            if !context.shared.exclusive.load(Ordering::Acquire)
+                && !hotkey
+                && code != CAPS_LOCK_KEYCODE
+            {
                 if pressed {
                     context.local_keys.insert(code);
                 } else {
                     context.local_keys.remove(&code);
                 }
             }
-            if pressed && context.hotkeys.is_reclaim(code, modifiers) {
+            if pressed && !repeat && context.hotkeys.is_reclaim(code, modifiers) {
                 context.shared.exclusive.store(false, Ordering::Release);
                 let _ = context.exit_remote(None);
             }
@@ -1074,7 +1092,19 @@ unsafe fn decode_event(kind: u32, event: CGEventRef) -> Option<CaptureSample> {
             repeat: integer(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0,
         }
     } else if kind == CGEventType::FlagsChanged as u32 {
-        SharedInputEvent::Modifiers { modifiers }
+        if integer(EventField::KEYBOARD_EVENT_KEYCODE) == i64::from(CAPS_LOCK_KEYCODE) {
+            // Input-source switching can leave AlphaShift unchanged. Preserve
+            // every Caps flagsChanged event, including release while the
+            // uppercase latch stays on, through the existing key packet.
+            SharedInputEvent::Key {
+                code: CAPS_LOCK_KEYCODE,
+                pressed: modifiers & CAPS_LOCK_STATELESS_FLAGS != 0,
+                modifiers,
+                repeat: false,
+            }
+        } else {
+            SharedInputEvent::Modifiers { modifiers }
+        }
     } else if kind == CGEventType::ScrollWheel as u32 {
         let continuous = integer(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS) != 0;
         let axis = |point, fixed, line| {
@@ -1709,6 +1739,76 @@ mod tests {
         );
     }
     #[test]
+    fn quartz_caps_events_preserve_identity_without_a_lock_state_change() {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
+        let event = CGEvent::new_keyboard_event(source, CAPS_LOCK_KEYCODE, true).unwrap();
+        event.set_type(CGEventType::FlagsChanged);
+        let alpha_shift = 1 << 16;
+        for flags in [
+            0x80,
+            0,
+            1 << 24,
+            0,
+            CAPS_LOCK_STATELESS_FLAGS,
+            CAPS_LOCK_STATELESS_FLAGS | alpha_shift,
+            alpha_shift,
+            0,
+            0,
+        ] {
+            event.set_flags(CGEventFlags::from_bits_retain(flags));
+            assert_eq!(
+                decoded(&event).event,
+                SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    pressed: flags & CAPS_LOCK_STATELESS_FLAGS != 0,
+                    modifiers: flags,
+                    repeat: false,
+                }
+            );
+        }
+    }
+    #[test]
+    fn caps_capture_does_not_prepend_a_duplicate_modifier_snapshot() {
+        use foreign_types::ForeignType;
+        let keyboard_source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
+        let shared = Arc::new(Shared::new());
+        let mut context = Context {
+            local_position: None,
+            first_motion_after_switch: None,
+            shared: shared.clone(),
+            cursor: CursorGuard::new(),
+            keyboard_source: keyboard_source.clone(),
+            local_keys: BTreeSet::new(),
+            hotkeys: HotkeyBindings::default(),
+            consumed: BTreeSet::new(),
+            last_modifiers: None,
+            tap: std::ptr::null_mut(),
+        };
+        let event = CGEvent::new_keyboard_event(keyboard_source, CAPS_LOCK_KEYCODE, true).unwrap();
+        event.set_type(CGEventType::FlagsChanged);
+        // Represent a physical event without installing a tap or posting input.
+        event.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, 0);
+        for flags in [0x80, 0, 0] {
+            event.set_flags(CGEventFlags::from_bits_retain(flags));
+            // SAFETY: both event and context are owned for this invocation;
+            // nonexclusive Caps decoding never accesses the null tap.
+            let returned = unsafe {
+                tap_callback(
+                    std::ptr::null(),
+                    CGEventType::FlagsChanged as u32,
+                    event.as_ptr(),
+                    (&mut context as *mut Context).cast(),
+                )
+            };
+            assert_eq!(returned, event.as_ptr());
+            let mut events = shared.events.lock().unwrap();
+            assert_eq!(events.len(), 1, "Caps must be queued exactly once");
+            assert_eq!(events.pop_front().unwrap().event, decoded(&event).event);
+            assert_eq!(context.last_modifiers, Some(flags));
+            assert!(context.local_keys.is_empty());
+        }
+    }
+    #[test]
     fn controlled_role_consumes_custom_emergency_even_when_other_hotkeys_are_disabled() {
         let keys = HotkeyBindings {
             emergency: deskfuse_input::sharing::HotkeyChord {
@@ -1717,20 +1817,73 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(capture_hotkey_matches(&keys, false, 14, 0x0c0000));
-        assert!(capture_hotkey_matches(&keys, false, 53, 0x1c0000));
-        assert!(!capture_hotkey_matches(&keys, false, 14, 0));
-        assert!(!capture_hotkey_matches(&keys, false, 123, 0x1c0000));
+        assert!(capture_hotkey_matches(&keys, false, 14, 0x0c0000, false));
+        assert!(capture_hotkey_matches(&keys, false, 53, 0x1c0000, false));
+        assert!(!capture_hotkey_matches(&keys, false, 14, 0, false));
+        assert!(!capture_hotkey_matches(&keys, false, 123, 0x1c0000, false));
+        assert!(!capture_hotkey_matches(&keys, false, 14, 0x0c0000, true));
     }
 
     #[test]
     fn controlled_role_only_consumes_fixed_emergency_chord() {
         let keys = HotkeyBindings::default();
         let flags = deskfuse_input::sharing::SHARING_MODIFIERS;
-        assert!(capture_hotkey_matches(&keys, false, 53, flags));
+        assert!(capture_hotkey_matches(&keys, false, 53, flags, false));
         for code in [123, 124, 125, 126, 37] {
-            assert!(!capture_hotkey_matches(&keys, false, code, flags));
-            assert!(capture_hotkey_matches(&keys, true, code, flags));
+            assert!(!capture_hotkey_matches(&keys, false, code, flags, false));
+            assert!(capture_hotkey_matches(&keys, true, code, flags, false));
+            assert!(!capture_hotkey_matches(&keys, true, code, flags, true));
         }
+    }
+    #[test]
+    fn capture_keeps_ordinary_repeat_and_release_when_chord_modifiers_arrive_later() {
+        use foreign_types::ForeignType;
+        let keyboard_source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
+        let shared = Arc::new(Shared::new());
+        shared.controller_hotkeys.store(true, Ordering::Release);
+        let mut context = Context {
+            local_position: None,
+            first_motion_after_switch: None,
+            shared,
+            cursor: CursorGuard::new(),
+            keyboard_source: keyboard_source.clone(),
+            local_keys: BTreeSet::new(),
+            hotkeys: HotkeyBindings::default(),
+            consumed: BTreeSet::new(),
+            last_modifiers: Some(0),
+            tap: std::ptr::null_mut(),
+        };
+        let event = CGEvent::new_keyboard_event(keyboard_source, 123, true).unwrap();
+        event.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, 0);
+        for (kind, flags, repeat) in [
+            (CGEventType::KeyDown, 0, false),
+            (
+                CGEventType::KeyDown,
+                deskfuse_input::sharing::SHARING_MODIFIERS,
+                true,
+            ),
+            (CGEventType::KeyUp, 0, false),
+        ] {
+            event.set_type(kind);
+            event.set_flags(CGEventFlags::from_bits_retain(flags));
+            event.set_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT, i64::from(repeat));
+            // SAFETY: callback-owned event/context remain live, and this local
+            // key sequence never invokes the unused native tap or cursor.
+            let returned = unsafe {
+                tap_callback(
+                    std::ptr::null(),
+                    kind as u32,
+                    event.as_ptr(),
+                    (&mut context as *mut Context).cast(),
+                )
+            };
+            assert_eq!(
+                returned,
+                event.as_ptr(),
+                "ordinary repeat/release must pass through"
+            );
+            assert!(context.consumed.is_empty());
+        }
+        assert!(context.local_keys.is_empty());
     }
 }

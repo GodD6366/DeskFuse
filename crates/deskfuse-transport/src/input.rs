@@ -17,7 +17,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 pub use update::{UpdateTransportRequest, UpdateTransportStream};
@@ -398,6 +398,7 @@ impl InputHub {
             .unwrap_or_else(tokio::runtime::Handle::current);
         background.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(250));
+            let mut inspection_detail = None;
             let reason = loop {
                 tokio::select! {
                     _ = interval.tick() => {},
@@ -408,8 +409,9 @@ impl InputHub {
                 }
                 let original = watched.context.clone();
                 let lan_port = hub.lan_port.clone();
-                let Ok(current) = crate::input_executor::inspect_blocking(move || {
-                    crate::lan::inspect(
+                let started = Instant::now();
+                let Ok((current, error)) = crate::input_executor::inspect_blocking(move || {
+                    crate::lan::inspect_with_error(
                         lan_port.as_deref(),
                         original.session_id,
                         original.local_addr,
@@ -418,8 +420,22 @@ impl InputHub {
                 })
                 .await
                 else {
+                    inspection_detail = Some("inspection worker unavailable".into());
                     break "input route inspection failed";
                 };
+                if deskfuse_core::debug_logging::enabled()
+                    && (current.interface_name != watched.context.interface_name
+                        || current.interface_kind != watched.context.interface_kind
+                        || current.scope != watched.context.scope)
+                {
+                    inspection_detail = Some(format!(
+                        "local={} remote={} old_interface={:?} new_interface={:?} old_kind={:?} new_kind={:?} old_scope={:?} new_scope={:?} inspection_ms={} inspection_error={error:?}",
+                        watched.context.local_addr, watched.context.remote_addr,
+                        watched.context.interface_name, current.interface_name,
+                        watched.context.interface_kind, current.interface_kind,
+                        watched.context.scope, current.scope, started.elapsed().as_millis(),
+                    ));
+                }
                 if current.interface_name != watched.context.interface_name {
                     break "input route interface changed";
                 }
@@ -430,7 +446,7 @@ impl InputHub {
                     break "input route scope changed";
                 }
             };
-            hub.invalidate(&watched, reason);
+            hub.invalidate_with_details(&watched, reason, inspection_detail);
         });
         let hub = self.clone();
         executor.spawn(async move {
@@ -518,6 +534,14 @@ impl InputHub {
         true
     }
     fn invalidate(&self, session: &Session, reason: &'static str) {
+        self.invalidate_with_details(session, reason, None);
+    }
+    fn invalidate_with_details(
+        &self,
+        session: &Session,
+        reason: &'static str,
+        detail: Option<String>,
+    ) {
         if session.valid.swap(false, Ordering::AcqRel) {
             session.motion.sample_diagnostics(session, reason, true);
             session.cancel.notify_waiters();
@@ -536,7 +560,8 @@ impl InputHub {
             let _ = self.tx.try_send(InputTransportEvent::Invalidated {
                 peer_id: session.peer,
                 session_id: session.context.session_id,
-                reason: reason.into(),
+                reason: detail
+                    .map_or_else(|| reason.into(), |detail| format!("{reason}; {detail}")),
             });
         }
     }

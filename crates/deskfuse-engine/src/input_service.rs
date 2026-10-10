@@ -140,6 +140,9 @@ async fn run(
         child.stopping.clone(),
     );
     let diagnostics = Arc::new(std::sync::Mutex::new(String::new()));
+    let input_records = crate::diagnostics::Diagnostics::new(512);
+    let exported_records = input_records.clone();
+    let diagnostic_handle = runtime.handle.clone();
     let diagnostic_output = diagnostics.clone();
     let runtime_port = platform.runtime();
     let stop = child.stopping.clone();
@@ -147,6 +150,21 @@ async fn run(
         while !stop.load(Ordering::Acquire) {
             if deskfuse_core::debug_logging::enabled() {
                 let mut lines = serde_json::json!({"subsystem":"input_service", "pid":runtime_port.process_id(), "build":deskfuse_runtime::input_service::build_identity()}).to_string(); lines.push('\n');
+                let input = diagnostic_handle.input_snapshot();
+                let activation_snapshot = serde_json::json!({
+                    "subsystem":"input_activation_snapshot", "pid":runtime_port.process_id(),
+                    "timestamp_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
+                    "enabled":input.settings.enabled, "role":input.settings.role,
+                    "local_suspended":input.environment.local_suspended,
+                    "activations":input.activations,
+                    "managed_control":input.managed_control,
+                    "links":input.links.iter().map(|link|serde_json::json!({
+                        "peer":link.peer_id, "ready":link.ready, "reason":link.reason,
+                        "context":link.context, "has_lease":link.control_session.is_some(),
+                    })).collect::<Vec<_>>()
+                });
+                lines.push_str(&activation_snapshot.to_string()); lines.push('\n');
+                lines.push_str(&exported_records.to_json_lines()); lines.push('\n');
                 for record in deskfuse_platform::timing::snapshot().records.into_iter().rev().take(256) {
                     if let Ok(line) = serde_json::to_string(&record) { lines.push_str(&line); lines.push('\n'); }
                 }
@@ -232,7 +250,22 @@ async fn run(
                 if let Err(error) = runtime.handle.try_send(command) { status.native.error = Some(error.to_string()); }
                 status.last_command = id;
             }
-            Some(deskfuse_runtime::RuntimeEvent::Error(error)) = runtime_events.next() => { status.native.error = Some(error.to_string()); },
+            Some(event) = runtime_events.next() => match event {
+                deskfuse_runtime::RuntimeEvent::InputDiagnostic {stage, detail} => {
+                    crate::diagnostics::record!(input_records,
+                        crate::diagnostics::DiagnosticLevel::Info, "input_activation", stage,
+                        Some(format!("pid={} {detail}", platform.runtime().process_id())), None,
+                    );
+                }
+                deskfuse_runtime::RuntimeEvent::Error(error) => {
+                    crate::diagnostics::record!(input_records,
+                        crate::diagnostics::DiagnosticLevel::Error, "input_service", "runtime_error",
+                        Some(format!("pid={} error={error}", platform.runtime().process_id())), None,
+                    );
+                    status.native.error = Some(error.to_string());
+                }
+                _ => {},
+            },
             Some(event) = ui_events.next() => match event {
                 UiEvent::InputStatus {error} => status.native.error = error,
                 UiEvent::InputLockStatus(value) => status.native.locked = value,

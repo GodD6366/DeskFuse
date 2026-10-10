@@ -69,6 +69,43 @@ pub(super) struct RetiredActivation {
 }
 
 impl InputActor {
+    pub(super) fn activation_diagnostic(
+        &mut self,
+        peer: DeviceId,
+        stage: &'static str,
+        detail: impl FnOnce() -> String,
+    ) {
+        if !deskfuse_core::debug_logging::enabled() {
+            return;
+        }
+        let detail = detail();
+        let key = (peer, stage);
+        if self
+            .diagnostic_states
+            .get(&key)
+            .is_some_and(|(previous, at)| {
+                previous == &detail && at.elapsed() < Duration::from_secs(30)
+            })
+        {
+            return;
+        }
+        // Bound log bookkeeping separately from the safety histories it measures.
+        if self.diagnostic_states.len() >= 256 && !self.diagnostic_states.contains_key(&key) {
+            self.diagnostic_states.clear();
+        }
+        self.diagnostic_states
+            .insert(key, (detail.clone(), Instant::now()));
+        // Diagnostics must never consume the native input delivery queue.
+        let _ = self.events.send(RuntimeEvent::InputDiagnostic {
+            stage,
+            detail: format!(
+                "peer={peer} retired_count={} paused_count={} history_capacity=1024 role={:?} enabled={} {detail}",
+                self.retired_activations.len(), self.paused_intents.len(),
+                self.snapshot.settings.role, self.snapshot.settings.enabled,
+            ),
+        });
+    }
+
     pub(super) fn policy_for_settings(
         &self,
         settings: &InputSharingSettings,
@@ -116,6 +153,10 @@ impl InputActor {
         }
     }
     pub(super) fn policy_failed(&mut self, reason: String) {
+        let local = self.network.borrow().snapshot.local_device_id;
+        self.activation_diagnostic(local, "activation_policy_failed", || {
+            format!("reason={reason}")
+        });
         self.activation_policy_error = Some(reason.clone());
         self.deactivate_all("activation policy persistence failed");
         self.emit(RuntimeEvent::Error(RuntimeError::Store(reason)));
@@ -169,6 +210,12 @@ impl InputActor {
                 InputActivationStatus::Unavailable
             },
         });
+        self.activation_diagnostic(activation.peer, "activation_retired", || {
+            format!(
+                "activation={} intent={} status={:?}",
+                activation.id, activation.intent_id, activation.status
+            )
+        });
     }
     fn release_activation_input(&mut self, id: InputActivationId, reason: &str) {
         let leases = self
@@ -196,6 +243,14 @@ impl InputActor {
     }
     pub(super) fn end_incoming(&mut self, reason: &str, notify: bool) {
         if let Some(activation) = self.incoming.take() {
+            self.activation_diagnostic(activation.peer, "activation_end_incoming", || {
+                format!(
+                    "activation={} intent={} transport={:?} reason={reason} notify={notify}",
+                    activation.id,
+                    activation.intent_id,
+                    activation.context.as_ref().map(|c| c.session_id)
+                )
+            });
             self.available = false;
             self.release_activation_input(activation.id, reason);
             if notify && let Some(context) = &activation.context {
@@ -214,6 +269,9 @@ impl InputActor {
     }
     fn stop_outgoing(&mut self, peer: DeviceId, reason: &str, notify: bool, remove: bool) {
         if let Some(mut activation) = self.outgoing.remove(&peer) {
+            self.activation_diagnostic(peer, "activation_end_outgoing", || {
+                format!("activation={} intent={} transport={:?} reason={reason} notify={notify} remove={remove}", activation.id, activation.intent_id, activation.context.as_ref().map(|c|c.session_id))
+            });
             self.release_activation_input(activation.id, reason);
             if notify
                 && activation.sent
@@ -273,7 +331,7 @@ impl InputActor {
         }
     }
     fn activation_reply(
-        &self,
+        &mut self,
         peer: DeviceId,
         context: &ConnectionContext,
         id: InputActivationId,
@@ -281,7 +339,8 @@ impl InputActor {
         status: InputActivationStatus,
         reason: Option<String>,
     ) -> bool {
-        self.send(
+        let diagnostic_reason = reason.clone();
+        let sent = self.send(
             peer,
             context,
             InputShareMessage::Activated {
@@ -291,7 +350,11 @@ impl InputActor {
                 status,
                 reason,
             },
-        )
+        );
+        self.activation_diagnostic(peer, "activation_response", || {
+            format!("activation={id} transport={} status={status:?} reason={diagnostic_reason:?} sent={sent}", context.session_id)
+        });
+        sent
     }
     pub(super) fn receive_activate(
         &mut self,
@@ -303,9 +366,12 @@ impl InputActor {
         force: bool,
     ) {
         if !self.activation_capable(peer, &context) {
+            self.activation_diagnostic(peer, "activation_rejected", || {
+                format!("activation={id} intent={intent_id} transport={} reason=activation_capability_unavailable", context.session_id)
+            });
             return;
         }
-        if let Some(reason) = &self.activation_policy_error {
+        if let Some(reason) = self.activation_policy_error.clone() {
             self.activation_reply(
                 peer,
                 &context,
@@ -427,6 +493,12 @@ impl InputActor {
                         .iter()
                         .any(|(paused_peer, _)| *paused_peer == peer))
             {
+                self.activation_diagnostic(peer, "activation_history_exhausted", || {
+                    format!(
+                        "activation={id} intent={intent_id} transport={}",
+                        context.session_id
+                    )
+                });
                 self.activation_reply(
                     peer,
                     &context,
@@ -443,6 +515,9 @@ impl InputActor {
             incoming.context = Some(context.clone());
             incoming.sent = true;
             self.incoming = Some(incoming);
+            self.activation_diagnostic(peer, "activation_receive", || {
+                format!("activation={id} intent={intent_id} transport={} local={} remote={} force={force}", context.session_id, context.local_addr, context.remote_addr)
+            });
             self.recent_managed_intent = Some((peer, intent_id));
             // A previous local role's availability is not proof that adapters
             // have been prepared for this activation ID.
@@ -466,9 +541,21 @@ impl InputActor {
         reason: Option<String>,
     ) {
         if !self.activation_capable(peer, &context) {
+            self.activation_diagnostic(peer, "activation_ack_ignored", || {
+                format!(
+                    "activation={id} transport={} reason=activation_capability_unavailable",
+                    context.session_id
+                )
+            });
             return;
         }
         let Some(activation) = self.outgoing.get_mut(&peer) else {
+            self.activation_diagnostic(peer, "activation_ack_ignored", || {
+                format!(
+                    "activation={id} transport={} reason=no_outgoing_activation",
+                    context.session_id
+                )
+            });
             return;
         };
         if activation.id != id
@@ -479,6 +566,19 @@ impl InputActor {
             || sequence > activation.sequence
             || sequence < activation.ack_sequence
         {
+            let diagnostic = format!(
+                "activation={id} expected_activation={} transport={} id_matches={} context_matches={} suppressed={} expired={} sent={} sequence_ahead={} sequence_stale={}",
+                activation.id,
+                context.session_id,
+                activation.id == id,
+                activation.context.as_ref() == Some(&context),
+                activation.suppressed,
+                activation.expired(),
+                activation.sent,
+                sequence > activation.sequence,
+                sequence < activation.ack_sequence,
+            );
+            self.activation_diagnostic(peer, "activation_ack_ignored", || diagnostic);
             return;
         }
         // An asynchronous emergency pause is terminal even if the latest
@@ -494,6 +594,13 @@ impl InputActor {
         } else {
             activation.extend();
         }
+        let diagnostic_reason = activation.reason.clone();
+        self.activation_diagnostic(peer, "activation_ack", || {
+            format!(
+                "activation={id} transport={} status={status:?} reason={diagnostic_reason:?}",
+                context.session_id
+            )
+        });
         if status != InputActivationStatus::Ready {
             self.release_activation_input(id, "managed input is not ready");
         }
@@ -547,6 +654,10 @@ impl InputActor {
         }
         incoming.status = status;
         incoming.reason = reason.clone();
+        let peer = incoming.peer;
+        self.activation_diagnostic(peer, "activation_native_status", || {
+            format!("activation={id} status={status:?} reason={reason:?}")
+        });
         self.available = status == InputActivationStatus::Ready;
         self.unavailable_reason = reason;
         if !self.available {
@@ -618,6 +729,8 @@ impl InputActor {
         }
         self.controller_intents
             .insert(peer, InputActivationId::new());
+        let intent = self.controller_intents[&peer];
+        self.activation_diagnostic(peer, "activation_restart", || format!("intent={intent}"));
         // Persist before sending: a crash between the two must not restore an
         // intent the receiver already retired.
         self.persist_activation_policy().await;
@@ -699,6 +812,10 @@ impl InputActor {
                     activation.status = InputActivationStatus::Unavailable;
                     activation.reason =
                         Some("Update both devices to support automatic input activation".into());
+                    let id = activation.id;
+                    self.activation_diagnostic(peer, "activation_capability_missing", || {
+                        format!("activation={id} reason=input_activation_not_negotiated")
+                    });
                 }
                 continue;
             };
@@ -722,6 +839,12 @@ impl InputActor {
                 sequence: activation.sequence,
                 force: false,
             };
+            let id = activation.id;
+            let intent = activation.intent_id;
+            let status = activation.status;
+            self.activation_diagnostic(peer, "activation_send", || {
+                format!("activation={id} intent={intent} transport={} local={} remote={} status={status:?}", context.session_id, context.local_addr, context.remote_addr)
+            });
             if !self.send(peer, &context, message) {
                 self.stop_outgoing(peer, "activation send failed", false, false);
             }

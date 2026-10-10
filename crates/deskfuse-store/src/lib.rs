@@ -33,6 +33,10 @@ use thiserror::Error;
 pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 const SETTINGS_PUBLIC_NETWORK_ENABLED: &str = "public_network_enabled";
+// The bundled SQLite build defaults each connection to -2000 pages (about
+// 2 MiB with the usual 1 KiB page size). DeskFuse keeps several connections
+// open for clipboard reads, so bound each connection to about 1 MiB.
+const SQLITE_PAGE_CACHE_KIB: i64 = -1024;
 
 /// Apply the common policy to each connection to the local state database.
 ///
@@ -46,6 +50,7 @@ pub fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()>
     if journal != "wal" && journal != "memory" {
         connection.pragma_update(None, "journal_mode", "WAL")?;
     }
+    connection.pragma_update(None, "cache_size", SQLITE_PAGE_CACHE_KIB)?;
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.set_transaction_behavior(TransactionBehavior::Immediate);
     Ok(())
