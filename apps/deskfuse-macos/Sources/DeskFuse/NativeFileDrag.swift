@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuickLookThumbnailing
 import DeskFuseEngine
 
 /// AppKit reports the final drag operation. A separate engine lease outlives the shelf itself.
@@ -40,15 +41,16 @@ private struct FileStackArtwork: View {
                     let side: CGFloat = isFront ? 0 : (index == 0 ? -1 : 1)
                     let iconSize = isFront ? size : size * 0.94
                     let lift: CGFloat = isFan ? (isFront ? size * 0.04 : -size * 0.05) : 0
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: iconSize, height: iconSize)
-                        .rotationEffect(.degrees(Double(side * 18)), anchor: .bottom)
-                        .offset(x: side * size * 0.14, y: -lift)
-                        .shadow(color: .black.opacity(isFan ? (isFront ? 0.16 : 0.10) : 0), radius: isFront ? 4 : 2, y: 1)
-                        .transition(fileTransition)
-                        .zIndex(Double(index + 1))
+                    FileIconView(
+                        url: url,
+                        shadowOpacity: isFan ? (isFront ? 0.16 : 0.10) : 0.14,
+                        shadowRadius: isFront ? 4 : 2
+                    )
+                    .frame(width: iconSize, height: iconSize)
+                    .rotationEffect(.degrees(Double(side * 18)), anchor: .bottom)
+                    .offset(x: side * size * 0.14, y: -lift)
+                    .transition(fileTransition)
+                    .zIndex(Double(index + 1))
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -63,6 +65,71 @@ private struct FileStackArtwork: View {
             removal: .offset(y: 8).combined(with: .scale(scale: 0.90)).combined(with: .opacity)
         )
     }
+}
+
+/// The workspace icon renders synchronously but has no shadow of its own, so a
+/// plain-white generic icon disappears into the glass. The fallback gets an
+/// explicit shadow; the QuickLook representation (real previews, or the type
+/// icon with a baked-in shadow) fades in over it once ready.
+private struct FileIconView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let url: URL
+    var shadowOpacity: Double = 0.14
+    var shadowRadius: CGFloat = 3
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        ZStack {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                .resizable()
+                .scaledToFit()
+                .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius, y: 1)
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFit()
+                    .transition(.opacity)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        let key = FileThumbnailCache.key(for: url)
+        if let cached = FileThumbnailCache.shared.image(forKey: key) {
+            thumbnail = cached
+            return
+        }
+        // .all lets the system pick the best representation: a real content
+        // preview when the file has one, otherwise the shadowed type icon.
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: 256, height: 256),
+            scale: 2,
+            representationTypes: .all
+        )
+        guard let representation = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) else { return }
+        let image = representation.nsImage
+        FileThumbnailCache.shared.set(image, forKey: key)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+            thumbnail = image
+        }
+    }
+}
+
+/// QuickLook generation goes through a system service; keep the results so the
+/// stack, the expanded grid and re-shown panels don't re-request. Keys carry
+/// the modification date because shelved files can still be edited in place.
+@MainActor private final class FileThumbnailCache {
+    static let shared = FileThumbnailCache()
+    private let cache = NSCache<NSString, NSImage>()
+    private init() { cache.countLimit = 256 }
+    static func key(for url: URL) -> String {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate?.timeIntervalSince1970 ?? 0
+        return "\(url.path)#\(modified)"
+    }
+    func image(forKey key: String) -> NSImage? { cache.object(forKey: key as NSString) }
+    func set(_ image: NSImage, forKey key: String) { cache.setObject(image, forKey: key as NSString) }
 }
 
 private struct NativeFileDragSurface: NSViewRepresentable {
