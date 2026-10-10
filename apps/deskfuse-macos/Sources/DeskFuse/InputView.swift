@@ -33,6 +33,25 @@ struct InputView: View {
                         layout(height: max(300, geometry.size.height - 220))
                         participantList
                     }.padding(28).frame(maxWidth: .infinity, alignment: .topLeading)
+                } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
+                    FeatureGateView(
+                        symbol: "rectangle.on.rectangle",
+                        symbolColor: .purple,
+                        title: "键鼠共享",
+                        message: "用一套键鼠控制多台电脑。",
+                        bullets: [
+                            "鼠标穿越屏幕边缘切换设备",
+                            "剪贴板随焦点设备自动跟随",
+                            "紧急收回快捷键随时可用",
+                        ],
+                        permission: .accessibility,
+                        actionTitle: "启用键鼠共享",
+                        action: { setSharingEnabled(true) },
+                        secondaryTitle: "打开共享设置",
+                        secondaryAction: { store.openSettings(tab: SettingsCategory.input.rawValue) }
+                    )
+                    .padding(28)
+                    .frame(maxWidth: .infinity, minHeight: max(0, geometry.size.height - 56))
                 } else {
                     receiverState
                         .padding(28)
@@ -139,7 +158,6 @@ struct InputView: View {
                 WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
                     store.openSettings(tab: SettingsCategory.input.rawValue)
                 }
-                sharingControl
                 WorkspaceChromeButton("快捷键设置", systemImage: "keyboard", help: "配置紧急收回、方向切换和锁定快捷键") {
                     store.openSettings(tab: "shortcuts")
                 }
@@ -149,18 +167,10 @@ struct InputView: View {
         }
     }
 
-    private var sharingControl: some View {
-        Toggle("共享键鼠", isOn: Binding(get: { snapshot.input.settings.enabled }, set: setSharingEnabled))
-            .toggleStyle(.switch).controlSize(.small).fixedSize()
-            .modifier(WorkspaceControlLabel())
-            .modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
-    }
-
-    /// 只打开共享开关。未担任主控时一并设为主控，否则无法共享。
+    /// 只打开共享开关，不强制成为主控：用户可以只作为被控参与。
     private func setSharingEnabled(_ enabled: Bool) {
         var settings = (store.snapshot ?? snapshot).input.settings
         settings.enabled = enabled
-        if enabled { settings.controller = true }
         applySettings(settings)
     }
 

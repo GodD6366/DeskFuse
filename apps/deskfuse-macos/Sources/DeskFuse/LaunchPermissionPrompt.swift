@@ -200,7 +200,7 @@ final class PermissionPromptController {
         }
     }
 
-    private func isGranted(_ permission: LaunchPermission) -> Bool {
+    func isGranted(_ permission: LaunchPermission) -> Bool {
         guard let pane = permission.pane else { return wifiState == .granted }
         return PermissionStatusRegistry.provider(for: pane).authorizationState() == .granted
     }
@@ -299,7 +299,7 @@ private final class SystemRestartAllowanceView: NSView {
     }
 }
 
-private struct PermissionPromptRow: View {
+struct PermissionPromptRow: View {
     let permission: LaunchPermission
     let controller: PermissionPromptController
 

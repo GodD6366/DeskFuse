@@ -651,7 +651,6 @@ pub trait ControlTransport: Send + Sync {
         &self,
         _peer: DeviceId,
         _endpoints: Vec<Endpoint>,
-        _preference: deskfuse_core::RoutePreference,
     ) -> Result<(), TransportError> {
         Err(TransportError::Closed)
     }
@@ -1645,14 +1644,13 @@ impl QuinnTransport {
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
-        preference: deskfuse_core::RoutePreference,
     ) -> Result<(), TransportError> {
         let current_rank = self
             .input
             .contexts(peer)
             .iter()
             .filter(|c| c.input_eligible())
-            .map(|c| routes::input_path_rank(preference, c.interface_kind))
+            .map(|c| routes::input_path_rank(c.interface_kind))
             .min();
         let expected = self
             .registered_identities
@@ -1696,7 +1694,7 @@ impl QuinnTransport {
                 if !context.input_eligible() || context.interface_name.as_ref() != Some(interface) {
                     continue;
                 }
-                let rank = routes::input_path_rank(preference, context.interface_kind);
+                let rank = routes::input_path_rank(context.interface_kind);
                 if current_rank.is_some_and(|current| rank >= current) {
                     continue;
                 }
@@ -1711,9 +1709,12 @@ impl QuinnTransport {
         candidates.sort_by_key(|(rank, local, remote, _, _)| (*rank, *local, *remote));
         for (rank, local, remote, interface, endpoint) in candidates {
             // An inbound dial may have won while inspection was in flight.
-            if self.input.contexts(peer).iter().any(|c| {
-                c.input_eligible() && routes::input_path_rank(preference, c.interface_kind) <= rank
-            }) {
+            if self
+                .input
+                .contexts(peer)
+                .iter()
+                .any(|c| c.input_eligible() && routes::input_path_rank(c.interface_kind) <= rank)
+            {
                 return Ok(());
             }
             // A disposable signed identity probe is never promoted into a live connection.
@@ -2172,12 +2173,9 @@ impl ControlTransport for QuinnTransport {
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
-        preference: deskfuse_core::RoutePreference,
     ) -> Result<(), TransportError> {
         if self.config.input_service {
-            return self
-                .ensure_service_input_link(peer, endpoints, preference)
-                .await;
+            return self.ensure_service_input_link(peer, endpoints).await;
         }
         if self
             .input

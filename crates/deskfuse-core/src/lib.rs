@@ -617,27 +617,6 @@ impl<'de> Deserialize<'de> for RouteId {
     }
 }
 
-/// Preferred physical interface; unavailable paths always fall back.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RoutePreference {
-    #[default]
-    Automatic,
-    Thunderbolt,
-    Ethernet,
-    WiFi,
-}
-impl RoutePreference {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Automatic => "自动",
-            Self::Thunderbolt => "雷电优先",
-            Self::Ethernet => "有线优先",
-            Self::WiFi => "Wi-Fi 优先",
-        }
-    }
-}
-
 pub fn device_hostname(device: DeviceId) -> String {
     format!("deskfuse-{}.local.", &device.to_hex()[..16])
 }
@@ -994,44 +973,6 @@ impl PeerSnapshot {
     }
 }
 
-/// Inputs controlling discovery and optional public networking.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct NetworkConfig {
-    pub mdns_enabled: bool,
-    pub public_network_enabled: bool,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            mdns_enabled: true,
-            public_network_enabled: false,
-        }
-    }
-}
-
-impl NetworkConfig {
-    /// Construct defaults: mDNS on, public networking off.
-    pub const fn new() -> Self {
-        Self {
-            mdns_enabled: true,
-            public_network_enabled: false,
-        }
-    }
-
-    /// Enable or disable mDNS discovery.
-    pub const fn with_mdns_enabled(mut self, enabled: bool) -> Self {
-        self.mdns_enabled = enabled;
-        self
-    }
-
-    /// Enable or disable the additive public-network transport.
-    pub const fn with_public_network_enabled(mut self, enabled: bool) -> Self {
-        self.public_network_enabled = enabled;
-        self
-    }
-}
-
 /// A validated request to begin pairing with a peer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "PairingRequestWire")]
@@ -1164,7 +1105,6 @@ pub struct NetworkSnapshot {
     pub sequence: u64,
     pub local_device_id: DeviceId,
     pub peers: Vec<PeerSnapshot>,
-    pub public_network_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -1172,53 +1112,26 @@ struct NetworkSnapshotWire {
     sequence: u64,
     local_device_id: DeviceId,
     peers: Vec<PeerSnapshot>,
-    public_network_enabled: bool,
 }
 
 impl TryFrom<NetworkSnapshotWire> for NetworkSnapshot {
     type Error = NetworkError;
 
     fn try_from(wire: NetworkSnapshotWire) -> Result<Self> {
-        Self::new(
-            wire.sequence,
-            wire.local_device_id,
-            wire.peers,
-            wire.public_network_enabled,
-        )
+        Self::new(wire.sequence, wire.local_device_id, wire.peers)
     }
 }
 
 impl NetworkSnapshot {
     /// Construct a validated snapshot.
-    pub fn new(
-        sequence: u64,
-        local_device_id: DeviceId,
-        peers: Vec<PeerSnapshot>,
-        public_network_enabled: bool,
-    ) -> Result<Self> {
+    pub fn new(sequence: u64, local_device_id: DeviceId, peers: Vec<PeerSnapshot>) -> Result<Self> {
         let snapshot = Self {
             sequence,
             local_device_id,
             peers,
-            public_network_enabled,
         };
         snapshot.validate()?;
         Ok(snapshot)
-    }
-
-    /// Construct from a network configuration, preserving its public feature boundary.
-    pub fn from_config(
-        sequence: u64,
-        local_device_id: DeviceId,
-        peers: Vec<PeerSnapshot>,
-        config: &NetworkConfig,
-    ) -> Result<Self> {
-        Self::new(
-            sequence,
-            local_device_id,
-            peers,
-            config.public_network_enabled,
-        )
     }
 
     /// Validate peers, duplicate identities, and the local-device exclusion invariant.
@@ -1292,10 +1205,6 @@ impl RouteSelection {
 pub enum RouteDecisionReason {
     /// No route candidates were provided or all were filtered.
     NoEligibleRoutes,
-    /// Public direct/relay routes were omitted while the feature was disabled.
-    PublicRoutesDisabled,
-    /// mDNS routes were omitted while mDNS was disabled.
-    MdnsDisabled,
 }
 
 /// Complete policy result, including an explanation when no route is selected.
@@ -1318,37 +1227,13 @@ impl RouteDecision {
 }
 
 /// Deterministic and additive route selection policy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RoutePolicy {
-    mdns_enabled: bool,
-    public_network_enabled: bool,
-}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RoutePolicy;
 
 impl RoutePolicy {
-    /// Build a route policy from network configuration.
-    pub const fn new(config: &NetworkConfig) -> Self {
-        Self {
-            mdns_enabled: config.mdns_enabled,
-            public_network_enabled: config.public_network_enabled,
-        }
-    }
-
-    /// Build a policy from the default configuration.
-    pub const fn default_policy() -> Self {
-        Self {
-            mdns_enabled: true,
-            public_network_enabled: false,
-        }
-    }
-
-    /// Whether public direct and relay candidates may be considered.
-    pub const fn public_network_enabled(self) -> bool {
-        self.public_network_enabled
-    }
-
-    /// Whether mDNS candidates may be considered.
-    pub const fn mdns_enabled(self) -> bool {
-        self.mdns_enabled
+    /// Build the route policy.
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Return eligible candidates sorted by health, source, then stable route ID.
@@ -1356,8 +1241,6 @@ impl RoutePolicy {
         let mut eligible = routes
             .iter()
             .filter(|route| route.health != RouteHealth::Unavailable)
-            .filter(|route| self.mdns_enabled || route.source != RouteSource::Mdns)
-            .filter(|route| self.public_network_enabled || !route.source.is_public())
             .cloned()
             .collect::<Vec<_>>();
         eligible.sort_by(compare_routes);
@@ -1389,28 +1272,10 @@ impl RoutePolicy {
                 }),
             };
         }
-
-        let filtered_public =
-            !self.public_network_enabled && routes.iter().any(|route| route.source.is_public());
-        let filtered_mdns =
-            !self.mdns_enabled && routes.iter().any(|route| route.source == RouteSource::Mdns);
-        let reason = if filtered_public {
-            RouteDecisionReason::PublicRoutesDisabled
-        } else if filtered_mdns {
-            RouteDecisionReason::MdnsDisabled
-        } else {
-            RouteDecisionReason::NoEligibleRoutes
-        };
         RouteDecision {
             selection: None,
-            reason: Some(reason),
+            reason: Some(RouteDecisionReason::NoEligibleRoutes),
         }
-    }
-}
-
-impl Default for RoutePolicy {
-    fn default() -> Self {
-        Self::default_policy()
     }
 }
 
@@ -1649,7 +1514,7 @@ impl DisplayInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, from_str, to_value};
+    use serde_json::{from_str, to_value};
 
     fn key(byte: u8) -> [u8; 32] {
         [byte; 32]
@@ -1903,7 +1768,7 @@ mod tests {
                 RouteHealth::Healthy,
             ),
         ];
-        let policy = RoutePolicy::new(&NetworkConfig::default().with_public_network_enabled(true));
+        let policy = RoutePolicy::new();
         let selection = policy.select(&routes).expect("a route");
         assert_eq!(selection.route.source, RouteSource::Mdns);
         assert_eq!(selection.route.health, RouteHealth::Healthy);
@@ -1932,7 +1797,7 @@ mod tests {
                 RouteHealth::Unknown,
             ),
         ];
-        let policy = RoutePolicy::default();
+        let policy = RoutePolicy::new();
         let selection = policy.select(&routes).expect("a route");
         assert_eq!(
             selection.route.id,
@@ -1948,10 +1813,10 @@ mod tests {
             RouteSource::Manual,
             RouteHealth::Unavailable,
         )];
-        let decision = RoutePolicy::default().select_with_reason(&routes);
+        let decision = RoutePolicy::new().select_with_reason(&routes);
         assert!(decision.selection.is_none());
         assert_eq!(decision.reason, Some(RouteDecisionReason::NoEligibleRoutes));
-        assert!(RoutePolicy::default().select(&routes).is_none());
+        assert!(RoutePolicy::new().select(&routes).is_none());
     }
 
     #[test]
@@ -1968,7 +1833,7 @@ mod tests {
             RouteSource::Manual,
             RouteHealth::Unknown,
         );
-        let policy = RoutePolicy::default();
+        let policy = RoutePolicy::new();
         let eligible = policy.eligible_routes(&[unavailable.clone(), usable.clone()]);
         assert_eq!(eligible, vec![usable.clone()]);
         let selection = policy
@@ -1976,38 +1841,6 @@ mod tests {
             .expect("usable route");
         assert_eq!(selection.route.id, usable.id);
         assert_ne!(selection.route.health, RouteHealth::Unavailable);
-    }
-
-    #[test]
-    fn public_network_is_default_off_and_public_routes_are_filtered() {
-        let routes = vec![route(
-            1,
-            endpoint("public", 1),
-            RouteSource::PublicDirect,
-            RouteHealth::Healthy,
-        )];
-        let decision = RoutePolicy::default().select_with_reason(&routes);
-        assert!(!NetworkConfig::default().public_network_enabled);
-        assert!(decision.selection.is_none());
-        assert_eq!(
-            decision.reason,
-            Some(RouteDecisionReason::PublicRoutesDisabled)
-        );
-        let enabled = NetworkConfig::default().with_public_network_enabled(true);
-        assert!(RoutePolicy::new(&enabled).select(&routes).is_some());
-    }
-
-    #[test]
-    fn mdns_toggle_is_independent_from_public_toggle() {
-        let routes = vec![route(
-            1,
-            endpoint("mdns", 1),
-            RouteSource::Mdns,
-            RouteHealth::Healthy,
-        )];
-        let config = NetworkConfig::default().with_mdns_enabled(false);
-        let decision = RoutePolicy::new(&config).select_with_reason(&routes);
-        assert_eq!(decision.reason, Some(RouteDecisionReason::MdnsDisabled));
     }
 
     #[test]
@@ -2039,7 +1872,6 @@ mod tests {
             7,
             DeviceId::from_public_key(key(9)).expect("local"),
             vec![peer],
-            false,
         )
         .expect("valid snapshot");
         let json = serde_json::to_string(&snapshot).expect("serialize snapshot");
@@ -2069,7 +1901,6 @@ mod tests {
                 0,
                 DeviceId::from_public_key(key(2)).expect("local"),
                 vec![peer.clone(), peer],
-                false
             )
             .is_err()
         );
@@ -2107,14 +1938,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn json_shapes_are_safe_and_stable() {
-        let config = NetworkConfig::default();
-        let json: Value = serde_json::to_value(config).expect("serialize");
-        assert_eq!(json["mdns_enabled"], Value::Bool(true));
-        assert_eq!(json["public_network_enabled"], Value::Bool(false));
     }
 }
 

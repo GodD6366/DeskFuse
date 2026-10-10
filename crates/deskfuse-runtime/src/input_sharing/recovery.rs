@@ -19,7 +19,7 @@ pub(super) struct Links {
     next: u64,
     active: BTreeMap<DeviceId, Attempt>,
     retries: BTreeMap<DeviceId, Retry>,
-    checked: BTreeMap<DeviceId, (RoutePreference, Instant)>,
+    checked: BTreeMap<DeviceId, Instant>,
     retired: Vec<tokio::task::JoinHandle<()>>,
     tx: mpsc::UnboundedSender<Completion>,
     rx: mpsc::UnboundedReceiver<Completion>,
@@ -49,15 +49,6 @@ impl Drop for Links {
     }
 }
 impl InputActor {
-    fn route_preference(&self, peer: DeviceId) -> RoutePreference {
-        self.network
-            .borrow()
-            .device_network
-            .route_preferences
-            .get(&peer)
-            .copied()
-            .unwrap_or_default()
-    }
     pub(super) fn maintain_link(&mut self, peer: DeviceId, endpoints: Vec<Endpoint>) {
         // Only the controller upgrades a live route. The receiver follows that
         // authenticated activation, so the two sides cannot fight over routing.
@@ -69,7 +60,6 @@ impl InputActor {
         {
             return;
         }
-        let preference = self.route_preference(peer);
         // Preparation is asynchronous, but retirement is an actor decision.
         // Recheck entered here: a drag may have begun while a probe was pending.
         if !self.leases.values().any(|l| l.peer == peer && l.entered) {
@@ -79,29 +69,26 @@ impl InputActor {
                 .filter(|c| {
                     c.input_eligible() && self.transport.input_motion_available(peer, c.session_id)
                 })
-                .min_by_key(|c| {
-                    deskfuse_transport::routes::input_path_rank(preference, c.interface_kind)
-                });
+                .min_by_key(|c| deskfuse_transport::routes::input_path_rank(c.interface_kind));
             if let Some(best) = best {
-                let rank =
-                    deskfuse_transport::routes::input_path_rank(preference, best.interface_kind);
+                let rank = deskfuse_transport::routes::input_path_rank(best.interface_kind);
                 if contexts.iter().any(|c| {
                     c.input_eligible()
-                        && deskfuse_transport::routes::input_path_rank(preference, c.interface_kind)
-                            > rank
+                        && deskfuse_transport::routes::input_path_rank(c.interface_kind) > rank
                 }) {
                     self.transport.select_input_route(peer, best.session_id);
                 }
             }
         }
-        if self.links.checked.get(&peer).is_some_and(|(previous, at)| {
-            *previous == preference && at.elapsed() < Duration::from_secs(5)
-        }) {
+        if self
+            .links
+            .checked
+            .get(&peer)
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+        {
             return;
         }
-        self.links
-            .checked
-            .insert(peer, (preference, Instant::now()));
+        self.links.checked.insert(peer, Instant::now());
         self.start_link(peer, endpoints);
     }
     fn link_desired(&self, peer: DeviceId) -> bool {
@@ -222,11 +209,10 @@ impl InputActor {
         let id = self.links.next;
         let tx = self.links.tx.clone();
         let transport = self.transport.clone();
-        let preference = self.route_preference(peer);
         let recover = async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(12),
-                transport.ensure_input_link(peer, endpoints, preference),
+                transport.ensure_input_link(peer, endpoints),
             )
             .await
             .unwrap_or_else(|_| {

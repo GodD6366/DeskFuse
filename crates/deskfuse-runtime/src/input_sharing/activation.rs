@@ -945,9 +945,6 @@ mod tests {
         fn get_settings(&self) -> Result<crate::Settings, RuntimeError> {
             self.inner.get_settings()
         }
-        fn set_public_network_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
-            self.inner.set_public_network_enabled(enabled)
-        }
     }
     #[tokio::test]
     async fn pause_ack_follows_durable_commit_and_policy_failures_block_activation() {

@@ -59,7 +59,6 @@ pub(super) enum NetworkResult {
 }
 #[derive(Default)]
 pub(super) struct DeviceNetworkState {
-    pub(super) route_preferences: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
     roster: Option<SignedNetworkRoster>,
     origins: NetworkTrustOrigins,
     origins_loaded: bool,
@@ -91,7 +90,6 @@ impl DeviceNetworkState {
     }
     pub fn view(&self, blocked: &BTreeSet<DeviceId>) -> DeviceNetworkSnapshot {
         DeviceNetworkSnapshot {
-            route_preferences: self.route_preferences.clone(),
             integrity_error: self.integrity_error.clone(),
             network_id: self
                 .roster
@@ -213,12 +211,6 @@ impl Actor {
         Ok(())
     }
     pub(super) async fn load_device_network(&mut self) {
-        let store = self.persistence.clone();
-        match task::spawn_blocking(move || store.get_route_preferences()).await {
-            Ok(Ok(preferences)) => self.device_network.route_preferences = preferences,
-            Ok(Err(error)) => self.emit_error(error),
-            Err(error) => self.emit_error(RuntimeError::Store(error.to_string())),
-        }
         let store = self.persistence.clone();
         match task::spawn_blocking(move || store.reconnect_suspended()).await {
             Ok(Ok(suspended)) => self.restore_reconnect_suspended(suspended),

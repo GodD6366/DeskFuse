@@ -176,14 +176,14 @@ struct InputSharingSettingsView: View {
 
     // MARK: - Actions
 
+    // 主控身份与共享开关相互独立：不开主控时只作为被控参与。
     private func setController(_ enabled: Bool) {
         draft.controller = enabled
-        if !enabled { draft.enabled = false }
     }
 
+    // 共享开关与主控身份解耦：只作为被控参与也是合法状态。
     private func setSharingEnabled(_ enabled: Bool) {
         draft.enabled = enabled
-        if enabled { draft.controller = true }
     }
 
     private func cornerBinding(_ index: Int) -> Binding<Bool> {

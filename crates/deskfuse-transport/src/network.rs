@@ -95,11 +95,7 @@ impl QuinnTransport {
         // Resolving both up front spends the entire bounded revocation delivery
         // window on an absent hostname even when the literal IP is reachable.
         'endpoints: for endpoint in [endpoint, fallback] {
-            let candidates = super::routes::ranked_endpoints(
-                vec![endpoint],
-                deskfuse_core::RoutePreference::Automatic,
-            )
-            .await;
+            let candidates = super::routes::ranked_endpoints(vec![endpoint]).await;
             for (_, endpoint) in candidates {
                 let address = resolve_endpoint(&endpoint).await?;
                 if let Ok(Ok(session)) = time::timeout(

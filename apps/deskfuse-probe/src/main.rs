@@ -13,8 +13,7 @@ use std::{
 
 use deskfuse_core::{
     Capabilities, ClipboardPayload, ConnectionState, DeviceId, DisplayInfo, Endpoint,
-    InputEventBatch, NetworkConfig, RemoteInputEvent, RouteCandidate, RouteHealth, RouteSource,
-    TrustState,
+    InputEventBatch, RemoteInputEvent, RouteCandidate, RouteHealth, RouteSource, TrustState,
 };
 use deskfuse_discovery::{PlatformDiscovery, ServiceRecord};
 use deskfuse_identity::{MemoryIdentityProvider, MemoryTrustStore};
@@ -288,9 +287,6 @@ async fn main() -> Result<(), String> {
     println!("[probe] local_device_id={}", local_id.to_hex());
 
     let config = RuntimeConfig {
-        network: NetworkConfig::new()
-            .with_mdns_enabled(true)
-            .with_public_network_enabled(false),
         display_name: args.name.clone(),
         capabilities: Capabilities::NETWORK,
         ..RuntimeConfig::default()

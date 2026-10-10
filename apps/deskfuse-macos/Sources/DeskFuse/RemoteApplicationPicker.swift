@@ -137,36 +137,41 @@ struct RemoteApplicationPicker: View {
             Menu {
                 Button("刷新应用列表") { session.refreshApplications() }
                 Button("搜索应用") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
-                Divider()
-                Toggle(isOn: $remote.virtualDisplayEnabled) {
-                    HStack(spacing: 6) {
-                        Text("虚拟屏幕模式")
-                        FeatureBadge(text: "实验性")
-                    }
-                }
-                .help("开启后，每个远程应用使用专属虚拟屏幕；下次打开或重新连接时生效")
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 16))
             }.menuStyle(.borderlessButton).fixedSize().help("应用列表操作")
         }
     }
     private var categories: some View {
-        ViewThatFits(in: .horizontal) {
-            Group {
-                if #available(macOS 26.0, *) {
-                    GlassEffectContainer(spacing: 5) { categoryButtons }
-                } else { categoryButtons }
-            }
-            Picker("分类", selection: $category) {
-                ForEach(RemoteApplicationCategory.allCases) { item in
-                    Text(item.rawValue).tag(item)
+        HStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                Group {
+                    if #available(macOS 26.0, *) {
+                        GlassEffectContainer(spacing: 5) { categoryButtons }
+                    } else { categoryButtons }
                 }
+                Picker("分类", selection: $category) {
+                    ForEach(RemoteApplicationCategory.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
             }
-            .pickerStyle(.menu)
-            .fixedSize()
+            Spacer(minLength: 8)
+            displayModeControl
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+    }
+    // 虚拟屏幕模式是高频查看项，直接放在分类行右侧，不收进菜单。
+    private var displayModeControl: some View {
+        HStack(spacing: 6) {
+            Text("虚拟屏幕").font(.system(size: 12))
+            FeatureBadge(text: "实验性")
+            Toggle("虚拟屏幕模式", isOn: $remote.virtualDisplayEnabled)
+                .toggleStyle(.switch).controlSize(.small).labelsHidden()
+        }
+        .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。下次打开或重新连接时生效。")
     }
     private var categoryButtons: some View {
         HStack(spacing: 5) {

@@ -564,9 +564,6 @@ impl RuntimeStore for BrokenRosterStore {
     fn get_settings(&self) -> Result<Settings, RuntimeError> {
         self.inner.get_settings()
     }
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
-        self.inner.set_public_network_enabled(enabled)
-    }
 }
 #[tokio::test]
 async fn corrupt_roster_leave_uses_independently_loaded_origins_and_preserves_legacy_trust() {

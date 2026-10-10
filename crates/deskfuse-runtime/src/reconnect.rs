@@ -66,7 +66,6 @@ struct ProbeBatch {
 struct Evaluation {
     current: Endpoint,
     control_generation: Option<u64>,
-    preference: RoutePreference,
     key: [u8; 32],
     task: task::JoinHandle<ProbeBatch>,
 }
@@ -498,12 +497,6 @@ impl Actor {
         let local = self.local_hello.clone();
         let tx = self.dial_result_tx.clone();
         let return_endpoint = self.recovery.return_endpoints.remove(&peer);
-        let preference = self
-            .device_network
-            .route_preferences
-            .get(&peer)
-            .copied()
-            .unwrap_or_default();
         let installed = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let installed_task = installed.clone();
         let dial_routes = routes.clone();
@@ -514,10 +507,9 @@ impl Actor {
             let measurements = batch.measurements;
             let rtt = batch.rtt;
             let mut candidates =
-                deskfuse_transport::routes::sort_classified(batch.classified, preference, &rtt);
-            // A return address is only a tie-break when Auto has no measured RTT.
-            // Explicit 雷电/有线/Wi-Fi must not be overridden by the last inbound IP.
-            if preference == RoutePreference::Automatic && rtt.is_empty() {
+                deskfuse_transport::routes::sort_classified(batch.classified, &rtt);
+            // A return address is only a tie-break when there is no measured RTT.
+            if rtt.is_empty() {
                 candidates.sort_by_key(|(_, endpoint)| return_endpoint.as_ref() != Some(endpoint));
             }
 
@@ -796,12 +788,6 @@ impl Actor {
         }) else {
             return;
         };
-        let preference = self
-            .device_network
-            .route_preferences
-            .get(&peer)
-            .copied()
-            .unwrap_or_default();
         if self.recovery.evaluations.contains_key(&peer) {
             return;
         }
@@ -823,7 +809,6 @@ impl Actor {
             Evaluation {
                 current,
                 control_generation,
-                preference,
                 key,
                 task,
             },
@@ -900,18 +885,10 @@ impl Actor {
             return;
         };
         let current = evaluation.current;
-        let preference = evaluation.preference;
         // Never let a stale background result alter a new session or restored trust.
         if !self.may_reconnect(peer)
             || self.recovery.attempts.contains_key(&peer)
             || self.transport.control_generation(peer) != evaluation.control_generation
-            || self
-                .device_network
-                .route_preferences
-                .get(&peer)
-                .copied()
-                .unwrap_or_default()
-                != preference
             || !self.peers.get(&peer).is_some_and(|state| {
                 state.connection == ConnectionState::Connected
                     && state.public_key == evaluation.key
@@ -941,7 +918,7 @@ impl Actor {
             .into_iter()
             .filter(|item| rtt.contains_key(&(item.endpoint.host.clone(), item.endpoint.port)))
             .collect();
-        let ranked = deskfuse_transport::routes::sort_classified(reachable, preference, &rtt);
+        let ranked = deskfuse_transport::routes::sort_classified(reachable, &rtt);
         let Some((_, best)) = ranked.first() else {
             return;
         };
@@ -950,44 +927,13 @@ impl Actor {
         }
         let current_rtt = rtt.get(&(current.host.clone(), current.port)).copied();
         let best_rtt = rtt.get(&(best.host.clone(), best.port)).copied();
-        let current_kind = self.peers.get(&peer).and_then(|state| {
-            state
-                .routes
-                .values()
-                .find(|route| route.endpoint == current)
-                .and_then(|route| route.path_kind)
-        });
-        let best_kind = self.peers.get(&peer).and_then(|state| {
-            state
-                .routes
-                .values()
-                .find(|route| route.endpoint.host == best.host && route.endpoint.port == best.port)
-                .and_then(|route| route.path_kind)
-        });
-        let switch = match preference {
-            RoutePreference::Automatic => match (best_rtt, current_rtt) {
-                (Some(best_delay), Some(current_delay)) => {
-                    best_delay + Duration::from_millis(5) < current_delay
-                }
-                // A failed independent probe does not prove the live route is slower.
-                // Keep the healthy session until both routes can be compared.
-                _ => false,
-            },
-            RoutePreference::Thunderbolt => {
-                best_kind == Some(InterfaceKind::Thunderbolt)
-                    && current_kind != Some(InterfaceKind::Thunderbolt)
-                    && best_rtt.is_some()
+        // A failed independent probe does not prove the live route is slower.
+        // Keep the healthy session until both routes can be compared.
+        let switch = match (best_rtt, current_rtt) {
+            (Some(best_delay), Some(current_delay)) => {
+                best_delay + Duration::from_millis(5) < current_delay
             }
-            RoutePreference::Ethernet => {
-                best_kind == Some(InterfaceKind::Ethernet)
-                    && current_kind != Some(InterfaceKind::Ethernet)
-                    && best_rtt.is_some()
-            }
-            RoutePreference::WiFi => {
-                best_kind == Some(InterfaceKind::WiFi)
-                    && current_kind != Some(InterfaceKind::WiFi)
-                    && best_rtt.is_some()
-            }
+            _ => false,
         };
         if switch {
             self.restart_after_active_route_change(peer, true).await;
@@ -1000,9 +946,6 @@ impl Actor {
         self.delivery_tick().await;
         self.recovery_tick().await;
         self.refresh_provider(self.discovery.clone()).await;
-        if let Some(provider) = self.public_provider.clone() {
-            self.refresh_provider(provider).await;
-        }
         // Sleep is not a failure. Everything learned before the machine slept
         // is stale, so every peer starts a fresh round at the first ladder step
         // instead of inheriting the pre-sleep interval. One attempt that races

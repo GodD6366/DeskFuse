@@ -32,7 +32,8 @@ use thiserror::Error;
 /// The latest schema version understood by this crate.
 pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
-const SETTINGS_PUBLIC_NETWORK_ENABLED: &str = "public_network_enabled";
+const SETTINGS_CLIPBOARD_ENABLED: &str = "clipboard_enabled";
+const SETTINGS_DEBUG_LOGGING: &str = "debug_logging";
 // The bundled SQLite build defaults each connection to -2000 pages (about
 // 2 MiB with the usual 1 KiB page size). DeskFuse keeps several connections
 // open for clipboard reads, so bound each connection to about 1 MiB.
@@ -238,10 +239,27 @@ impl PeerRecord {
 }
 
 /// Store-level settings persisted as key/value values.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Whether the additive public-network transport is enabled.
-    pub public_network_enabled: bool,
+    /// Whether clipboard sync is enabled; defaults on for legacy databases.
+    #[serde(default = "default_true")]
+    pub clipboard_enabled: bool,
+    /// Whether verbose debug logging is enabled.
+    #[serde(default)]
+    pub debug_logging: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            clipboard_enabled: true,
+            debug_logging: false,
+        }
+    }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// A manually configured endpoint for one peer.
@@ -304,19 +322,6 @@ pub trait PeerStore: Send + Sync {
 
 /// Synchronous persistence contract for feature settings.
 pub trait SettingsStore: Send + Sync {
-    /// Load per-device physical route priorities.
-    fn get_route_preferences(
-        &self,
-    ) -> Result<std::collections::BTreeMap<DeviceId, deskfuse_core::RoutePreference>> {
-        Ok(Default::default())
-    }
-    /// Persist per-device priorities without disabling fallback.
-    fn set_route_preferences(
-        &self,
-        _preferences: std::collections::BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
-    ) -> Result<()> {
-        Ok(())
-    }
     /// Load peers the user explicitly disconnected until they click connect.
     fn get_reconnect_suspended(&self) -> Result<std::collections::BTreeSet<DeviceId>> {
         Ok(Default::default())
@@ -329,10 +334,6 @@ pub trait SettingsStore: Send + Sync {
     fn get_settings(&self) -> Result<Settings>;
     /// Replace settings.
     fn set_settings(&self, settings: Settings) -> Result<()>;
-    /// Read the public-network feature flag.
-    fn public_network_enabled(&self) -> Result<bool>;
-    /// Update the public-network feature flag.
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<()>;
 
     /// Alias for [`SettingsStore::get_settings`].
     fn load(&self) -> Result<Settings> {
@@ -944,30 +945,6 @@ impl TrustStore for SQLiteStore {
 }
 
 impl SettingsStore for SQLiteStore {
-    fn get_route_preferences(
-        &self,
-    ) -> Result<std::collections::BTreeMap<DeviceId, deskfuse_core::RoutePreference>> {
-        let connection = self.lock_connection()?;
-        let value: Option<String> = connection
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'route_preferences'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        value
-            .map(|value| serde_json::from_str(&value).map_err(StoreError::Serialization))
-            .transpose()
-            .map(Option::unwrap_or_default)
-    }
-    fn set_route_preferences(
-        &self,
-        preferences: std::collections::BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
-    ) -> Result<()> {
-        let value = serde_json::to_string(&preferences).map_err(StoreError::Serialization)?;
-        self.lock_connection()?.execute("INSERT INTO settings (key,value) VALUES ('route_preferences',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])?;
-        Ok(())
-    }
     fn get_reconnect_suspended(&self) -> Result<std::collections::BTreeSet<DeviceId>> {
         let connection = self.lock_connection()?;
         let value: Option<String> = connection
@@ -989,41 +966,36 @@ impl SettingsStore for SQLiteStore {
     }
     fn get_settings(&self) -> Result<Settings> {
         let connection = self.lock_connection()?;
-        let value: Option<String> = connection
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                [SETTINGS_PUBLIC_NETWORK_ENABLED],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let read_bool = |key: &str| -> Result<Option<bool>> {
+            let value: Option<String> = connection
+                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            Ok(value.as_deref().map(parse_bool))
+        };
+        // 缺失的键按安全默认值处理，兼容旧版本创建的数据库。
         Ok(Settings {
-            // Missing values are deliberately false for databases created by
-            // older builds and for partially initialized legacy databases.
-            public_network_enabled: value.as_deref().is_some_and(parse_bool),
+            clipboard_enabled: read_bool(SETTINGS_CLIPBOARD_ENABLED)?.unwrap_or(true),
+            debug_logging: read_bool(SETTINGS_DEBUG_LOGGING)?.unwrap_or(false),
         })
     }
 
     fn set_settings(&self, settings: Settings) -> Result<()> {
         let connection = self.lock_connection()?;
-        connection.execute(
+        let mut statement = connection.prepare(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![
-                SETTINGS_PUBLIC_NETWORK_ENABLED,
-                bool_to_str(settings.public_network_enabled)
-            ],
         )?;
+        statement.execute(params![
+            SETTINGS_CLIPBOARD_ENABLED,
+            bool_to_str(settings.clipboard_enabled)
+        ])?;
+        statement.execute(params![
+            SETTINGS_DEBUG_LOGGING,
+            bool_to_str(settings.debug_logging)
+        ])?;
         Ok(())
-    }
-
-    fn public_network_enabled(&self) -> Result<bool> {
-        Ok(self.get_settings()?.public_network_enabled)
-    }
-
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<()> {
-        self.set_settings(Settings {
-            public_network_enabled: enabled,
-        })
     }
 }
 
@@ -1154,12 +1126,6 @@ fn migrate_connection(connection: &mut Connection) -> Result<()> {
     }
     if found < CURRENT_SCHEMA_VERSION {
         let transaction = connection.transaction()?;
-        // Version 1 is the first schema. The settings key is inserted with a
-        // safe false default; INSERT OR IGNORE also preserves legacy values.
-        transaction.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
-            params![SETTINGS_PUBLIC_NETWORK_ENABLED, bool_to_str(false)],
-        )?;
         if found < 2 {
             backfill_trust_records(&transaction)?;
         }
@@ -1184,14 +1150,12 @@ fn migrate_connection(connection: &mut Connection) -> Result<()> {
             params![CURRENT_SCHEMA_VERSION, unix_time_ms()],
         )?;
         transaction.commit()?;
-    } else {
-        // A version-1 database may have been created by an early build that
-        // omitted this key. Keep that database safe and compatible.
-        connection.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
-            params![SETTINGS_PUBLIC_NETWORK_ENABLED, bool_to_str(false)],
-        )?;
     }
+    // 公开版已移除公网传输与按设备路由优先级，清掉旧版本残留的设置键。
+    connection.execute(
+        "DELETE FROM settings WHERE key IN ('public_network_enabled', 'route_preferences')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1580,7 +1544,13 @@ mod tests {
             store.schema_version().expect("version"),
             CURRENT_SCHEMA_VERSION
         );
-        assert!(!store.public_network_enabled().expect("default setting"));
+        assert!(
+            store
+                .get_settings()
+                .expect("default setting")
+                .clipboard_enabled
+        );
+        assert!(!store.get_settings().expect("default setting").debug_logging);
     }
 
     #[test]
@@ -1633,7 +1603,9 @@ mod tests {
             )
             .expect("legacy schema");
         let store = SQLiteStore::from_connection(connection).expect("migrate legacy");
-        assert!(!store.public_network_enabled().expect("default"));
+        let settings = store.get_settings().expect("default");
+        assert!(settings.clipboard_enabled);
+        assert!(!settings.debug_logging);
     }
 
     #[test]
@@ -1657,10 +1629,19 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SQLiteStore>();
         let store = Arc::new(SQLiteStore::open_in_memory().expect("open store"));
-        store.set_public_network_enabled(true).expect("enable");
-        assert!(store.public_network_enabled().expect("read"));
+        store
+            .set_settings(Settings {
+                clipboard_enabled: false,
+                debug_logging: true,
+            })
+            .expect("enable");
+        let saved = store.get_settings().expect("read");
+        assert!(!saved.clipboard_enabled);
+        assert!(saved.debug_logging);
         store.set_settings(Settings::default()).expect("reset");
-        assert!(!store.public_network_enabled().expect("read"));
+        let reset = store.get_settings().expect("read");
+        assert!(reset.clipboard_enabled);
+        assert!(!reset.debug_logging);
     }
 
     #[test]
@@ -1768,8 +1749,13 @@ mod tests {
     #[test]
     fn default_path_is_never_used_by_isolated_constructor() {
         let store = SQLiteStore::open_in_memory().expect("open store");
-        store.set_public_network_enabled(true).expect("setting");
-        assert!(store.public_network_enabled().expect("read"));
+        store
+            .set_settings(Settings {
+                clipboard_enabled: true,
+                debug_logging: true,
+            })
+            .expect("setting");
+        assert!(store.get_settings().expect("read").debug_logging);
         // Keep this test intentionally free of SQLiteStore::new(), which would
         // touch the user's real application database.
     }
@@ -1996,9 +1982,14 @@ mod input_store_tests {
             ..Default::default()
         };
         store.set_input_sharing_settings(settings.clone()).unwrap();
-        store.set_public_network_enabled(true).unwrap();
+        store
+            .set_settings(Settings {
+                clipboard_enabled: false,
+                debug_logging: false,
+            })
+            .unwrap();
         assert_eq!(store.get_input_sharing_settings().unwrap(), settings);
-        assert!(store.get_settings().unwrap().public_network_enabled);
+        assert!(!store.get_settings().unwrap().clipboard_enabled);
         settings.disabled_corners = 255;
         assert!(store.set_input_sharing_settings(settings).is_err());
         store
@@ -2153,7 +2144,12 @@ mod network_config_tests {
         let scene =
             deskfuse_core::InputSharingScene::new("Desk".into(), Default::default()).unwrap();
         store.set_input_sharing_scenes(vec![scene.clone()]).unwrap();
-        store.set_public_network_enabled(true).unwrap();
+        store
+            .set_settings(Settings {
+                clipboard_enabled: false,
+                debug_logging: true,
+            })
+            .unwrap();
         assert_eq!(
             store.get_input_sharing_scenes().unwrap(),
             vec![scene.clone()]
@@ -2180,7 +2176,12 @@ mod network_config_tests {
             cache_max_bytes: 64 * 1024 * 1024,
         };
         store.set_file_transfer_settings(&settings).unwrap();
-        store.set_public_network_enabled(true).unwrap();
+        store
+            .set_settings(Settings {
+                clipboard_enabled: false,
+                debug_logging: false,
+            })
+            .unwrap();
         assert_eq!(store.file_transfer_settings().unwrap(), settings);
         let invalid = deskfuse_core::FileTransferSettings {
             cache_max_bytes: 1,

@@ -42,7 +42,7 @@ fn actor(transport: ProbeTransport) -> Actor {
     let config = RuntimeConfig::default();
     let identity = Arc::new(LocalIdentity::from_bytes(&[80; 32]).unwrap());
     let hello = make_local_hello(&identity, &config).unwrap();
-    let snapshot = NetworkSnapshot::new(0, identity.device_id(), vec![], false).unwrap();
+    let snapshot = NetworkSnapshot::new(0, identity.device_id(), vec![]).unwrap();
     let (snapshot_tx, _) = watch::channel(snapshot.clone());
     let (view_tx, _) = watch::channel(SnapshotView {
         snapshot,
@@ -57,7 +57,6 @@ fn actor(transport: ProbeTransport) -> Actor {
         identity,
         hello,
         Arc::new(MemoryDiscovery::new()),
-        None,
         Arc::new(transport),
         Arc::new(MemoryTrustStore::new()),
         Arc::new(MemoryRuntimeStore::new()),
@@ -431,20 +430,6 @@ async fn removed_route_result_is_rejected_and_fallback_remains_retryable() {
 }
 
 #[tokio::test]
-async fn disabled_public_routes_are_never_dialed_during_retry_or_wake() {
-    let transport = ProbeTransport::default();
-    let mut actor = actor(transport.clone());
-    let (peer, route) = add_peer(&mut actor, &transport, 91);
-    let state = actor.peers.get_mut(&peer).unwrap();
-    state.routes.get_mut(&route.id).unwrap().source = RouteSource::PublicDirect;
-    actor.system_woke().await;
-    expire(&mut actor, peer);
-    actor.recovery_tick().await;
-    assert_eq!(transport.started.load(Ordering::Relaxed), 0);
-    assert!(!actor.recovery.attempts.contains_key(&peer));
-}
-
-#[tokio::test]
 async fn network_removal_suspends_even_legacy_trust_until_explicit_connect() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
@@ -459,30 +444,6 @@ async fn network_removal_suspends_even_legacy_trust_until_explicit_connect() {
         .await;
     complete(&mut actor).await;
     assert_eq!(actor.peers[&peer].connection, ConnectionState::Connected);
-}
-
-#[tokio::test]
-async fn disabling_public_policy_cancels_dial_before_late_result() {
-    let transport = ProbeTransport::default();
-    let mut actor = actor(transport.clone());
-    let (peer, route) = add_peer(&mut actor, &transport, 93);
-    actor.config.network.public_network_enabled = true;
-    actor.policy = RoutePolicy::new(&actor.config.network);
-    actor
-        .peers
-        .get_mut(&peer)
-        .unwrap()
-        .routes
-        .get_mut(&route.id)
-        .unwrap()
-        .source = RouteSource::PublicDirect;
-    actor.connect_peer(peer).await;
-    let obsolete = actor.dial_result_rx.recv().await.unwrap();
-    actor.set_public_network_enabled(false).await;
-    actor.handle_dial_result(obsolete).await;
-    actor.system_woke().await;
-    assert!(!actor.recovery.attempts.contains_key(&peer));
-    assert_eq!(transport.control_session_alive(peer), Some(false));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

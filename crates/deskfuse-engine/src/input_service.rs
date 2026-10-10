@@ -55,7 +55,6 @@ fn view(
             sequence,
             local_device_id: authority.local,
             peers,
-            public_network_enabled: false,
         },
         discovered_peers: vec![],
     }

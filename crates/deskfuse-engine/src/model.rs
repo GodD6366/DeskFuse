@@ -230,7 +230,6 @@ pub struct AppModel {
     pub updates: deskfuse_runtime::updates::LanUpdateView,
     runtime_error_sticky: bool,
     pub permissions: PermissionSnapshot,
-    pub public_network_enabled: bool,
     pub transfer_queue: Vec<TransferItem>,
     pub clipboard_sync_enabled: bool,
     pub clipboard_last_mime: Option<String>,
@@ -273,7 +272,6 @@ impl AppModel {
             updates: Default::default(),
             runtime_error_sticky: true,
             permissions: PermissionSnapshot::all_unknown(),
-            public_network_enabled: false,
             transfer_queue: Vec::new(),
             clipboard_sync_enabled: DEFAULT_CLIPBOARD_SYNC_ENABLED,
             clipboard_last_mime: None,
@@ -331,7 +329,6 @@ impl AppModel {
             updates: Default::default(),
             runtime_error_sticky: false,
             permissions: PermissionSnapshot::all_unknown(),
-            public_network_enabled: runtime.snapshot.public_network_enabled,
             transfer_queue: Vec::new(),
             clipboard_sync_enabled: DEFAULT_CLIPBOARD_SYNC_ENABLED,
             clipboard_last_mime: None,
@@ -635,7 +632,6 @@ impl AppModel {
                 }
                 self.peers = snapshot.peers.iter().map(device_from_peer).collect();
                 self.reconcile_device_presentations();
-                self.public_network_enabled = snapshot.public_network_enabled;
             }
             RuntimeEvent::DiscoveredPeerHint(hint) => {
                 let device = device_from_hint(&hint);
@@ -787,14 +783,6 @@ impl AppModel {
             .retain(|request| !trusted_ids.contains(&request.peer.id));
     }
 
-    pub fn public_network_summary(&self) -> &'static str {
-        if self.public_network_enabled {
-            "已开启 · 仅在你明确启用后连接公网"
-        } else {
-            "已关闭 · 不启动公网组件、监听器或辅助进程"
-        }
-    }
-
     pub fn command_refresh(&self) -> RuntimeCommand {
         RuntimeCommand::RefreshPeers
     }
@@ -836,10 +824,6 @@ impl AppModel {
 
     pub fn command_forget(&self, peer_id: &str) -> Option<RuntimeCommand> {
         parse_device_id(peer_id).map(RuntimeCommand::forget_peer)
-    }
-
-    pub fn command_set_public_network(&self, enabled: bool) -> RuntimeCommand {
-        RuntimeCommand::set_public_network_enabled(enabled)
     }
 }
 
@@ -1296,7 +1280,7 @@ mod tests {
         let identity = MemoryIdentityProvider::new()
             .load_or_create()
             .expect("identity");
-        NetworkSnapshot::new(0, identity.device_id(), Vec::new(), false).expect("snapshot")
+        NetworkSnapshot::new(0, identity.device_id(), Vec::new()).expect("snapshot")
     }
 
     #[test]
@@ -1330,8 +1314,7 @@ mod tests {
         };
         let mut model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new(), false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new()).expect("snapshot"),
             discovered_peers: vec![hint],
         });
         assert!(model.peers.is_empty());
@@ -1376,7 +1359,7 @@ mod tests {
         };
         let mut model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![authenticated_peer], false)
+            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![authenticated_peer])
                 .expect("snapshot"),
             discovered_peers: vec![hint.clone()],
         });
@@ -1411,8 +1394,7 @@ mod tests {
             .expect("identity");
         model.apply_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(1, identity.device_id(), Vec::new(), false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(1, identity.device_id(), Vec::new()).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert_eq!(model.permissions, snapshot);
@@ -1447,8 +1429,7 @@ mod tests {
         .expect("peer");
         let mut model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer], false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer]).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert_eq!(model.local.health, Health::Ready);
@@ -1511,7 +1492,7 @@ mod tests {
         .expect("peer");
         let mut model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer.clone()], false)
+            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer.clone()])
                 .expect("snapshot"),
             discovered_peers: Vec::new(),
         });
@@ -1521,7 +1502,7 @@ mod tests {
         let error = model.runtime_error.clone();
 
         model.apply_runtime_event(RuntimeEvent::Snapshot(
-            NetworkSnapshot::new(2, local.device_id(), vec![peer], false).expect("snapshot"),
+            NetworkSnapshot::new(2, local.device_id(), vec![peer]).expect("snapshot"),
         ));
         assert_eq!(model.runtime_status, RuntimeStatus::Error);
         assert_eq!(model.runtime_error, error);
@@ -1529,8 +1510,7 @@ mod tests {
 
         model.apply_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(3, local.device_id(), Vec::new(), false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(3, local.device_id(), Vec::new()).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert_eq!(model.runtime_status, RuntimeStatus::Error);
@@ -1581,25 +1561,6 @@ mod tests {
     }
 
     #[test]
-    fn public_flag_defaults_false_and_follows_runtime_snapshot() {
-        let identity = MemoryIdentityProvider::new()
-            .load_or_create()
-            .expect("identity");
-        let snapshot =
-            NetworkSnapshot::new(0, identity.device_id(), Vec::new(), true).expect("snapshot");
-        let model = AppModel::from_runtime_view(SnapshotView {
-            device_network: Default::default(),
-            snapshot,
-            discovered_peers: Vec::new(),
-        });
-        assert!(model.public_network_enabled);
-        assert_eq!(
-            model.public_network_summary(),
-            "已开启 · 仅在你明确启用后连接公网"
-        );
-    }
-
-    #[test]
     fn clipboard_sync_defaults_on_and_survives_runtime_refresh() {
         let mut model = AppModel::starting();
         assert!(model.clipboard_sync_enabled);
@@ -1609,8 +1570,7 @@ mod tests {
             .expect("identity");
         model.apply_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new(), false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new()).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert!(model.clipboard_sync_enabled);
@@ -1649,15 +1609,10 @@ mod tests {
             .expect("identity");
         let model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new(), false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(0, identity.device_id(), Vec::new()).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert_eq!(model.command_refresh(), RuntimeCommand::RefreshPeers);
-        assert_eq!(
-            model.command_set_public_network(true),
-            RuntimeCommand::SetPublicNetworkEnabled(true)
-        );
         assert_eq!(
             model.command_connect(&identity.device_id().to_hex()),
             Some(RuntimeCommand::RequestPairing {
@@ -1711,8 +1666,7 @@ mod tests {
         .expect("peer");
         let model = AppModel::from_runtime_view(SnapshotView {
             device_network: Default::default(),
-            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer], false)
-                .expect("snapshot"),
+            snapshot: NetworkSnapshot::new(1, local.device_id(), vec![peer]).expect("snapshot"),
             discovered_peers: Vec::new(),
         });
         assert_eq!(model.peers[0].health, Health::Ready);

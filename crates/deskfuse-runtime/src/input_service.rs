@@ -210,13 +210,8 @@ mod build_identity_tests {
         let (commands, command_rx) = mpsc::channel(8);
         let (snapshots, _) = watch::channel(InputSharingSnapshot::default());
         let (_network, network) = watch::channel(SnapshotView {
-            snapshot: NetworkSnapshot::new(
-                0,
-                DeviceId::from_public_key([9; 32]).unwrap(),
-                vec![],
-                false,
-            )
-            .unwrap(),
+            snapshot: NetworkSnapshot::new(0, DeviceId::from_public_key([9; 32]).unwrap(), vec![])
+                .unwrap(),
             discovered_peers: vec![],
             device_network: Default::default(),
         });
@@ -339,7 +334,6 @@ mod build_identity_tests {
                 )
                 .unwrap(),
             ],
-            false,
         )
         .unwrap();
         let view = SnapshotView {
@@ -406,7 +400,6 @@ pub struct StoredInput {
     pub settings: InputSharingSettings,
     pub scenes: Vec<InputSharingScene>,
     pub policy: Option<InputActivationPolicy>,
-    pub routes: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
 }
 impl StoredInput {
     fn load(store: &dyn RuntimeStore) -> Result<Self, RuntimeError> {
@@ -414,7 +407,6 @@ impl StoredInput {
             settings: store.get_input_sharing_settings()?,
             scenes: store.get_input_sharing_scenes()?,
             policy: store.get_input_activation_policy()?,
-            routes: store.get_route_preferences()?,
         })
     }
 }
@@ -424,7 +416,6 @@ enum Persist {
     Scenes(Vec<InputSharingScene>),
     Policy(InputActivationPolicy),
     SettingsPolicy(InputSharingSettings, InputActivationPolicy),
-    Routes(BTreeMap<DeviceId, deskfuse_core::RoutePreference>),
 }
 impl Persist {
     fn apply(&self, store: &dyn RuntimeStore) -> Result<(), RuntimeError> {
@@ -435,7 +426,6 @@ impl Persist {
             Self::SettingsPolicy(s, p) => {
                 store.set_input_sharing_settings_and_policy(s.clone(), p.clone())
             }
-            Self::Routes(v) => store.set_route_preferences(v.clone()),
         }
     }
 }

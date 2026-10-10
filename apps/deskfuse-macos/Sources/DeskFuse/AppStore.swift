@@ -46,10 +46,13 @@ import DeskFuseEngine
     var shelf: ShelfController?
     /// Launch-time guidance for permissions used by local features.
     let permissionPrompt = PermissionPromptController()
+    let onboarding = OnboardingController()
     let previousInstallation = PreviousInstallationController()
     var showMainWindow: (() -> Void)?
     @ObservationIgnored var showSettingsWindow: (() -> Void)?
     var pendingSettingsTab: String?
+    /// 设置页剪贴板分类内的分段深链（「历史 / 工作流」）。
+    var pendingClipboardSegment: String?
     var pairingWindow: PairingWindowController?
     private var transferWindow: TransferProgressWindowController?
     private var eventsTask: Task<Void, Never>?
@@ -237,8 +240,9 @@ import DeskFuseEngine
         UserDefaults.standard.set(hidden, forKey: AppStore.hideDockIconDefaultsKey)
         applyDockIconPolicy()
     }
-    func openSettings(tab: String? = nil) {
+    func openSettings(tab: String? = nil, clipboardSegment: String? = nil) {
         pendingSettingsTab = tab
+        pendingClipboardSegment = clipboardSegment
         NSApp.activate(ignoringOtherApps: true)
         showSettingsWindow?()
     }

@@ -34,6 +34,16 @@ struct RootView: View {
                 PermissionPromptView(controller: store.permissionPrompt)
             }
         }
+        .sheet(isPresented: onboardingBinding) {
+            OnboardingPrompt(store: store)
+        }
+    }
+
+    private var onboardingBinding: Binding<Bool> {
+        Binding(
+            get: { store.onboarding.isPresented },
+            set: { show in if !show { store.onboarding.complete() } }
+        )
     }
 
     private var permissionPromptBinding: Binding<Bool> {

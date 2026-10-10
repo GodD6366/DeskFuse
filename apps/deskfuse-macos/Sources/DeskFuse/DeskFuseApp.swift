@@ -26,6 +26,7 @@ import DeskFuseEngine
             CommandMenu("共享") {
                 Button("文件暂存区") { store.shelf?.show() }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("立即收回键鼠") { store.reclaim() }.keyboardShortcut(.escape, modifiers: [.control, .option, .command])
+                    .disabled(!(store.snapshot?.input.managed == true || store.snapshot?.input.settings.enabled == true))
                 Divider()
                 Button("搜索设备") { store.send(.refreshDevices) }
             }
@@ -91,16 +92,32 @@ import DeskFuseEngine
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()
+        // 引擎启动前判断：已有状态库的是升级老用户，不进新手引导。
+        let support = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/DeskFuse/state.sqlite3")
+        let hasExistingState = FileManager.default.fileExists(atPath: support.path)
         AppStore.shared.previousInstallation.evaluate { [weak self] in
-            self?.startEngine()
+            self?.startEngine(isFreshInstall: !hasExistingState)
         }
     }
 
-    private func startEngine() {
+    private func startEngine(isFreshInstall: Bool) {
         AppStore.shared.start()
-        // 自检流程随即退出，不弹权限窗口；其余启动在缺少权限时提示一次。
-        if !AppStore.shared.selfTest { AppStore.shared.permissionPrompt.evaluateAtLaunch() }
-        ClipboardPanelController.shared.install(store: AppStore.shared)
+        let store = AppStore.shared
+        // 自检流程随即退出，不弹任何引导窗口。
+        guard !store.selfTest else {
+            ClipboardPanelController.shared.install(store: store)
+            return
+        }
+        let onboardingCompleted = UserDefaults.standard.bool(forKey: OnboardingController.completedKey)
+        if isFreshInstall, !store.previousInstallation.wasPresented, !onboardingCompleted {
+            // 全新安装：先弹功能引导，本次启动不再重复弹权限提醒。
+            store.onboarding.present()
+        } else {
+            // 老用户（含迁移完成）：维持缺权限时提示一次的现行为。
+            store.permissionPrompt.evaluateAtLaunch()
+        }
+        ClipboardPanelController.shared.install(store: store)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

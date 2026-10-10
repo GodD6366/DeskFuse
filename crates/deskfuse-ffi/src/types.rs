@@ -26,7 +26,6 @@ pub struct Device {
     pub connected: bool,
     pub member: bool,
     pub blocked: bool,
-    pub route_preference: RoutePreference,
     pub input_reason: String,
     /// The far side reclaimed input locally; a new enable cycle is required.
     pub input_restart_required: bool,
@@ -50,7 +49,7 @@ pub struct DeviceRoute {
     pub probe_error: Option<String>,
 }
 
-fn device_routes(device: &model::Device, public_network_enabled: bool) -> Vec<DeviceRoute> {
+fn device_routes(device: &model::Device) -> Vec<DeviceRoute> {
     let connected = device.health == model::Health::Ready;
     let mut routes = device
         .routes
@@ -71,8 +70,6 @@ fn device_routes(device: &model::Device, public_network_enabled: bool) -> Vec<De
                 .into(),
                 status: if active {
                     "当前连接"
-                } else if route.source.is_public() && !public_network_enabled {
-                    "公网未启用"
                 } else if route.probe_error.is_some() {
                     "探测失败"
                 } else {
@@ -235,33 +232,6 @@ impl From<PermissionKind> for deskfuse_platform::PermissionKind {
             PermissionKind::Accessibility => Self::Accessibility,
             PermissionKind::FullDiskAccess => Self::FullDiskAccess,
             PermissionKind::InputMonitoring => Self::InputMonitoring,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, uniffi::Enum)]
-pub enum RoutePreference {
-    Automatic,
-    Thunderbolt,
-    Ethernet,
-    Wifi,
-}
-impl From<RoutePreference> for core::RoutePreference {
-    fn from(p: RoutePreference) -> Self {
-        match p {
-            RoutePreference::Automatic => Self::Automatic,
-            RoutePreference::Thunderbolt => Self::Thunderbolt,
-            RoutePreference::Ethernet => Self::Ethernet,
-            RoutePreference::Wifi => Self::WiFi,
-        }
-    }
-}
-impl From<core::RoutePreference> for RoutePreference {
-    fn from(p: core::RoutePreference) -> Self {
-        match p {
-            core::RoutePreference::Automatic => Self::Automatic,
-            core::RoutePreference::Thunderbolt => Self::Thunderbolt,
-            core::RoutePreference::Ethernet => Self::Ethernet,
-            core::RoutePreference::WiFi => Self::Wifi,
         }
     }
 }
@@ -508,7 +478,6 @@ pub struct EngineSnapshot {
     pub permissions: Vec<Permission>,
     pub input: InputState,
     pub update: UpdateState,
-    pub public_network_enabled: bool,
 }
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum EngineCommand {
@@ -544,13 +513,6 @@ pub enum EngineCommand {
         peer_id: String,
     },
     LeaveNetwork,
-    SetRoute {
-        peer_id: String,
-        preference: RoutePreference,
-    },
-    SetPublicNetwork {
-        enabled: bool,
-    },
     SetClipboard {
         enabled: bool,
     },
@@ -694,7 +656,7 @@ impl From<&EngineState> for EngineSnapshot {
                         name: d.name.clone(),
                         detail: d.subtitle.clone(),
                         endpoint: d.endpoint.clone(),
-                        routes: device_routes(d, m.public_network_enabled),
+                        routes: device_routes(d),
                         trusted: matches!(d.trust, model::TrustState::Trusted),
                         connected: matches!(d.health, model::Health::Ready),
                         member: m.is_network_member(&d.id),
@@ -702,14 +664,6 @@ impl From<&EngineState> for EngineSnapshot {
                             .id
                             .parse::<core::DeviceId>()
                             .is_ok_and(|id| m.device_network.blocked_peer_ids.contains(&id)),
-                        route_preference: d
-                            .id
-                            .parse::<core::DeviceId>()
-                            .ok()
-                            .and_then(|id| m.device_network.route_preferences.get(&id))
-                            .copied()
-                            .unwrap_or_default()
-                            .into(),
                         input_reason: m.input_availability_reason(&d.id),
                         input_restart_required: m.input_restart_required(&d.id),
                         remote_app_rdp: d.routes.iter().any(|route| {
@@ -989,7 +943,6 @@ impl From<&EngineState> for EngineSnapshot {
                 message: m.updates.message.clone(),
                 error: m.updates.error.clone(),
             },
-            public_network_enabled: m.public_network_enabled,
         }
     }
 }

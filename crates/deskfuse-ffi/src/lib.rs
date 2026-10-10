@@ -376,16 +376,6 @@ impl Engine {
             EngineCommand::LeaveNetwork => {
                 TokioCommand::Runtime(RuntimeCommand::LeaveDeviceNetwork)
             }
-            EngineCommand::SetRoute {
-                peer_id,
-                preference,
-            } => TokioCommand::Runtime(RuntimeCommand::SetRoutePreference {
-                peer_id: device(&peer_id)?,
-                preference: preference.into(),
-            }),
-            EngineCommand::SetPublicNetwork { enabled } => {
-                TokioCommand::Runtime(RuntimeCommand::SetPublicNetworkEnabled(enabled))
-            }
             EngineCommand::SetDebugLogging { enabled } => TokioCommand::SetDebugLogging(enabled),
             EngineCommand::SetClipboard { enabled } => TokioCommand::SetClipboardSync(enabled),
             EngineCommand::PushClipboard => TokioCommand::PushClipboard,

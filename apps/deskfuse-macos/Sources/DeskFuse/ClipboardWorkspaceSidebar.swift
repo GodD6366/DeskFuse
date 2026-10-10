@@ -6,7 +6,7 @@ private struct WorkflowSyncCard: View {
 
     var body: some View {
         Button {
-            AppStore.shared.openSettings(tab: "workflows")
+            AppStore.shared.openSettings(tab: "clipboard", clipboardSegment: "workflows")
         } label: {
             HStack {
                 Image(systemName: "square.stack.3d.up")

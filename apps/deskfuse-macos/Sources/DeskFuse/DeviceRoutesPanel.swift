@@ -30,7 +30,6 @@ struct DeviceRoutesPanel: View {
                         Text("地址").frame(maxWidth: .infinity, alignment: .leading)
                         Text("发现来源").frame(width: 128, alignment: .leading)
                         Text("状态").frame(width: 94, alignment: .leading)
-                        Text("").frame(width: 24)
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -74,9 +73,6 @@ struct DeviceRoutesPanel: View {
                             }
                             .font(.caption)
                             .frame(width: 94, alignment: .leading)
-                            Image(systemName: "ellipsis")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 24)
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)

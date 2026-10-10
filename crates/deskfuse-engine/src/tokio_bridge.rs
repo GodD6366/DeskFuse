@@ -18,9 +18,7 @@ mod finder_paste_jobs;
 #[path = "library_sync.rs"]
 mod library_sync;
 use crate::diagnostics::{DiagnosticLevel, Diagnostics};
-use crate::model::{
-    ClipboardHistoryItem, DEFAULT_CLIPBOARD_SYNC_ENABLED, TransferDirection, TransferState,
-};
+use crate::model::{ClipboardHistoryItem, TransferDirection, TransferState};
 use crate::platform::memory_platform;
 #[cfg(test)]
 use deskfuse_core::RouteCandidate;
@@ -48,7 +46,7 @@ use deskfuse_runtime::{
     RuntimeBuilder, RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeHandle,
     SnapshotView,
 };
-use deskfuse_store::SQLiteStore;
+use deskfuse_store::{SQLiteStore, SettingsStore};
 use deskfuse_transfer::ExternalCacheLeases;
 use deskfuse_transfer::{
     CLIPBOARD_FILE_MIME, CacheCleanup, ClipboardFileFrame, ClipboardFilePlan, ConflictStrategy,
@@ -1534,23 +1532,24 @@ async fn run_worker(
         &mut last_permission,
     );
 
-    let runtime = match build_runtime(&diagnostics, platform.clone()).await {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let message = error.to_string();
-            eprintln!("DeskFuse: runtime startup failed: {message}");
-            crate::diagnostics::record!(
-                diagnostics,
-                DiagnosticLevel::Error,
-                "runtime",
-                "startup_failed",
-                Some(message.clone()),
-                Some("RUNTIME_STARTUP".to_owned()),
-            );
-            let _ = ui_sender.unbounded_send(UiEvent::BridgeError(message));
-            return;
-        }
-    };
+    let (runtime, settings_store, mut persisted_settings) =
+        match build_runtime(&diagnostics, platform.clone()).await {
+            Ok(parts) => parts,
+            Err(error) => {
+                let message = error.to_string();
+                eprintln!("DeskFuse: runtime startup failed: {message}");
+                crate::diagnostics::record!(
+                    diagnostics,
+                    DiagnosticLevel::Error,
+                    "runtime",
+                    "startup_failed",
+                    Some(message.clone()),
+                    Some("RUNTIME_STARTUP".to_owned()),
+                );
+                let _ = ui_sender.unbounded_send(UiEvent::BridgeError(message));
+                return;
+            }
+        };
 
     #[cfg(target_os = "macos")]
     let lan_display_name = local_display_name(&*platform.runtime());
@@ -1588,7 +1587,9 @@ async fn run_worker(
         }
     };
     let pasteboard = platform.pasteboard();
-    let mut clipboard_enabled = DEFAULT_CLIPBOARD_SYNC_ENABLED;
+    // 持久化设置优先于编译期默认：重启后保持用户上次的选择。
+    deskfuse_core::debug_logging::set_enabled(persisted_settings.debug_logging);
+    let mut clipboard_enabled = persisted_settings.clipboard_enabled;
     // Inspect the current pasteboard on startup. Finder may have populated it
     // before DeskFuse launched, and treating that value as an unseen baseline
     // left the UI stuck on “等待剪贴板变化”.
@@ -1606,6 +1607,17 @@ async fn run_worker(
         }
     };
     clipboard_history.publish(&ui_sender);
+    // 让 UI 与持久化的开关状态对齐：剪贴板同步/调试日志在重启后保持上次选择。
+    let _ = ui_sender.unbounded_send(UiEvent::ClipboardStatus {
+        enabled: clipboard_enabled,
+        last_mime: None,
+        last_len: 0,
+        last_sequence: None,
+        error: None,
+    });
+    let _ = ui_sender.unbounded_send(UiEvent::DebugLoggingChanged(
+        persisted_settings.debug_logging,
+    ));
 
     let mut outgoing_file_cancellations: HashMap<TransferId, Arc<AtomicBool>> = HashMap::new();
     let mut outgoing_file_sources: HashMap<TransferId, FileTransferSource> = HashMap::new();
@@ -2047,9 +2059,25 @@ async fn run_worker(
                     }
                     Some(TokioCommand::SetDebugLogging(enabled)) => {
                         deskfuse_core::debug_logging::set_enabled(enabled);
+                        if let Err(error) = settings_store.set_settings(deskfuse_store::Settings {
+                            debug_logging: enabled,
+                            ..persisted_settings
+                        }) {
+                            command_error = Some(format!("调试日志设置保存失败：{error}"));
+                        } else {
+                            persisted_settings.debug_logging = enabled;
+                        }
                         let _ = ui_sender.unbounded_send(UiEvent::DebugLoggingChanged(enabled));
                     }
                     Some(TokioCommand::SetClipboardSync(enabled)) => {
+                        if let Err(error) = settings_store.set_settings(deskfuse_store::Settings {
+                            clipboard_enabled: enabled,
+                            ..persisted_settings
+                        }) {
+                            command_error = Some(format!("剪贴板同步设置保存失败：{error}"));
+                        } else {
+                            persisted_settings.clipboard_enabled = enabled;
+                        }
                         if !enabled {file_policy.cancel_pending(&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;}
                         clipboard_enabled = enabled;
                         clipboard_sync.reset(&ui_sender);
@@ -4831,9 +4859,6 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
         Capabilities::LAN_UPDATE_TRIGGER
     };
     RuntimeConfig {
-        network: deskfuse_core::NetworkConfig::new()
-            .with_mdns_enabled(true)
-            .with_public_network_enabled(false),
         display_name: local_display_name(runtime),
         capabilities: Capabilities::NETWORK
             | Capabilities::CLIPBOARD
@@ -4878,7 +4903,7 @@ fn local_display_name(_runtime: &dyn deskfuse_platform::ports::HostRuntimePort) 
 async fn build_runtime(
     diagnostics: &Diagnostics,
     platform: Arc<dyn EnginePlatformPort>,
-) -> Result<RuntimeHandle, RuntimeError> {
+) -> Result<(RuntimeHandle, SQLiteStore, deskfuse_store::Settings), RuntimeError> {
     // Production persists identity beside the state database. Tests stay isolated.
     #[cfg(not(test))]
     let identity_provider = FileIdentityProvider::new(
@@ -4896,6 +4921,10 @@ async fn build_runtime(
     let store =
         SQLiteStore::open_in_memory().map_err(|error| RuntimeError::Store(error.to_string()))?;
     let config = runtime_config(&*platform.runtime());
+    // 启动时读回持久化设置：剪贴板同步与调试日志在重启后保持用户选择。
+    let settings = store
+        .get_settings()
+        .map_err(|error| RuntimeError::Store(error.to_string()))?;
 
     #[cfg(not(test))]
     let (transport, control_port) = {
@@ -4971,7 +5000,7 @@ async fn build_runtime(
         .config(config)
         .with_identity_provider(identity_provider)
         .with_trust_store(store.clone())
-        .with_store(store);
+        .with_store(store.clone());
     #[cfg(not(test))]
     let builder = builder
         .with_external_discovery(discovery)
@@ -4992,7 +5021,7 @@ async fn build_runtime(
     let runtime = builder.build()?;
     #[cfg(not(test))]
     crate::remote_application::install(transport, runtime.clone());
-    Ok(runtime)
+    Ok((runtime, store, settings))
 }
 
 fn emit_permission_snapshot(
@@ -5304,10 +5333,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_keeps_public_network_disabled() {
+    fn runtime_config_has_expected_capabilities() {
         let config = runtime_config(&*crate::platform::memory_platform().runtime());
-        assert!(config.network.mdns_enabled);
-        assert!(!config.network.public_network_enabled);
         assert_eq!(config.display_name, "DeskFuse");
         assert_eq!(
             config.capabilities,
@@ -5411,7 +5438,7 @@ mod tests {
             .collect::<Vec<_>>();
         let member = peers[0].id;
         let mut view = SnapshotView {
-            snapshot: deskfuse_core::NetworkSnapshot::new(0, local, peers, false).unwrap(),
+            snapshot: deskfuse_core::NetworkSnapshot::new(0, local, peers).unwrap(),
             discovered_peers: vec![],
             device_network: Default::default(),
         };
@@ -5435,9 +5462,8 @@ mod tests {
             .load_or_create()
             .expect("identity");
         let peer_id = DeviceId::from_bytes([9; 32]);
-        let snapshot =
-            deskfuse_core::NetworkSnapshot::new(0, identity.device_id(), Vec::new(), false)
-                .expect("snapshot");
+        let snapshot = deskfuse_core::NetworkSnapshot::new(0, identity.device_id(), Vec::new())
+            .expect("snapshot");
         let hint = deskfuse_runtime::DiscoveredPeerHint {
             peer_id,
             display_name: "Nearby".to_owned(),
@@ -5475,13 +5501,8 @@ mod tests {
                 network_id: Some("temporary-network".into()),
                 ..Default::default()
             },
-            snapshot: deskfuse_core::NetworkSnapshot::new(
-                0,
-                DeviceId::from_bytes([1; 32]),
-                vec![],
-                false,
-            )
-            .unwrap(),
+            snapshot: deskfuse_core::NetworkSnapshot::new(0, DeviceId::from_bytes([1; 32]), vec![])
+                .unwrap(),
             discovered_peers: vec![],
         };
         let (sender, mut receiver) = tokio::sync::watch::channel(view.clone());
@@ -5519,7 +5540,6 @@ mod tests {
                         0,
                         identity.device_id(),
                         Vec::new(),
-                        false,
                     )
                     .expect("snapshot"),
                     discovered_peers: Vec::new(),

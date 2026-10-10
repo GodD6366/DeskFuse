@@ -1730,7 +1730,6 @@ mod tests {
             &self,
             peer: DeviceId,
             _endpoints: Vec<Endpoint>,
-            _preference: RoutePreference,
         ) -> ProviderFuture<()> {
             self.ensured.lock().unwrap().push(peer);
             Box::pin(async { Ok(()) })
@@ -1786,7 +1785,6 @@ mod tests {
             0,
             DeviceId::from_public_key([8; 32]).unwrap(),
             vec![peer_snapshot],
-            false,
         )
         .unwrap();
         let (_, network) = watch::channel(crate::SnapshotView {

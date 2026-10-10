@@ -4,7 +4,7 @@ use deskfuse_core::{
     Capabilities, ClipboardPayload, ConnectionContext, ConnectionState, DeviceId,
     DisplayDescriptor, DisplayId, DisplayTopology, Endpoint, InputPeerStatus, InputSessionId,
     InputShareRole, InputSharingSettings, InputSharingSnapshot, InterfaceKind, LinkScope,
-    NetworkConfig, RouteCandidate, RouteHealth, RouteSource, SharedInputEvent, TrustState,
+    RouteCandidate, RouteHealth, RouteSource, SharedInputEvent, TrustState,
 };
 use deskfuse_identity::{MemoryIdentityProvider, MemoryTrustStore};
 use deskfuse_runtime::{
@@ -1158,9 +1158,6 @@ async fn execute(args: &Args) -> Result<(), String> {
     }
     let runtime = RuntimeBuilder::new()
         .config(RuntimeConfig {
-            network: NetworkConfig::new()
-                .with_mdns_enabled(false)
-                .with_public_network_enabled(false),
             display_name: args.name(args.role),
             capabilities: args.capabilities(),
             event_capacity: 2048,

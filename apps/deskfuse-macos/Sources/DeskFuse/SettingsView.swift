@@ -20,6 +20,7 @@ struct SettingsView: View, Equatable {
     @State private var clearCache = false
     @State private var exportingDiagnostics = false
     @SceneStorage("settings.selectedTab") private var selectedTab = "general"
+    @SceneStorage("settings.clipboardSegment") private var clipboardSegment = "history"
     var body: some View {
         HStack(spacing: 0) {
             SettingsCategoryBar(selection: $selectedTab)
@@ -38,6 +39,15 @@ struct SettingsView: View, Equatable {
             .padding(12)
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .onAppear {
+            // 旧版本可能残留已删除分类（如「工作流」），归一回通用页。
+            if SettingsCategory(rawValue: selectedTab) == nil { selectedTab = SettingsCategory.general.rawValue }
+        }
+        .onChange(of: store.pendingClipboardSegment) { _, segment in
+            guard let segment else { return }
+            clipboardSegment = segment
+            store.pendingClipboardSegment = nil
+        }
         .onChange(of: store.client != nil, initial: true) { _, ready in
             guard ready else { return }
             store.send(.refreshCache)
@@ -58,6 +68,17 @@ struct SettingsView: View, Equatable {
         case .general:
             GeneralSettingsView(
                 clipboardEnabled: Binding(get: { presentation.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
+                inputSharingEnabled: Binding(
+                    get: { presentation.inputSettings?.enabled ?? false },
+                    set: { enabled in
+                        guard var settings = presentation.inputSettings else { return }
+                        settings.enabled = enabled
+                        store.send(.setInput(settings: settings))
+                    }
+                ),
+                remoteApplicationEnabled: remoteApplicationBinding,
+                remoteApplicationBeta: true,
+                lanWebClient: store.client,
                 debugLoggingEnabled: Binding(get: { presentation.debugLoggingEnabled }, set: { store.send(.setDebugLogging(enabled: $0)) }),
                 hideDockIcon: Binding(get: { store.hideDockIcon }, set: { store.setHideDockIcon($0) }),
                 keepAwake: Binding(get: { store.keepAwake }, set: { store.keepAwake = $0 }),
@@ -97,12 +118,31 @@ struct SettingsView: View, Equatable {
                     revert: { if let savedFiles { loadFiles(savedFiles) } }, save: saveFiles)
             }
         case .clipboard:
-            ClipboardLibrarySettingsView()
-        case .workflows:
-            WorkflowSettingsView(store: store)
+            VStack(spacing: 0) {
+                Picker("", selection: $clipboardSegment) {
+                    Text("历史").tag("history")
+                    Text("工作流").tag("workflows")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 320)
+                .padding(.horizontal, 36).padding(.bottom, 12)
+                // 用透明度切换而非重建，两个视图各自持有的编辑状态不丢失。
+                ZStack {
+                    ClipboardLibrarySettingsView()
+                        .opacity(clipboardSegment == "history" ? 1 : 0)
+                        .allowsHitTesting(clipboardSegment == "history")
+                    WorkflowSettingsView(store: store)
+                        .opacity(clipboardSegment == "workflows" ? 1 : 0)
+                        .allowsHitTesting(clipboardSegment == "workflows")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .shortcuts:
             ShortcutSettingsPage(store: store,
-                manageWorkflows: { selectedTab = "workflows" },
+                manageWorkflows: {
+                    clipboardSegment = "workflows"
+                    selectedTab = SettingsCategory.clipboard.rawValue
+                },
                 configureInput: { selectedTab = SettingsCategory.input.rawValue })
         case .updates:
             Form {
@@ -113,6 +153,16 @@ struct SettingsView: View, Equatable {
             }.formStyle(.grouped)
         }
     }
+    private var remoteApplicationBinding: Binding<Bool>? {
+        if #available(macOS 14.2, *) {
+            return Binding(
+                get: { RemoteApplicationManager.shared.enabled },
+                set: { RemoteApplicationManager.shared.enabled = $0 }
+            )
+        }
+        return nil
+    }
+
     private var filesDirty: Bool {
         guard let savedFiles else { return false }
         return prefetch != savedFiles.prefetch || threshold != Double(savedFiles.threshold) / 1_048_576

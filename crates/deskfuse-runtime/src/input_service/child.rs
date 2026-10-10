@@ -332,7 +332,6 @@ impl RemoteStore {
                 cache.settings = s;
                 cache.policy = Some(p);
             }
-            Persist::Routes(v) => cache.routes = v,
         }
         Ok(())
     }
@@ -353,11 +352,6 @@ impl RuntimeStore for RemoteStore {
     fn get_input_activation_policy(&self) -> Result<Option<InputActivationPolicy>, RuntimeError> {
         Ok(self.read()?.policy)
     }
-    fn get_route_preferences(
-        &self,
-    ) -> Result<BTreeMap<DeviceId, deskfuse_core::RoutePreference>, RuntimeError> {
-        Ok(self.read()?.routes)
-    }
     fn set_input_sharing_settings(&self, v: InputSharingSettings) -> Result<(), RuntimeError> {
         self.persist(Persist::Settings(v))
     }
@@ -373,12 +367,6 @@ impl RuntimeStore for RemoteStore {
         p: InputActivationPolicy,
     ) -> Result<(), RuntimeError> {
         self.persist(Persist::SettingsPolicy(s, p))
-    }
-    fn set_route_preferences(
-        &self,
-        v: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
-    ) -> Result<(), RuntimeError> {
-        self.persist(Persist::Routes(v))
     }
     fn list_peers(&self) -> Result<Vec<PeerRecord>, RuntimeError> {
         Ok(vec![])
@@ -398,10 +386,5 @@ impl RuntimeStore for RemoteStore {
     }
     fn get_settings(&self) -> Result<Settings, RuntimeError> {
         Ok(Settings::default())
-    }
-    fn set_public_network_enabled(&self, _: bool) -> Result<(), RuntimeError> {
-        Err(RuntimeError::InvalidCommand(
-            "input service is LAN only".into(),
-        ))
     }
 }

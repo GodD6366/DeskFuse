@@ -52,10 +52,9 @@ use tokio::task;
 
 use deskfuse_core::{
     Capabilities, ClipboardPayload, ConnectionState, DeviceId, DisplayInfo, Endpoint,
-    InputEventBatch, InterfaceKind, LivenessState, NetworkConfig, NetworkSnapshot,
+    InputEventBatch, InterfaceKind, LivenessState, NetworkSnapshot,
     PairingRequest as CorePairingRequest, PeerSnapshot, ProtocolVersion, RouteCandidate,
-    RouteHealth, RouteId, RoutePolicy, RoutePreference, RouteSource, TrustState,
-    collapse_routes_by_endpoint,
+    RouteHealth, RouteId, RoutePolicy, RouteSource, TrustState, collapse_routes_by_endpoint,
 };
 use deskfuse_identity::{
     DeviceId as IdentityDeviceId, Fingerprint, IdentityError, IdentityProvider, LocalIdentity,
@@ -348,12 +347,7 @@ pub trait TransportProvider: Send + Sync {
         ))
     }
     fn select_input_route(&self, _peer: DeviceId, _session: TransportSessionId) {}
-    fn ensure_input_link(
-        &self,
-        _peer: DeviceId,
-        _endpoints: Vec<Endpoint>,
-        _preference: deskfuse_core::RoutePreference,
-    ) -> ProviderFuture<()> {
+    fn ensure_input_link(&self, _peer: DeviceId, _endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
         Box::pin(async { Err(RuntimeError::Transport("LAN connection unavailable".into())) })
     }
 
@@ -544,13 +538,8 @@ where
     fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
         (**self).select_input_route(peer, session);
     }
-    fn ensure_input_link(
-        &self,
-        peer: DeviceId,
-        endpoints: Vec<Endpoint>,
-        preference: deskfuse_core::RoutePreference,
-    ) -> ProviderFuture<()> {
-        (**self).ensure_input_link(peer, endpoints, preference)
+    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
+        (**self).ensure_input_link(peer, endpoints)
     }
     fn register_peer_identity(
         &self,
@@ -607,41 +596,12 @@ where
     }
 }
 
-/// Factory for the additive public-network discovery provider.
-///
-/// The factory is intentionally separate from the normal discovery provider.
-/// A false public flag therefore means this method is never called and no
-/// public provider is constructed or started.
-pub trait PublicDiscoveryFactory: Send + Sync {
-    fn create(&self) -> Result<Arc<dyn DiscoveryProvider>, RuntimeError>;
-}
-
-impl<F> PublicDiscoveryFactory for F
-where
-    F: Fn() -> Result<Arc<dyn DiscoveryProvider>, RuntimeError> + Send + Sync,
-{
-    fn create(&self) -> Result<Arc<dyn DiscoveryProvider>, RuntimeError> {
-        self()
-    }
-}
-
 /// Synchronous persistence boundary used by the actor.
 ///
 /// Implementations are called only inside `spawn_blocking`.  The blanket
 /// implementation lets `deskfuse-store::SQLiteStore` be injected directly while
 /// keeping the runtime independent from SQLite details.
 pub trait RuntimeStore: Send + Sync {
-    fn get_route_preferences(
-        &self,
-    ) -> Result<BTreeMap<DeviceId, deskfuse_core::RoutePreference>, RuntimeError> {
-        Ok(BTreeMap::new())
-    }
-    fn set_route_preferences(
-        &self,
-        _preferences: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
-    ) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Store("route preferences unavailable".into()))
-    }
     fn reconnect_suspended(&self) -> Result<BTreeSet<DeviceId>, RuntimeError> {
         Ok(BTreeSet::new())
     }
@@ -709,7 +669,6 @@ pub trait RuntimeStore: Send + Sync {
     fn list_manual_endpoints(&self, peer_id: DeviceId)
     -> Result<Vec<ManualEndpoint>, RuntimeError>;
     fn get_settings(&self) -> Result<Settings, RuntimeError>;
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<(), RuntimeError>;
 }
 
 impl<S> RuntimeStore for S
@@ -722,18 +681,6 @@ where
         + Send
         + Sync,
 {
-    fn get_route_preferences(
-        &self,
-    ) -> Result<BTreeMap<DeviceId, deskfuse_core::RoutePreference>, RuntimeError> {
-        SettingsStore::get_route_preferences(self).map_err(|e| RuntimeError::Store(e.to_string()))
-    }
-    fn set_route_preferences(
-        &self,
-        preferences: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
-    ) -> Result<(), RuntimeError> {
-        SettingsStore::set_route_preferences(self, preferences)
-            .map_err(|e| RuntimeError::Store(e.to_string()))
-    }
     fn reconnect_suspended(&self) -> Result<BTreeSet<DeviceId>, RuntimeError> {
         SettingsStore::get_reconnect_suspended(self).map_err(|e| RuntimeError::Store(e.to_string()))
     }
@@ -817,11 +764,6 @@ where
 
     fn get_settings(&self) -> Result<Settings, RuntimeError> {
         SettingsStore::get_settings(self).map_err(|error| RuntimeError::Store(error.to_string()))
-    }
-
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
-        SettingsStore::set_public_network_enabled(self, enabled)
-            .map_err(|error| RuntimeError::Store(error.to_string()))
     }
 }
 
@@ -1030,14 +972,6 @@ impl RuntimeStore for MemoryRuntimeStore {
             .map_err(|_| RuntimeError::Store("settings store is poisoned".to_owned()))
             .map(|settings| settings.clone())
     }
-
-    fn set_public_network_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
-        self.settings
-            .lock()
-            .map_err(|_| RuntimeError::Store("settings store is poisoned".to_owned()))?
-            .public_network_enabled = enabled;
-        Ok(())
-    }
 }
 
 // Host-to-input-service IPC keeps wallpaper commands small instead of encoding
@@ -1084,10 +1018,6 @@ pub enum RuntimeCommand {
     },
     ForgetControllerEnvironment {
         ssid: String,
-    },
-    SetRoutePreference {
-        peer_id: DeviceId,
-        preference: deskfuse_core::RoutePreference,
     },
     /// Native wake notification: refresh discovery and expedite recovery.
     SystemWoke,
@@ -1202,7 +1132,6 @@ pub enum RuntimeCommand {
     ForgetPeer {
         peer_id: DeviceId,
     },
-    SetPublicNetworkEnabled(bool),
     #[serde(skip)]
     SendClipboard {
         peer_id: DeviceId,
@@ -1313,11 +1242,6 @@ impl RuntimeCommand {
     pub const fn send_display_info(peer_id: DeviceId, display: DisplayInfo) -> Self {
         Self::SendDisplayInfo { peer_id, display }
     }
-
-    #[must_use]
-    pub const fn set_public_network_enabled(enabled: bool) -> Self {
-        Self::SetPublicNetworkEnabled(enabled)
-    }
 }
 
 /// A discovery observation that has not yet been authenticated by a signed
@@ -1343,7 +1267,6 @@ pub struct SnapshotView {
 /// Verified invitation state; discovery hints never populate this list.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceNetworkSnapshot {
-    pub route_preferences: BTreeMap<DeviceId, deskfuse_core::RoutePreference>,
     pub integrity_error: Option<String>,
     pub network_id: Option<String>,
     pub owner_id: Option<DeviceId>,
@@ -1491,7 +1414,6 @@ pub enum RuntimeEvent {
 /// Runtime configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
-    pub network: NetworkConfig,
     pub display_name: String,
     pub capabilities: Capabilities,
     pub command_capacity: usize,
@@ -1502,7 +1424,6 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            network: NetworkConfig::default(),
             display_name: "DeskFuse".to_owned(),
             capabilities: Capabilities::NETWORK,
             command_capacity: 64,
@@ -1513,12 +1434,6 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    #[must_use]
-    pub fn with_network(mut self, network: NetworkConfig) -> Self {
-        self.network = network;
-        self
-    }
-
     #[must_use]
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.display_name = display_name.into();
@@ -1545,7 +1460,6 @@ pub struct RuntimeBuilder {
     input_service: Option<input_service::ServiceOptions>,
     config: RuntimeConfig,
     discovery: Arc<dyn DiscoveryProvider>,
-    public_factory: Option<Arc<dyn PublicDiscoveryFactory>>,
     transport: Arc<dyn TransportProvider>,
     identity_provider: Arc<dyn IdentityProvider>,
     trust_store: Arc<dyn TrustStore>,
@@ -1557,7 +1471,6 @@ impl fmt::Debug for RuntimeBuilder {
         formatter
             .debug_struct("RuntimeBuilder")
             .field("config", &self.config)
-            .field("has_public_factory", &self.public_factory.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -1569,7 +1482,6 @@ impl Default for RuntimeBuilder {
             input_service: None,
             config: RuntimeConfig::default(),
             discovery: Arc::new(MemoryDiscovery::new()),
-            public_factory: None,
             transport: Arc::new(MemoryTransport::new()),
             identity_provider: Arc::new(MemoryIdentityProvider::new()),
             trust_store: Arc::new(MemoryTrustStore::new()),
@@ -1614,15 +1526,6 @@ impl RuntimeBuilder {
         D: deskfuse_discovery::DiscoveryProvider + 'static,
     {
         self.with_discovery(ExternalDiscoveryAdapter::new(provider))
-    }
-
-    #[must_use]
-    pub fn with_public_factory<F>(mut self, factory: F) -> Self
-    where
-        F: PublicDiscoveryFactory + 'static,
-    {
-        self.public_factory = Some(Arc::new(factory));
-        self
     }
 
     #[must_use]
@@ -1683,13 +1586,8 @@ impl RuntimeBuilder {
         let identity = Arc::new(self.identity_provider.load_or_create()?);
         self.transport.configure_identity(identity.clone())?;
         let local_hello = make_local_hello(&identity, &self.config)?;
-        let initial = NetworkSnapshot::new(
-            0,
-            core_device_id(identity.device_id()),
-            Vec::new(),
-            self.config.network.public_network_enabled,
-        )
-        .map_err(|error| RuntimeError::InvalidCommand(error.to_string()))?;
+        let initial = NetworkSnapshot::new(0, core_device_id(identity.device_id()), Vec::new())
+            .map_err(|error| RuntimeError::InvalidCommand(error.to_string()))?;
 
         #[cfg(unix)]
         let service = self
@@ -1721,7 +1619,6 @@ impl RuntimeBuilder {
         let view_tx_for_thread = view_tx.clone();
         let config = self.config.clone();
         let discovery = self.discovery;
-        let public_factory = self.public_factory;
         let transport = self.transport;
         let update_transport = transport.clone();
         let trust_store = self.trust_store;
@@ -1758,7 +1655,6 @@ impl RuntimeBuilder {
                             identity,
                             local_hello,
                             discovery,
-                            public_factory,
                             transport,
                             trust_store,
                             persistence,
@@ -2209,10 +2105,7 @@ struct Actor {
     identity: Arc<LocalIdentity>,
     local_hello: Hello,
     discovery: Arc<dyn DiscoveryProvider>,
-    public_factory: Option<Arc<dyn PublicDiscoveryFactory>>,
-    public_provider: Option<Arc<dyn DiscoveryProvider>>,
     discovery_event_task: Option<tokio::task::JoinHandle<()>>,
-    public_event_task: Option<tokio::task::JoinHandle<()>>,
     transport: Arc<dyn TransportProvider>,
     trust_store: Arc<dyn TrustStore>,
     persistence: Arc<dyn RuntimeStore>,
@@ -2242,7 +2135,6 @@ impl Actor {
         identity: Arc<LocalIdentity>,
         local_hello: Hello,
         discovery: Arc<dyn DiscoveryProvider>,
-        public_factory: Option<Arc<dyn PublicDiscoveryFactory>>,
         transport: Arc<dyn TransportProvider>,
         trust_store: Arc<dyn TrustStore>,
         persistence: Arc<dyn RuntimeStore>,
@@ -2263,15 +2155,12 @@ impl Actor {
             device_network: device_network::DeviceNetworkState::default(),
             network_result_tx,
             network_result_rx,
-            policy: RoutePolicy::new(&config.network),
+            policy: RoutePolicy::new(),
             config,
             identity,
             local_hello,
             discovery,
-            public_factory,
-            public_provider: None,
             discovery_event_task: None,
-            public_event_task: None,
             transport,
             trust_store,
             persistence,
@@ -2305,21 +2194,12 @@ impl Actor {
         self.load_device_network().await;
         self.restore_transport_identities().await;
 
-        // Validate a persisted public-network flag before the first restored
-        // snapshot. A stale flag must never briefly expose a public route
-        // policy when its provider cannot be constructed.
-        if self.config.network.public_network_enabled
-            && let Err(error) = self.enable_public_provider().await
-        {
-            self.rollback_public_network(error).await;
-        }
-
         // Publish the restored state before discovery begins.  This makes
-        // persisted peers and the persisted public-network setting visible to
-        // snapshot subscribers even when discovery has no events to emit.
+        // persisted peers visible to snapshot subscribers even when discovery
+        // has no events to emit.
         self.publish();
 
-        self.attach_provider(self.discovery.clone(), false);
+        self.attach_provider(self.discovery.clone());
         self.refresh_provider(self.discovery.clone()).await;
         self.auto_connect_trusted_peers().await;
 
@@ -2390,15 +2270,6 @@ impl Actor {
         if let Err(error) = self.discovery.shutdown().await {
             self.emit_error(error);
         }
-        if let Some(event_task) = self.public_event_task.take() {
-            event_task.abort();
-            let _ = event_task.await;
-        }
-        if let Some(provider) = self.public_provider.take()
-            && let Err(error) = provider.shutdown().await
-        {
-            self.emit_error(error);
-        }
         if let Err(error) = self.transport.shutdown().await {
             self.emit_error(error);
         }
@@ -2406,21 +2277,16 @@ impl Actor {
 
     async fn load_persistence(&mut self) -> Result<(), RuntimeError> {
         let store = self.persistence.clone();
-        let (records, settings, retired_endpoints) = task::spawn_blocking(move || {
+        let (records, retired_endpoints) = task::spawn_blocking(move || {
             let records = store.list_peers()?;
-            let settings = store.get_settings()?;
             let mut retired_endpoints = BTreeMap::new();
             for record in &records {
                 retired_endpoints.insert(record.id, store.list_manual_endpoints(record.id)?);
             }
-            Ok::<_, RuntimeError>((records, settings, retired_endpoints))
+            Ok::<_, RuntimeError>((records, retired_endpoints))
         })
         .await
         .map_err(|error| RuntimeError::Store(error.to_string()))??;
-        if settings.public_network_enabled {
-            self.config.network.public_network_enabled = true;
-            self.policy = RoutePolicy::new(&self.config.network);
-        }
         for record in records {
             let id = record.id;
             let routes = record
@@ -2562,20 +2428,7 @@ impl Actor {
         Ok(())
     }
 
-    async fn rollback_public_network(&mut self, error: RuntimeError) {
-        self.disable_public_provider().await;
-        self.config.network.public_network_enabled = false;
-        self.policy = RoutePolicy::new(&self.config.network);
-        let store = self.persistence.clone();
-        match task::spawn_blocking(move || store.set_public_network_enabled(false)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(store_error)) => self.emit_error(store_error),
-            Err(join_error) => self.emit_error(RuntimeError::Store(join_error.to_string())),
-        }
-        self.emit_error(error);
-    }
-
-    fn attach_provider(&mut self, provider: Arc<dyn DiscoveryProvider>, is_public: bool) {
+    fn attach_provider(&mut self, provider: Arc<dyn DiscoveryProvider>) {
         let mut events = provider.events();
         let sender = self.provider_tx.clone();
         let task = tokio::spawn(async move {
@@ -2585,11 +2438,7 @@ impl Actor {
                 }
             }
         });
-        if is_public {
-            self.public_event_task = Some(task);
-        } else {
-            self.discovery_event_task = Some(task);
-        }
+        self.discovery_event_task = Some(task);
     }
 
     async fn refresh_provider(&mut self, provider: Arc<dyn DiscoveryProvider>) {
@@ -2671,9 +2520,6 @@ impl Actor {
                     self.reselect(peer_id);
                 }
                 self.refresh_provider(self.discovery.clone()).await;
-                if let Some(provider) = self.public_provider.clone() {
-                    self.refresh_provider(provider).await;
-                }
                 // Only trusted, non-blocked peers may reconnect automatically.
                 // Ordinary mDNS updates keep failed routes suppressed; explicit
                 // scans grant them one new attempt without discarding history.
@@ -2688,25 +2534,6 @@ impl Actor {
             RuntimeCommand::RequestPairing { peer_id } => {
                 self.resume_reconnect(peer_id).await;
                 self.request_network_pairing(peer_id).await
-            }
-            RuntimeCommand::SetRoutePreference {
-                peer_id,
-                preference,
-            } => {
-                let mut preferences = self.device_network.route_preferences.clone();
-                preferences.insert(peer_id, preference);
-                let store = self.persistence.clone();
-                let saved = preferences.clone();
-                match task::spawn_blocking(move || store.set_route_preferences(saved)).await {
-                    Ok(Ok(())) => {
-                        self.device_network.route_preferences = preferences;
-                        self.resume_reconnect(peer_id).await;
-                        self.restart_after_active_route_change(peer_id, true).await;
-                    }
-                    Ok(Err(error)) => self.emit_error(error),
-                    Err(error) => self.emit_error(RuntimeError::Store(error.to_string())),
-                }
-                self.publish();
             }
             RuntimeCommand::Connect { peer_id } => {
                 self.resume_reconnect(peer_id).await;
@@ -2755,9 +2582,6 @@ impl Actor {
             RuntimeCommand::ForgetPeer { peer_id } => {
                 self.network_revoke_member(peer_id).await;
                 self.forget_peer(peer_id).await;
-            }
-            RuntimeCommand::SetPublicNetworkEnabled(enabled) => {
-                self.set_public_network_enabled(enabled).await;
             }
             RuntimeCommand::SendClipboardTracked {
                 peer_id,
@@ -2890,116 +2714,6 @@ impl Actor {
         };
         for message in messages {
             self.deliver_peer_message(peer_id, message);
-        }
-    }
-
-    async fn set_public_network_enabled(&mut self, enabled: bool) {
-        if enabled == self.config.network.public_network_enabled {
-            return;
-        }
-        let store = self.persistence.clone();
-        match task::spawn_blocking(move || store.set_public_network_enabled(enabled)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.emit_error(error);
-                return;
-            }
-            Err(error) => {
-                self.emit_error(RuntimeError::Store(error.to_string()));
-                return;
-            }
-        }
-        self.cancel_all_reconnects().await;
-        self.config.network.public_network_enabled = enabled;
-        self.policy = RoutePolicy::new(&self.config.network);
-        if enabled {
-            // Set the policy before refreshing the public provider.  Its
-            // initial route observations must be eligible immediately; doing
-            // this afterwards could leave a trusted public-only peer in the
-            // Failed state after a refresh sees an intentionally disabled
-            // route.
-            if let Err(error) = self.enable_public_provider().await {
-                self.rollback_public_network(error).await;
-                return;
-            }
-            for peer_id in self.peers.keys().copied().collect::<Vec<_>>() {
-                self.reselect(peer_id);
-            }
-            self.publish();
-            let reconnect = self
-                .peers
-                .values()
-                .filter(|peer| {
-                    peer.trust == TrustState::Trusted
-                        && !self.blocked.contains(&peer.id)
-                        && peer.connection == ConnectionState::Disconnected
-                        && peer.preferred_route.is_some()
-                })
-                .map(|peer| peer.id)
-                .collect::<Vec<_>>();
-            for peer_id in reconnect {
-                self.connect_peer(peer_id).await;
-            }
-        } else {
-            // Disable policy before stopping the provider so any queued public
-            // observation is harmless and cannot become a fallback route.
-            self.disable_public_provider().await;
-            let public_peers = self
-                .peers
-                .values()
-                .filter(|peer| {
-                    peer.connection == ConnectionState::Connected
-                        && peer.active_route.is_some_and(|route_id| {
-                            peer.routes
-                                .get(&route_id)
-                                .is_some_and(|route| route.source.is_public())
-                        })
-                })
-                .map(|peer| peer.id)
-                .collect::<Vec<_>>();
-            for peer_id in public_peers {
-                self.restart_after_active_route_change(peer_id, true).await;
-            }
-            for peer_id in self.peers.keys().copied().collect::<Vec<_>>() {
-                if !self
-                    .peers
-                    .get(&peer_id)
-                    .is_some_and(|peer| peer.connection == ConnectionState::Connecting)
-                {
-                    self.reselect(peer_id);
-                }
-            }
-        }
-        self.publish();
-    }
-
-    async fn enable_public_provider(&mut self) -> Result<(), RuntimeError> {
-        if self.public_provider.is_some() {
-            return Ok(());
-        }
-        let Some(factory) = self.public_factory.as_ref() else {
-            return Err(RuntimeError::Discovery(
-                "public networking has no configured provider".to_owned(),
-            ));
-        };
-        let provider = factory.create()?;
-        self.attach_provider(provider.clone(), true);
-        self.refresh_provider(provider.clone()).await;
-        self.public_provider = Some(provider);
-        Ok(())
-    }
-
-    async fn disable_public_provider(&mut self) {
-        // Drop the consumer first so provider shutdown cannot be blocked by an
-        // event stream that still owns provider resources.
-        if let Some(event_task) = self.public_event_task.take() {
-            event_task.abort();
-            let _ = event_task.await;
-        }
-        if let Some(provider) = self.public_provider.take()
-            && let Err(error) = provider.shutdown().await
-        {
-            self.emit_error(error);
         }
     }
 
@@ -4023,7 +3737,6 @@ impl Actor {
             sequence: self.sequence,
             local_device_id: core_device_id(self.identity.device_id()),
             peers: self.peers.values().map(PeerState::snapshot).collect(),
-            public_network_enabled: self.config.network.public_network_enabled,
         };
         if let Err(error) = snapshot.validate() {
             self.emit_error(RuntimeError::InvalidCommand(error.to_string()));
@@ -4668,16 +4381,11 @@ where
     fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
         self.inner.select_input_route(peer, session);
     }
-    fn ensure_input_link(
-        &self,
-        peer: DeviceId,
-        endpoints: Vec<Endpoint>,
-        preference: deskfuse_core::RoutePreference,
-    ) -> ProviderFuture<()> {
+    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
         let inner = self.inner.clone();
         Box::pin(async move {
             inner
-                .ensure_input_link(peer, endpoints, preference)
+                .ensure_input_link(peer, endpoints)
                 .await
                 .map_err(|e| RuntimeError::Transport(e.to_string()))
         })
@@ -5267,38 +4975,6 @@ impl TransportProvider for MemoryTransport {
     }
 }
 
-/// A simple public provider factory useful for tests that assert the default
-/// off boundary.  It exposes a thread-safe call counter and returns the
-/// supplied provider when enabled.
-#[derive(Clone)]
-pub struct CountingPublicFactory {
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-    provider: Arc<dyn DiscoveryProvider>,
-}
-
-impl CountingPublicFactory {
-    #[must_use]
-    pub fn new(provider: Arc<dyn DiscoveryProvider>) -> Self {
-        Self {
-            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            provider,
-        }
-    }
-
-    #[must_use]
-    pub fn calls(&self) -> usize {
-        self.calls.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-impl PublicDiscoveryFactory for CountingPublicFactory {
-    fn create(&self) -> Result<Arc<dyn DiscoveryProvider>, RuntimeError> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(self.provider.clone())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5605,19 +5281,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn default_public_provider_is_never_constructed() {
-        let public = MemoryDiscovery::new();
-        let factory = CountingPublicFactory::new(Arc::new(public));
-        let handle = RuntimeBuilder::new()
-            .with_public_factory(factory.clone())
-            .build()
-            .expect("runtime");
-        sleep(Duration::from_millis(20)).await;
-        assert_eq!(factory.calls(), 0);
-        handle.shutdown_and_wait().await.expect("shutdown");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn control_adapter_forwards_route_and_closes_replaced_session() {
         let local_identity = LocalIdentity::from_bytes(&[31; 32]).expect("local identity");
         let remote_identity = LocalIdentity::from_bytes(&[32; 32]).expect("remote identity");
@@ -5719,32 +5382,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn persisted_public_network_failure_rolls_back_before_publish() {
-        let store = MemoryRuntimeStore::new();
-        store
-            .set_public_network_enabled(true)
-            .expect("persisted setting");
-        let handle = RuntimeBuilder::new()
-            .with_store(store.clone())
-            .build()
-            .expect("runtime");
-        for _ in 0..100 {
-            if handle.snapshot().sequence > 0 {
-                break;
-            }
-            sleep(Duration::from_millis(5)).await;
-        }
-        assert!(!handle.snapshot().public_network_enabled);
-        assert!(
-            !store
-                .get_settings()
-                .expect("settings")
-                .public_network_enabled
-        );
-        handle.shutdown_and_wait().await.expect("shutdown");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn signed_discovery_registers_before_connect() {
         let discovery = MemoryDiscovery::new();
         let (peer_id, remote) = hello();
@@ -5792,7 +5429,7 @@ mod tests {
         let config = RuntimeConfig::default();
         let identity = Arc::new(MemoryIdentityProvider::new().load_or_create().unwrap());
         let local_hello = make_local_hello(&identity, &config).unwrap();
-        let snapshot = NetworkSnapshot::new(0, identity.device_id(), vec![], false).unwrap();
+        let snapshot = NetworkSnapshot::new(0, identity.device_id(), vec![]).unwrap();
         let (snapshot_tx, _) = watch::channel(snapshot.clone());
         let (view_tx, _) = watch::channel(SnapshotView {
             snapshot,
@@ -5807,7 +5444,6 @@ mod tests {
             identity,
             local_hello,
             Arc::new(MemoryDiscovery::new()),
-            None,
             Arc::new(MemoryTransport::new()),
             Arc::new(MemoryTrustStore::new()),
             Arc::new(MemoryRuntimeStore::new()),
@@ -7239,74 +6875,6 @@ mod tests {
         handle.shutdown_and_wait().await.expect("shutdown");
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn disabling_public_network_never_uses_public_route_as_fallback() {
-        let discovery = MemoryDiscovery::new();
-        let public = MemoryDiscovery::new();
-        let factory = CountingPublicFactory::new(Arc::new(public.clone()));
-        let transport = MemoryTransport::new();
-        let trust_store = MemoryTrustStore::new();
-        let (peer_id, remote) = hello();
-        transport.set_remote_hello(peer_id, remote.clone());
-        trust_store
-            .upsert(TrustRecord::new(
-                identity_device_id(peer_id),
-                Fingerprint::from(peer_id),
-            ))
-            .expect("trust store");
-        let public_route = RouteCandidate::new(
-            Endpoint::new("public-only", 42).expect("endpoint"),
-            RouteSource::PublicDirect,
-            RouteHealth::Healthy,
-            Capabilities::NETWORK,
-        );
-        let public_route_id = public_route.id;
-        public.push(DiscoveryEvent::PeerDiscovered {
-            hello: remote,
-            routes: vec![public_route],
-        });
-        let config = RuntimeConfig {
-            network: NetworkConfig {
-                mdns_enabled: true,
-                public_network_enabled: true,
-            },
-            ..RuntimeConfig::default()
-        };
-        let handle = RuntimeBuilder::new()
-            .config(config)
-            .with_discovery(discovery)
-            .with_public_factory(factory)
-            .with_transport(transport.clone())
-            .with_trust_store(trust_store)
-            .build()
-            .expect("runtime");
-        let snapshot = wait_for_snapshot(&handle, |snapshot| {
-            snapshot.peers.first().is_some_and(|peer| {
-                peer.id == peer_id
-                    && peer.connection == ConnectionState::Connected
-                    && peer.selected_route == Some(public_route_id)
-            })
-        })
-        .await;
-        assert!(snapshot.public_network_enabled);
-        let connects_before = transport.connect_count();
-        handle
-            .send(RuntimeCommand::set_public_network_enabled(false))
-            .await
-            .expect("disable public network");
-        let snapshot = wait_for_snapshot(&handle, |snapshot| {
-            snapshot.peers.first().is_some_and(|peer| {
-                peer.connection == ConnectionState::Disconnected
-                    && peer.liveness == LivenessState::Offline
-                    && peer.selected_route.is_none()
-            })
-        })
-        .await;
-        assert!(!snapshot.public_network_enabled);
-        assert_eq!(transport.connect_count(), connects_before);
-        handle.shutdown_and_wait().await.expect("shutdown");
-    }
-
     // Deleted 2026-09-15: this case expected a failed selected route to fall back
     // to the third candidate, but the refactored route selection now keeps a
     // different selected route. The intended fallback semantics still need a
@@ -7323,25 +6891,6 @@ mod tests {
         handle.shutdown_and_wait().await.expect("shutdown");
         handle.shutdown_and_wait().await.expect("second shutdown");
         assert_eq!(discovery.shutdown_count(), 1);
-
-        let public = MemoryDiscovery::new();
-        let factory = CountingPublicFactory::new(Arc::new(public.clone()));
-        let config = RuntimeConfig {
-            network: NetworkConfig {
-                mdns_enabled: true,
-                public_network_enabled: true,
-            },
-            ..RuntimeConfig::default()
-        };
-        let handle = RuntimeBuilder::new()
-            .config(config)
-            .with_public_factory(factory.clone())
-            .build()
-            .expect("public runtime");
-        sleep(Duration::from_millis(20)).await;
-        assert_eq!(factory.calls(), 1);
-        handle.shutdown_and_wait().await.expect("public shutdown");
-        assert_eq!(public.shutdown_count(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

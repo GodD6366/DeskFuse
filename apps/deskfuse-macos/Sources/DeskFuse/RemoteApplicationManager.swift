@@ -10,6 +10,13 @@ import DeskFuseRemoteApplication
     private(set) var hosts: [UUID: RemoteApplicationSession] = [:]
     private(set) var viewers: [UUID: RemoteApplicationSession] = [:]
     var error: String?
+    /// 远程应用总开关：默认开；关闭后停止对外提供窗口并拦截本机打开入口。
+    var enabled = UserDefaults.standard.object(forKey: "remoteApplication.enabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(enabled, forKey: "remoteApplication.enabled")
+            applyEnabled()
+        }
+    }
     var virtualDisplayEnabled = UserDefaults.standard.object(forKey: "remoteApplication.virtualDisplayEnabled") as? Bool ?? false {
         didSet { UserDefaults.standard.set(virtualDisplayEnabled, forKey: "remoteApplication.virtualDisplayEnabled") }
     }
@@ -28,9 +35,11 @@ import DeskFuseRemoteApplication
     private init() {}
 
     static let viewerRestriction = "当前键鼠共享角色不允许操作远程应用，请在主控电脑操作，或结束被控并关闭键鼠共享。"
+    static let disabledMessage = "远程应用已在设置中停用。前往「设置 → 通用 → 功能」重新开启。"
     var canOperateApplications: Bool { AppStore.shared.snapshot?.input.canOperateRemoteApplications == true }
 
     @discardableResult private func allowViewer() -> Bool {
+        guard enabled else { error = Self.disabledMessage; return false }
         guard canOperateApplications else { error = Self.viewerRestriction; return false }
         return true
     }
@@ -46,6 +55,11 @@ import DeskFuseRemoteApplication
         incoming = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                // 总开关关闭时保持 hosting 关闭，不接入新的对端会话。
+                guard self.enabled else {
+                    do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                    continue
+                }
                 let channel = await Task.detached { () -> RemoteApplicationChannel? in
                     // Entering the authenticated device network enables remote
                     // application hosting automatically. There is no separate
@@ -70,6 +84,18 @@ import DeskFuseRemoteApplication
             }
         }
     }
+
+    /// 总开关实时生效：关闭立即让出既有 hosting 会话并通知引擎停止监听；
+    /// 开启由 hosting 循环的下一轮自动恢复。
+    private func applyEnabled() {
+        guard let engine else { return }
+        if enabled {
+            Task.detached { try? engine.setRemoteApplicationHosting(enabled: true) }
+        } else {
+            stopHosting()
+            Task.detached { try? engine.setRemoteApplicationHosting(enabled: false) }
+        }
+    }
     func stopHosting() {
         let sessions = Array(hosts.values)
         for session in sessions { session.yieldHostControl() }
@@ -77,6 +103,7 @@ import DeskFuseRemoteApplication
         Task { for session in sessions { await session.stop() } }
     }
     func open(_ device: Device) {
+        guard enabled else { error = Self.disabledMessage; return }
         guard device.trusted, device.connected, !device.blocked else { error = "请先连接已配对设备"; return }
         if device.remoteAppRdp {
             openWindowsPicker(peerID: device.id, peerName: device.name,
@@ -91,6 +118,7 @@ import DeskFuseRemoteApplication
         return value.split(separator: ":", maxSplits: 1).first.map(String.init) ?? value
     }
     private func openWindowsPicker(peerID: String, peerName: String, endpoint: String) {
+        guard enabled else { error = Self.disabledMessage; return }
         guard let engine else { error = "远程应用引擎尚未就绪"; return }
         if let picker = rdpPickers[peerID] {
             picker.showWindow(nil); picker.window?.deminiaturize(nil); picker.window?.makeKeyAndOrderFront(nil)
@@ -107,7 +135,7 @@ import DeskFuseRemoteApplication
         picker.showWindow(nil); picker.window?.makeKeyAndOrderFront(nil)
     }
     func makeWindowsCatalog(for device: Device) -> RemoteRdpSession? {
-        guard let engine, device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
+        guard enabled, let engine, device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
         return RemoteRdpSession(engine: engine, peerID: device.id,
             peerHost: windowsHost(device.routes.first(where: \.active)?.endpoint ?? device.endpoint))
     }

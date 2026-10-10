@@ -1,8 +1,6 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
 use super::{file_transfer, remote_app};
-use deskfuse_core::{
-    Capabilities, ConnectionState, NetworkConfig, RequestId, RouteHealth, TrustState,
-};
+use deskfuse_core::{Capabilities, ConnectionState, RequestId, RouteHealth, TrustState};
 use deskfuse_discovery::{DiscoveryHandle, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
 use deskfuse_identity::{TrustStore, WindowsServiceDataDirectory, WindowsServiceIdentityProvider};
 use deskfuse_runtime::{
@@ -67,9 +65,6 @@ impl Network {
                 Capabilities::REMOTE_APPLICATION | Capabilities::REMOTE_APPLICATION_RDP;
         }
         let config = RuntimeConfig {
-            network: NetworkConfig::new()
-                .with_mdns_enabled(true)
-                .with_public_network_enabled(false),
             display_name: "DeskFuse Windows".into(),
             capabilities: control_capabilities,
             ..RuntimeConfig::default()

@@ -20,6 +20,8 @@ final class PreviousInstallationController {
     var importedCount: Int?
     var hasHistory = false
     var appURLs: [URL] = []
+    /// 本次启动呈现过迁移 sheet：属于老用户，不再进入新手引导。
+    private(set) var wasPresented = false
     private var installation: Installation?
     private var source: URL?
     private var sourceCache: URL?
@@ -65,6 +67,7 @@ final class PreviousInstallationController {
         }
         catch { self.error = error.localizedDescription }
         self.completion = completion
+        wasPresented = true
         isPresented = true
     }
 
