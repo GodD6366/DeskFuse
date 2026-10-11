@@ -110,8 +110,10 @@ impl GitHubUpdater {
             return;
         }
         let already_requested = self.view.manual_requested;
+        // A local click is an explicit user priority request. Once the
+        // verified artifact is ready it may preempt transfers and input.
         if !already_requested {
-            self.force_install = false;
+            self.force_install = true;
         }
         self.view.manual_requested = true;
         self.view.error = None;

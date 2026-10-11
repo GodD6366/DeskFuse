@@ -12,27 +12,41 @@ pub(super) struct LayoutPersistence {
 }
 
 impl InputActor {
+    /// Return the Wi-Fi-bound scene after replacing its layout with `settings`.
+    /// A first layout change on a network creates the scene, so the UI does not
+    /// need a separate save action just to establish the binding.
+    fn environment_scene_for(
+        &self,
+        settings: &InputSharingSettings,
+    ) -> Option<Vec<InputSharingScene>> {
+        let ssid = self.snapshot.environment.ssid.clone()?;
+        let mut scenes = self.snapshot.scenes.clone();
+        if let Some(scene) = scenes
+            .iter_mut()
+            .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
+        {
+            if scene.settings.placements == settings.placements
+                && scene.settings.layout_profiles == settings.layout_profiles
+            {
+                return None;
+            }
+            scene.settings.placements = settings.placements.clone();
+            scene.settings.layout_profiles = settings.layout_profiles.clone();
+        } else {
+            let mut scene = InputSharingScene::new(ssid.clone(), settings.clone()).ok()?;
+            scene.ssid = Some(ssid);
+            scenes.push(scene);
+        }
+        Some(scenes)
+    }
+
     /// Keep the scene bound to the current network in step with the layout that
     /// is being persisted, so returning to this Wi-Fi restores this arrangement
     /// without a manual save.
     pub(super) fn refresh_environment_scene(&mut self) -> bool {
-        let Some(ssid) = self.snapshot.environment.ssid.clone() else {
+        let Some(scenes) = self.environment_scene_for(&self.snapshot.settings) else {
             return false;
         };
-        let mut scenes = self.snapshot.scenes.clone();
-        let Some(scene) = scenes
-            .iter_mut()
-            .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
-        else {
-            return false;
-        };
-        if scene.settings.placements == self.snapshot.settings.placements
-            && scene.settings.layout_profiles == self.snapshot.settings.layout_profiles
-        {
-            return false;
-        }
-        scene.settings.placements = self.snapshot.settings.placements.clone();
-        scene.settings.layout_profiles = self.snapshot.settings.layout_profiles.clone();
         self.snapshot.scenes = scenes;
         self.layout_persistence.scene_dirty = true;
         true
@@ -171,20 +185,7 @@ impl InputActor {
         let store = self.store.clone();
         let saved = settings.clone();
         // Keep the scene bound to this network in step with the arrangement.
-        let scenes = self.snapshot.environment.ssid.clone().and_then(|ssid| {
-            let mut scenes = self.snapshot.scenes.clone();
-            let scene = scenes
-                .iter_mut()
-                .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))?;
-            if scene.settings.placements == saved.placements
-                && scene.settings.layout_profiles == saved.layout_profiles
-            {
-                return None;
-            }
-            scene.settings.placements = saved.placements.clone();
-            scene.settings.layout_profiles = saved.layout_profiles.clone();
-            Some(scenes)
-        });
+        let scenes = self.environment_scene_for(&settings);
         let applied_scenes = scenes.clone();
         if matches!(
             tokio::task::spawn_blocking(move || -> std::result::Result<(), RuntimeError> {

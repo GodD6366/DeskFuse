@@ -435,6 +435,60 @@ impl Library {
         tx.execute("DELETE FROM cl_blobs WHERE hash IN (SELECT b.hash FROM cl_blobs b WHERE NOT EXISTS(SELECT 1 FROM cl_items WHERE blob_hash=b.hash) AND NOT EXISTS(SELECT 1 FROM cl_blob_birth WHERE hash=b.hash AND created>?1) LIMIT 8)", [now_ms().saturating_sub(600_000)]).map_err(err)?;
         tx.commit().map_err(err)
     }
+    /// 分批扫描本机文件类历史条目，删除任一源路径已不存在的死引用。
+    /// 游标按 id 推进，扫完一轮后回到表头重新开始；远端索引投影（remote=1）
+    /// 与手动列表归档（ordinary=0）不在清理范围内。
+    pub(super) fn collect_missing_files_step(&self, cursor: u64) -> Result<(u64, bool)> {
+        const BATCH: u64 = 16;
+        let Some(db) = self.background_writer()? else {
+            return Ok((cursor, false));
+        };
+        let rows: Vec<(u64, Option<Vec<u8>>)> = db
+            .prepare(
+                "SELECT id, COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE ordinary=1 AND remote=0 AND json_extract(summary,'$.kind')='files' AND id>?1 ORDER BY id LIMIT ?2",
+            )
+            .map_err(err)?
+            .query_map(params![cursor, BATCH], |r| {
+                Ok((r.get::<_, u64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+            })
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(err)?;
+        if rows.is_empty() {
+            return Ok((0, false));
+        }
+        let next_cursor = rows.last().map(|(id, _)| *id).unwrap_or(cursor);
+        let exhausted = (rows.len() as u64) < BATCH;
+        let mut missing = Vec::new();
+        for (id, bytes) in &rows {
+            let dead = bytes
+                .as_deref()
+                .and_then(|bytes| decode(bytes).ok())
+                .is_some_and(|snapshot| {
+                    !snapshot.file_urls.is_empty()
+                        && snapshot
+                            .file_urls
+                            .iter()
+                            .any(|path| !std::path::Path::new(path).exists())
+                });
+            if dead {
+                missing.push(*id);
+            }
+        }
+        if !missing.is_empty() {
+            db.execute(
+                &format!(
+                    "DELETE FROM cl_items WHERE id IN ({})",
+                    missing.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+                ),
+                params_from_iter(missing.iter()),
+            )
+            .map_err(err)?;
+            self.changed();
+        }
+        // 不足一批说明已扫到表尾，下一轮从表头重新开始。
+        Ok((if exhausted { 0 } else { next_cursor }, !exhausted))
+    }
 }
 
 pub(super) fn ready(value: bool) -> AtomicBool {

@@ -1,5 +1,32 @@
 import AppKit
 
+/// ICNS supplies the light default; the running Dock tile follows system appearance.
+@MainActor final class DockIconAppearanceController {
+    static let shared = DockIconAppearanceController()
+    private var observation: NSKeyValueObservation?
+
+    func start() {
+        guard observation == nil else { return }
+        updateIcon()
+        observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.updateIcon() }
+        }
+    }
+
+    private func updateIcon() {
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let name = dark ? "DeskFuse-icon-1024" : "DeskFuse-icon-light-1024"
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return }
+        if #available(macOS 14.2, *) {
+            RemoteApplicationDockController.shared.updateDeskFuseIcon(image)
+        } else {
+            NSApp.applicationIconImage = image
+            NSApp.dockTile.display()
+        }
+    }
+}
+
 /// Presents the active remote application through DeskFuse's Dock tile.
 ///
 /// macOS owns one Dock tile per application process. Remote windows all live
@@ -24,6 +51,16 @@ import AppKit
     private override init() { super.init() }
 
     var hasActiveApplication: Bool { !entries.isEmpty }
+
+    func updateDeskFuseIcon(_ image: NSImage) {
+        if entries.isEmpty {
+            NSApp.applicationIconImage = image
+            NSApp.dockTile.display()
+        } else {
+            originalIcon = image
+            refreshDockTile()
+        }
+    }
 
     func present(id: UUID, title: String, iconPNG: Data?) {
         if entries.isEmpty {

@@ -23,7 +23,7 @@ struct UpdateControls: View {
     let update: UpdateState
 
     private var actionTitle: String {
-        if update.manualRequested { return update.ready ? "正在准备安装…" : "正在下载安装…" }
+        if update.manualRequested { return update.ready ? "正在立即安装…" : "正在下载安装…" }
         if update.ready { return "立即安装并重启" }
         if update.downloading { return "下载完成后立即安装" }
         return "立即下载安装"
@@ -45,9 +45,6 @@ struct UpdateControls: View {
                 ProgressView(value: Double(update.receivedBytes), total: Double(update.totalBytes))
                 Text("\(byteCount(update.receivedBytes)) / \(byteCount(update.totalBytes))")
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            }
-            if let error = update.error {
-                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if UpdateInstallationChannel.isManual {
                 Text("下载新版安装包后手动安装。此版本不会自动检查、下载或安装更新。")
@@ -86,7 +83,7 @@ struct UpdateControls: View {
                         checkButton
                     }
                 }
-                Text("从可信局域网设备为这台 Mac 获取已签名新版。主动安装会结束键鼠共享并重启 DeskFuse；正在传输、粘贴或导出的文件会等待完成。点击“立即安装”可跳过等待。")
+                Text("从可信局域网设备为这台 Mac 获取已签名新版。立即安装会停止当前传输、粘贴和键鼠共享并重启 DeskFuse。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -99,13 +96,18 @@ struct UpdateControls: View {
     }
 
     private var immediateInstallButton: some View {
-        Button("立即安装") { store.send(.downloadAndInstallUpdate) }
+        Button("立即安装（停止任务）") { store.send(.downloadAndInstallUpdate) }
             .buttonStyle(.borderedProminent)
             .disabled(!canInstallImmediately)
     }
 
     private var checkButton: some View {
-        Button(update.checking ? "正在检查…" : "检查更新") { store.send(.checkUpdates) }
-            .disabled(!update.available || update.checking || update.ready || update.manualRequested)
+        Button { store.checkForUpdates() } label: {
+            HStack(spacing: 6) {
+                if store.isCheckingForUpdates { ProgressView().controlSize(.small) }
+                Text(store.isCheckingForUpdates ? "正在检查…" : "检查更新")
+            }
+        }
+        .disabled(store.isCheckingForUpdates || update.ready || update.manualRequested)
     }
 }

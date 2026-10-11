@@ -62,7 +62,7 @@ struct ClipboardHistoryPane: View {
             .padding(.horizontal, 20).padding(.vertical, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(.clear)
         .onChange(of: searchRequest) { _, _ in historyFocused = false; searchFocused = true }
         .onAppear { if let selected { selection = [selected] } }
         .onChange(of: selected) { _, id in
@@ -90,48 +90,57 @@ struct ClipboardHistoryPane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            searchField
-            HStack(spacing: 10) {
-                Menu {
-                    Picker("来源设备", selection: $source) {
-                        Text("所有设备").tag(String?.none)
-                        ForEach(sources) { Text($0.name).tag(Optional($0.id)) }
+        NativeGlassGroup {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("历史记录").font(.system(size: 19, weight: .semibold))
+                    Spacer(minLength: 8)
+                    Menu {
+                        Button("全选已加载") { setSelection(Set(items.map(\.id))) }
+                            .disabled(items.isEmpty)
+                        Button("删除所选（\(selection.count) 条）", role: .destructive) { requestDelete(selection) }
+                            .disabled(selection.isEmpty)
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 28, height: 28)
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(sources.first(where: { $0.id == source })?.name ?? source ?? "所有设备").lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                    .modifier(NativeGlassBackdrop(cornerRadius: 14))
+                    .accessibilityLabel("历史记录操作")
+                }
+                searchField
+                HStack(spacing: 10) {
+                    Menu {
+                        Picker("来源设备", selection: $source) {
+                            Text("所有设备").tag(String?.none)
+                            ForEach(sources) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                    } label: {
+                        Label(sources.first(where: { $0.id == source })?.name ?? source ?? "所有设备",
+                              systemImage: "laptopcomputer")
+                            .font(.system(size: 12)).lineLimit(1)
                     }
-                    .font(.callout)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("来源设备")
+                    .help("按来源设备筛选历史")
+                    Spacer(minLength: 8)
+                    if let total {
+                        Text("\(total) 条").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+                            .accessibilityLabel("共 \(total) 条历史")
+                    }
+                    ClipboardDisplayModePicker(mode: $displayMode)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel("来源设备")
-                .help("按来源设备筛选历史")
-                Spacer(minLength: 8)
-                if let total {
-                    Text("\(total) 条").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        .accessibilityLabel("共 \(total) 条历史")
+                if selection.count > 1 {
+                    HStack {
+                        Text("已选 \(selection.count) 条").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("删除所选", role: .destructive) { requestDelete(selection) }
+                            .buttonStyle(.borderless)
+                    }.font(.caption)
                 }
-                ClipboardDisplayModePicker(mode: $displayMode)
             }
-            HStack(spacing: 8) {
-                Text("已选 \(selection.count) 条").font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button("全选已加载") { setSelection(Set(items.map(\.id))) }
-                    .buttonStyle(.borderless).disabled(items.isEmpty)
-                    .help("选择当前已加载的 \(items.count) 条内容（⌘A），不包含尚未加载的分页")
-                Button("删除所选", role: .destructive) { requestDelete(selection) }
-                    .buttonStyle(.borderless).disabled(selection.isEmpty)
-            }
-            .font(.caption)
-            .lineLimit(1)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 8)
     }
 
     private func listContent(proxy: ScrollViewProxy) -> some View {
@@ -156,7 +165,7 @@ struct ClipboardHistoryPane: View {
                                         onDelete: { deleteFromContext(item.id) })
                         .clipboardSelectionFrame(item.id)
                         .padding(.horizontal, 10)
-                        .background(selection.contains(item.id) ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                        .background(selection.contains(item.id) ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
                         .overlay {
                             RoundedRectangle(cornerRadius: 10)
                                 .strokeBorder(item.id == selected && historyFocused ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
@@ -398,7 +407,7 @@ struct ClipboardHistoryPane: View {
         .font(.system(size: 13))
         .padding(.horizontal, 12)
         .frame(height: 40)
-        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .modifier(NativeGlassBackdrop(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(searchFocused ? Color.accentColor : .clear, lineWidth: 2)
@@ -441,16 +450,12 @@ private struct ClipboardHistoryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Region 1: the app that produced the copy.
-            appIcon
-                .frame(width: 30, height: 30)
-            // Region 2: the content itself. Text, files and images are all
-            // centered between the source icon and the timestamp.
-            content
+            ClipboardRecordLabel(item: item, title: title, appID: appID,
+                                 thumbnail: thumbnail, meta: meta)
             VStack(alignment: .trailing, spacing: 4) {
                 if let date = item.copiedDate {
                     Text(Self.timeFormatter.string(from: date))
-                        .font(.system(size: 12)).monospacedDigit().foregroundStyle(.secondary)
+                        .font(.system(size: 10)).monospacedDigit().foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 4) {
                     if ocrHit {
@@ -487,54 +492,6 @@ private struct ClipboardHistoryRow: View {
             thumbnail = image
         }
         .onDisappear { thumbnail = nil }
-    }
-
-    @ViewBuilder private var appIcon: some View {
-        if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
-            Image(nsImage: icon).resizable().scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .accessibilityHidden(true)
-        } else {
-            Image(systemName: item.clipboardSymbol)
-                .font(.system(size: 22, weight: .regular))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder private var content: some View {
-        if item.hasImage {
-            VStack(spacing: 4) {
-                Group {
-                    if let image = thumbnail {
-                        Image(nsImage: image).resizable().scaledToFit()
-                    } else {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
-                            .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
-                    }
-                }
-                    .frame(width: 76, height: 76)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                    titleLabel
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-        } else {
-            titleLabel
-        }
-    }
-
-    private var titleLabel: some View {
-        ClipboardTitleLabel(
-            title: title,
-            fallback: item.clipboardTitle,
-            editing: $editingTitle,
-            editsOnDoubleClick: false,
-            font: .system(size: 14, weight: .semibold)
-        )
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {

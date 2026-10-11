@@ -19,6 +19,7 @@ root = pathlib.Path(sys.argv[1])
 hasher = hashlib.sha256()
 for relative in (
     "resources/DeskFuse-icon.svg",
+    "resources/DeskFuse-icon-light.svg",
     "resources/deskfuse-status-icon.svg",
     "resources/dmg-background.svg",
     "scripts/export-center-icon.py",
@@ -35,6 +36,7 @@ if [[ "${DESKFUSE_FORCE_ASSETS:-0}" != 1 \
   && "$(cat "$ASSET_FINGERPRINT_FILE")" == "$ASSET_FINGERPRINT" \
   && -s "$GENERATED_DIR/DeskFuse.icns" \
   && -s "$GENERATED_DIR/DeskFuse-icon-1024.png" \
+  && -s "$GENERATED_DIR/DeskFuse-icon-light-1024.png" \
   && -s "$GENERATED_DIR/deskfuse-status-icon.png" \
   && -s "$GENERATED_DIR/dmg-background.png" \
   && -s "$RESOURCE_DIR/macos_center_icon.svg" ]]; then
@@ -52,15 +54,16 @@ mkdir -p "$ICONSET_DIR"
 
 python3 "$ROOT_DIR/scripts/export-center-icon.py"
 sips -s format png "$RESOURCE_DIR/DeskFuse-icon.svg" --out "$GENERATED_DIR/DeskFuse-icon-1024.png" >/dev/null
+sips -s format png "$RESOURCE_DIR/DeskFuse-icon-light.svg" --out "$GENERATED_DIR/DeskFuse-icon-light-1024.png" >/dev/null
 # Render the dedicated monochrome template at native 2x (36px for 18pt).
 # Never derive the menu bar glyph from the colored application artwork.
 sips -s format png "$RESOURCE_DIR/deskfuse-status-icon.svg" --out "$GENERATED_DIR/deskfuse-status-icon.png" >/dev/null
 sips -s format png "$RESOURCE_DIR/dmg-background.svg" --out "$GENERATED_DIR/dmg-background.png" >/dev/null
 
 for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$GENERATED_DIR/DeskFuse-icon-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+  sips -z "$size" "$size" "$GENERATED_DIR/DeskFuse-icon-light-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
   double_size=$((size * 2))
-  sips -z "$double_size" "$double_size" "$GENERATED_DIR/DeskFuse-icon-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+  sips -z "$double_size" "$double_size" "$GENERATED_DIR/DeskFuse-icon-light-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
 done
 
 # Keep PNG alpha intact even for 16/32 pt representations.

@@ -560,3 +560,183 @@ fn background_publication_intent_failure_rolls_back_metadata() {
         .unwrap();
     assert!(title.is_none());
 }
+
+#[test]
+fn set_item_text_rewrites_content_in_place() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, "原始文本内容");
+    finish_metadata(&library);
+    library
+        .mutate(
+            &json!({"op":"set_item_title","id":id,"title":"保留标题","compact":true}).to_string(),
+        )
+        .unwrap();
+    let before = library.generation();
+    library
+        .mutate(
+            &json!({"op":"set_item_text","id":id,"text":"编辑后的文本","compact":true}).to_string(),
+        )
+        .unwrap();
+    assert!(library.generation() > before);
+    // 内容原地替换：同一 id 读出新文本，粘贴表示不再携带旧文本。
+    let snapshot = library.snapshot(id).unwrap();
+    assert_eq!(snapshot.text.as_deref(), Some("编辑后的文本"));
+    let types: Vec<&str> = snapshot
+        .items
+        .iter()
+        .flat_map(|item| item.representations.iter().map(|r| r.type_name.as_str()))
+        .collect();
+    assert_eq!(types, ["public.utf8-plain-text"]);
+    // 列表行 preview 更新，标题等其它字段保持。
+    let items = page(&library, "")["items"].as_array().unwrap().clone();
+    let row = items
+        .iter()
+        .find(|row| row["id"].as_u64() == Some(id))
+        .unwrap();
+    assert_eq!(row["preview"], "编辑后的文本");
+    assert_eq!(row["title"], "保留标题");
+    // 搜索命中新文本，不再命中旧文本。
+    assert_eq!(page(&library, "编辑后")["items"][0]["id"], id);
+    assert!(
+        page(&library, "原始文本")["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // digest 已更新：再次复制原文本会作为新条目入库，而不是合并进已编辑条目。
+    let recopied = text(&library, "原始文本内容");
+    assert_ne!(recopied, id);
+}
+
+#[test]
+fn set_item_text_keeps_rtf_representation() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, "plain before rich edit");
+    let rtf: Vec<u8> = b"{\\rtf1\\b rich}".to_vec();
+    library
+        .mutate(
+            &json!({"op":"set_item_text","id":id,"text":"rich edit","rtf":rtf,"compact":true})
+                .to_string(),
+        )
+        .unwrap();
+    let snapshot = library.snapshot(id).unwrap();
+    assert_eq!(snapshot.text.as_deref(), Some("rich edit"));
+    let rtf_representation = snapshot
+        .items
+        .iter()
+        .flat_map(|item| &item.representations)
+        .find(|r| r.type_name == "public.rtf")
+        .unwrap();
+    assert_eq!(rtf_representation.data, rtf);
+}
+
+#[test]
+fn set_item_text_updates_archived_copy_in_manual_list() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library.mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#).unwrap();
+    let id = text(&library, "归档前的文本");
+    library.membership("group", id, true).unwrap();
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let archived = manual["items"][0]["id"].as_u64().unwrap();
+    assert_ne!(archived, id);
+    library
+        .mutate(
+            &json!({"op":"set_item_text","id":archived,"text":"归档后的文本","compact":true})
+                .to_string(),
+        )
+        .unwrap();
+    assert_eq!(
+        library.snapshot(archived).unwrap().text.as_deref(),
+        Some("归档后的文本")
+    );
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manual["items"][0]["preview"], "归档后的文本");
+}
+
+#[test]
+fn set_item_text_rejects_blank_unsupported_and_remote_rows() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    let id = text(&library, "keep me");
+    assert!(
+        library
+            .mutate(&json!({"op":"set_item_text","id":id,"text":"   ","compact":true}).to_string())
+            .is_err()
+    );
+    let image = library
+        .ingest(
+            &PasteboardSnapshot {
+                png: Some(vec![137, 80, 78, 71]),
+                ..Default::default()
+            },
+            "local",
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        library
+            .mutate(
+                &json!({"op":"set_item_text","id":image,"text":"new","compact":true}).to_string()
+            )
+            .is_err()
+    );
+    // 远端索引行：编辑会被下一次 reconcile 覆盖，直接拒绝。
+    library
+        .merge_operations(vec![json!({
+            "op_id": "op-remote-text",
+            "key": "index:remote-text-row",
+            "revision": 1,
+            "author": "peer-device",
+            "clock": {"peer-device": 1},
+            "deleted": false,
+            "value": {
+                "id": "remote-text-row",
+                "digest": "text:remote-text-row",
+                "summary": {
+                    "id": 0, "copied_at_ms": now_ms(), "mime": "text/plain",
+                    "length": 11, "preview": "remote text", "source": "远端 peer-device",
+                    "has_image": false, "file_count": 0, "source_device_id": "peer-device",
+                    "source_app_id": null, "source_app_name": null, "kind": "text"
+                },
+                "title": null,
+                "ocr_text": null,
+                "search_text": "remote text",
+                "blob_hash": "d".repeat(64),
+            },
+        })])
+        .unwrap();
+    let remote_id: u64 = library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT id FROM cl_items WHERE global_id='remote-text-row'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        library
+            .mutate(
+                &json!({"op":"set_item_text","id":remote_id,"text":"new","compact":true})
+                    .to_string()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        library.snapshot(id).unwrap().text.as_deref(),
+        Some("keep me")
+    );
+}

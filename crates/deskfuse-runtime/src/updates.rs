@@ -393,12 +393,15 @@ fn request_download_and_install(
         return UPDATE_COMMAND_BUSY;
     }
     let already_requested = state.view.manual_requested;
+    // Local installation is explicitly highest priority. Preserve the
+    // remote coalescing behaviour, but let a local request preempt work as
+    // soon as a verified artifact is ready.
     if !already_requested {
-        state.force_install = false;
+        state.force_install = !remote;
     }
     state.view.manual_requested = true;
     state.view.error = None;
-    if state.ready.is_some() {
+    if state.ready.is_some() || state.github_ready.is_some() {
         if already_requested {
             state.force_install = true;
             state.view.message = if remote {

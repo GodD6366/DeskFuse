@@ -115,7 +115,7 @@ struct SidebarNavRow: View {
             Image(systemName: symbol)
                 .font(.system(size: 17, weight: .medium))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                 .frame(width: 24, alignment: .center)
             Text(title)
                 .font(.system(size: 16, weight: selected ? .semibold : .regular))
@@ -129,7 +129,7 @@ struct SidebarNavRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.accentColor.opacity(0.14) : .clear,
+        .background(selected ? Color(red: 0.89, green: 0.93, blue: 1.0) : .clear,
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .background(NativeListSelection())
         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))

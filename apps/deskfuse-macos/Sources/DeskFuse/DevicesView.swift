@@ -123,7 +123,8 @@ struct DevicesView: View {
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .modifier(NativeGlassBackdrop(cornerRadius: 10))
                     .controlSize(.large)
                     .help("手动输入 IPv4 地址")
                     .accessibilityLabel("手动输入 IPv4 地址")
@@ -135,7 +136,8 @@ struct DevicesView: View {
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .modifier(NativeGlassBackdrop(cornerRadius: 10))
                     .controlSize(.large)
                     .help("刷新设备")
                     .accessibilityLabel("刷新设备")
@@ -150,7 +152,8 @@ struct DevicesView: View {
                                 .font(.system(size: 15, weight: .medium))
                                 .frame(width: 34, height: 34)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.plain)
+                        .modifier(NativeGlassBackdrop(cornerRadius: 10))
                         .controlSize(.large)
                         .disabled(batchUpdateCandidates.isEmpty)
                         .help("批量触发 \(batchUpdateCandidates.count) 台设备更新")
@@ -185,7 +188,7 @@ struct DevicesView: View {
                 .font(.system(size: 13))
                 .padding(.horizontal, 12)
                 .frame(height: 38)
-                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.38), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .modifier(NativeGlassBackdrop(cornerRadius: 10))
                 .overlay {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(searchFocused ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 2)
@@ -243,7 +246,7 @@ struct DevicesView: View {
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 52)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(.clear)
     }
 
     @ViewBuilder
@@ -374,7 +377,7 @@ struct DevicesView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(pairByIP)
                 Button("配对", action: pairByIP)
-                    .buttonStyle(.borderedProminent)
+                    .modifier(NativeGlassAction())
                     .disabled(ip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -532,7 +535,7 @@ struct DevicesView: View {
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(.clear)
     }
 
     private func remoteDetail(_ device: Device) -> some View {
@@ -618,7 +621,7 @@ struct DevicesView: View {
                     .frame(width: 34, height: 34)
             }
             .menuStyle(.borderlessButton)
-            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .modifier(NativeGlassBackdrop(cornerRadius: 10))
             .accessibilityLabel("设备操作")
         }
     }
@@ -703,7 +706,7 @@ struct DevicesView: View {
                     Button("邀请配对", systemImage: "person.badge.plus") {
                         store.send(.pair(peerId: device.id))
                     }
-                    .buttonStyle(.borderedProminent)
+                    .modifier(NativeGlassAction())
                 } else {
                     Button(device.connected ? "断开连接" : "重新连接", systemImage: device.connected ? "pin.slash" : "arrow.clockwise") {
                         store.send(device.connected ? .disconnect(peerId: device.id) : .connect(peerId: device.id))
@@ -792,11 +795,7 @@ struct DevicesView: View {
 private struct DeviceDetailsSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.52), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45))
-            }
+            .modifier(NativeGlassCardSurface(cornerRadius: 14))
     }
 }
 

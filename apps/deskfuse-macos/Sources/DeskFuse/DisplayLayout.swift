@@ -12,6 +12,8 @@ struct DisplayLayout: View {
     var onReconnectDevice: ((String) -> Void)? = nil
     var reconnecting: Set<String> = []
     var editingDisabled = false
+    var layoutTipVisible = false
+    var onLayoutInteraction: (() -> Void)? = nil
     @State private var dragging: String?
     @State private var delta: CGSize = .zero
     @State private var dragDisplays: [Display] = []
@@ -32,7 +34,7 @@ struct DisplayLayout: View {
             let scale = viewport.scale
 
             ZStack(alignment: .topLeading) {
-                Color(nsColor: .controlBackgroundColor)
+                Rectangle().fill(.regularMaterial)
                 Canvas { context, size in
                     var dots = Path()
                     for x in stride(from: 16.0, to: size.width, by: 24.0) {
@@ -55,11 +57,23 @@ struct DisplayLayout: View {
                     let outline = DisplayPalette.color(for: display.deviceId, displays: displays)
                     let reconnecting = isReconnecting(display.deviceId)
                     let canReconnect = showsReconnect(for: display)
+                    let offline = isOffline(display)
                     let position = viewport.position(of: display, translation: dragging == display.deviceId ? delta : .zero)
-                    ZStack {
+                    ZStack(alignment: .bottomLeading) {
                         DisplayWallpaperView(display: display, localWallpaper: store.localDisplayWallpapers[display.id],
-                            outline: outline, size: CGSize(
+                            outline: outline, isOffline: offline, size: CGSize(
                                 width: display.width * scale, height: display.height * scale))
+                        if offline {
+                            Color.black.opacity(contrast == .increased ? 0.34 : 0.24)
+                                .allowsHitTesting(false)
+                            Label(display.ready ? "已断开" : "等待连接", systemImage: "wifi.slash")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(.black.opacity(0.48), in: Capsule())
+                                .padding(8)
+                                .allowsHitTesting(false)
+                        }
                         RoundedRectangle(cornerRadius: 2)
                             .fill(outline.opacity(dragging == display.deviceId ? 0.09 : (display.ready ? 0.025 : 0.06)))
                             .overlay {
@@ -69,6 +83,9 @@ struct DisplayLayout: View {
                                         dash: display.ready ? [] : [6, 4]
                                     ))
                             }
+                            // The interaction surface must fill the tile even
+                            // when no wallpaper image has arrived.
+                            .frame(width: display.width * scale, height: display.height * scale)
                             .contentShape(Rectangle())
                             .gesture(Self.moveGesture
                                 .onChanged { value in
@@ -77,11 +94,14 @@ struct DisplayLayout: View {
                                         dragDisplays = displays
                                         dragViewport = viewport
                                         dragging = display.deviceId
+                                        onLayoutInteraction?()
+                                        NSCursor.closedHand.set()
                                     }
                                     guard dragging == display.deviceId else { return }
                                     updateDrag(value.translation, device: display.deviceId, attach: false)
                                 }
                                 .onEnded { value in
+                                    NSCursor.openHand.set()
                                     guard dragging == display.deviceId, pendingMove == nil else { return }
                                     guard !editingDisabled,
                                           updateDrag(value.translation, device: display.deviceId, attach: true),
@@ -97,6 +117,16 @@ struct DisplayLayout: View {
                                         })
                                     confirmMove(using: snapshot.input.displays)
                                 })
+                        DisplayInfoBar(
+                            name: displayDeviceName(display),
+                            resolution: display.layoutSizeLabel,
+                            symbol: displayDeviceSymbol(display),
+                            status: displayStatus(display),
+                            expanded: hoveredDisplay == display.layoutID,
+                            compact: display.width * scale < 180 || display.height * scale < 96
+                        )
+                        .padding(7)
+                        .allowsHitTesting(false)
                         if hoveredDisplay == display.layoutID && dragging == nil {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("屏幕 \(String(format: "%02d", index + 1)) · \(display.local ? "本机" : "远端")")
@@ -126,10 +156,18 @@ struct DisplayLayout: View {
                     }
                     .frame(width: display.width * scale, height: display.height * scale)
                     .clipShape(RoundedRectangle(cornerRadius: 2))
-                    .offset(x: position.x, y: position.y)
+                    .contentShape(Rectangle())
+                    .scaleEffect(hoveredDisplay == display.layoutID && dragging == nil ? 1.01 : 1)
+                    .shadow(color: .black.opacity(hoveredDisplay == display.layoutID ? 0.18 : 0.08),
+                            radius: hoveredDisplay == display.layoutID ? 8 : 3, y: 2)
                     .onHover { inside in
-                        if inside { hoveredDisplay = display.layoutID }
-                        else if hoveredDisplay == display.layoutID { hoveredDisplay = nil }
+                        if inside {
+                            hoveredDisplay = display.layoutID
+                            (dragging == nil ? NSCursor.openHand : NSCursor.closedHand).set()
+                        } else {
+                            if hoveredDisplay == display.layoutID { hoveredDisplay = nil }
+                            NSCursor.arrow.set()
+                        }
                     }
                     .contextMenu {
                         if !display.local {
@@ -149,6 +187,7 @@ struct DisplayLayout: View {
                     .accessibilityElement(children: canReconnect ? .contain : .ignore)
                     .accessibilityLabel("屏幕 \(index + 1)，\(display.name)，\(display.layoutSizeLabel)，\(display.ready ? "已就绪" : "未就绪")")
                     .accessibilityHint(canReconnect ? "未正式连接。可重新连接并通知对端准备键鼠共享。" : "")
+                    .offset(x: position.x, y: position.y)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -161,6 +200,31 @@ struct DisplayLayout: View {
                     Label(pendingMove != nil ? "正在保存布局…" : snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
                         .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                         .allowsHitTesting(false)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if layoutTipVisible && dragging == nil {
+                    HStack(spacing: 7) {
+                        Image(systemName: "hand.draw")
+                            .foregroundStyle(.blue)
+                        Text("拖动屏幕调整位置，松手自动吸附")
+                            .font(.caption)
+                        Button {
+                            onLayoutInteraction?()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(.plain)
+                        .help("关闭提示")
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .foregroundStyle(.primary)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay { Capsule().strokeBorder(.separator.opacity(0.45)) }
+                    .padding(.bottom, 14)
+                    .allowsHitTesting(true)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -201,6 +265,34 @@ struct DisplayLayout: View {
             || snapshot.devices.contains { $0.id == id && $0.detail.contains("正在连接") }
     }
 
+    private func deviceName(for display: Display) -> String {
+        if display.local { return snapshot.localName }
+        return snapshot.devices.first(where: { $0.id == display.deviceId })?.name
+            ?? "设备 \(display.deviceId.prefix(8))"
+    }
+
+    private func isOffline(_ display: Display) -> Bool {
+        guard !display.local else { return !display.ready }
+        let connected = snapshot.devices.first(where: { $0.id == display.deviceId })?.connected == true
+        return !connected || !display.ready
+    }
+
+    private func displayDeviceName(_ display: Display) -> String {
+        deviceName(for: display)
+    }
+
+    private func displayDeviceSymbol(_ display: Display) -> String {
+        DeviceProductIconResolver.fallbackSymbol(for: deviceName(for: display))
+    }
+
+    private func displayStatus(_ display: Display) -> DisplayStatus {
+        if display.local {
+            return display.ready ? .local : .offline
+        }
+        let connected = snapshot.devices.first(where: { $0.id == display.deviceId })?.connected == true
+        return connected && display.ready ? .connected : .offline
+    }
+
     private func screenHelp(_ display: Display, reconnecting: Bool) -> String {
         let status: String
         if display.ready {
@@ -237,6 +329,62 @@ extension Display {
     var layoutID: String { deviceId + ":" + id }
     // The topology contains logical desktop bounds, not physical panel inches.
     var layoutSizeLabel: String { "\(Int(width)) × \(Int(height)) pt" }
+}
+
+private enum DisplayStatus {
+    case local, connected, offline
+
+    var color: Color {
+        switch self {
+        case .local: .blue
+        case .connected: .green
+        case .offline: .gray
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .local: "本机"
+        case .connected: "已连接"
+        case .offline: "已断开"
+        }
+    }
+}
+
+private struct DisplayInfoBar: View {
+    let name: String
+    let resolution: String
+    let symbol: String
+    let status: DisplayStatus
+    let expanded: Bool
+    let compact: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+            Circle()
+                .fill(status.color)
+                .frame(width: 6, height: 6)
+            if !compact || expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(name).lineLimit(1)
+                    Text(resolution).font(.system(size: 9)).opacity(0.78).lineLimit(1)
+                }
+            } else {
+                Text(name).lineLimit(1)
+            }
+            if expanded && !compact {
+                Text(status.label).opacity(0.84).lineLimit(1)
+            }
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.black.opacity(0.58), in: Capsule())
+        .overlay { Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5) }
+        .animation(.easeOut(duration: 0.15), value: expanded)
+    }
 }
 
 private struct DisplayReconnectButton: View {
@@ -328,6 +476,7 @@ private struct DisplayWallpaperView: View {
     let display: Display
     let localWallpaper: NSImage?
     let outline: Color
+    let isOffline: Bool
     let size: CGSize
     @State private var remoteWallpaper: NSImage?
 
@@ -348,6 +497,7 @@ private struct DisplayWallpaperView: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 2))
+        .saturation(isOffline ? 0 : 1)
         .allowsHitTesting(false)
         .task(id: display.wallpaperJpeg?.hashValue) {
             remoteWallpaper = display.wallpaperJpeg.flatMap(NSImage.init(data:))

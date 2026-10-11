@@ -79,11 +79,7 @@ struct DeviceRoutesPanel: View {
                         if route.id != routes.last?.id { Divider().padding(.horizontal, 14) }
                     }
                 }
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.52), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45))
-                }
+                .modifier(NativeGlassCardSurface(cornerRadius: 12))
                 if routes.count == 1 {
                     Text("目前仅发现这一条候选地址，不代表设备只有一个网络接口。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -94,10 +90,6 @@ struct DeviceRoutesPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.28), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35))
-        }
+        .modifier(NativeGlassCardSurface(cornerRadius: 14))
     }
 }

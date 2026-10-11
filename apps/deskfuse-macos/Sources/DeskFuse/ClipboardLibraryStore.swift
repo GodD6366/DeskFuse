@@ -214,7 +214,21 @@ struct ClipboardLibraryState: Codable {
         for name in Set(legacyNames).sorted() where !names.contains(name) {
             result.append(ClipboardLibraryChoice(id: name, name: name.isEmpty ? "未知来源" : name))
         }
-        return result.map { ClipboardLibraryChoice(id: $0.id, name: displaySource($0.name, id: $0.id, snapshot: snapshot)) }
+        // Historical rows can carry several identities for the same machine
+        // (for example an old "本机" label and the current device ID). Map
+        // first, then deduplicate the labels so the picker never shows three
+        // visually identical "这台 Mac" entries. Keep the first raw ID as the
+        // filter value so existing source filtering remains compatible.
+        var seen = Set<String>()
+        return result
+            .map { ClipboardLibraryChoice(id: $0.id, name: displaySource($0.name, id: $0.id, snapshot: snapshot)) }
+            .filter { choice in
+                let key = choice.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                return seen.insert(key).inserted
+            }
+            .sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
     }
 
     func query(listID: String?, search: String, source: String?, offset: Int = 0, cursor: ClipboardLibraryCursor? = nil) async throws -> ClipboardLibraryPage {
@@ -250,6 +264,13 @@ struct ClipboardLibraryState: Codable {
             case "set_item_title":
                 if let id = request["id"] as? UInt64, let index = result.firstIndex(where: { $0.id == id }) {
                     result[index].title = request["title"] as? String
+                }
+            case "set_item_text":
+                // 引擎确认前先在页面上呈现编辑后的预览与长度。
+                if let id = request["id"] as? UInt64, let text = request["text"] as? String,
+                   let index = result.firstIndex(where: { $0.id == id }) {
+                    result[index].preview = String(text.prefix(160))
+                    result[index].length = UInt64(text.utf8.count)
                 }
             case "membership":
                 if let id = request["history_id"] as? UInt64, let list = request["list_id"] as? String,
@@ -507,6 +528,13 @@ struct ClipboardLibraryState: Codable {
     /// Empty titles clear the custom label and fall back to the content preview.
     func rename(_ id: UInt64, title: String) {
         perform(["op": "set_item_title", "id": id, "title": title])
+    }
+    /// 原地替换文本条目的内容；不产生新历史记录，也不写系统剪贴板。
+    /// RTF 表示以字节数组随请求传递，保留编辑器里的粗体/斜体等样式。
+    func updateText(_ id: UInt64, text: String, rtf: [UInt8]?) {
+        var request: [String: Any] = ["op": "set_item_text", "id": id, "text": text]
+        if let rtf { request["rtf"] = rtf }
+        perform(request)
     }
     /// Persist on-device OCR output (or an empty result) for search. The version
     /// stamps which recognizer produced it so a newer one can re-run.

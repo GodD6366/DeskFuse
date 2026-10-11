@@ -73,6 +73,7 @@ pub(super) fn start(library: &Arc<Library>) {
 fn run(library: Weak<Library>, queue: Arc<Queue>) {
     let mut next_payload = Instant::now();
     let mut next_prune = Instant::now() + Duration::from_secs(60);
+    let mut missing_files_cursor = 0_u64;
     loop {
         let uses = {
             let Ok(pending) = queue.pending.lock() else {
@@ -139,8 +140,12 @@ fn run(library: Weak<Library>, queue: Arc<Queue>) {
         if Instant::now() >= next_prune {
             let more = library.prune_step().unwrap_or(false);
             let _ = library.collect_blobs_step();
+            let (cursor, sweeping) = library
+                .collect_missing_files_step(missing_files_cursor)
+                .unwrap_or((missing_files_cursor, false));
+            missing_files_cursor = cursor;
             next_prune = Instant::now()
-                + if more {
+                + if more || sweeping {
                     Duration::from_millis(25)
                 } else {
                     Duration::from_secs(60)

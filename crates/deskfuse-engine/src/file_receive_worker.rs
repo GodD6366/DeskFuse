@@ -47,6 +47,9 @@ pub(super) struct IncomingFileClipboard {
     pub(super) manifest: TransferManifest,
     pub(super) root_paths: Vec<PathBuf>,
     destination: PathBuf,
+    /// An `Offer` created by an explicit send is delivered to the configured
+    /// folder after verification. Requested offers remain clipboard-only.
+    pub(super) direct_destination: Option<PathBuf>,
     pub(super) name: String,
     pub(super) received_bytes: u64,
     pub(super) pasteboard_change_count: i64,
@@ -143,6 +146,7 @@ fn run_receive_disk_worker(
     key: ReceiveKey,
     destination: PathBuf,
     manifest: TransferManifest,
+    direct_destination: Option<PathBuf>,
     mut frames: tokio::sync::mpsc::Receiver<ClipboardFileFrame>,
     cancelled: Arc<AtomicBool>,
     events: ReceiveEventSender,
@@ -196,6 +200,10 @@ fn run_receive_disk_worker(
                     if cancelled.load(Ordering::Acquire) {
                         return Err("接收已取消".into());
                     }
+                    if let Some(downloads) = direct_destination {
+                        let roots = clipboard_root_paths(&destination, &manifest)?;
+                        save_roots_to_directory(&roots, &downloads)?;
+                    }
                     return Ok(());
                 }
                 _ => return Err("接收队列包含无效文件帧".into()),
@@ -224,9 +232,12 @@ pub(super) fn apply_remote_file_clipboard(
     ui: &UnboundedSender<UiEvent>,
 ) -> Result<(), String> {
     let frame = ClipboardFileFrame::decode(bytes).map_err(|error| error.to_string())?;
-    apply_remote_file_clipboard_frame(pasteboard, frame, incoming, cache, peer_id, events, ui)
+    apply_remote_file_clipboard_frame(
+        pasteboard, frame, incoming, cache, peer_id, events, ui, None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_remote_file_clipboard_frame(
     pasteboard: &dyn Pasteboard,
     frame: ClipboardFileFrame,
@@ -235,9 +246,13 @@ pub(super) fn apply_remote_file_clipboard_frame(
     peer_id: DeviceId,
     events: &ReceiveEventSender,
     ui: &UnboundedSender<UiEvent>,
+    download_directory: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let id = frame.transfer_id();
     let key = (peer_id, id);
+    let direct_destination = matches!(&frame, ClipboardFileFrame::Offer { .. })
+        .then(|| download_directory.map(PathBuf::from))
+        .flatten();
     match frame {
         ClipboardFileFrame::Offer { manifest, .. }
         | ClipboardFileFrame::RequestedOffer { manifest, .. } => {
@@ -275,6 +290,7 @@ pub(super) fn apply_remote_file_clipboard_frame(
             let worker_destination = destination.clone();
             let worker_cancelled = cancelled.clone();
             let worker_events = events.clone();
+            let worker_direct_destination = direct_destination.clone();
             let completion = events.tx.clone();
             tokio::spawn(async move {
                 let cleanup_destination = worker_destination.clone();
@@ -283,6 +299,7 @@ pub(super) fn apply_remote_file_clipboard_frame(
                         key,
                         worker_destination,
                         worker_manifest,
+                        worker_direct_destination,
                         frames,
                         worker_cancelled,
                         worker_events,
@@ -319,6 +336,7 @@ pub(super) fn apply_remote_file_clipboard_frame(
                     manifest,
                     root_paths,
                     destination,
+                    direct_destination,
                     name: name.clone(),
                     received_bytes: 0,
                     pasteboard_change_count: change_count,
@@ -411,6 +429,80 @@ pub(super) fn apply_remote_file_clipboard_frame(
     }
     Ok(())
 }
+
+/// Copy verified roots into a user destination without overwriting existing
+/// files. The source lives in the application cache and is trusted because it
+/// has already passed the manifest and hash checks.
+fn save_roots_to_directory(roots: &[PathBuf], destination: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination).map_err(|error| format!("无法创建下载目录：{error}"))?;
+    let mut created = Vec::new();
+    for root in roots {
+        let name = root
+            .file_name()
+            .ok_or_else(|| "接收文件名无效".to_owned())?;
+        let target = unique_destination(destination, name);
+        created.push(target.clone());
+        if let Err(error) = copy_entry(root, &target) {
+            for path in created.into_iter().rev() {
+                let _ = remove_entry(&path);
+            }
+            return Err(format!("保存到下载目录失败：{error}"));
+        }
+    }
+    Ok(())
+}
+
+fn unique_destination(parent: &std::path::Path, name: &std::ffi::OsStr) -> PathBuf {
+    let original = parent.join(name);
+    if !original.exists() {
+        return original;
+    }
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .unwrap_or(name)
+        .to_string_lossy();
+    let extension = std::path::Path::new(name)
+        .extension()
+        .map(|value| value.to_string_lossy());
+    for index in 2.. {
+        let candidate = match &extension {
+            Some(extension) => parent.join(format!("{stem} {index}.{extension}")),
+            None => parent.join(format!("{stem} {index}")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("unique destination index exhausted")
+}
+
+fn copy_entry(source: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("拒绝保存符号链接".into());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(target).map_err(|error| error.to_string())?;
+        for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let child = entry.path();
+            let child_target = target.join(entry.file_name());
+            copy_entry(&child, &child_target)?;
+        }
+    } else {
+        std::fs::copy(source, target).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn remove_entry(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        std::fs::remove_file(path).map_err(|error| error.to_string())
+    }
+}
 pub(super) fn handle_receive_event(
     event: ReceiveEvent,
     pasteboard: &dyn Pasteboard,
@@ -444,7 +536,9 @@ pub(super) fn handle_receive_event(
     let owns_generation = pasteboard.change_count().ok() == Some(incoming.pasteboard_change_count)
         && pasteboard.read_remote_origin_marker().ok().flatten()
             == Some(format!("deskfuse-clipboard-file-v1:{}", key.1));
-    let mut eligible = !incoming.cancelled.load(Ordering::Acquire)
+    let direct_send = incoming.direct_destination.is_some();
+    let mut eligible = !direct_send
+        && !incoming.cancelled.load(Ordering::Acquire)
         && owns_generation
         && state.pending_incoming_file.load(Ordering::Acquire);
     let committed = result.is_ok();
@@ -521,6 +615,11 @@ pub(super) fn handle_receive_event(
     match publish {
         Ok(()) => {
             if !eligible {
+                if direct_send {
+                    state.pending_incoming_file.store(false, Ordering::Release);
+                    state.paste_requested.store(false, Ordering::Release);
+                    state.paste_target_pid.store(0, Ordering::Release);
+                }
                 let mut snapshot = PasteboardSnapshot {
                     file_urls: incoming
                         .root_paths
@@ -537,7 +636,11 @@ pub(super) fn handle_receive_event(
                     ui,
                     key.1,
                     std::mem::take(&mut incoming.name),
-                    "已校验并缓存；剪贴板已变化，可从历史记录使用".into(),
+                    if direct_send {
+                        "已保存到指定下载文件夹".into()
+                    } else {
+                        "已校验并缓存；剪贴板已变化，可从历史记录使用".into()
+                    },
                     TransferState::Completed,
                     total,
                     total,

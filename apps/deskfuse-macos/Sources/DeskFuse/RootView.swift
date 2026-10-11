@@ -3,7 +3,6 @@ import SwiftUI
 /// A single window background supports navigation and an inset content card.
 struct RootView: View {
     @Bindable var store: AppStore
-    @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var historySearchRequest = 0
     @State private var deviceSearchRequest = 0
     @Environment(\.openWindow) private var openWindow
@@ -11,10 +10,8 @@ struct RootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if visibility != .detailOnly {
-                MainSidebar(store: store, visibility: $visibility)
-                    .frame(width: 250)
-            }
+            MainSidebar(store: store)
+                .frame(width: 250)
             workspace
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
@@ -55,15 +52,6 @@ struct RootView: View {
 
     private var workspace: some View {
         VStack(spacing: 0) {
-            if visibility == .detailOnly {
-                HStack {
-                    SidebarVisibilityButton(visibility: $visibility)
-                    Spacer()
-                }
-                // Clears the transparent titlebar drag region the card now
-                // extends into, keeping the button fully clickable.
-                .padding(.horizontal, 20).padding(.top, 20)
-            }
             MainContentView(
                 store: store,
                 historySearchRequest: historySearchRequest,
@@ -73,9 +61,6 @@ struct RootView: View {
         }
         .modifier(WorkspaceContentSurface())
         .padding(12)
-        // The window uses full-size content, so the card can rise into the
-        // titlebar area and keep the same 12 pt margin top and bottom. The
-        // sidebar keeps the system safe area for the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
     }
 

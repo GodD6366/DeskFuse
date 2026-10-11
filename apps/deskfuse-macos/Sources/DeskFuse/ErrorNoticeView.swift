@@ -6,7 +6,8 @@ struct ErrorNoticeView: View {
     var body: some View {
         if let message = notice.message {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
                 Text(message).textSelection(.enabled)
                 Spacer(minLength: 8)
                 Button(action: notice.dismiss) {
@@ -20,7 +21,13 @@ struct ErrorNoticeView: View {
             }
             .font(.callout)
             .padding(12)
-            .background(.yellow.opacity(0.12))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.orange.opacity(0.28), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
         }
     }
 }

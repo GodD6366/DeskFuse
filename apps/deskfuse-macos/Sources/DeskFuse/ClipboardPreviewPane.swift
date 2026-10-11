@@ -88,8 +88,7 @@ struct ClipboardPreviewPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .modifier(NativeGlassBackdrop(cornerRadius: 14))
     }
 
     /// Recognized image text is local derived data shown read-only so the user
@@ -108,7 +107,7 @@ struct ClipboardPreviewPane: View {
             Label("识别文字", systemImage: "text.viewfinder").font(.callout)
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .modifier(NativeGlassBackdrop(cornerRadius: 10))
     }
 
     private func imagePreview(_ image: NSImage) -> some View {
@@ -308,8 +307,7 @@ struct ClipboardPreviewPane: View {
         .font(.callout)
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary) }
+        .modifier(NativeGlassBackdrop(cornerRadius: 14))
     }
 
     private func metadataRow(_ label: String, value: String) -> some View {

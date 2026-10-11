@@ -364,18 +364,19 @@ async fn cleanup_invalidates_only_history_and_pasteboard_references_inside_remov
     receive(&pasteboard, &fixture, false).await;
     let (mut history, mut last) = (ClipboardHistoryStore::default(), None);
     let (sender, _) = unbounded();
-    history.record(pasteboard.read().unwrap(), "received", &sender);
+    // 临时目录中的文件路径不会进入历史库，这里直接操作内存历史，
+    // 让用例聚焦在缓存清理对历史/粘贴板引用的失效处理上。
+    history.insert(pasteboard.read().unwrap(), "received");
     let original = fixture.plan.sources()[0]
         .source_path()
         .to_string_lossy()
         .into_owned();
-    history.record(
+    history.insert(
         PasteboardSnapshot {
             file_urls: vec![original.clone()],
             ..Default::default()
         },
         "source",
-        &sender,
     );
     let mut cache = TransferCache::new(
         fixture.received.parent().unwrap().to_path_buf(),

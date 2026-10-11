@@ -11,6 +11,9 @@ pub struct FileTransferSettings {
     pub small_file_threshold_bytes: u64,
     /// Maximum sum of committed cache data and active transfer reservations.
     pub cache_max_bytes: u64,
+    /// Destination for explicit file sends. An empty value means the platform
+    /// Downloads directory.
+    pub download_directory: String,
 }
 impl Default for FileTransferSettings {
     fn default() -> Self {
@@ -18,6 +21,7 @@ impl Default for FileTransferSettings {
             small_file_prefetch_enabled: false,
             small_file_threshold_bytes: 10 * 1024 * 1024,
             cache_max_bytes: 1024 * 1024 * 1024,
+            download_directory: String::new(),
         }
     }
 }

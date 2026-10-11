@@ -9,12 +9,14 @@ struct MainContentView: View {
     let localDeviceRequest: Int
 
     var body: some View {
-        VStack(spacing: 0) {
-            ErrorNoticeView(notice: store.errorNotice)
-            pageContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        pageContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .overlay(alignment: .bottomLeading) {
+                ErrorNoticeView(notice: store.errorNotice)
+                    .frame(width: 320)
+                    .padding(.leading, 14)
+                    .padding(.bottom, 14)
+            }
     }
 
     @ViewBuilder private var pageContent: some View {

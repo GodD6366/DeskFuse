@@ -85,17 +85,15 @@ struct ClipboardView: View {
                     if let error = copyError ?? library.error ?? snapshot.clipboardError {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .font(.callout).foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
                     }
-                    detail
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    detail.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .textBackgroundColor))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .top) { Divider() }
         .task {
             while !Task.isCancelled {
                 await library.refresh()

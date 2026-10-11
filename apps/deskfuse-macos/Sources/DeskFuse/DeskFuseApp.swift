@@ -7,7 +7,7 @@ import DeskFuseEngine
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store = AppStore.shared
     var body: some SwiftUI.Scene {
-        Window("DeskFuse", id: "main") {
+        Window("", id: "main") {
             RootView(store: store)
                 .frame(minWidth: 960, maxWidth: .infinity, minHeight: 568, maxHeight: .infinity)
                 .background(WindowIdentity())
@@ -89,6 +89,7 @@ import DeskFuseEngine
     }
 
     private func finishLaunching() {
+        DockIconAppearanceController.shared.start()
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()

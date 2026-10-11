@@ -1,11 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Independent editor for a text clip. Saving writes the edited content to the
-/// pasteboard so the library records it as a new item through the normal ingest path.
+/// Independent editor for a text clip. Saving rewrites the original library
+/// item in place; the clipboard panel stays open and no new history entry
+/// is created through the pasteboard.
 @MainActor final class ClipboardContentEditorController: NSObject, NSWindowDelegate {
     static let shared = ClipboardContentEditorController()
     private var windows: [UInt64: NSWindow] = [:]
+
+    /// 面板的外点击监视据此放行编辑窗口，编辑期间剪贴板面板保持打开。
+    func owns(_ window: NSWindow) -> Bool {
+        windows.values.contains { $0 === window }
+    }
 
     func present(itemID: UInt64, title: String, text: String) {
         if let existing = windows[itemID] {
@@ -29,6 +35,10 @@ import SwiftUI
         window.delegate = self
         window.minSize = NSSize(width: 480, height: 320)
         window.isReleasedWhenClosed = false
+        // 剪贴板面板浮在弹出菜单层级；编辑期间面板不关闭，编辑窗口要盖过它。
+        if ClipboardPanelController.shared.isShown {
+            window.level = .popUpMenu
+        }
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -112,8 +122,7 @@ private struct ClipboardContentEditor: View {
     }
 
     private func save() {
-        _ = ClipboardItemActions.writeAttributedText(attributed)
-        ClipboardPanelController.shared.close()
+        ClipboardItemActions.updateText(itemID, attributed: attributed)
         close()
     }
 }

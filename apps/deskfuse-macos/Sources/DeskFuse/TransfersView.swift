@@ -28,12 +28,16 @@ struct TransfersView: View {
                         summary("可重试", count: transfers.filter { $0.canRetry }.count, color: .orange)
                     }
                     .padding(.vertical, 16)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-                    LazyVStack(spacing: 0) {
-                        ForEach(transfers, id: \.id) { task in
-                            TransferQueueRow(store: store, task: task, compact: geometry.size.width < 860)
-                            Divider()
+                    .modifier(NativeGlassBackdrop(cornerRadius: 14))
+                    if !transfers.isEmpty {
+                        LazyVStack(spacing: 0) {
+                            ForEach(transfers, id: \.id) { task in
+                                TransferQueueRow(store: store, task: task, compact: geometry.size.width < 860)
+                                Divider()
+                            }
                         }
+                        .padding(.horizontal, 16)
+                        .modifier(NativeGlassCardSurface(cornerRadius: 16))
                     }
                     ContentUnavailableView(transfers.isEmpty ? "没有传输任务" : "没有其他传输任务",
                                            systemImage: "arrow.up.arrow.down",
@@ -43,7 +47,7 @@ struct TransfersView: View {
                 .padding(28)
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(.clear)
         }
     }
 

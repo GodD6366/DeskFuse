@@ -7,11 +7,11 @@ import DeskFuseEngine
 @Suite @MainActor struct DisplayLayoutTests {
     private func displays() -> [Display] {
         [Display(id: "one", deviceId: "local", name: "Local", x: 0, y: 0, width: 1920, height: 1080,
-                 scale: 1, rotation: 0, local: true, ready: true),
+                 scale: 1, rotation: 0, local: true, ready: true, wallpaperJpeg: nil),
          Display(id: "two", deviceId: "remote", name: "Remote", x: 1920, y: 0, width: 1920, height: 1080,
-                 scale: 1, rotation: 0, local: false, ready: true),
+                 scale: 1, rotation: 0, local: false, ready: true, wallpaperJpeg: nil),
          Display(id: "three", deviceId: "remote", name: "Remote", x: 3840, y: 0, width: 1280, height: 720,
-                 scale: 1, rotation: 0, local: false, ready: true)]
+                 scale: 1, rotation: 0, local: false, ready: true, wallpaperJpeg: nil)]
     }
 
     @Test func navigationUsesKeyboardMouseSharingName() {

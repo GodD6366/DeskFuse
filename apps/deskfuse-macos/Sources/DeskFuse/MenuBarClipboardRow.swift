@@ -35,17 +35,8 @@ struct MenuBarClipboardRow: View {
     var body: some View {
         Button(action: select) {
             HStack(spacing: 12) {
-                // Leading: the app that produced the copy.
-                appIcon
-                    .frame(width: 28, height: 28)
-                // Middle: the content itself; text and images are both centered.
-                VStack(spacing: 6) {
-                    content
-                    if requestFiles {
-                        Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
+                ClipboardRecordLabel(item: item, title: title, appID: appID,
+                                     thumbnail: image, meta: meta)
                 VStack(alignment: .trailing, spacing: 15) {
                     HStack(spacing: 4) {
                         if ocrHit {
@@ -69,9 +60,9 @@ struct MenuBarClipboardRow: View {
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 10).padding(.vertical, 10)
-            .frame(minHeight: item.hasImage ? 84 : 56)
+            .frame(minHeight: 64)
             .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -89,52 +80,6 @@ struct MenuBarClipboardRow: View {
         }
         .task(id: loadKey) { await loadPreview() }
         .onDisappear { image = nil; media = nil; loading = false }
-    }
-
-    @ViewBuilder private var appIcon: some View {
-        if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
-            Image(nsImage: icon).resizable().scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .accessibilityHidden(true)
-        } else {
-            Image(systemName: media?.firstFileIsDirectory == true ? "folder.fill" : item.clipboardSymbol)
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(media?.firstFileIsDirectory == true ? Color.accentColor : Color.secondary)
-        }
-    }
-
-    @ViewBuilder private var content: some View {
-        if item.hasImage {
-            if let image {
-                VStack(spacing: 5) {
-                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                        .frame(width: 108, height: 72)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    if title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { titleLabel }
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                // Keep a stable slot while the thumbnail loads so rows never jump.
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
-                    .frame(width: 108, height: 72)
-                    .overlay { if loading { ProgressView().controlSize(.small) } }
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-        } else {
-            titleLabel
-        }
-    }
-
-    private var titleLabel: some View {
-        ClipboardTitleLabel(
-            title: title,
-            fallback: item.clipboardTitle,
-            editing: $editingTitle,
-            editsOnDoubleClick: false
-        )
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -246,7 +191,7 @@ struct MenuBarClipboardCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+                .strokeBorder(selected ? Color.accentColor.opacity(0.25) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 12))
         // A stacked single + double tap makes the single click wait out the

@@ -570,7 +570,7 @@ impl InputActor {
     /// Create or refresh the layout scene bound to the current Wi-Fi network.
     /// Saving again on the same network updates that one scene instead of
     /// stacking duplicates, so the automatic restore stays unambiguous.
-    async fn save_environment_layout(&mut self, name: Option<String>) {
+    async fn save_environment_layout(&mut self, _name: Option<String>) {
         let Some(ssid) = self.snapshot.environment.ssid.clone() else {
             self.settings_error("尚未取得唯一的 Wi-Fi 名称，暂时无法绑定布局");
             return;
@@ -585,16 +585,11 @@ impl InputActor {
             .iter_mut()
             .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
         {
-            if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
-                scene.name = name.trim().to_owned();
-            }
+            scene.name = ssid.clone();
             scene.settings.placements = self.snapshot.settings.placements.clone();
             scene.settings.layout_profiles = self.snapshot.settings.layout_profiles.clone();
         } else {
-            let name = name
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| format!("{ssid} 布局"));
-            match InputSharingScene::new(name, self.snapshot.settings.clone()) {
+            match InputSharingScene::new(ssid.clone(), self.snapshot.settings.clone()) {
                 Ok(mut scene) => {
                     scene.ssid = Some(ssid.clone());
                     scenes.push(scene);
@@ -1974,6 +1969,19 @@ mod tests {
         actor.snapshot.settings.placements[0].x = 2000.0;
         assert!(actor.refresh_environment_scene());
         assert_eq!(actor.snapshot.scenes[0].settings.placements[0].x, 2000.0);
+        assert!(actor.layout_persistence.scene_dirty);
+    }
+
+    #[test]
+    fn first_network_layout_change_creates_bound_scene() {
+        let (mut actor, _, _, _, _) = setup(true);
+        actor.snapshot.environment.ssid = Some("Home".into());
+        actor.snapshot.scenes.clear();
+
+        assert!(actor.refresh_environment_scene());
+        assert_eq!(actor.snapshot.scenes.len(), 1);
+        assert_eq!(actor.snapshot.scenes[0].name, "Home");
+        assert_eq!(actor.snapshot.scenes[0].ssid.as_deref(), Some("Home"));
         assert!(actor.layout_persistence.scene_dirty);
     }
 

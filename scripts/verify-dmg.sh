@@ -46,7 +46,7 @@ APP_BUNDLE="$MOUNT_POINT/DeskFuse.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 BINARY_PATH="$CONTENTS_DIR/MacOS/deskfuse-app"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
-for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt DeskFuse.icns DeskFuse-icon-1024.png deskfuse-status-icon.png; do
+for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
@@ -91,11 +91,12 @@ from pathlib import Path
 import struct, sys
 import xml.etree.ElementTree as ET
 resources = Path(sys.argv[1])
-for name, size in (("DeskFuse-icon", 1024), ("deskfuse-status-icon", 36)):
+for name, size, png_name in (("DeskFuse-icon", 1024, "DeskFuse-icon-1024.png"),
+                             ("DeskFuse-icon-light", 1024, "DeskFuse-icon-light-1024.png"),
+                             ("deskfuse-status-icon", 36, "deskfuse-status-icon.png")):
     root = ET.parse(resources / f"{name}.svg").getroot()
     if root.tag != "{http://www.w3.org/2000/svg}svg":
         raise SystemExit(f"error: invalid SVG source: {name}")
-    png_name = "DeskFuse-icon-1024.png" if size == 1024 else f"{name}.png"
     header = (resources / png_name).read_bytes()[:24]
     if (len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n"
             or header[12:16] != b"IHDR" or struct.unpack(">II", header[16:24]) != (size, size)):

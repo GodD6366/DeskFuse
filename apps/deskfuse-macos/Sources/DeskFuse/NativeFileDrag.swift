@@ -9,10 +9,11 @@ struct NativeFileDrag: View {
     let store: AppStore
     let onSuccess: ([URL]) -> Void
     let onClick: () -> Void
+    var iconMaxSize: CGFloat = 80
 
     var body: some View {
         ZStack {
-            FileStackArtwork(urls: urls)
+            FileStackArtwork(urls: urls, iconMaxSize: iconMaxSize)
                 .allowsHitTesting(false)
             // Keep one clear native hit surface throughout the visual animation.
             // Finder drag receipts and export leases still belong to AppKit.
@@ -24,12 +25,13 @@ struct NativeFileDrag: View {
 private struct FileStackArtwork: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let urls: [URL]
+    let iconMaxSize: CGFloat
     private var visibleURLs: [URL] { Array(urls.suffix(3)) }
 
     var body: some View {
         GeometryReader { geometry in
             let isFan = visibleURLs.count > 1
-            let size = max(0, min(80, min(
+            let size = max(0, min(iconMaxSize, min(
                 (geometry.size.width - 16) / (isFan ? 1.95 : 1),
                 (geometry.size.height - 16) / (isFan ? 1.35 : 1)
             )))

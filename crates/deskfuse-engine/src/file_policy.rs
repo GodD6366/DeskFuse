@@ -55,6 +55,18 @@ pub(super) struct FilePolicy {
     paste_leases: Vec<(Instant, Vec<TransferId>)>,
 }
 impl FilePolicy {
+    /// Resolve the destination used by explicit file sends. Keep the empty
+    /// setting as a portable default so old databases continue to use the
+    /// platform's Downloads folder.
+    pub fn download_directory(&self) -> std::path::PathBuf {
+        if !self.settings.download_directory.trim().is_empty() {
+            return std::path::PathBuf::from(self.settings.download_directory.trim());
+        }
+        dirs::download_dir()
+            .or_else(|| dirs::home_dir().map(|path| path.join("Downloads")))
+            .unwrap_or_else(|| std::env::temp_dir().join("Downloads"))
+    }
+
     pub(super) fn capture_reference(&self) -> Option<deskfuse_platform_macos::FilePasteReference> {
         let offer = self.pending.as_ref()?;
         Some(deskfuse_platform_macos::FilePasteReference {

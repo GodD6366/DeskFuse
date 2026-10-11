@@ -101,7 +101,7 @@ struct ShareAndTransferView: View {
                 .padding(28)
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(.clear)
         }
         .task {
             await refresh()
@@ -412,12 +412,16 @@ struct ShareAndTransferView: View {
                 summary("可重试", count: snapshot.transfers.filter { $0.canRetry }.count, color: .orange)
             }
             .padding(.vertical, 16)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-            LazyVStack(spacing: 0) {
-                ForEach(snapshot.transfers, id: \.id) { task in
-                    TransferQueueRow(store: store, task: task, compact: compact)
-                    Divider()
+            .modifier(NativeGlassBackdrop(cornerRadius: 14))
+            if !snapshot.transfers.isEmpty {
+                LazyVStack(spacing: 0) {
+                    ForEach(snapshot.transfers, id: \.id) { task in
+                        TransferQueueRow(store: store, task: task, compact: compact)
+                        Divider()
+                    }
                 }
+                .padding(.horizontal, 16)
+                .modifier(NativeGlassCardSurface(cornerRadius: 16))
             }
             if snapshot.transfers.isEmpty {
                 ContentUnavailableView("没有传输任务",
@@ -438,8 +442,7 @@ struct ShareAndTransferView: View {
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16, content: content)
             .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 1) }
+            .modifier(NativeGlassCardSurface(cornerRadius: 16))
     }
 
     @MainActor private func refresh() async {

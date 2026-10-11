@@ -97,15 +97,23 @@ enum ClipboardTextFormat: String, CaseIterable, Identifiable {
         return Int64(pasteboard.changeCount)
     }
 
-    static func writeAttributedText(_ text: NSAttributedString) -> Int64 {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let range = NSRange(location: 0, length: text.length)
-        if let rtf = text.rtf(from: range) {
-            pasteboard.setData(rtf, forType: .rtf)
+    /// 把编辑后的文本写回原条目：不产生新历史记录，也不触碰系统剪贴板。
+    /// 只有真正带样式（粗体/斜体/下划线/删除线）时才附带 RTF 表示，
+    /// 避免纯文本编辑后粘贴到富文本目标时带上编辑器的默认字体样式。
+    static func updateText(_ id: UInt64, attributed: NSAttributedString) {
+        let range = NSRange(location: 0, length: attributed.length)
+        var styled = false
+        attributed.enumerateAttributes(in: range) { attrs, _, stop in
+            let font = attrs[.font] as? NSFont
+            let styledFont = font.map {
+                !NSFontManager.shared.traits(of: $0).isDisjoint(with: [.boldFontMask, .italicFontMask])
+            } ?? false
+            let underlined = ((attrs[.underlineStyle] as? NSNumber)?.intValue ?? 0) != 0
+            let struckThrough = ((attrs[.strikethroughStyle] as? NSNumber)?.intValue ?? 0) != 0
+            if styledFont || underlined || struckThrough { styled = true; stop.pointee = true }
         }
-        pasteboard.setString(text.string, forType: .string)
-        return Int64(pasteboard.changeCount)
+        let rtf = styled ? attributed.rtf(from: range).map(Array.init) : nil
+        ClipboardLibraryStore.shared.updateText(id, text: attributed.string, rtf: rtf)
     }
 
     private static func perform(_ id: UInt64, format: ClipboardTextFormat, paste: Bool) async {

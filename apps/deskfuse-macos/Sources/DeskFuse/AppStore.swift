@@ -7,7 +7,13 @@ import DeskFuseEngine
     static let shared = AppStore()
     let errorNotice = ErrorNotice()
     var snapshot: EngineSnapshot? {
-        didSet { errorNotice.updateRuntimeError(snapshot?.error) }
+        didSet {
+            let message = snapshot?.error
+                ?? snapshot?.clipboardError
+                ?? snapshot?.input.error
+                ?? snapshot?.update.error
+            errorNotice.updateRuntimeError(message)
+        }
     }
     var error: String? {
         didSet { errorNotice.updateLocalError(error) }
@@ -33,7 +39,30 @@ import DeskFuseEngine
     static let keepAwakeDefaultsKey = "deskfuse.keepAwake"
     private let caffeineController = CaffeineController()
     @ObservationIgnored private let displayWallpaperPublisher = DisplayWallpaperPublisher()
+    @ObservationIgnored private var wallpaperPublicationTask: Task<Void, Never>?
     var localDisplayWallpapers: [String: NSImage] = [:]
+    private(set) var updateCheckPending = false
+
+    var isCheckingForUpdates: Bool { updateCheckPending || snapshot?.update.checking == true }
+
+    func checkForUpdates() {
+        guard !isCheckingForUpdates else { return }
+        updateCheckPending = true
+        send(.checkUpdates, applied: { [weak self] in
+            self?.finishUpdateCheckFeedback()
+        }, failed: { [weak self] _ in
+            self?.finishUpdateCheckFeedback()
+        })
+    }
+
+    private func finishUpdateCheckFeedback() {
+        // Keep the affordance visibly active even when the updater rejects the
+        // command immediately (for example in a manual or unavailable build).
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            self?.updateCheckPending = false
+        }
+    }
     var clipboardNavigation: ClipboardNavigationRequest?
     /// One-shot request from the sidebar footer to show the local device in the
     /// devices inspector without duplicating selection state in the store.
@@ -112,13 +141,17 @@ import DeskFuseEngine
                 pairingWindow?.reconcile(snapshot?.pairing ?? [])
                 starting = false
                 recordStartup("workspace_ready")
+                // Publish the local desktop preview independently of the current
+                // page. A controller can then show a peer's wallpaper even when
+                // that peer has never opened the keyboard-sharing page.
+                publishDisplayWallpapers()
             } catch { self.error = error.userFacingMessage; starting = false }
         }
     }
 
-    /// Capture local wallpaper previews for one presentation of the layout UI.
-    /// The view owns the task, so closing the page releases temporary images and
-    /// reopening it performs one fresh capture.
+    /// Capture local wallpaper previews for the layout UI and publish them to
+    /// peers. The page refreshes its temporary images when it is opened; the
+    /// launch-time call keeps remote cards populated before that page is shown.
     func refreshDisplayWallpapers() async {
         guard !Task.isCancelled, let result = await displayWallpaperPublisher.refresh() else { return }
         guard !Task.isCancelled else { return }
@@ -133,6 +166,17 @@ import DeskFuseEngine
         localDisplayWallpapers.removeAll(keepingCapacity: false)
     }
 
+    private func publishDisplayWallpapers() {
+        wallpaperPublicationTask?.cancel()
+        wallpaperPublicationTask = Task { [weak self] in
+            guard let self else { return }
+            // Coalesce discovery/activation snapshots into one capture.
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            await refreshDisplayWallpapers()
+            if selectedPage != .input { clearDisplayWallpapers() }
+        }
+    }
+
     func consume(_ event: EngineEvent) {
         switch event {
         case .workflowCatalogChanged:
@@ -141,7 +185,12 @@ import DeskFuseEngine
             WorkflowStore.shared.consume(run)
         case .snapshot(let value):
             if value.revision >= (snapshot?.revision ?? 0) {
+                let connected = Set(value.devices.filter { $0.member && $0.connected }.map(\.id))
+                let previousConnected = Set(snapshot?.devices.filter { $0.member && $0.connected }.map(\.id) ?? [])
+                let shouldPublishWallpaper = !connected.subtracting(previousConnected).isEmpty
+                    || (value.input.managed && snapshot?.input.managed != true)
                 snapshot = value
+                if shouldPublishWallpaper { publishDisplayWallpapers() }
                 if #available(macOS 14.2, *), !value.input.canOperateRemoteApplications {
                     RemoteApplicationManager.shared.reconcileViewerRole()
                 }
@@ -268,6 +317,7 @@ import DeskFuseEngine
         caffeineController.disable()
         if quitting || client == nil { return .terminateNow }
         quitting = true; reclaim(); shelf?.stop(); transferWindow?.stop()
+        wallpaperPublicationTask?.cancel()
         // AppKit already holds the main run loop inside applicationShouldTerminate,
         // and the native teardown can wait on a peer or on an install handoff. Input
         // control is released above, the update journal is durable, and the helper

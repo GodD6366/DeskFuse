@@ -156,7 +156,9 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
             }
             if item.fileCount == 0 {
                 add(item.hasImage ? "编辑图片" : "编辑文本", to: menu, enabled: canUse, key: "e") {
-                    ClipboardPanelController.shared.close()
+                    // 图片经外部编辑器（预览.app）打开，焦点离开本应用，关闭面板；
+                    // 文本编辑是应用内窗口，面板保持打开，保存时原地更新条目。
+                    if item.hasImage { ClipboardPanelController.shared.close() }
                     ClipboardItemActions.edit(item, title: value.title)
                 }
             }

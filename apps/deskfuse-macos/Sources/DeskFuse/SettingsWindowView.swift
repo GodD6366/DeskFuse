@@ -8,10 +8,12 @@ struct SettingsWindowView: View {
     @SceneStorage("settings.selectedTab") private var selectedTab = "general"
 
     var body: some View {
-        VStack(spacing: 0) {
-            ErrorNoticeView(notice: store.errorNotice)
-            SettingsView(store: store, presentation: SettingsPresentation(store.snapshot)).equatable()
-        }
+        SettingsView(store: store, presentation: SettingsPresentation(store.snapshot)).equatable()
+            .overlay(alignment: .bottomLeading) {
+                ErrorNoticeView(notice: store.errorNotice)
+                    .frame(width: 340)
+                    .padding(16)
+            }
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .tint(.blue)
         .onAppear {

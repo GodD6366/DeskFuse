@@ -193,6 +193,7 @@ pub struct FileSettings {
     pub prefetch: bool,
     pub threshold: u64,
     pub maximum: u64,
+    pub download_directory: String,
 }
 impl From<FileSettings> for core::FileTransferSettings {
     fn from(s: FileSettings) -> Self {
@@ -200,6 +201,7 @@ impl From<FileSettings> for core::FileTransferSettings {
             small_file_prefetch_enabled: s.prefetch,
             small_file_threshold_bytes: s.threshold,
             cache_max_bytes: s.maximum,
+            download_directory: s.download_directory,
         }
     }
 }
@@ -825,6 +827,7 @@ impl From<&EngineState> for EngineSnapshot {
                 prefetch: s.file_settings.small_file_prefetch_enabled,
                 threshold: s.file_settings.small_file_threshold_bytes,
                 maximum: s.file_settings.cache_max_bytes,
+                download_directory: s.file_settings.download_directory.clone(),
             },
             cache: CacheStatus {
                 used: s.cache.used_bytes,

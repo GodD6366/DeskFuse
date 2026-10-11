@@ -479,6 +479,12 @@ impl FinderPasteJobs {
         }))
         .then_some(transfer)
     }
+    pub fn cancel_all(&mut self, ui: &UnboundedSender<UiEvent>) {
+        let ids = self.jobs.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.cancel(id, ui);
+        }
+    }
     pub fn retry(
         &mut self,
         id: TransferId,

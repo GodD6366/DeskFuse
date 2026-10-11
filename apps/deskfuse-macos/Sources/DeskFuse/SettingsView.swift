@@ -12,6 +12,7 @@ struct SettingsView: View, Equatable {
     @State private var prefetch = false
     @State private var threshold = 10.0
     @State private var maximum = 1024.0
+    @State private var downloadDirectory = ""
     @State private var savedFiles: FileSettings?
     @State private var savingFiles = false
     @State private var fileSaveStatus: String?
@@ -59,6 +60,7 @@ struct SettingsView: View, Equatable {
         .onChange(of: prefetch) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
         .onChange(of: threshold) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
         .onChange(of: maximum) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
+        .onChange(of: downloadDirectory) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
         .confirmationDialog("清空所有剪贴板历史？", isPresented: $clearHistory) { Button("清空历史", role: .destructive) { store.send(.clearHistory) } }
         .confirmationDialog("清除可回收的传输缓存？", isPresented: $clearCache) { Button("清除缓存", role: .destructive) { store.send(.clearCache) } }
     }
@@ -99,6 +101,32 @@ struct SettingsView: View, Equatable {
                         Toggle("小文件提前传输", isOn: $prefetch)
                         HStack { Text("整批阈值"); TextField("MiB", value: $threshold, format: .number).frame(width: 90); Text("MiB") }.disabled(!prefetch)
                         HStack { Text("缓存上限"); TextField("MiB", value: $maximum, format: .number).frame(width: 90); Text("MiB") }
+                    }.disabled(savingFiles || savedFiles == nil)
+                    Section("暂存区发送") {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("接收位置")
+                                Text(downloadDirectory.isEmpty ? defaultDownloadDirectory.path : downloadDirectory)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer(minLength: 12)
+                            Button("选择…", action: chooseDownloadDirectory)
+                                .disabled(savingFiles || savedFiles == nil)
+                        }
+                        HStack(spacing: 10) {
+                            Text("从文件暂存区发送到此设备的文件会直接保存到这里。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            if !downloadDirectory.isEmpty {
+                                Button("恢复下载文件夹") { downloadDirectory = "" }
+                                    .buttonStyle(.link)
+                                    .font(.caption)
+                            }
+                        }
                     }.disabled(savingFiles || savedFiles == nil)
                     Section("本地存储") {
                         if let cache = presentation.cache {
@@ -151,6 +179,8 @@ struct SettingsView: View, Equatable {
                 }
                 Text("可随时手动检查；后台每 12 小时检查一次。GitHub 签名包自动下载安装，内部签名版沿用局域网下载和空闲安装流程。").font(.caption).foregroundStyle(.secondary)
             }.formStyle(.grouped)
+        case .about:
+            AboutSettingsView()
         }
     }
     private var remoteApplicationBinding: Binding<Bool>? {
@@ -167,10 +197,12 @@ struct SettingsView: View, Equatable {
         guard let savedFiles else { return false }
         return prefetch != savedFiles.prefetch || threshold != Double(savedFiles.threshold) / 1_048_576
             || maximum != Double(savedFiles.maximum) / 1_048_576
+            || downloadDirectory != savedFiles.downloadDirectory
     }
     private func loadFiles(_ files: FileSettings) {
         savedFiles = files; prefetch = files.prefetch
         threshold = Double(files.threshold) / 1_048_576; maximum = Double(files.maximum) / 1_048_576
+        downloadDirectory = files.downloadDirectory
         fileSaveStatus = nil; fileSaveFailure = nil
     }
     private func saveFiles() {
@@ -180,13 +212,37 @@ struct SettingsView: View, Equatable {
             fileSaveFailure = "请输入有效的缓存容量与阈值"; return
         }
         let submitted = FileSettings(prefetch: prefetch, threshold: UInt64(threshold * 1_048_576),
-            maximum: UInt64(maximum * 1_048_576))
+            maximum: UInt64(maximum * 1_048_576), downloadDirectory: downloadDirectory)
         savingFiles = true; fileSaveFailure = nil; fileSaveStatus = nil
         store.send(.setFiles(settings: submitted), applied: {
             loadFiles(submitted); savingFiles = false; fileSaveStatus = "已保存"
         }, failed: { message in
             savingFiles = false; fileSaveFailure = message
         })
+    }
+
+    private var defaultDownloadDirectory: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    }
+
+    private func chooseDownloadDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        panel.message = "选择暂存区发送文件的保存位置"
+        panel.directoryURL = downloadDirectory.isEmpty ? defaultDownloadDirectory : URL(fileURLWithPath: downloadDirectory)
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                downloadDirectory = url.standardizedFileURL.path
+                fileSaveStatus = nil
+                fileSaveFailure = nil
+            }
+        }
     }
     private func exportDiagnostics() {
         guard !exportingDiagnostics, let client = store.client else { return }

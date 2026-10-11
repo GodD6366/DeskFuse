@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 18 18" fill="none">
-  <title>DeskFuse — Connected windows menu bar template</title>
-  <desc>Optically simplified 18 pt companion to the application mark. Black with transparent background; macOS supplies the menu bar foreground color.</desc>
-  <g stroke="#000000" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
-    <path d="M5.5 10.5H3C2.17 10.5 1.5 9.83 1.5 9V4.5C1.5 3.67 2.17 3 3 3H9C9.83 3 10.5 3.67 10.5 4.5V9C10.5 9.83 9.83 10.5 9 10.5"/>
-    <path d="M12.5 7.5H15C15.83 7.5 16.5 8.17 16.5 9V13.5C16.5 14.33 15.83 15 15 15H9C8.17 15 7.5 14.33 7.5 13.5V9C7.5 8.17 8.17 7.5 9 7.5"/>
+  <title>DeskFuse — Shared control menu bar template</title>
+  <desc>Optically simplified monochrome companion: two offset desktop panels and one shared input cursor.</desc>
+  <g stroke="#000000" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M2.25 3.5C2.25 2.81 2.81 2.25 3.5 2.25H9.1C9.79 2.25 10.35 2.81 10.35 3.5V7.85C10.35 8.54 9.79 9.1 9.1 9.1H3.5C2.81 9.1 2.25 8.54 2.25 7.85V3.5Z"/>
+    <path d="M8.65 8.15C8.65 7.46 9.21 6.9 9.9 6.9H14.5C15.19 6.9 15.75 7.46 15.75 8.15V12.5C15.75 13.19 15.19 13.75 14.5 13.75H9.9C9.21 13.75 8.65 13.19 8.65 12.5V8.15Z"/>
+    <path d="M8.95 3.85L12.95 7.65L11.25 7.45L12.1 9.15L11.2 9.6L10.35 7.9L9.05 9.05L8.95 3.85Z" fill="#000000" stroke="none"/>
   </g>
 </svg>

@@ -236,7 +236,7 @@ struct ShelfView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var controller: ShelfController
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button { controller.close() } label: {
                     shelfIcon("xmark", label: "清空并关闭")
@@ -272,9 +272,18 @@ struct ShelfView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.top, 12)
+            .padding(.bottom, 4)
             if controller.preparing { ProgressView("正在准备发送…").frame(maxWidth: .infinity, maxHeight: .infinity) }
             else if controller.files.isEmpty {
-                VStack(spacing: 10) { Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary); Text("拖入文件").font(.headline); Text("临时放在这里").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 10) {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("拖入文件").font(.headline)
+                    Text("文件会暂存在这里，拖出即可取用")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if controller.expanded {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 16) {
@@ -288,14 +297,26 @@ struct ShelfView: View {
                     }.padding(14)
                 }
             } else {
-                NativeFileDrag(urls: controller.files, store: controller.store, onSuccess: { controller.remove($0) }, onClick: { controller.toggleExpanded() })
+                NativeFileDrag(urls: controller.files, store: controller.store, onSuccess: { controller.remove($0) }, onClick: { controller.toggleExpanded() }, iconMaxSize: 112)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
-                Text("\(controller.files.count) 个项目 ›")
-                    .font(.headline)
-                    .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
-                    .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
-                Text("拖出全部 · 点按展开").font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(controller.files.count) 个项目")
+                            .font(.system(size: 15, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
+                            .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
+                        Text("拖出全部文件")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("查看全部") { controller.toggleExpanded() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("展开暂存区")
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -318,6 +339,7 @@ struct ShelfView: View {
             .font(.system(size: 12, weight: .medium))
             .symbolRenderingMode(.monochrome)
             .frame(width: 28, height: 28)
+            .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
     }
 

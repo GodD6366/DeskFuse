@@ -33,7 +33,7 @@ struct ClipboardDisplayModePicker: View {
             }
         }
         .padding(2)
-        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+        .modifier(NativeGlassBackdrop(cornerRadius: 9))
     }
 }
 

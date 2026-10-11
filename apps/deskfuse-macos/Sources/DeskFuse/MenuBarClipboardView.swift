@@ -49,6 +49,9 @@ struct MenuBarClipboardView: View {
     private var automaticOCR: Bool
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
+    private var sourceChoices: [ClipboardLibraryChoice] {
+        library.sourceChoices(legacyNames: history.map(\.source), snapshot: store.snapshot)
+    }
     /// Every record the panel may show, deduplicated and ordered newest first.
     /// The library page already carries the engine's order key; snapshot-only
     /// records are merged by the same key instead of being prepended, so a
@@ -118,8 +121,8 @@ struct MenuBarClipboardView: View {
         }
         .scrollIndicators(.hidden)
         .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(.clear)
+        .modifier(ClipboardPopupSurface())
         .background(MenuBarPanelBridge(handle: panel, opened: beginSession, closed: endSession, modifiersChanged: { commandHeld = $0.contains(.command) }, keyDown: handleKey))
         .task(id: searchKey) { if panelActive { await searchHistory() } }
         .task(id: panelActive) {
@@ -196,14 +199,10 @@ struct MenuBarClipboardView: View {
                     }
                 }
                 .font(.system(size: 13)).padding(.horizontal, 11).frame(height: 34)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(searchFocused ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1))
+                .modifier(NativeGlassBackdrop(cornerRadius: 9))
                 ClipboardLibraryTabs(selectedListID: $listID)
-
-
             }
             .padding(16)
-            .modifier(NativeGlassBackdrop(cornerRadius: 0))
         }
     }
 
@@ -211,12 +210,12 @@ struct MenuBarClipboardView: View {
         Menu {
             Picker("来源设备", selection: $source) {
                 Text("全部设备").tag(String?.none)
-                ForEach(library.sourceChoices(legacyNames: history.map(\.source), snapshot: store.snapshot)) { value in
+                ForEach(sourceChoices) { value in
                     Text(value.name).tag(Optional(value.id))
                 }
             }
         } label: {
-            Text(library.devices.first(where: { $0.id == source })?.name ?? source ?? "全部设备")
+            Text(sourceChoices.first(where: { $0.id == source })?.name ?? source ?? "全部设备")
                 .font(.system(size: 11)).lineLimit(1).truncationMode(.tail)
                 .frame(minWidth: 72, maxWidth: 100, minHeight: 32, alignment: .trailing)
                 .contentShape(Rectangle())
@@ -423,7 +422,6 @@ struct MenuBarClipboardView: View {
                 if let error = store.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(3) }
             }
             .padding(.horizontal, 16).padding(.vertical, 13)
-            .modifier(NativeGlassBackdrop(cornerRadius: 0))
         }
     }
 

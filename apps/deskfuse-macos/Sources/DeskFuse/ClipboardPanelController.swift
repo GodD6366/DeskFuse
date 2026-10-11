@@ -86,12 +86,18 @@ import DeskFuseEngine
                 let panel = self.pointerPanel
                 let popoverWindow = self.popover.contentViewController?.view.window
                 let previewWindow = ClipboardQuickLookController.shared.window
-                if self.isPresenting, let clicked = event.window,
-                   clicked !== panel, clicked.sheetParent !== panel,
-                   clicked !== popoverWindow,
-                   clicked !== previewWindow,
-                   clicked !== self.item?.button?.window {
-                    self.close()
+                if self.isPresenting, let clicked = event.window {
+                    // 标题编辑 sheet 挂在面板/popover 窗口上；文本编辑是独立窗口。
+                    // 两者都属于面板内的编辑会话，不能像外部点击一样收起面板。
+                    let sheetParent = clicked.sheetParent
+                    let ownSheet = sheetParent != nil && (sheetParent === panel || sheetParent === popoverWindow)
+                    if clicked !== panel, !ownSheet,
+                       clicked !== popoverWindow,
+                       clicked !== previewWindow,
+                       clicked !== self.item?.button?.window,
+                       !ClipboardContentEditorController.shared.owns(clicked) {
+                        self.close()
+                    }
                 }
             }
             return event

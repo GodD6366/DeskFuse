@@ -31,6 +31,7 @@ struct RemoteApplicationCatalog: View {
                 .accessibilityLabel("刷新应用列表")
             }
             .padding(24)
+            .modifier(NativeGlassBackdrop(cornerRadius: 14))
             Divider()
             if let rdpSession {
                 RemoteRdpPicker(session: rdpSession, embedded: true) { application, username, password in
@@ -51,7 +52,7 @@ struct RemoteApplicationCatalog: View {
         // catalog in the pane, which leaves a large blank area above it in the
         // workspace layout.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(.clear)
         .task(id: "\(device.id):\(device.remoteAppRdp):\(device.connected)") {
             let manager = RemoteApplicationManager.shared
             if device.remoteAppRdp {

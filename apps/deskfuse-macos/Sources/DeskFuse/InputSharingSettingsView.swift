@@ -11,8 +11,6 @@ struct InputSharingSettingsView: View {
     @State private var saving = false
     @State private var status: String?
     @State private var failure: String?
-    @State private var sceneName = ""
-    @State private var renameID: String?
     @State private var remember = true
     @State private var selectedController = ""
 
@@ -90,27 +88,13 @@ struct InputSharingSettingsView: View {
         Section("布局") {
             if let ssid = snapshot?.input.ssid {
                 LabeledContent("当前网络", value: ssid)
-                Button(boundScene == nil ? "保存布局到「\(ssid)」" : "更新「\(ssid)」布局") {
-                    store.error = nil
-                    store.send(.saveEnvironmentLayout(name: nil))
-                }
-                Text("同一 Wi-Fi 下的屏幕排布会自动保存并在回到该网络时恢复；只恢复排布，不会自动开启共享。")
+                Text("屏幕排布改动后会自动保存，并在回到该网络时恢复；只恢复排布，不会自动开启共享。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("读取到唯一的 Wi-Fi 名称后，可以按网络保存布局；也可以直接创建独立布局。")
+                Text("读取到唯一的 Wi-Fi 名称后，屏幕排布改动会自动按网络保存。")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("前往权限设置") { store.openSettings(tab: SettingsCategory.permissions.rawValue) }
                     .buttonStyle(.link)
-            }
-            HStack {
-                TextField("布局名称", text: $sceneName)
-                Button(renameID == nil ? "保存为新布局" : "重命名") { commitSceneName() }
-                    .disabled(sceneName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            Text("布局保存已应用的屏幕排布；主控与跨屏设置请使用页面底部的保存按钮。")
-                .font(.caption).foregroundStyle(.secondary)
-            ForEach(snapshot?.input.scenes ?? [], id: \.id) { scene in
-                sceneRow(scene)
             }
         }
     }
@@ -147,43 +131,22 @@ struct InputSharingSettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private func sceneRow(_ scene: DeskFuseEngine.Scene) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(scene.name)
-                if let ssid = scene.ssid {
-                    Text("自动恢复于 \(ssid)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button("应用") {
-                store.send(.applyScene(id: scene.id))
-                failure = nil
-                status = nil
-            }
-            .disabled(dirty)
-            .help(dirty ? "请先保存或撤销上方修改" : "应用该布局")
-            Button("重命名") { renameID = scene.id; sceneName = scene.name }
-            Button("删除", role: .destructive) { store.send(.deleteScene(id: scene.id)) }
-        }
-    }
-
-    private var boundScene: DeskFuseEngine.Scene? {
-        guard let ssid = snapshot?.input.ssid else { return nil }
-        return snapshot?.input.scenes.first { $0.ssid == ssid }
-    }
-
     // MARK: - Actions
 
-    // 主控身份与共享开关相互独立：不开主控时只作为被控参与。
+    // 关闭主控也停止主动共享；被控状态由对端激活管理。
     private func setController(_ enabled: Bool) {
         draft.controller = enabled
+        if !enabled { draft.enabled = false }
     }
 
-    // 共享开关与主控身份解耦：只作为被控参与也是合法状态。
     private func setSharingEnabled(_ enabled: Bool) {
         draft.enabled = enabled
+        if enabled { draft.controller = true }
+    }
+
+    private func controllerName(_ id: String) -> String {
+        if id == snapshot?.localId { return snapshot?.localName ?? "本机" }
+        return snapshot?.devices.first { $0.id == id }?.name ?? "离线设备"
     }
 
     private func cornerBinding(_ index: Int) -> Binding<Bool> {
@@ -194,28 +157,6 @@ struct InputSharingSettingsView: View {
                 else { draft.disabledCorners &= ~(1 << index) }
             }
         )
-    }
-
-    private func commitSceneName() {
-        let name = sceneName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        if let id = renameID {
-            store.send(.renameScene(id: id, name: name))
-            renameID = nil
-        } else {
-            guard snapshot?.input.canConfigure == true else {
-                store.error = "只能保留为布局操作；请先在主控设备上开启共享"
-                return
-            }
-            store.error = nil
-            store.send(.saveScene(name: name))
-        }
-        sceneName = ""
-    }
-
-    private func controllerName(_ id: String) -> String {
-        if id == snapshot?.localId { return snapshot?.localName ?? "本机" }
-        return snapshot?.devices.first { $0.id == id }?.name ?? "离线设备"
     }
 
     private func save() {

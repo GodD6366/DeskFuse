@@ -31,7 +31,7 @@ struct ClipboardLibraryTabs: View {
                 }
             } else {
                 HStack(spacing: 6) {
-                    ScrollView(.horizontal) {
+                    HorizontalWheelScrollView {
                         HStack(spacing: 6) {
                             tab("全部", id: nil, count: library.counts["all"])
                             ForEach(library.lists) { list in
@@ -48,7 +48,8 @@ struct ClipboardLibraryTabs: View {
                                     }
                             }
                         }
-                    }.scrollIndicators(.hidden)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 36)
                     newListButton(label: nil, vertical: false)
                 }
             }

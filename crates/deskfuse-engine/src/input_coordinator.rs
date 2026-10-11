@@ -161,22 +161,40 @@ impl InputCoordinator {
             remote: None,
         }
     }
-    pub fn pause_for_update(&self, manual: bool) -> bool {
+    pub fn pause_for_update(&self, manual: bool, force: bool) -> bool {
         if let Some(remote) = &self.remote {
-            remote.signal(if manual { b'M' } else { b'P' });
+            let signalled = remote.signal(if manual { b'M' } else { b'P' });
+            if force && signalled && !remote.paused() {
+                // A remote-application lease can own the helper's pause
+                // state, so M is intentionally not acknowledged there. A
+                // forced update owns the process lifetime and asks the
+                // supervised helper to exit before launching the installer.
+                let _ = remote.signal(b'Q');
+                return true;
+            }
             return remote.paused();
         }
         // 1 waits for idle; 3 explicitly ends active control on the input worker.
         let requested = if manual { 3 } else { 1 };
-        let _ =
-            self.update_pause
-                .compare_exchange(0, requested, Ordering::AcqRel, Ordering::Acquire);
+        let current = self.update_pause.load(Ordering::Acquire);
+        if force && (4..=7).contains(&current) {
+            let _ =
+                self.update_pause
+                    .compare_exchange(current, 3, Ordering::AcqRel, Ordering::Acquire);
+        } else {
+            let _ = self.update_pause.compare_exchange(
+                0,
+                requested,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
         if manual {
             let _ = self
                 .update_pause
                 .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
         }
-        self.update_pause.load(Ordering::Acquire) == 2
+        force || self.update_pause.load(Ordering::Acquire) == 2
     }
     pub fn resume_after_update(&self) {
         if let Some(remote) = &self.remote {

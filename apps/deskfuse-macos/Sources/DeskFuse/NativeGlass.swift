@@ -31,6 +31,31 @@ struct NativeGlassBackdrop: ViewModifier {
     }
 }
 
+/// A quiet, non-interactive glass panel for page sections and inspectors.
+/// Controls inside the panel keep their own interaction style, while the
+/// surface samples the page behind it as a single native Liquid Glass layer.
+struct NativeGlassCardSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let cornerRadius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            content
+                .background(Color(nsColor: .controlBackgroundColor), in: shape)
+                .overlay { shape.strokeBorder(.quaternary, lineWidth: 1) }
+        } else if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay { shape.strokeBorder(.quaternary, lineWidth: 1) }
+        }
+    }
+}
+
 /// Standalone surfaces (the file shelf and sidebar identity) own their container.
 struct NativeGlassSurface: ViewModifier {
     let cornerRadius: CGFloat

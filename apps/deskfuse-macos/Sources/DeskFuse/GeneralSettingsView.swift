@@ -103,7 +103,7 @@ struct GeneralSettingsView: View {
     }
 }
 
-private struct SettingsGroupCard<Content: View>: View {
+struct SettingsGroupCard<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
 
@@ -118,8 +118,7 @@ private struct SettingsGroupCard<Content: View>: View {
             VStack(alignment: .leading, spacing: 12, content: content)
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-                .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 1) }
+                .modifier(NativeGlassCardSurface(cornerRadius: 16))
         }
     }
 }

@@ -2174,6 +2174,7 @@ mod network_config_tests {
             small_file_prefetch_enabled: true,
             small_file_threshold_bytes: 20 * 1024 * 1024,
             cache_max_bytes: 64 * 1024 * 1024,
+            download_directory: String::new(),
         };
         store.set_file_transfer_settings(&settings).unwrap();
         store

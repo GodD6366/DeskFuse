@@ -46,8 +46,10 @@ struct MenuBarPanelBridge: NSViewRepresentable {
                         let sheetIsActive = window.attachedSheet?.isVisible == true
                             || NSApp.keyWindow?.sheetParent === window
                         let previewIsActive = ClipboardQuickLookController.shared.window?.isVisible == true
+                        // 文本编辑窗口与面板同属一次编辑会话，焦点让渡不算失焦。
+                        let editorIsActive = NSApp.keyWindow.map { ClipboardContentEditorController.shared.owns($0) } ?? false
                         let ignore = !willClose
-                            && (ClipboardHistoryMenuSession.isTracking || sheetIsActive || previewIsActive)
+                            && (ClipboardHistoryMenuSession.isTracking || sheetIsActive || previewIsActive || editorIsActive)
                         if closing && !ignore { self?.owner.handle.generation &+= 1 }
                         return ignore
                     }
@@ -84,8 +86,9 @@ struct MenuBarPanelBridge: NSViewRepresentable {
             let sheetIsActive = window?.attachedSheet?.isVisible == true
                 || NSApp.keyWindow?.sheetParent === window
             let previewIsActive = ClipboardQuickLookController.shared.window?.isVisible == true
+            let editorIsActive = NSApp.keyWindow.map { ClipboardContentEditorController.shared.owns($0) } ?? false
             let next = !forceClosed && window?.isVisible == true
-                && (window?.isKeyWindow == true || sheetIsActive || previewIsActive)
+                && (window?.isKeyWindow == true || sheetIsActive || previewIsActive || editorIsActive)
             guard next != active else { return }
             active = next
             if next { owner.opened() } else { owner.closed() }

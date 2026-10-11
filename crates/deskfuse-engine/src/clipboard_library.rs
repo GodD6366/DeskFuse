@@ -1,7 +1,7 @@
 //! SQLite-backed clipboard library. Native payloads remain lazy, opaque and local.
 use crate::model::ClipboardHistoryItem;
 use bincode::Options;
-use deskfuse_platform::PasteboardSnapshot;
+use deskfuse_platform::{PasteboardItem, PasteboardRepresentation, PasteboardSnapshot};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,120 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 pub const METADATA_TYPE: &str = crate::clipboard_bundle::SOURCE_METADATA_TYPE;
+
+/// 复制来源文件是否位于临时/暂存目录。
+///
+/// 远程控制（网易 UU 远程、Windows App）、接力/通用剪贴板、输入法等应用
+/// 复制文件时会把内容暂存到这类目录，源文件很快就会被清理；入库后只留下
+/// 无法还原的死引用，因此这类文件复制不入库。
+pub(crate) fn temporary_clipboard_file(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    let parts: Vec<&str> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    // 系统临时目录：/tmp 与 /var/folders（macOS 每用户临时目录在其下；
+    // /var 是指向 /private/var 的符号链接，两种写法都覆盖）。
+    let is = |i: usize, value: &str| parts.get(i) == Some(&value);
+    if is(0, "tmp")
+        || (is(0, "private") && is(1, "tmp"))
+        || (is(0, "var") && is(1, "folders"))
+        || (is(0, "private") && is(1, "var") && is(2, "folders"))
+    {
+        return true;
+    }
+    // $TMPDIR 可能被重定向到非标准位置（沙箱、CI），兜底匹配一次。
+    let temp_dir = std::env::temp_dir();
+    if temp_dir != std::path::Path::new("/tmp") && path.starts_with(&temp_dir) {
+        return true;
+    }
+    // 应用容器内的 tmp（远程桌面类应用复制文件时的暂存目录）。
+    if parts
+        .windows(5)
+        .any(|w| w[0] == "Library" && w[1] == "Containers" && w[3] == "Data" && w[4] == "tmp")
+    {
+        return true;
+    }
+    // 通用剪贴板（接力）落盘的共享暂存目录。
+    if parts.windows(3).any(|w| {
+        w[0] == "Group Containers"
+            && w[1] == "group.com.apple.coreservices.useractivityd"
+            && w[2] == "shared-pasteboard"
+    }) {
+        return true;
+    }
+    // 其他应用的缓存目录（输入法等暂存复制内容）。DeskFuse 自身接收文件的
+    // 缓存受传输租约保护，不属于临时文件。
+    if let Some(cache) = dirs::cache_dir()
+        && let Ok(relative) = path.strip_prefix(&cache)
+    {
+        let first = relative.components().find_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        });
+        return !matches!(first, Some("com.deskfuse.app") | Some("com.unidesk.app"));
+    }
+    // 其他应用 Application Support 下的隐藏暂存文件（如 .uuremote_ 前缀）。
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+        && parts
+            .windows(2)
+            .any(|w| w[0] == "Library" && w[1] == "Application Support")
+    {
+        return true;
+    }
+    false
+}
+
+/// 入库前对文件类快照的处理决定。
+enum TemporaryFileAction {
+    /// 非临时文件（或混合来源），原样入库。
+    Keep,
+    /// 全部为临时文件但伴随位图/文本等持久内容：剥离文件路径，保留其余内容。
+    Strip(PasteboardSnapshot),
+    /// 整个快照只有临时文件路径，跳过入库。
+    Skip,
+}
+
+fn temporary_file_action(snapshot: &PasteboardSnapshot) -> TemporaryFileAction {
+    if snapshot.file_urls.is_empty()
+        || !snapshot
+            .file_urls
+            .iter()
+            .all(|p| temporary_clipboard_file(std::path::Path::new(p)))
+    {
+        return TemporaryFileAction::Keep;
+    }
+    let mut stripped = snapshot.clone();
+    stripped.file_urls.clear();
+    if has_durable_content(&stripped) {
+        TemporaryFileAction::Strip(stripped)
+    } else {
+        TemporaryFileAction::Skip
+    }
+}
+
+/// 剥离文件路径后仍值得入库的内容：文本、位图或任何非元数据表示。
+fn has_durable_content(snapshot: &PasteboardSnapshot) -> bool {
+    if snapshot.text.is_some() || snapshot.png.is_some() {
+        return true;
+    }
+    const METADATA_TYPES: [&str; 3] = [
+        METADATA_TYPE,
+        "com.deskfuse.clipboard-origin",
+        "com.apple.is-remote-clipboard",
+    ];
+    snapshot
+        .items
+        .iter()
+        .flat_map(|item| &item.representations)
+        .any(|rep| !METADATA_TYPES.contains(&rep.type_name.as_str()))
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Origin {
     pub device_id: String,
@@ -742,6 +856,15 @@ END;").map_err(err)?;
         if origin.no_history || self.excluded(origin.app_id.as_deref()) {
             return Ok(None);
         }
+        let stripped;
+        let snapshot: &PasteboardSnapshot = match temporary_file_action(snapshot) {
+            TemporaryFileAction::Keep => snapshot,
+            TemporaryFileAction::Skip => return Ok(None),
+            TemporaryFileAction::Strip(s) => {
+                stripped = s;
+                &stripped
+            }
+        };
         let fingerprint = content_digest(snapshot)?;
         self.ingest_record_resolved(snapshot, source, origin, fingerprint)
     }
@@ -755,6 +878,15 @@ END;").map_err(err)?;
         if origin.no_history || self.excluded(origin.app_id.as_deref()) {
             return Ok(None);
         }
+        let stripped;
+        let snapshot: &PasteboardSnapshot = match temporary_file_action(snapshot) {
+            TemporaryFileAction::Keep => snapshot,
+            TemporaryFileAction::Skip => return Ok(None),
+            TemporaryFileAction::Strip(s) => {
+                stripped = s;
+                &stripped
+            }
+        };
         let fingerprint = content_digest_with(snapshot, image_digest)?;
         self.ingest_record_resolved(snapshot, source, origin, fingerprint)
     }
@@ -1576,6 +1708,105 @@ END;").map_err(err)?;
                     changes.push((format!("item:{global_id}"), json!({"id": global_id}), true));
                 }
                 self.local_records_with_delete(changes, &bases.into_iter().collect::<Vec<_>>())?;
+            }
+            "set_item_text" => {
+                let id = q["id"].as_u64().ok_or("内容 ID 无效")?;
+                let text: String = q["text"]
+                    .as_str()
+                    .ok_or("文本内容无效")?
+                    .chars()
+                    .take(1_000_000)
+                    .collect();
+                if text.trim().is_empty() {
+                    return Err("文本内容不能为空".into());
+                }
+                let rtf: Option<Vec<u8>> = q
+                    .get("rtf")
+                    .filter(|v| !v.is_null())
+                    .map(|v| serde_json::from_value::<Vec<u8>>(v.clone()).map_err(err))
+                    .transpose()?
+                    .filter(|v| !v.is_empty());
+                let (gid, ordinary, remote, summary_raw) = {
+                    let db = self.writer()?;
+                    db.query_row(
+                        "SELECT global_id,ordinary,COALESCE(remote,0),summary FROM cl_items WHERE id=?1",
+                        [id],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, bool>(1)?,
+                                r.get::<_, bool>(2)?,
+                                r.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(err)?
+                    .ok_or("内容不存在")?
+                };
+                // 远端索引行会被下一次 reconcile 覆盖，不支持原地编辑。
+                if remote {
+                    return Err("远端内容请先复制到本机再编辑".into());
+                }
+                let mut s: Summary = serde_json::from_str(&summary_raw).map_err(err)?;
+                if s.file_count > 0 || s.has_image {
+                    return Err("仅文本内容支持编辑".into());
+                }
+                // 确认内容本地可用；不可用时 snapshot 会排队按需拉取并返回等待错误。
+                self.snapshot(id)?;
+                let mut representations = vec![PasteboardRepresentation {
+                    type_name: "public.utf8-plain-text".into(),
+                    data: text.as_bytes().to_vec(),
+                }];
+                if let Some(rtf) = rtf {
+                    representations.push(PasteboardRepresentation {
+                        type_name: "public.rtf".into(),
+                        data: rtf,
+                    });
+                }
+                let edited = PasteboardSnapshot {
+                    change_count: 0,
+                    text: Some(text.clone()),
+                    png: None,
+                    file_urls: Vec::new(),
+                    items: vec![PasteboardItem { representations }],
+                };
+                let bytes = encode(&edited, "编辑")?;
+                let hash = hex::encode(Sha256::digest(&bytes));
+                s.preview = text.chars().take(160).collect();
+                s.length = text.len() as u64;
+                s.mime = "text/plain".into();
+                s.kind = "text".into();
+                let search = crate::clipboard_echo::normalize_clipboard_text(&text).to_lowercase();
+                if ordinary {
+                    // 与 ingest 相同的 blob 化形态：payload 置空，内容经 blob_hash 引用。
+                    let digest = content_digest(&edited)?;
+                    let mut db = self.writer()?;
+                    let tx = db.transaction().map_err(err)?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
+                        params![hash, bytes],
+                    )
+                    .map_err(err)?;
+                    tx.execute(
+                        "UPDATE cl_items SET digest=?1,summary=?2,payload=NULL,search_text=?3,blob_hash=?4 WHERE id=?5",
+                        params![digest, serde_json::to_string(&s).map_err(err)?, search, hash, id],
+                    )
+                    .map_err(err)?;
+                    self.publication_intent_db(&tx, id)?;
+                    tx.commit().map_err(err)?;
+                    drop(db);
+                    self.changed();
+                    self.publication_committed(id)?;
+                } else {
+                    // 归档内容经 item 记录同步；materialize 按新 blob 更新本地行。
+                    self.write_blob(&hash, &bytes)?;
+                    self.local_record(
+                        format!("item:{gid}"),
+                        json!({"id":gid,"summary":serde_json::to_value(&s).map_err(err)?,"blob_hash":hash}),
+                        false,
+                    )?;
+                }
             }
             "set_item_title" => {
                 let id = q["id"].as_u64().ok_or("内容 ID 无效")? as i64;
@@ -3347,5 +3578,159 @@ mod digest_tests {
             content_digest(&text("caption")).unwrap(),
             content_digest(&image).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod temp_file_tests {
+    use super::*;
+    use deskfuse_platform::{PasteboardItem, PasteboardRepresentation};
+
+    #[test]
+    fn temporary_clipboard_file_covers_known_staging_locations() {
+        // 系统临时目录与应用容器 tmp
+        for path in [
+            "/tmp/uu.tmp",
+            "/private/tmp/uu.tmp",
+            "/var/folders/m5/abc/T/unidesk-file-paste-1234/a.bin",
+            "/private/var/folders/m5/abc/T/uu.tmp",
+            "/Users/godd/Library/Containers/com.microsoft.rdc.macos/Data/tmp/ABC/1.png",
+        ] {
+            assert!(
+                temporary_clipboard_file(std::path::Path::new(path)),
+                "{path} 应判定为临时文件"
+            );
+        }
+        // 通用剪贴板（接力）共享暂存目录
+        assert!(temporary_clipboard_file(std::path::Path::new(
+            "/Users/godd/Library/Group Containers/group.com.apple.coreservices.useractivityd/shared-pasteboard/items/UUID/a.jsonl"
+        )));
+        // 其他应用 Application Support 下的隐藏暂存文件（网易 UU 远程）
+        assert!(temporary_clipboard_file(std::path::Path::new(
+            "/Users/godd/Library/Application Support/com.netease.uuremote.server/Clipboard/.uuremote_aeaws1"
+        )));
+        // 缓存目录：其他应用算临时，DeskFuse 自身接收缓存除外
+        let cache = dirs::cache_dir().unwrap();
+        assert!(temporary_clipboard_file(
+            &cache.join("WeType/dsclp/mac_1.png")
+        ));
+        assert!(!temporary_clipboard_file(
+            &cache.join("com.deskfuse.app/clipboard/t-1/a.jpg")
+        ));
+        assert!(!temporary_clipboard_file(
+            &cache.join("com.unidesk.app/clipboard/t-1/a.jpg")
+        ));
+        // 正常位置不算临时文件
+        for path in [
+            "/Users/godd/Downloads/IMG_8452.HEIC",
+            "/Users/godd/Documents/.hidden-note",
+            "/Users/godd/Library/Application Support/com.netease.uuremote.server/Clipboard/visible.txt",
+        ] {
+            assert!(
+                !temporary_clipboard_file(std::path::Path::new(path)),
+                "{path} 不应判定为临时文件"
+            );
+        }
+    }
+
+    fn file_snapshot(path: &str) -> PasteboardSnapshot {
+        PasteboardSnapshot {
+            file_urls: vec![path.into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ingest_skips_snapshots_with_only_temporary_files() {
+        let library = Library::open().unwrap();
+        let snapshot = file_snapshot("/var/folders/m5/abc/T/uu-remote-tmp");
+        assert_eq!(library.ingest(&snapshot, "本机").unwrap(), None);
+        let count: i64 = {
+            let db = library.db.lock().unwrap();
+            db.query_row("SELECT COUNT(*) FROM cl_items", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn ingest_keeps_remaining_content_when_temporary_file_path_is_stripped() {
+        let library = Library::open().unwrap();
+        let mut snapshot = file_snapshot("/var/folders/m5/abc/T/staged.png");
+        snapshot.png = Some(vec![137, 80, 78, 71]);
+        snapshot.items = vec![PasteboardItem {
+            representations: vec![PasteboardRepresentation {
+                type_name: "public.png".into(),
+                data: vec![137, 80, 78, 71],
+            }],
+        }];
+        let id = library.ingest(&snapshot, "本机").unwrap().unwrap();
+        let raw: String = {
+            let db = library.db.lock().unwrap();
+            db.query_row("SELECT summary FROM cl_items WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let summary: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(summary["kind"], "image");
+        assert_eq!(summary["file_count"], 0);
+        assert!(library.snapshot(id).unwrap().file_urls.is_empty());
+    }
+
+    #[test]
+    fn ingest_keeps_real_file_copies() {
+        let library = Library::open().unwrap();
+        let snapshot = file_snapshot("/Users/godd/Downloads/IMG_8452.HEIC");
+        assert!(library.ingest(&snapshot, "本机").unwrap().is_some());
+    }
+
+    #[test]
+    fn missing_files_step_deletes_dead_file_entries() {
+        let library = Library::open().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        // 用一个一定不属于临时目录判定的路径形态不现实（测试临时目录本身就在
+        // $TMPDIR 下），因此直接写入库行，绕过入库过滤。
+        let alive = directory.path().join("alive.txt");
+        std::fs::write(&alive, b"alive").unwrap();
+        let dead = directory.path().join("dead.txt");
+        std::fs::write(&dead, b"dead").unwrap();
+        let insert = |path: &std::path::Path| {
+            let snapshot = file_snapshot(&path.to_string_lossy());
+            let bytes = encode(&snapshot, "test").unwrap();
+            let s = json!({"id":0,"copied_at_ms":1,"mime":"application/x-deskfuse-file-clipboard;version=1",
+                "length":1,"preview":"fixture","source":"test","has_image":false,
+                "file_count":1,"kind":"files"});
+            let db = library.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO cl_items(global_id,digest,summary,imported,blob_hash) VALUES(?1,?1,?2,1,?3)",
+                params![uuid::Uuid::new_v4().to_string(), s.to_string(), hex::encode(Sha256::digest(&bytes))],
+            )
+            .unwrap();
+            let id = db.last_insert_rowid() as u64;
+            db.execute(
+                "INSERT INTO cl_blobs VALUES(?1,?2)",
+                params![hex::encode(Sha256::digest(&bytes)), bytes],
+            )
+            .unwrap();
+            id
+        };
+        let alive_id = insert(&alive);
+        insert(&dead);
+        std::fs::remove_file(&dead).unwrap();
+
+        let (cursor, more) = library.collect_missing_files_step(0).unwrap();
+        assert!(!more);
+        assert_eq!(cursor, 0);
+        let remaining: Vec<u64> = {
+            let db = library.db.lock().unwrap();
+            db.prepare("SELECT id FROM cl_items ORDER BY id")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(remaining, vec![alive_id]);
     }
 }

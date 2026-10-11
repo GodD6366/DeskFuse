@@ -2513,6 +2513,7 @@ async fn run_worker(
                         }
                         let file_id = frame.transfer_id();
                         let is_data_frame = matches!(frame, ClipboardFileFrame::Offer {..}|ClipboardFileFrame::RequestedOffer {..}|ClipboardFileFrame::Chunk {..}|ClipboardFileFrame::Complete {..});
+                        let download_directory = file_policy.download_directory();
                         if let Some(transfer_id) = apply_remote_clipboard_decoded(
                             pasteboard.as_ref(),
                             &payload,
@@ -2531,6 +2532,7 @@ async fn run_worker(
                             &diagnostics,
                             peer_id,
                             Some(frame),
+                            Some(&download_directory),
                         ) {
                             file_policy.finished(transfer_id);
                             file_policy.protect_clipboard(pasteboard.as_ref());
@@ -2832,7 +2834,7 @@ async fn run_worker(
                         });
                         if files_idle
                             && input_coordinator
-                                .pause_for_update(github.snapshot().manual_requested)
+                                .pause_for_update(github.snapshot().manual_requested, force_install)
                         {
                             let admitted = {
                                 let mut closed = input_signals.update_admission.lock().unwrap();
@@ -2848,6 +2850,36 @@ async fn run_worker(
                                 }
                             };
                             if admitted {
+                                if force_install {
+                                    for cancel in outgoing_file_cancellations.values() {
+                                        cancel.store(true, Ordering::Release);
+                                    }
+                                    for state in incoming_file_clipboards.values_mut() {
+                                        state.cancel();
+                                    }
+                                    file_policy.cancel_pending(
+                                        &pending_incoming_file,
+                                        &paste_requested,
+                                        &paste_target_pid,
+                                        &runtime,
+                                        &clipboard_sequence,
+                                        &ui_sender,
+                                        &mut incoming_file_clipboards,
+                                    ).await;
+                                    finder_pastes.cancel_all(&ui_sender);
+                                    for job in preparations.jobs.values_mut() {
+                                        job.cancel.store(true, Ordering::Release);
+                                    }
+                                    for request in workflow_sources.drain(..) {
+                                        request.cancel.store(true, Ordering::Release);
+                                        let _ = request.reply.send(Err("任务已取消，正在立即安装更新".into()));
+                                    }
+                                    for task in workflow_sends.drain(..) {
+                                        task.abort();
+                                    }
+                                    clipboard_sync.invalidate_copy(&ui_sender);
+                                    paste_requested.store(false, Ordering::Release);
+                                }
                                 match deskfuse_update_platform::installer::launch_helper() {
                                     Ok(helper) => {
                                         install_helper = Some(helper);
@@ -2922,7 +2954,7 @@ async fn run_worker(
                         if staged
                             && files_idle
                             && input_coordinator
-                                .pause_for_update(updater.snapshot().manual_requested)
+                                .pause_for_update(updater.snapshot().manual_requested, force_install)
                         {
                             let admitted = {
                                 let mut closed = input_signals.update_admission.lock().unwrap();
@@ -2938,6 +2970,36 @@ async fn run_worker(
                                 }
                             };
                             if admitted {
+                                if force_install {
+                                    for cancel in outgoing_file_cancellations.values() {
+                                        cancel.store(true, Ordering::Release);
+                                    }
+                                    for state in incoming_file_clipboards.values_mut() {
+                                        state.cancel();
+                                    }
+                                    file_policy.cancel_pending(
+                                        &pending_incoming_file,
+                                        &paste_requested,
+                                        &paste_target_pid,
+                                        &runtime,
+                                        &clipboard_sequence,
+                                        &ui_sender,
+                                        &mut incoming_file_clipboards,
+                                    ).await;
+                                    finder_pastes.cancel_all(&ui_sender);
+                                    for job in preparations.jobs.values_mut() {
+                                        job.cancel.store(true, Ordering::Release);
+                                    }
+                                    for request in workflow_sources.drain(..) {
+                                        request.cancel.store(true, Ordering::Release);
+                                        let _ = request.reply.send(Err("任务已取消，正在立即安装更新".into()));
+                                    }
+                                    for task in workflow_sends.drain(..) {
+                                        task.abort();
+                                    }
+                                    clipboard_sync.invalidate_copy(&ui_sender);
+                                    paste_requested.store(false, Ordering::Release);
+                                }
                                 match deskfuse_update_platform::installer::launch_helper() {
                                     Ok(helper) => {
                                         install_helper = Some(helper);
@@ -2967,7 +3029,7 @@ async fn run_worker(
                                     }
                                 }
                             }
-                        } else {
+                        } else if !staged || !files_idle {
                             input_coordinator.resume_after_update();
                         }
                     }
@@ -4457,9 +4519,11 @@ fn apply_remote_clipboard(
         diagnostics,
         peer_id,
         frame,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_remote_clipboard_decoded(
     pasteboard: &dyn Pasteboard,
     payload: &ClipboardPayload,
@@ -4468,6 +4532,7 @@ fn apply_remote_clipboard_decoded(
     diagnostics: &Diagnostics,
     peer_id: DeviceId,
     frame: Option<ClipboardFileFrame>,
+    download_directory: Option<&std::path::Path>,
 ) -> Option<TransferId> {
     if payload.mime == CLIPBOARD_FILE_MIME {
         let transfer_id = frame.as_ref().map(ClipboardFileFrame::transfer_id);
@@ -4508,6 +4573,7 @@ fn apply_remote_clipboard_decoded(
                     peer_id,
                     state.receive_events,
                     ui_sender,
+                    download_directory,
                 )
             });
         let old_len = state.history.items.len();
