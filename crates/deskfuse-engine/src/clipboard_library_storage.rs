@@ -79,6 +79,7 @@ pub(super) fn install(db: &Connection) -> Result<bool> {
         CREATE INDEX IF NOT EXISTS cl_metadata_blob ON cl_item_metadata(blob_hash);
         CREATE INDEX IF NOT EXISTS cl_metadata_app ON cl_item_metadata(json_extract(summary,'$.source_app_id'),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);
         CREATE INDEX IF NOT EXISTS cl_metadata_device ON cl_item_metadata(json_extract(summary,'$.source_device_id'),MAX(COALESCE(last_used,0),COALESCE(copied,imported)) DESC,id DESC);
+        CREATE INDEX IF NOT EXISTS cl_metadata_archive_text ON cl_item_metadata(search_text) WHERE ordinary=0;
         CREATE TABLE IF NOT EXISTS cl_short_terms(term TEXT NOT NULL,item_id INTEGER NOT NULL,PRIMARY KEY(term,item_id));
         CREATE INDEX IF NOT EXISTS cl_short_terms_item ON cl_short_terms(item_id);
         CREATE TABLE IF NOT EXISTS cl_short_pending(item_id INTEGER PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0);

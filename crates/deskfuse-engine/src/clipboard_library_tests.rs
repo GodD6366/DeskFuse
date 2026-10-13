@@ -740,3 +740,219 @@ fn set_item_text_rejects_blank_unsupported_and_remote_rows() {
         Some("keep me")
     );
 }
+
+/// 与任何归档都没有身份关系的同文本历史行，复刻导入历史与跨设备同步造成的重复。
+fn duplicate_row(library: &Library, value: &str, remote: bool) -> u64 {
+    let db = library.writer().unwrap();
+    let mut summary = json!({
+        "kind": "text",
+        "mime": "text/plain",
+        "length": value.len(),
+        "preview": value,
+        "source": "本机",
+        "has_image": false,
+        "file_count": 0,
+    });
+    db.execute(
+        "INSERT INTO cl_items(global_id,digest,summary,imported,search_text,ordinary,remote) VALUES(?1,?2,?3,?4,?5,1,?6)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            format!("legacy:{}", uuid::Uuid::new_v4()),
+            serde_json::to_string(&summary).unwrap(),
+            now_ms(),
+            value.to_lowercase(),
+            remote as i64
+        ],
+    )
+    .unwrap();
+    let id = db.last_insert_rowid() as u64;
+    // summary 必须回填自身 id，读取侧的 Summary 结构体要求该字段。
+    summary["id"] = json!(id);
+    db.execute(
+        "UPDATE cl_items SET summary=?1 WHERE id=?2",
+        params![serde_json::to_string(&summary).unwrap(), id],
+    )
+    .unwrap();
+    id
+}
+
+/// 冻结归档行加手动列表成员关系，复刻从别的设备或导入历史带进来的已命名条目。
+fn named_archive(library: &Library, list: &str, value: &str, title: &str) -> u64 {
+    let global_id = format!("archive:{}", uuid::Uuid::new_v4());
+    let mut summary = json!({
+        "kind": "text",
+        "mime": "text/plain",
+        "length": value.len(),
+        "preview": value,
+        "source": "本机",
+        "has_image": false,
+        "file_count": 0,
+    });
+    let db = library.writer().unwrap();
+    db.execute(
+        "INSERT INTO cl_items(global_id,digest,summary,imported,search_text,ordinary,title) VALUES(?1,?2,?3,?4,?5,0,?6)",
+        params![
+            global_id,
+            format!("legacy:{}", uuid::Uuid::new_v4()),
+            serde_json::to_string(&summary).unwrap(),
+            now_ms(),
+            value.to_lowercase(),
+            title
+        ],
+    )
+    .unwrap();
+    let id = db.last_insert_rowid() as u64;
+    summary["id"] = json!(id);
+    db.execute(
+        "UPDATE cl_items SET summary=?1 WHERE id=?2",
+        params![serde_json::to_string(&summary).unwrap(), id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO cl_records(key,revision,author,deleted,value) VALUES(?1,1,'test',0,?2)",
+        params![
+            format!("member:{list}:{global_id}"),
+            json!({"list_id": list, "item_id": global_id}).to_string()
+        ],
+    )
+    .unwrap();
+    id
+}
+
+fn text_rows(library: &Library, value: &str) -> i64 {
+    library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM cl_items WHERE search_text=?1",
+            [value.to_lowercase()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn used_at(library: &Library, id: u64) -> u64 {
+    library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(last_used,0) FROM cl_items WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn snapshot_of(value: &str) -> PasteboardSnapshot {
+    PasteboardSnapshot {
+        text: Some(value.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn repeating_text_reuses_the_named_archive_without_a_new_row() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library
+        .mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#)
+        .unwrap();
+    let base = text(&library, "90731230");
+    library.membership("group", base, true).unwrap();
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let archived = manual["items"][0]["id"].as_u64().unwrap();
+    library
+        .mutate(
+            &json!({"op":"set_item_title","id":archived,"title":"yz定制自动化测试店铺","compact":true})
+                .to_string(),
+        )
+        .unwrap();
+    let before = text_rows(&library, "90731230");
+
+    let reused = library
+        .ingest(&snapshot_of("90731230"), "local")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reused, base);
+    assert_eq!(text_rows(&library, "90731230"), before);
+    assert!(used_at(&library, archived) > 0);
+
+    // 全局历史展示归档的普通来源行，手动列表展示归档本身，标题与内容都保留。
+    let items = page(&library, "");
+    let items = items["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_u64().unwrap(), base);
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manual["items"].as_array().unwrap().len(), 1);
+    assert_eq!(manual["items"][0]["id"].as_u64().unwrap(), archived);
+    assert_eq!(
+        manual["items"][0]["title"].as_str().unwrap(),
+        "yz定制自动化测试店铺"
+    );
+    assert_eq!(
+        library.snapshot(archived).unwrap().text.as_deref(),
+        Some("90731230")
+    );
+}
+
+#[test]
+fn historical_duplicates_show_only_the_named_archive() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library
+        .mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#)
+        .unwrap();
+    let archived = named_archive(&library, "group", "90731230", "yz定制自动化测试店铺");
+    duplicate_row(&library, "90731230", false);
+    duplicate_row(&library, "90731230", true);
+
+    let items = page(&library, "");
+    let items = items["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_u64().unwrap(), archived);
+    assert_eq!(items[0]["title"].as_str().unwrap(), "yz定制自动化测试店铺");
+
+    let before = text_rows(&library, "90731230");
+    let reused = library
+        .ingest(&snapshot_of("90731230"), "local")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reused, archived);
+    assert_eq!(text_rows(&library, "90731230"), before);
+    assert!(used_at(&library, archived) > 0);
+    let items = page(&library, "");
+    let items = items["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_u64().unwrap(), archived);
+}
+
+#[test]
+fn an_untitled_archive_does_not_absorb_repeated_text() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    library
+        .mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#)
+        .unwrap();
+    named_archive(&library, "group", "90731230", "");
+    duplicate_row(&library, "90731230", false);
+
+    let before = text_rows(&library, "90731230");
+    library
+        .ingest(&snapshot_of("90731230"), "local")
+        .unwrap()
+        .unwrap();
+    // 没有标题就没有关联依据：仍按原有 digest/文本规则复用，重复行保持可见。
+    assert_eq!(text_rows(&library, "90731230"), before);
+    let items = page(&library, "");
+    assert_eq!(items["items"].as_array().unwrap().len(), 2);
+}
