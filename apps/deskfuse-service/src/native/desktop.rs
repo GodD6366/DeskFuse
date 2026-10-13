@@ -133,8 +133,19 @@ impl State {
                 control_session: link.control_session.map(|id| id.to_string()),
                 lease_revision: link.lease_revision,
                 motion_mode: link.motion_mode.clone(),
+                motion_fallback_reason: link.motion_fallback_reason.clone(),
             })
             .collect();
+        let active = input
+            .links
+            .iter()
+            .find(|link| link.control_session.is_some());
+        let mode = active
+            .and_then(|link| link.motion_mode.clone())
+            .unwrap_or_default();
+        let fallback = active.and_then(|link| link.motion_fallback_reason.clone());
+        deskfuse_core::fold_pending_stages();
+        let quality = deskfuse_input::quality::current_report(&mode, fallback.as_deref());
         let session_agent = self.session_agent.snapshot();
         ipc::InputState {
             helper_connected: self.helper_available(),
@@ -172,6 +183,7 @@ impl State {
             activations,
             remote_topologies,
             links,
+            quality,
         }
     }
     pub(super) fn input_event(
@@ -899,6 +911,7 @@ impl State {
                 session_epoch,
                 after_sequence,
                 desktop,
+                stages,
             } => {
                 if session_epoch != epoch {
                     return ipc::Reply::rejected("session_expired", "input helper epoch expired");
@@ -937,6 +950,8 @@ impl State {
                 let sequence = deliveries
                     .last()
                     .map_or(after_sequence, ipc::InputDelivery::sequence);
+                // 只有这份轮询会被 helper 当成已接收。拒绝路径由 helper 把计数加回去。
+                deskfuse_core::add_pending_stages(stages);
                 ipc::Reply::InputPoll {
                     state: self.input_state(network),
                     deliveries,
@@ -1068,6 +1083,7 @@ impl State {
                 target_display,
                 batch: _,
                 events,
+                relative,
             } => {
                 let Ok(session_id) = parse_input_session(&session_id) else {
                     return ipc::Reply::rejected("invalid_input", "invalid input session id");
@@ -1086,6 +1102,7 @@ impl State {
                         session_id,
                         target_display: target_display.into(),
                         events,
+                        relative,
                     }) {
                     Ok(()) => ipc::Reply::queued(),
                     Err(_) => ipc::Reply::rejected("busy", "input runtime queue unavailable"),

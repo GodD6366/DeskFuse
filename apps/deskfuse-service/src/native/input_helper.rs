@@ -123,6 +123,7 @@ struct Controller {
     /// (peer, granted control session, ready) rows mirrored from the state.
     links: Vec<(DeviceId, Option<InputSessionId>, bool)>,
     pending: Vec<SharedInputEvent>,
+    pending_relative: Option<(f64, f64)>,
     pending_target: Option<(InputSessionId, String)>,
     batch: u64,
     started: Instant,
@@ -144,6 +145,7 @@ impl Controller {
             layout: Vec::new(),
             links: Vec::new(),
             pending: Vec::new(),
+            pending_relative: None,
             pending_target: None,
             batch: 0,
             started: Instant::now(),
@@ -203,18 +205,21 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
                 }
             }
         }
+        let stages = deskfuse_core::take_pending_stages();
         let reply = match exchange(
             &mut request_id,
             ipc::Command::PollInput {
                 session_epoch,
                 after_sequence: cursor,
                 desktop: input_desktop(),
+                stages,
             },
         )
         .await
         {
             Ok(reply) => reply,
             Err(_) => {
+                deskfuse_core::add_pending_stages(stages);
                 registered = false;
                 current_session = None;
                 let _ = injector.release_all_nowait();
@@ -229,6 +234,8 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
             state,
         } = reply
         else {
+            // 服务没收下这批计数。加回去，等下一次成功的轮询。
+            deskfuse_core::add_pending_stages(stages);
             registered = false;
             continue;
         };
@@ -378,12 +385,19 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
                         }
                         let global = Point::new(sample.global_x, sample.global_y);
                         let now_ms = controller.started.elapsed().as_millis() as u64;
-                        actions.extend(controller.policy.handle_input(
+                        let (has_raw, raw_dx, raw_dy) = (sample.has_raw, sample.raw_dx, sample.raw_dy);
+                        let mut routed = controller.policy.handle_input(
                             sample.event,
                             global,
                             Vector2::new(sample.delta_x, sample.delta_y),
                             now_ms,
-                        ));
+                        );
+                        attach_captured_relative(&mut routed, has_raw, raw_dx, raw_dy);
+                        deskfuse_core::record_input_stage(
+                            deskfuse_core::InputStage::CaptureQueue,
+                            u64::try_from(sample.captured_at.elapsed().as_micros()).unwrap_or(u64::MAX),
+                        );
+                        actions.extend(routed);
                     }
                     Ok(None) => break,
                     Ok(Some(_)) | Err(_) => {
@@ -500,7 +514,7 @@ fn maintain_controller(
                 context: None,
                 reason: None,
                 motion_mode: link.motion_mode.clone(),
-                motion_fallback_reason: None,
+                motion_fallback_reason: link.motion_fallback_reason.clone(),
             })
         })
         .collect();
@@ -581,6 +595,56 @@ fn maintain_controller(
     Ok(release_on_change)
 }
 
+/// 把设备计数挂到本样本的第一条移动上。超限时保留原来的累计，不把像素差当成设备计数。
+fn attach_captured_relative(actions: &mut [SharingAction], has_raw: bool, dx: f64, dy: f64) {
+    if !has_raw {
+        return;
+    }
+    if !deskfuse_core::relative_delta_ok(dx) || !deskfuse_core::relative_delta_ok(dy) {
+        return;
+    }
+    let Some(SharingAction::Route { relative, .. }) = actions.iter_mut().find(|action| {
+        matches!(
+            action,
+            SharingAction::Route {
+                event: SharedInputEvent::Motion { .. },
+                ..
+            }
+        )
+    }) else {
+        return;
+    };
+    *relative = match *relative {
+        None => Some((dx, dy)),
+        Some((left, right)) => {
+            let (sum_x, sum_y) = (left + dx, right + dy);
+            if deskfuse_core::relative_delta_ok(sum_x) && deskfuse_core::relative_delta_ok(sum_y) {
+                Some((sum_x, sum_y))
+            } else {
+                Some((left, right))
+            }
+        }
+    };
+}
+
+/// 累加同一批次的相对位移。和超限时返回错误，调用方先发出当前批次。
+fn merge_relative(current: Option<(f64, f64)>, dx: f64, dy: f64) -> Result<Option<(f64, f64)>, ()> {
+    if !deskfuse_core::relative_delta_ok(dx) || !deskfuse_core::relative_delta_ok(dy) {
+        return Ok(current);
+    }
+    match current {
+        None => Ok(Some((dx, dy))),
+        Some((left, right)) => {
+            let (sum_x, sum_y) = (left + dx, right + dy);
+            if deskfuse_core::relative_delta_ok(sum_x) && deskfuse_core::relative_delta_ok(sum_y) {
+                Ok(Some((sum_x, sum_y)))
+            } else {
+                Err(())
+            }
+        }
+    }
+}
+
 /// Sends the pending routed batch to the service. Batch identifiers are
 /// per-session monotonic; the service drops replays and the runtime validates
 /// every event against the live lease.
@@ -590,11 +654,13 @@ async fn flush_pending(controller: &mut Controller, request_id: &mut u64) {
     };
     if controller.pending.is_empty() {
         controller.pending_target = None;
+        controller.pending_relative = None;
         return;
     }
     controller.batch = controller.batch.wrapping_add(1).max(1);
     let batch = controller.batch;
     let events = std::mem::take(&mut controller.pending);
+    let relative = controller.pending_relative.take();
     controller.pending_target = None;
     let reply = exchange(
         request_id,
@@ -603,6 +669,7 @@ async fn flush_pending(controller: &mut Controller, request_id: &mut u64) {
             target_display: target,
             batch,
             events,
+            relative,
         },
     )
     .await;
@@ -721,7 +788,7 @@ async fn apply_actions(
                     }
                 }
             }
-            SharingAction::Route { target, event } => {
+            SharingAction::Route { target, event, relative } => {
                 let Some(outbound) = controller.outbound.clone() else {
                     continue;
                 };
@@ -736,6 +803,23 @@ async fn apply_actions(
                     .is_some_and(|existing| *existing != key)
                 {
                     flush_pending(controller, request_id).await;
+                }
+                if let Some((dx, dy)) = relative {
+                    match merge_relative(controller.pending_relative, dx, dy) {
+                        Ok(next) => controller.pending_relative = next,
+                        Err(()) => {
+                            if controller.pending_relative.is_some() {
+                                flush_pending(controller, request_id).await;
+                            }
+                            controller.pending_relative = if deskfuse_core::relative_delta_ok(dx)
+                                && deskfuse_core::relative_delta_ok(dy)
+                            {
+                                Some((dx, dy))
+                            } else {
+                                None
+                            };
+                        }
+                    }
                 }
                 controller.pending_target = Some(key);
                 controller.pending.push(event);

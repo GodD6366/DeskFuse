@@ -206,5 +206,6 @@ internal static class JsonFields
     public static string String(this JsonElement value, string key, string fallback = "") => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.String ? field.GetString() ?? fallback : fallback;
     public static bool Bool(this JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.True;
     public static long Number(this JsonElement value, string key, long fallback = 0) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field) && field.TryGetInt64(out long number) ? number : fallback;
+    public static double Double(this JsonElement value, string key, double fallback = 0) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field) && field.TryGetDouble(out double number) ? number : fallback;
     public static IEnumerable<JsonElement> Array(this JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.Array ? field.EnumerateArray() : [];
 }

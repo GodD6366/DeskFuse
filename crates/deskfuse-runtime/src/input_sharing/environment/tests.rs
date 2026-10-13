@@ -93,10 +93,32 @@ async fn wifi_temporary_override_expires_on_the_next_network() {
     settle(&mut actor, Some("unknown"));
     actor.choose_environment_controller(local, false).await;
     assert!(!actor.snapshot.environment.local_suspended);
-    assert_eq!(actor.environment.rules.len(), 1);
+    // 静默记忆：本次生效的主控自动成为当前 Wi-Fi 的保存规则。
+    assert_eq!(actor.environment.rules.get("unknown"), Some(&local));
     settle(&mut actor, Some("another"));
     assert!(actor.snapshot.environment.local_suspended);
     assert!(actor.environment.temporary.is_none());
+}
+
+#[test]
+fn wifi_effective_controller_is_remembered_silently() {
+    let (mut actor, _, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    settle(&mut actor, Some("home"));
+    assert_eq!(actor.environment.rules.get("home"), Some(&local));
+    assert!(actor.environment.dirty);
+}
+
+#[test]
+fn wifi_rule_for_local_controller_is_cleared_when_controller_turns_off() {
+    let (mut actor, _, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.snapshot.settings.enabled = false;
+    actor.snapshot.settings.role = InputShareRole::Disabled;
+    actor.environment.rules.insert("home".into(), local);
+    settle(&mut actor, Some("home"));
+    assert!(!actor.environment.rules.contains_key("home"));
+    assert!(actor.environment.dirty);
 }
 
 #[test]

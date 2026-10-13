@@ -11,6 +11,14 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod debug_logging;
+pub mod input_quality;
+pub use input_quality::{
+    accept_raw_delta, add_pending_stages, fold_pending_stages, note_injection_duration,
+    note_quality_tick, quality_ticks, record_input_stage, relative_delta_ok,
+    relative_motion_capture_ready, relative_motion_inject_ready,
+    set_relative_motion_capture_ready, take_pending_stages, InputStage, PendingStages,
+    QualityObservation, QualityTick,
+};
 
 mod file_transfer;
 pub use file_transfer::*;
@@ -386,6 +394,8 @@ impl Capabilities {
 
     /// Epoch-barriered mouse positions carried by bounded QUIC datagrams.
     pub const INPUT_MOTION_DATAGRAM_V1: Self = Self(1 << 9);
+    /// Device-count relative motion on the same datagram path. Absence keeps absolute motion.
+    pub const INPUT_RELATIVE_MOTION_V1: Self = Self(1 << 16);
 
     /// Synchronized workflow definitions and sender-side rules.
     pub const WORKFLOW_SYNC: Self = Self(1 << 14);
@@ -1631,6 +1641,7 @@ mod tests {
             Capabilities::LAN_UPDATES,
             Capabilities::LAN_UPDATE_TRIGGER,
             Capabilities::INPUT_MOTION_DATAGRAM_V1,
+            Capabilities::INPUT_RELATIVE_MOTION_V1,
             Capabilities::INPUT_ENVIRONMENT,
         ];
         let mut seen = Capabilities::NONE;

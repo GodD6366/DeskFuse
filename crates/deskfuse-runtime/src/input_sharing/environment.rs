@@ -381,6 +381,27 @@ impl InputActor {
                 }
                 self.snapshot.environment.selected = selected;
                 self.snapshot.environment.local_suspended = suspended;
+                // 静默记忆：已知 Wi-Fi 上生效的主控直接成为保存的规则，
+                // 切换主控即自动更新；关闭本机主控则清除该网络的映射，
+                // 让它回到「未匹配自动暂停」语义。落盘复用 dirty + 周期 flush。
+                if let Some(ssid) = self.snapshot.environment.ssid.clone() {
+                    if !local_controller
+                        && self.environment.temporary.is_none()
+                        && self.environment.rules.get(&ssid) == Some(&local)
+                    {
+                        self.environment.rules.remove(&ssid);
+                        self.environment.dirty = true;
+                        self.environment.last_sent = None;
+                    } else if let Some(controller) = selected
+                        && self.environment.rules.get(&ssid) != Some(&controller)
+                        && (self.environment.rules.contains_key(&ssid)
+                            || self.environment.rules.len() < 64)
+                    {
+                        self.environment.rules.insert(ssid, controller);
+                        self.environment.dirty = true;
+                        self.environment.last_sent = None;
+                    }
+                }
             }
         }
         self.snapshot.environment.candidates = candidates;

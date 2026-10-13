@@ -117,8 +117,8 @@ struct ClipboardView: View {
         .onChange(of: selected) { _, _ in cancelCopy(); copyError = nil; copiedID = nil }
         .task(id: copiedID) {
             guard let id = copiedID else { return }
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            if copiedID == id { copiedID = nil }
+            do { try await Task.sleep(for: .seconds(1.2)) } catch { return }
+            if copiedID == id { withMotion(.snappy) { copiedID = nil } }
         }
         .onDisappear {
             cancelCopy()
@@ -200,6 +200,7 @@ struct ClipboardView: View {
                 guard copyToken == token, selected == id else { return }
                 copyToken = nil
                 copiedID = id
+                NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
                 // A copy may have fetched remote file references. Refresh the
                 // preview's local availability without issuing another paste.
                 if let refreshed = try? await client.content(id) {
@@ -251,7 +252,7 @@ struct ClipboardView: View {
         let visible = page.filter { item in
             item.fileCount == 0 || !unavailable.contains(item.id)
         }
-        let deviceNames = Dictionary(library.devices.map { ($0.id, $0.name) }, uniquingKeysWith: { _, latest in latest })
+        let deviceNames = library.displayDeviceNames(snapshot: snapshot)
         var appIDs: [UInt64: String] = [:]
         var titles: [UInt64: String] = [:]
         var metas: [UInt64: ClipboardItemMeta] = [:]

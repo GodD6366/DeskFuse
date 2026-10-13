@@ -24,6 +24,7 @@ struct ClipboardHistoryPane: View {
     let onDelete: ([UInt64]) -> Void
     @State private var selection: Set<UInt64> = []
     @State private var selectionAnchor: UInt64?
+    @State private var hoveredItem: UInt64?
     @State private var itemFrames: [UInt64: CGRect] = [:]
     @State private var selectionRect: CGRect?
     @State private var dragBase: Set<UInt64>?
@@ -45,10 +46,13 @@ struct ClipboardHistoryPane: View {
                 Group {
                     if displayMode == .grid {
                         gridContent(proxy: proxy)
+                            .transition(.opacity.combined(with: .scale(0.98)))
                     } else {
                         listContent(proxy: proxy)
+                            .transition(.opacity.combined(with: .scale(0.98)))
                     }
                 }
+                .animation(Motion.settle, value: displayMode)
             }
 
             Divider().padding(.horizontal, 20)
@@ -72,6 +76,7 @@ struct ClipboardHistoryPane: View {
         .onChange(of: items.map(\.id)) { _, ids in
             selection.formIntersection(ids)
             if let selectionAnchor, !ids.contains(selectionAnchor) { self.selectionAnchor = nil }
+            if let hoveredItem, !ids.contains(hoveredItem) { self.hoveredItem = nil }
             pendingDeletion = pendingDeletion.filter { ids.contains($0) }
         }
         .onChange(of: listID) { _, _ in clearSelection() }
@@ -165,15 +170,19 @@ struct ClipboardHistoryPane: View {
                                         onDelete: { deleteFromContext(item.id) })
                         .clipboardSelectionFrame(item.id)
                         .padding(.horizontal, 10)
-                        .background(selection.contains(item.id) ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                        .background(rowBackground(item.id), in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous))
                         .overlay {
-                            RoundedRectangle(cornerRadius: 10)
+                            RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
                                 .strokeBorder(item.id == selected && historyFocused ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
                         }
                         .background(NativeListSelection())
+                        .onHover { over in
+                            withMotion(.snappy) { hoveredItem = over ? item.id : nil }
+                        }
                         .tag(item.id)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
                 if hasMore {
                     ClipboardPaginationTrigger(itemCount: paginationOffset, searching: searching, loadMore: loadMore)
@@ -183,9 +192,16 @@ struct ClipboardHistoryPane: View {
             .listStyle(.inset)
             .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 68),
+            .environment(\.defaultMinListRowHeight, 56)
+            /// 新条目插入时从顶部淡入滑入。
+            .animation(Motion.snappy, value: items.map(\.id)),
             proxy: proxy
         )
+    }
+
+    private func rowBackground(_ id: UInt64) -> Color {
+        if selection.contains(id) { return DeskFuseBrand.selectionFill }
+        return hoveredItem == id ? DeskFuseBrand.listRowHoverFill : .clear
     }
 
     private func startsDayGroup(at index: Int) -> Bool {
@@ -421,7 +437,7 @@ struct ClipboardHistoryPane: View {
                 Text("正在搜索…").font(.callout).foregroundStyle(.secondary)
             } else {
                 Image(systemName: historyIsEmpty ? "clipboard" : "magnifyingglass")
-                    .font(.system(size: 28)).foregroundStyle(.tertiary)
+                    .font(.system(size: 28)).foregroundStyle(DeskFuseBrand.fusionGradient)
                 Text(historyIsEmpty ? "还没有剪贴板历史" : "没有匹配的内容")
                     .font(.callout.weight(.medium))
                 Text(historyIsEmpty ? "复制文字、图片或文件后\n会显示在这里。" : "试试其他关键词或筛选条件。")

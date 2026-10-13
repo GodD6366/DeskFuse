@@ -208,6 +208,8 @@ impl Owner {
                     scale_factor: 1.,
                     rotation_degrees: 0,
                     is_primary: true,
+                    physical_width_mm: None,
+                    physical_height_mm: None,
                 };
                 Some((packet, id, display, injector))
             })();

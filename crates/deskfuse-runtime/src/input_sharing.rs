@@ -25,6 +25,29 @@ const RENEW: Duration = Duration::from_millis(250);
 // Bound work per select turn so motion bursts cannot starve lease/network processing.
 const MAX_MOTION_COMMAND_DRAIN: usize = 64;
 
+fn relative_of(command: &RuntimeCommand) -> Option<(f64, f64)> {
+    match command {
+        RuntimeCommand::SendSharedInput { relative, .. } => *relative,
+        _ => None,
+    }
+}
+
+/// 一边没有原始增量时保留另一边。两边相加超过协议上限则整段改走绝对坐标。
+fn combine_relative(left: Option<(f64, f64)>, right: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    match (left, right) {
+        (None, value) | (value, None) => value,
+        (Some((left_x, left_y)), Some((right_x, right_y))) => {
+            let dx = left_x + right_x;
+            let dy = left_y + right_y;
+            if relative_delta_ok(dx) && relative_delta_ok(dy) {
+                Some((dx, dy))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Lease {
     activation_id: InputActivationId,
@@ -213,7 +236,11 @@ pub(crate) async fn run(
                 None => break,
             },
             event = inbox.next() => if let Some(event) = event {
-                publish_snapshot = !matches!(&event, InputTransportEvent::Motion { .. });
+                publish_snapshot = !matches!(
+                    &event,
+                    InputTransportEvent::Motion { .. }
+                        | InputTransportEvent::RelativeMotion { .. }
+                );
                 actor.inbound(event);
             } else { break },
             _ = environment_save.tick() => {
@@ -269,6 +296,7 @@ impl InputActor {
             session_id,
             target_display,
             events,
+            ..
         } = command
         else {
             return None;
@@ -294,6 +322,7 @@ impl InputActor {
         let Some(target) = self.motion_command_target(&command) else {
             return command;
         };
+        let mut relative = relative_of(&command);
         for _ in 1..MAX_MOTION_COMMAND_DRAIN {
             let Ok(next) = commands.try_recv() else {
                 break;
@@ -304,11 +333,12 @@ impl InputActor {
                 *pending = Some(next);
                 break;
             }
+            relative = combine_relative(relative, relative_of(&next));
             command = next;
         }
-        if let RuntimeCommand::SendSharedInput { events, .. } = &mut command {
-            // All positions were validated above; these are absolute coordinates,
-            // not relative deltas. Replaying older positions only adds latency.
+        if let RuntimeCommand::SendSharedInput { events, relative: slot, .. } = &mut command {
+            // 绝对坐标只留最新点。相对计数必须累加，超限则改走绝对坐标。
+            *slot = relative;
             if events.len() > 1 {
                 let latest = events.pop().unwrap();
                 events.clear();
@@ -421,6 +451,7 @@ impl InputActor {
     }
     fn release(&mut self, id: InputSessionId, reason: &str, notify: bool) {
         if let Some(lease) = self.leases.remove(&id) {
+            deskfuse_input::quality::archive_session(&id.to_string());
             self.transport
                 .cancel_input_motion(lease.peer, lease.context.session_id, id);
             if notify && let Some(token) = lease.token {
@@ -478,14 +509,14 @@ impl InputActor {
             return;
         }
         let id = InputSessionId::new();
-        let supports_motion = self
-            .transport
-            .input_capabilities(peer, context.session_id)
-            .contains(Capabilities::INPUT_MOTION_DATAGRAM_V1)
+        let capabilities = self.transport.input_capabilities(peer, context.session_id);
+        let supports_motion = capabilities.contains(Capabilities::INPUT_MOTION_DATAGRAM_V1)
             && !self
                 .motion_disabled_until
                 .get(&peer)
                 .is_some_and(|until| *until > Instant::now());
+        let peer_relative = capabilities.contains(Capabilities::INPUT_RELATIVE_MOTION_V1);
+        let capture_ready = relative_motion_capture_ready();
         let motion_available = self
             .transport
             .input_motion_available(peer, context.session_id);
@@ -501,10 +532,12 @@ impl InputActor {
             }
         }
         let hybrid_request = supports_motion && motion_available;
+        let relative_ready = hybrid_request && peer_relative && capture_ready;
         let request = if hybrid_request {
             InputShareMessage::RequestHybrid {
                 session_id: id,
                 target_display: target.clone(),
+                relative_ready,
             }
         } else {
             InputShareMessage::Request {
@@ -533,18 +566,25 @@ impl InputActor {
                 revision: 0,
                 hybrid: HybridLease {
                     requested: hybrid_request,
-                    fallback_reason: if hybrid_request {
-                        None
-                    } else if self
-                        .motion_disabled_until
-                        .get(&peer)
-                        .is_some_and(|until| *until > Instant::now())
-                    {
-                        Some("Datagram health failure cooldown".into())
-                    } else if !supports_motion {
-                        Some("Motion capability not negotiated (disabled or unsupported)".into())
+                    fallback_reason: if !hybrid_request {
+                        if self
+                            .motion_disabled_until
+                            .get(&peer)
+                            .is_some_and(|until| *until > Instant::now())
+                        {
+                            Some("Datagram health failure cooldown".into())
+                        } else if !supports_motion {
+                            Some(
+                                "Motion capability not negotiated (disabled or unsupported)"
+                                    .into(),
+                            )
+                        } else {
+                            Some("Datagram path probe unavailable after timeout".into())
+                        }
+                    } else if peer_relative && !capture_ready {
+                        Some("本机原始相对采集未就绪，已使用绝对坐标".into())
                     } else {
-                        Some("Datagram path probe unavailable after timeout".into())
+                        None
                     },
                     ..Default::default()
                 },
@@ -865,6 +905,7 @@ impl InputActor {
                 session_id,
                 target_display,
                 events,
+                relative,
             } => {
                 let Some(lease) = self.leases.get(&session_id) else {
                     return;
@@ -885,7 +926,8 @@ impl InputActor {
                 let generation = topology.generation;
                 if events.is_empty()||events.len()>256||events.iter().any(|e|e.validate().is_err() || matches!(e,SharedInputEvent::Motion{x,y} if !topology.displays.iter().any(|d|d.id==target_display && d.contains(*x,*y)))){self.release(session_id,"invalid input frame",true);return}
                 if self.leases[&session_id].hybrid.enabled {
-                    self.hybrid_events(session_id, events);
+                    let relative = relative.filter(|(dx, dy)| relative_delta_ok(*dx) && relative_delta_ok(*dy));
+                    self.hybrid_events(session_id, events, relative);
                     return;
                 }
                 let lease = self.leases.get_mut(&session_id).unwrap();
@@ -948,6 +990,11 @@ impl InputActor {
                 context,
                 motion,
             } => self.inbound_motion(peer_id, context, motion),
+            InputTransportEvent::RelativeMotion {
+                peer_id,
+                context,
+                motion,
+            } => self.inbound_relative(peer_id, context, motion),
             InputTransportEvent::Invalidated {
                 peer_id,
                 session_id,
@@ -993,8 +1040,20 @@ impl InputActor {
                     return;
                 }
                 let hybrid_request = matches!(&message, InputShareMessage::RequestHybrid { .. });
+                let request_relative_ready = matches!(
+                    &message,
+                    InputShareMessage::RequestHybrid {
+                        relative_ready: true,
+                        ..
+                    }
+                );
                 let hybrid_grant = match &message {
-                    InputShareMessage::GrantHybrid { motion_enabled, .. } => Some(*motion_enabled),
+                    InputShareMessage::GrantHybrid {
+                        motion_enabled,
+                        pointer_mode,
+                        pointer_fallback,
+                        ..
+                    } => Some((*motion_enabled, *pointer_mode, pointer_fallback.clone())),
                     _ => None,
                 };
                 match message {
@@ -1139,6 +1198,7 @@ impl InputActor {
                     | InputShareMessage::RequestHybrid {
                         session_id,
                         target_display,
+                        relative_ready: _,
                     } => {
                         if hybrid_request
                             && !self
@@ -1182,6 +1242,47 @@ impl InputActor {
                         }
                         let token = InputToken::new();
                         let revision = self.revision();
+                        let motion_available = self
+                            .transport
+                            .input_motion_available(peer_id, context.session_id);
+                        let caps = self
+                            .transport
+                            .input_capabilities(peer_id, context.session_id);
+                        let datagram = hybrid_request
+                            && caps.contains(Capabilities::INPUT_MOTION_DATAGRAM_V1)
+                            && motion_available;
+                        let decision = deskfuse_input::quality::negotiate_pointer(
+                            deskfuse_input::quality::PointerNegotiation {
+                                datagram_available: datagram,
+                                peer_relative: caps
+                                    .contains(Capabilities::INPUT_RELATIVE_MOTION_V1),
+                                request_relative_ready,
+                                inject_ready: relative_motion_inject_ready(),
+                            },
+                        );
+                        let (enabled, pointer_mode, fallback_reason, wire_fallback) =
+                            if decision.motion_enabled {
+                                (
+                                    true,
+                                    decision.mode,
+                                    decision.fallback.map(str::to_owned),
+                                    decision.fallback.map(str::to_owned),
+                                )
+                            } else if !hybrid_request {
+                                (
+                                    false,
+                                    MotionPointerMode::Reliable,
+                                    Some("Controller requested reliable-only".into()),
+                                    None,
+                                )
+                            } else {
+                                (
+                                    false,
+                                    MotionPointerMode::Reliable,
+                                    Some("Receiver Datagram path unavailable".into()),
+                                    None,
+                                )
+                            };
                         self.leases.insert(
                             session_id,
                             Lease {
@@ -1202,24 +1303,14 @@ impl InputActor {
                                 revision,
                                 hybrid: HybridLease {
                                     requested: hybrid_request,
-                                    fallback_reason: if !hybrid_request {
-                                        Some("Controller requested reliable-only".into())
-                                    } else if !self
-                                        .transport
-                                        .input_motion_available(peer_id, context.session_id)
-                                    {
-                                        Some("Receiver Datagram path unavailable".into())
-                                    } else {
-                                        None
-                                    },
-                                    enabled: hybrid_request
-                                        && self
-                                            .transport
-                                            .input_motion_available(peer_id, context.session_id),
+                                    enabled,
+                                    fallback_reason,
+                                    pointer_mode,
                                     ..Default::default()
                                 },
                             },
                         );
+                        deskfuse_input::quality::begin_session(&session_id.to_string());
                         if !self.send(
                             peer_id,
                             &context,
@@ -1228,7 +1319,9 @@ impl InputActor {
                                     session_id,
                                     token,
                                     ttl_ms: 1500,
-                                    motion_enabled: self.leases[&session_id].hybrid.enabled,
+                                    motion_enabled: enabled,
+                                    pointer_mode,
+                                    pointer_fallback: wire_fallback,
                                 }
                             } else {
                                 InputShareMessage::Grant {
@@ -1247,6 +1340,26 @@ impl InputActor {
                     | InputShareMessage::GrantHybrid {
                         session_id, token, ..
                     } => {
+                        let grant_enabled = hybrid_grant.as_ref().map(|(enabled, _, _)| *enabled);
+                        let mode_ok = match hybrid_grant.as_ref() {
+                            Some((enabled, mode, _)) => {
+                                self.leases.get(&session_id).is_some_and(|l| {
+                                    if l.token.is_none() {
+                                        true
+                                    } else if !l.hybrid.enabled {
+                                        !enabled
+                                            && matches!(
+                                                mode,
+                                                MotionPointerMode::Absolute
+                                                    | MotionPointerMode::Reliable
+                                            )
+                                    } else {
+                                        *enabled && *mode == l.hybrid.pointer_mode
+                                    }
+                                })
+                            }
+                            None => true,
+                        };
                         let valid = self.leases.get(&session_id).is_some_and(|l| {
                             l.peer == peer_id
                                 && l.context == context
@@ -1256,12 +1369,13 @@ impl InputActor {
                                 && l.token.is_none_or(|t| t == token)
                                 && l.hybrid.requested == hybrid_grant.is_some()
                                 && (l.token.is_none()
-                                    || l.hybrid.enabled == hybrid_grant.unwrap_or(false))
-                                && (!hybrid_grant.unwrap_or(false)
+                                    || l.hybrid.enabled == grant_enabled.unwrap_or(false))
+                                && (!grant_enabled.unwrap_or(false)
                                     || self
                                         .transport
                                         .input_motion_available(peer_id, context.session_id))
-                        }) && self.role_allowed(peer_id, true);
+                        }) && mode_ok
+                            && self.role_allowed(peer_id, true);
                         if !valid {
                             return;
                         }
@@ -1269,11 +1383,20 @@ impl InputActor {
                         let lease = self.leases.get_mut(&session_id).unwrap();
                         let first = lease.token.is_none();
                         if first {
-                            lease.hybrid.enabled = hybrid_grant.unwrap_or(false);
-                            if hybrid_grant == Some(false) {
-                                lease.hybrid.fallback_reason =
-                                    Some("Peer selected reliable-only".into());
+                            if let Some((enabled, mode, fallback)) = hybrid_grant.clone() {
+                                lease.hybrid.enabled = enabled;
+                                if enabled {
+                                    lease.hybrid.pointer_mode = mode;
+                                    if let Some(reason) = fallback {
+                                        lease.hybrid.fallback_reason = Some(reason);
+                                    }
+                                } else {
+                                    lease.hybrid.pointer_mode = MotionPointerMode::Reliable;
+                                    lease.hybrid.fallback_reason =
+                                        Some("Peer selected reliable-only".into());
+                                }
                             }
+                            deskfuse_input::quality::begin_session(&session_id.to_string());
                         }
                         lease.token = Some(token);
                         lease.extend();
@@ -1388,6 +1511,8 @@ impl InputActor {
                         token,
                         ttl_ms: 1500,
                         motion_enabled: lease.hybrid.enabled,
+                        pointer_mode: lease.hybrid.pointer_mode,
+                        pointer_fallback: lease.hybrid.fallback_reason.clone(),
                     }
                 } else {
                     InputShareMessage::Grant {
@@ -1537,6 +1662,9 @@ impl InputActor {
                 self.release(id, "input renew send failed", true)
             }
         }
+        // 质量采样必须由时间驱动。运动路径只在 datagram 收发时采样，光标静止或
+        // 链路回退到可靠路径时一条样本都不产生，应用内质量图表会一直是空的。
+        self.transport.sample_input_quality();
         let peers = self.network.borrow().snapshot.peers.clone();
         for peer in peers {
             let id = peer.id;
@@ -1629,7 +1757,10 @@ impl InputActor {
                     motion_fallback_reason: lease
                         .and_then(|(_, l)| l.hybrid.fallback_reason.clone()),
                     motion_mode: lease.map(|(_, l)| {
-                        if l.hybrid.enabled {
+                        if l.hybrid.enabled && l.hybrid.pointer_mode == MotionPointerMode::Relative
+                        {
+                            "relative"
+                        } else if l.hybrid.enabled {
                             "hybrid"
                         } else {
                             "reliable-only"
@@ -1664,6 +1795,7 @@ mod tests {
         pub(super) independent: AtomicBool,
         pub(super) motion_ready: AtomicBool,
         pub(super) motion_sent: Mutex<Vec<MotionDatagram>>,
+        pub(super) relative_sent: Mutex<Vec<RelativeMotionDatagram>>,
         pub(super) motion_cancelled: Mutex<Vec<InputSessionId>>,
     }
     impl TransportProvider for TestTransport {
@@ -1711,6 +1843,15 @@ mod tests {
             motion: MotionDatagram,
         ) -> std::result::Result<(), RuntimeError> {
             self.motion_sent.lock().unwrap().push(motion);
+            Ok(())
+        }
+        fn send_input_relative(
+            &self,
+            _peer: DeviceId,
+            _session: TransportSessionId,
+            motion: RelativeMotionDatagram,
+        ) -> std::result::Result<(), RuntimeError> {
+            self.relative_sent.lock().unwrap().push(motion);
             Ok(())
         }
         fn cancel_input_motion(
@@ -1798,6 +1939,8 @@ mod tests {
                 scale_factor: 2.,
                 rotation_degrees: 0,
                 is_primary: true,
+                physical_width_mm: None,
+                physical_height_mm: None,
             }],
         };
         let settings = InputSharingSettings {
@@ -2060,6 +2203,7 @@ mod tests {
             session_id,
             target_display: "display".into(),
             events: vec![SharedInputEvent::Motion { x, y: 10.0 }],
+            relative: None,
         }
     }
 
@@ -2099,12 +2243,14 @@ mod tests {
                 session_id: id,
                 target_display: "display".into(),
                 events: vec![event],
+                relative: None,
             });
         }
         barriers.push(RuntimeCommand::SendSharedInput {
             session_id: id,
             target_display: "another-display".into(),
             events: vec![SharedInputEvent::Motion { x: 30.0, y: 10.0 }],
+            relative: None,
         });
         for barrier in barriers {
             let (tx, mut rx) = mpsc::channel(8);
@@ -2142,6 +2288,7 @@ mod tests {
                 session_id: id,
                 target_display: "display".into(),
                 events,
+                relative: None,
             };
             let (tx, mut rx) = mpsc::channel(8);
             tx.try_send(invalid).unwrap();
@@ -2188,6 +2335,7 @@ mod tests {
                 SharedInputEvent::Motion { x: 1.0, y: 2.0 },
                 SharedInputEvent::Motion { x: 3.0, y: 10.0 },
             ],
+            relative: None,
         };
         assert_eq!(
             actor.coalesce_queued_motion(batch, &mut rx, &mut pending),

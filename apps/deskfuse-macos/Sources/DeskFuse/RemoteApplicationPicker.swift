@@ -257,7 +257,7 @@ private struct RemoteApplicationTile: View {
             }
             .padding(.horizontal, 4).padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .background((isSelected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(hovering ? 0.06 : 0)),
+            .background((isSelected ? DeskFuseBrand.selectionFill : Color.primary.opacity(hovering ? 0.06 : 0)),
                         in: RoundedRectangle(cornerRadius: 16))
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }

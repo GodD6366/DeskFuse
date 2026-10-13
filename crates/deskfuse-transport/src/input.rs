@@ -29,6 +29,12 @@ pub enum InputTransportEvent {
         context: ConnectionContext,
         motion: MotionDatagram,
     },
+    /// 同一会话的相对设备计数。不携带显示器坐标。
+    RelativeMotion {
+        peer_id: DeviceId,
+        context: ConnectionContext,
+        motion: deskfuse_core::RelativeMotionDatagram,
+    },
     Message {
         peer_id: DeviceId,
         context: ConnectionContext,
@@ -328,6 +334,23 @@ impl InputHub {
         };
         for session in retired {
             self.invalidate(&session, "input upgraded to preferred physical route");
+        }
+    }
+
+    /// 给每个活跃输入会话采一次质量样本。
+    ///
+    /// 运动路径只在 datagram 收发时采样，光标静止或链路回退到可靠路径时都
+    /// 不会产生样本，应用内质量图表就一直是空的。这个入口让调用方按自己的
+    /// 节奏驱动采样，不依赖运动流量。
+    pub fn sample_quality(&self) {
+        let Ok(sessions) = self.sessions.lock() else {
+            return;
+        };
+        for session in sessions.values().filter(|session| session.live()) {
+            // 不强制：复用每秒节流，与 60 秒窗口和 256 条容量匹配。
+            session
+                .motion
+                .sample_diagnostics(session, "quality_tick", false);
         }
     }
     pub fn capabilities(&self, peer: DeviceId, id: TransportSessionId) -> Capabilities {

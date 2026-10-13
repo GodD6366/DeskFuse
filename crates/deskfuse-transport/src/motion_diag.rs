@@ -14,6 +14,7 @@ use deskfuse_core::{DeviceId, TransportSessionId};
 
 /// Bounded: roughly 30 minutes of samples at the rate-limited cadence.
 const CAPACITY: usize = 2048;
+const QUALITY_CAPACITY: usize = 256;
 
 /// One rate-limited sample of a single motion link.
 #[derive(Clone, Debug)]
@@ -48,7 +49,25 @@ pub struct MotionDiagRecord {
     pub congestion_events: u64,
 }
 
+/// Always-on, metadata-only samples used by the in-app quality chart.
+#[derive(Clone, Debug)]
+pub struct QualityRecord {
+    pub timestamp_ms: u128,
+    pub rtt_micros: u64,
+    pub hitches: u32,
+    /// 这一秒内达到慢注入阈值的注入次数。
+    pub slow_injections: u32,
+    /// 这一秒采集排队耗时合计，微秒。
+    pub capture_queue_micros: u64,
+    /// 这一秒采集样本数。
+    pub capture_count: u64,
+    /// 采样时数据报运动通道是否就绪。降级到可靠通道后曲线仍要连续，因此
+    /// 采样本身不依赖这个值；它只用来告诉界面当前走的是哪条通道。
+    pub ready: bool,
+}
+
 static RECORDS: Mutex<VecDeque<MotionDiagRecord>> = Mutex::new(VecDeque::new());
+static QUALITY_RECORDS: Mutex<VecDeque<QualityRecord>> = Mutex::new(VecDeque::new());
 static DROPPED_RECORDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Append one sample, evicting the oldest so the newest is always retained.
@@ -74,6 +93,23 @@ pub fn snapshot() -> (Vec<MotionDiagRecord>, u64) {
         .map(|records| records.iter().cloned().collect())
         .unwrap_or_default();
     (records, DROPPED_RECORDS.load(Ordering::Relaxed))
+}
+
+pub(crate) fn record_quality(record: QualityRecord) {
+    let Ok(mut records) = QUALITY_RECORDS.try_lock() else {
+        return;
+    };
+    if records.len() == QUALITY_CAPACITY {
+        records.pop_front();
+    }
+    records.push_back(record);
+}
+
+pub fn quality_snapshot() -> Vec<QualityRecord> {
+    QUALITY_RECORDS
+        .lock()
+        .map(|records| records.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 pub(crate) fn timestamp_ms() -> u128 {

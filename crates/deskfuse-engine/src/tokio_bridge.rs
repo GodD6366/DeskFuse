@@ -1441,6 +1441,14 @@ impl TokioBridge {
         {
             contents.push_str(&diagnostics);
         }
+        // 主进程自己的阶段计数。输入子进程的报告已经在上面的诊断文本里。
+        deskfuse_core::fold_pending_stages();
+        let quality = deskfuse_input::quality::diagnostics_record("main", "", None);
+        if !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(&quality);
+        contents.push('\n');
         self.runtime
             .write_file(path, contents.as_bytes())
             .map_err(|error| format!("诊断导出失败：{error}"))
@@ -4909,10 +4917,10 @@ fn merge_update_view(
 /// Motion datagrams are enabled by default; `reliable` is a diagnostic override.
 /// Path negotiation still decides whether a new control session can use hybrid mode.
 fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
-    if mode == Some("reliable") {
-        Capabilities::NONE
-    } else {
-        Capabilities::INPUT_MOTION_DATAGRAM_V1
+    match mode {
+        Some("reliable") => Capabilities::NONE,
+        Some("absolute") => Capabilities::INPUT_MOTION_DATAGRAM_V1,
+        _ => Capabilities::INPUT_MOTION_DATAGRAM_V1 | Capabilities::INPUT_RELATIVE_MOTION_V1,
     }
 }
 
@@ -5389,9 +5397,13 @@ mod tests {
         for mode in [None, Some("hybrid"), Some(""), Some("typo")] {
             assert_eq!(
                 motion_mode_capabilities(mode),
-                Capabilities::INPUT_MOTION_DATAGRAM_V1
+                Capabilities::INPUT_MOTION_DATAGRAM_V1 | Capabilities::INPUT_RELATIVE_MOTION_V1
             );
         }
+        assert_eq!(
+            motion_mode_capabilities(Some("absolute")),
+            Capabilities::INPUT_MOTION_DATAGRAM_V1
+        );
         assert_eq!(
             motion_mode_capabilities(Some("reliable")),
             Capabilities::NONE

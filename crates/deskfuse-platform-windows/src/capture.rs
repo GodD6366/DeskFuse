@@ -36,7 +36,8 @@ pub enum CaptureEvent {
         modifiers: HidModifiers,
     },
     /// Per-monitor-aware physical screen coordinates, including negative origins.
-    MouseMove { x: i32, y: i32 },
+    /// `raw` 是自上次移动以来累计的设备计数，不是像素差。
+    MouseMove { x: i32, y: i32, raw: Option<(i32, i32)> },
     MouseButton {
         button: MouseButton,
         down: bool,
@@ -382,7 +383,7 @@ mod native {
                 LLKHF_EXTENDED, LLKHF_INJECTED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT,
                 MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_NOREMOVE, PM_REMOVE,
                 PeekMessageW, PostThreadMessageW, QS_ALLINPUT, SetWindowsHookExW, TranslateMessage,
-                UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_KEYUP,
+                UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
                 WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
                 WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
                 WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
@@ -569,6 +570,7 @@ mod native {
         sender: SyncSender<CaptureEvent>,
         ready: &SyncSender<Result<u32, CaptureError>>,
     ) -> Result<(), CaptureError> {
+        deskfuse_core::set_relative_motion_capture_ready(false);
         if !ordinary_desktop() {
             return Err(CaptureError::DesktopUnavailable);
         }
@@ -615,6 +617,8 @@ mod native {
         shared.alive.store(true, Ordering::Release);
         // SAFETY: GetCurrentThreadId takes no pointers and returns this live worker.
         let id = unsafe { GetCurrentThreadId() };
+        // 注册失败时保持绝对坐标，不让整路捕获失败。窗口在函数返回时销毁。
+        let _raw_mouse = crate::raw_mouse::RawMouseWindow::install();
         if ready.try_send(Ok(id)).is_err() {
             return Err(CaptureError::Stopped);
         }
@@ -643,6 +647,10 @@ mod native {
                 if message.message == STOP_MESSAGE || message.message == WM_QUIT {
                     shared.stop.store(true, Ordering::Release);
                     break;
+                }
+                if message.message == WM_INPUT {
+                    crate::raw_mouse::ingest(message.lParam);
+                    continue;
                 }
                 // SAFETY: MSG initialized by PeekMessageW; standard loop dispatch.
                 unsafe {
@@ -794,7 +802,11 @@ mod native {
             let x = data.pt.x;
             let y = data.pt.y;
             let event = match message {
-                WM_MOUSEMOVE => CaptureEvent::MouseMove { x, y },
+                WM_MOUSEMOVE => CaptureEvent::MouseMove {
+                    x,
+                    y,
+                    raw: crate::raw_mouse::take_delta(),
+                },
                 WM_MOUSEWHEEL => CaptureEvent::Scroll {
                     vertical: i32::from(i16::from_le_bytes([
                         data.mouseData.to_le_bytes()[2],

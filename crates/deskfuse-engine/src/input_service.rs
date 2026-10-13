@@ -15,7 +15,7 @@ use futures::StreamExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, atomic::Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn main_with_platform(
@@ -59,6 +59,18 @@ fn view(
         discovered_peers: vec![],
     }
 }
+fn quality_lease(input: &InputSharingSnapshot) -> (String, Option<String>) {
+    let link = input
+        .links
+        .iter()
+        .find(|link| link.control_session.is_some());
+    (
+        link.and_then(|link| link.motion_mode.clone())
+            .unwrap_or_default(),
+        link.and_then(|link| link.motion_fallback_reason.clone()),
+    )
+}
+
 async fn run(
     mut child: ChildConnection,
     platform: Arc<dyn EnginePlatformPort>,
@@ -75,7 +87,8 @@ async fn run(
         | Capabilities::DEVICE_NETWORK
         | Capabilities::INPUT_ACTIVATION
         | Capabilities::INPUT_ENVIRONMENT
-        | Capabilities::INPUT_MOTION_DATAGRAM_V1;
+        | Capabilities::INPUT_MOTION_DATAGRAM_V1
+        | Capabilities::INPUT_RELATIVE_MOTION_V1;
     let nonce = identity.device_id().into_bytes();
     let hello = PeerHello::signed(&identity, child.bootstrap.display_name.clone(), caps, nonce)
         .map_err(|e| e.to_string())?;
@@ -184,6 +197,8 @@ async fn run(
     let mut runtime_events = runtime.handle.event_stream();
     let mut status = child.status.borrow().clone();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut quality_line = String::new();
+    let mut quality_at: Option<Instant> = None;
     while !child.stopping.load(Ordering::Acquire) {
         tokio::select! {
             _ = tick.tick() => {
@@ -234,7 +249,27 @@ async fn run(
                 status.native.persistence_pending = pending;
                 if let Some(error) = error { status.native.error = Some(format!("输入设置尚未保存：{error}")); }
                 status.native.update_paused = child.pause.load(Ordering::Acquire) == 2;
-                if let Ok(lines) = diagnostics.try_lock() { status.diagnostics = lines.clone(); }
+                if let Ok(lines) = diagnostics.try_lock() {
+                    status.diagnostics = lines.clone();
+                    // 质量行最多每秒重算一次，避免 50ms 状态循环反复序列化整份报告。
+                    if quality_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                        deskfuse_core::fold_pending_stages();
+                        let (mode, fallback) = quality_lease(&status.input);
+                        quality_line = deskfuse_input::quality::diagnostics_record(
+                            "input_child",
+                            &mode,
+                            fallback.as_deref(),
+                        );
+                        quality_at = Some(Instant::now());
+                    }
+                    if !quality_line.is_empty() {
+                        if !status.diagnostics.ends_with('\n') {
+                            status.diagnostics.push('\n');
+                        }
+                        status.diagnostics.push_str(&quality_line);
+                        status.diagnostics.push('\n');
+                    }
+                }
                 child.status.send_if_modified(|current| {
                     if current == &status {
                         false

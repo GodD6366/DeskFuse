@@ -9,17 +9,18 @@ struct ShortcutSettingsPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "keyboard").font(.system(size: 28)).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("快捷键").font(.title2.bold())
-                    Text("用一组按键，运行工作流或切换控制设备。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 8)
-            Form {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "keyboard").font(.system(size: 20)).foregroundStyle(.secondary)
+                Text("用一组按键，运行工作流或切换控制设备。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }.padding(.horizontal, 26).padding(.top, 2).padding(.bottom, 12)
+            SystemSettingsFormPage {
                 WorkflowShortcutSettings(store: store, manageWorkflows: manageWorkflows)
-                Section {
+                SystemSettingsFormBlock(
+                    title: "键鼠控制",
+                    titleSymbol: "computermouse",
+                    footer: "方向切换与锁定遵循键鼠共享状态；显示组合键不代表当前可用。"
+                ) {
                     if let input = store.snapshot?.input {
                         ForEach(Array(input.settings.shortcuts.prefix(6).enumerated()), id: \.offset) { index, shortcut in
                             HStack {
@@ -39,14 +40,16 @@ struct ShortcutSettingsPage: View {
                     } else {
                         Text("正在读取键鼠设置…").foregroundStyle(.secondary)
                     }
-                } header: { Label("键鼠控制", systemImage: "computermouse") }
-                  footer: { Text("方向切换与锁定遵循键鼠共享状态；显示组合键不代表当前可用。") }
-                Section {
+                }
+                SystemSettingsFormBlock(
+                    title: "固定快捷键",
+                    titleSymbol: "lock",
+                    footer: "这些组合键由 DeskFuse 保留，不能分配给工作流。"
+                ) {
                     fixedRow("紧急收回（保底）", detail: "自定义按键之外，此组合始终可用", key: 53, modifiers: 0x1c0000)
                     fixedRow("文件暂存区", detail: "打开或收起暂存区", key: 2, modifiers: 0x120000)
-                } header: { Label("固定快捷键", systemImage: "lock") }
-                  footer: { Text("这些组合键由 DeskFuse 保留，不能分配给工作流。") }
-            }.formStyle(.grouped)
+                }
+            }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     private func fixedRow(_ title: String, detail: String, key: UInt16, modifiers: UInt64) -> some View {

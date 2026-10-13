@@ -3,10 +3,14 @@
 #[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
+mod raw_mouse;
+#[cfg(windows)]
 mod clipboard;
 mod clipboard_formats;
 #[cfg(windows)]
 mod display;
+#[cfg(any(windows, test))]
+mod display_edid;
 pub mod hid;
 #[cfg(windows)]
 pub mod input;

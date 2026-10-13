@@ -437,12 +437,15 @@ mod motion_control_tests {
             InputShareMessage::RequestHybrid {
                 session_id: id,
                 target_display: DisplayId::new("main"),
+                relative_ready: false,
             },
             InputShareMessage::GrantHybrid {
                 session_id: id,
                 token,
                 ttl_ms: 1500,
                 motion_enabled: true,
+                pointer_mode: deskfuse_core::MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
             InputShareMessage::Hybrid {
                 session_id: id,

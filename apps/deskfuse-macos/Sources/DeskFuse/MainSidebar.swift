@@ -10,44 +10,40 @@ struct MainSidebar: View {
         List(selection: $store.selectedPage) {
             Section("功能") {
                 ForEach(Page.allCases.filter { $0 != .devices }) { page in
-                    HStack(spacing: 8) {
-                        SidebarNavRow(
-                            title: page.rawValue,
-                            symbol: page.symbol,
-                            selected: store.selectedPage == page
-                        )
-                        if page == .remoteApplications { FeatureBadge() }
-                    }
+                    SystemSettingsSidebarRow(
+                        title: page.rawValue,
+                        symbol: page.symbol,
+                        color: page.color,
+                        selected: store.selectedPage == page,
+                        badge: page == .remoteApplications ? "Beta" : nil
+                    )
                     .tag(page)
-                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+                    .listRowInsets(SystemSettingsMetrics.rowInsets)
                     .listRowBackground(Color.clear)
                 }
             }
             Section("配置") {
-                ForEach([Page.devices]) { page in
-                    HStack(spacing: 8) {
-                        SidebarNavRow(
-                            title: page.rawValue,
-                            symbol: page.symbol,
-                            selected: store.selectedPage == page
-                        )
-                    }
-                    .tag(page)
-                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
-                    .listRowBackground(Color.clear)
-                }
+                SystemSettingsSidebarRow(
+                    title: Page.devices.rawValue,
+                    symbol: Page.devices.symbol,
+                    color: Page.devices.color,
+                    selected: store.selectedPage == .devices
+                )
+                .tag(Page.devices)
+                .listRowInsets(SystemSettingsMetrics.rowInsets)
+                .listRowBackground(Color.clear)
                 Button { store.openSettings() } label: {
-                    SidebarNavRow(title: "设置", symbol: "gearshape", selected: false)
+                    SystemSettingsSidebarRow(title: "设置", symbol: "gearshape", color: .gray, selected: false)
                 }
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+                .listRowInsets(SystemSettingsMetrics.rowInsets)
                 .listRowBackground(Color.clear)
             }
         }
         .listStyle(.sidebar)
         .listSectionSeparator(.hidden, edges: .all)
         .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 40)
+        .environment(\.defaultMinListRowHeight, SystemSettingsMetrics.rowHeight)
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -70,11 +66,12 @@ struct MainSidebar: View {
             .padding(.leading, 20)
             .padding(.trailing, 12)
             .padding(.top, 16)
-            .padding(.bottom, 14)
+            .padding(.bottom, 12)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             SidebarDeviceStatus(store: store)
         }
+        .systemSettingsSidebarBackground()
     }
 
 
@@ -103,6 +100,7 @@ private struct DeskFuseBrandMark: View {
             }
         }
         .frame(width: 34, height: 34)
+        .modifier(BrandGlow())
         .accessibilityHidden(true)
     }
 }
@@ -146,11 +144,11 @@ private struct SidebarDeviceStatus: View {
             .accessibilityLabel(store.isCheckingForUpdates ? "正在检查更新" : "检查更新")
             .help(store.isCheckingForUpdates ? "正在检查更新…" : "检查更新")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(NativeGlassBackdrop(cornerRadius: 13))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .systemSettingsBlock()
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
     }
 
     private var runtimeColor: Color {

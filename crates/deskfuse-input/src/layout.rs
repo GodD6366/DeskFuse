@@ -432,6 +432,8 @@ mod tests {
             scale_factor: 2.0,
             rotation_degrees: 0,
             is_primary: x == 0.0 && y == 0.0,
+            physical_width_mm: None,
+            physical_height_mm: None,
         }
     }
     fn topology(displays: Vec<DisplayDescriptor>) -> DisplayTopology {

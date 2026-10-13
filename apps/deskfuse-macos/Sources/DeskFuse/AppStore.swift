@@ -337,6 +337,8 @@ enum Page: String, CaseIterable, Identifiable {
     static var allCases: [Page] { [.clipboard, .input, .remoteApplications, .devices, .lanTransfer] }
     var id: Self { self }
     var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane" } }
+    /// 侧栏彩色方块图标的识别色，与设置页同名功能保持同色。
+    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange } }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

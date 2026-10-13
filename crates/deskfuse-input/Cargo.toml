@@ -11,4 +11,5 @@ publish.workspace = true
 [dependencies]
 deskfuse-core = { path = "../deskfuse-core" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 getrandom = { version = "0.4.3", features = ["sys_rng"] }

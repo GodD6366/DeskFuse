@@ -221,6 +221,7 @@ public partial class MainWindow : Window
             InputAvailability.Text = "普通桌面输入 helper 正在等待服务重连；不会接受新的远端输入。";
             InputReceiverReady.IsChecked = false;
             ReclaimInputButton.IsEnabled = false;
+            ClearInputQuality();
             lastDeviceSnapshot = "";
             RebuildDevices();
             ShowNotice(message);
@@ -232,6 +233,96 @@ public partial class MainWindow : Window
         }
         wasConnected = connected;
     }
+    private void ClearInputQuality()
+    {
+        if (InputQualitySummary is null) return;
+        InputQualitySummary.Text = "等待输入";
+        InputQualityMetrics.Text = "P50 — · P95 — · 卡顿 —";
+        InputQualityMode.Text = "等待会话";
+        InputQualityAdvice.Text = "";
+        InputQualityCanvas.Children.Clear();
+    }
+
+    private void RefreshInputQuality(JsonElement input)
+    {
+        if (InputQualitySummary is null) return;
+        if (!input.TryGetProperty("quality", out var quality) || quality.ValueKind != JsonValueKind.Object)
+        {
+            ClearInputQuality();
+            return;
+        }
+        InputQualitySummary.Text = quality.String("grade", "idle") switch
+        {
+            "smooth" => "流畅",
+            "fair" => "一般",
+            "poor" => "较差",
+            _ => "等待输入",
+        };
+        long p50 = quality.Number("rtt_p50_micros");
+        long p95 = quality.Number("rtt_p95_micros");
+        long hitches = quality.Number("hitches");
+        InputQualityMetrics.Text = $"P50 {p50 / 1000.0:0.0} ms · P95 {p95 / 1000.0:0.0} ms · 卡顿 {hitches}";
+        string mode = quality.String("mode");
+        string fallback = quality.String("fallback");
+        foreach (var link in input.Array("links"))
+        {
+            if (link.String("control_session").Length == 0) continue;
+            string linkMode = link.String("motion_mode");
+            if (linkMode.Length > 0) mode = linkMode;
+            string linkFallback = link.String("motion_fallback_reason");
+            if (linkFallback.Length > 0) fallback = linkFallback;
+            break;
+        }
+        string modeLabel = mode switch
+        {
+            "relative" => "相对移动",
+            "hybrid" => "绝对坐标",
+            _ => mode.Length == 0 ? "等待会话" : "可靠路径",
+        };
+        InputQualityMode.Text = fallback.Length > 0 ? $"{modeLabel} · {fallback}" : modeLabel;
+        var advice = new List<string>();
+        if (quality.TryGetProperty("suggestions", out var suggestions) && suggestions.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in suggestions.EnumerateArray())
+            {
+                string action = item.String("action");
+                if (action.Length > 0) advice.Add(action);
+            }
+        }
+        InputQualityAdvice.Text = string.Join(Environment.NewLine, advice);
+        DrawQualityCurve(quality);
+    }
+
+    private void DrawQualityCurve(JsonElement quality)
+    {
+        InputQualityCanvas.Children.Clear();
+        double width = InputQualityCanvas.ActualWidth > 8 ? InputQualityCanvas.ActualWidth : 240;
+        var samples = quality.Array("samples").ToList();
+        if (samples.Count == 0) return;
+        var values = new List<double>();
+        double max = 1;
+        foreach (var sample in samples)
+        {
+            double rtt = sample.Double("rtt_ms");
+            values.Add(rtt);
+            if (rtt > max) max = rtt;
+        }
+        const double height = 72;
+        var points = new PointCollection();
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = values.Count == 1 ? 0 : width * i / (values.Count - 1);
+            double y = height - (values[i] / max) * (height - 4) - 2;
+            points.Add(new Point(x, y));
+        }
+        InputQualityCanvas.Children.Add(new System.Windows.Shapes.Polyline
+        {
+            Points = points,
+            Stroke = Brushes.SteelBlue,
+            StrokeThickness = 1.5,
+        });
+    }
+
     private void RefreshInputState(JsonElement snapshot)
     {
         bool capable = snapshot.TryGetProperty("capabilities", out var capabilities) && capabilities.Bool("input");
@@ -240,6 +331,7 @@ public partial class MainWindow : Window
             InputAvailability.Text = "当前服务未提供 Windows 输入 helper 状态。";
             InputReceiverReady.IsChecked = false;
             ReclaimInputButton.IsEnabled = false;
+            ClearInputQuality();
             DrawInputLayout(default);
             return;
         }
@@ -267,6 +359,7 @@ public partial class MainWindow : Window
             InputAvailability.Text += $"\n本机已开启主控{(peer.Length > 0 && controllingId.Length > 0 ? $"：正在控制 {peer}{(target.Length > 0 ? $"（{target}）" : "")}" : "；把指针移到屏幕边缘即可控制对端")}";
         }
         RenderShortcutBindings(input);
+        RefreshInputQuality(input);
         DrawInputLayout(input);
     }
 

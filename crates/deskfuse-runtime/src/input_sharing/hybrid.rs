@@ -9,9 +9,13 @@ pub(super) struct HybridLease {
     pub requested: bool,
     pub enabled: bool,
     pub fallback_reason: Option<String>,
+    /// 本租约固定的指针模式。可靠路径记为 Reliable，续租不能改。
+    pub pointer_mode: MotionPointerMode,
     pub(super) position: Option<MotionPosition>,
     pub(super) state_epoch: u64,
     pub(super) motion_seq: u64,
+    /// 已接受的相对序号。和绝对水位取较大值，避免旧包回放。
+    pub(super) relative_seq: u64,
     pub(super) receiver: MotionReceiver,
     pub(super) dirty_at: Option<Instant>,
 }
@@ -70,54 +74,110 @@ impl InputActor {
         }
     }
 
-    pub(super) fn hybrid_events(&mut self, id: InputSessionId, events: Vec<SharedInputEvent>) {
+    pub(super) fn hybrid_events(
+        &mut self,
+        id: InputSessionId,
+        events: Vec<SharedInputEvent>,
+        mut pending_relative: Option<(f64, f64)>,
+    ) {
         let mut transitions = Vec::new();
+        // 同一条命令里的相对计数只消耗一次。之后的绝对点不能再抢光标。
+        let mut suppress_absolute = false;
         for event in events {
-            if let SharedInputEvent::Motion { x, y } = event {
-                if !transitions.is_empty()
-                    && !self.hybrid_transition(id, std::mem::take(&mut transitions))
-                {
-                    return;
+            match event {
+                SharedInputEvent::RelativeMotion { dx, dy } => {
+                    pending_relative = super::combine_relative(pending_relative, Some((dx, dy)));
                 }
-                let Some(lease) = self.leases.get_mut(&id) else {
-                    return;
-                };
-                let Some(seq) = lease.hybrid.motion_seq.checked_add(1) else {
-                    self.release(id, "motion sequence exhausted", true);
-                    return;
-                };
-                let Some(position) = lease.hybrid.position.as_mut() else {
-                    self.release(id, "hybrid input before entry", true);
-                    return;
-                };
-                position.motion_seq = seq;
-                position.x = x;
-                position.y = y;
-                lease.hybrid.motion_seq = seq;
-                lease.hybrid.dirty_at = Some(Instant::now());
-                let motion = MotionDatagram {
-                    session_id: id,
-                    token: lease.token.unwrap(),
-                    state_epoch: lease.hybrid.state_epoch,
-                    position: position.clone(),
-                };
-                if self
-                    .transport
-                    .send_input_motion(lease.peer, lease.context.session_id, motion)
-                    .is_err()
-                {
-                    self.retire_motion(
-                        id,
-                        "motion transport unavailable; reacquire reliable control",
-                    );
-                    return;
+                SharedInputEvent::Motion { x, y } => {
+                    if !transitions.is_empty()
+                        && !self.hybrid_transition(id, std::mem::take(&mut transitions))
+                    {
+                        return;
+                    }
+                    let Some(lease) = self.leases.get_mut(&id) else {
+                        return;
+                    };
+                    let Some(position) = lease.hybrid.position.as_mut() else {
+                        self.release(id, "hybrid input before entry", true);
+                        return;
+                    };
+                    position.x = x;
+                    position.y = y;
+                    let pointer_mode = lease.hybrid.pointer_mode;
+                    let relative = if pointer_mode == MotionPointerMode::Relative {
+                        pending_relative.take().filter(|(dx, dy)| {
+                            relative_delta_ok(*dx) && relative_delta_ok(*dy)
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some((dx, dy)) = relative {
+                        let Some(seq) = lease.hybrid.motion_seq.checked_add(1) else {
+                            self.release(id, "motion sequence exhausted", true);
+                            return;
+                        };
+                        position.motion_seq = seq;
+                        lease.hybrid.motion_seq = seq;
+                        let datagram = RelativeMotionDatagram {
+                            session_id: id,
+                            token: lease.token.unwrap(),
+                            state_epoch: lease.hybrid.state_epoch,
+                            motion_seq: seq,
+                            dx,
+                            dy,
+                        };
+                        if self
+                            .transport
+                            .send_input_relative(lease.peer, lease.context.session_id, datagram)
+                            .is_err()
+                        {
+                            self.retire_motion(
+                                id,
+                                "motion transport unavailable; reacquire reliable control",
+                            );
+                            return;
+                        }
+                        suppress_absolute = true;
+                        continue;
+                    }
+                    if suppress_absolute {
+                        continue;
+                    }
+                    let Some(seq) = lease.hybrid.motion_seq.checked_add(1) else {
+                        self.release(id, "motion sequence exhausted", true);
+                        return;
+                    };
+                    position.motion_seq = seq;
+                    lease.hybrid.motion_seq = seq;
+                    // 相对会话里的绝对回退样本也不发周期快照，避免和相对注入抢光标。
+                    if pointer_mode != MotionPointerMode::Relative {
+                        lease.hybrid.dirty_at = Some(Instant::now());
+                    }
+                    let motion = MotionDatagram {
+                        session_id: id,
+                        token: lease.token.unwrap(),
+                        state_epoch: lease.hybrid.state_epoch,
+                        position: position.clone(),
+                    };
+                    if self
+                        .transport
+                        .send_input_motion(lease.peer, lease.context.session_id, motion)
+                        .is_err()
+                    {
+                        self.retire_motion(
+                            id,
+                            "motion transport unavailable; reacquire reliable control",
+                        );
+                        return;
+                    }
                 }
-            } else {
-                transitions.push(event);
-                if transitions.len() == 254
-                    && !self.hybrid_transition(id, std::mem::take(&mut transitions))
-                {
-                    return;
+                other => {
+                    transitions.push(other);
+                    if transitions.len() == 254
+                        && !self.hybrid_transition(id, std::mem::take(&mut transitions))
+                    {
+                        return;
+                    }
                 }
             }
         }
@@ -312,6 +372,59 @@ impl InputActor {
         }
     }
 
+    /// 相对包不经过绝对坐标接收器。序号和状态世代仍跟可靠 Enter 对齐。
+    pub(super) fn inbound_relative(
+        &mut self,
+        peer: DeviceId,
+        context: ConnectionContext,
+        motion: RelativeMotionDatagram,
+    ) {
+        let id = motion.session_id;
+        if motion.validate().is_err()
+            || !self.network_allowed(peer)
+            || !self.context_live(peer, &context)
+        {
+            return;
+        }
+        let Some(lease) = self.leases.get(&id) else {
+            return;
+        };
+        let watermark = lease
+            .hybrid
+            .relative_seq
+            .max(lease.hybrid.receiver.latest_motion_seq());
+        if !lease.hybrid.enabled
+            || lease.hybrid.pointer_mode != MotionPointerMode::Relative
+            || lease.controller
+            || lease.peer != peer
+            || lease.context != context
+            || lease.token != Some(motion.token)
+            || lease.expired()
+            || !self.role_allowed(peer, false)
+            || !self.lease_activation_live(lease)
+            || !lease.hybrid.receiver.motion_open()
+            || motion.state_epoch != lease.hybrid.receiver.state_epoch()
+            || motion.motion_seq <= watermark
+        {
+            return;
+        }
+        let target = lease.target.clone();
+        let lease = self.leases.get_mut(&id).unwrap();
+        lease.hybrid.relative_seq = motion.motion_seq;
+        lease.hybrid.receiver.note_motion_seq(motion.motion_seq);
+        self.emit(RuntimeEvent::SharedInputReceived {
+            peer_id: peer,
+            session_id: id,
+            target_display: target,
+            sequence: motion.motion_seq,
+            state_epoch: motion.state_epoch,
+            events: vec![SharedInputEvent::RelativeMotion {
+                dx: motion.dx,
+                dy: motion.dy,
+            }],
+        });
+    }
+
     pub(super) fn inbound_hybrid(
         &mut self,
         peer: DeviceId,
@@ -424,6 +537,7 @@ mod tests {
             InputShareMessage::RequestHybrid {
                 session_id: id,
                 target_display: "display".into(),
+                relative_ready: false,
             },
         );
         let token = actor.leases[&id].token.unwrap();
@@ -629,6 +743,8 @@ mod tests {
                 token,
                 ttl_ms: 1500,
                 motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
         );
         actor.hybrid_enter(id, "display".into(), 1.0, 10.0);
@@ -636,6 +752,7 @@ mod tests {
             .command(RuntimeCommand::SendSharedInput {
                 session_id: id,
                 target_display: "display".into(),
+                relative: None,
                 events: vec![
                     SharedInputEvent::Motion { x: 10.0, y: 10.0 },
                     SharedInputEvent::Button {
@@ -691,6 +808,8 @@ mod tests {
                 token,
                 ttl_ms: 1500,
                 motion_enabled: false,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
         );
         assert!(!actor.leases[&id].hybrid.enabled);
@@ -716,6 +835,8 @@ mod tests {
                 token,
                 ttl_ms: 1500,
                 motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
         );
         assert!(!actor.leases[&id].hybrid.enabled);
@@ -734,6 +855,7 @@ mod tests {
             InputShareMessage::RequestHybrid {
                 session_id: id,
                 target_display: "display".into(),
+                relative_ready: false,
             },
         );
         assert!(!actor.leases[&id].hybrid.enabled);
@@ -806,6 +928,8 @@ mod tests {
                 token: InputToken::new(),
                 ttl_ms: 1500,
                 motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
         );
         assert!(actor.leases[&hybrid].hybrid.enabled);

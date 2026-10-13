@@ -127,6 +127,13 @@ pub struct DisplayDescriptor {
     pub scale_factor: f64,
     pub rotation_degrees: u16,
     pub is_primary: bool,
+    /// Optional physical panel width reported by the native display adapter.
+    /// Logical coordinates and scale remain authoritative for input injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_width_mm: Option<f64>,
+    /// Optional physical panel height reported by the native display adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_height_mm: Option<f64>,
 }
 impl DisplayDescriptor {
     pub fn contains(&self, x: f64, y: f64) -> bool {
@@ -161,6 +168,10 @@ impl DisplayTopology {
                     || !d.scale_factor.is_finite()
                     || !(0.25..=8.0).contains(&d.scale_factor)
                     || ![0, 90, 180, 270].contains(&d.rotation_degrees)
+                    || d.physical_width_mm
+                        .is_some_and(|v| !v.is_finite() || !(1.0..=10_000.0).contains(&v))
+                    || d.physical_height_mm
+                        .is_some_and(|v| !v.is_finite() || !(1.0..=10_000.0).contains(&v))
             })
         {
             return Err(invalid("invalid display topology"));
@@ -369,6 +380,11 @@ pub enum SharedInputEvent {
         dx: f64,
         dy: f64,
     },
+    /// 设备计数相对位移。+x 向右，+y 向下。只在进程内从接收走到注入，不进入可靠 Hybrid JSON。
+    RelativeMotion {
+        dx: f64,
+        dy: f64,
+    },
 }
 impl SharedInputEvent {
     pub fn validate(&self) -> Result<()> {
@@ -387,6 +403,9 @@ impl SharedInputEvent {
             Self::Button { button, .. } => *button <= 31,
             Self::Key { code, .. } => *code <= 255,
             Self::Modifiers { .. } => true,
+            Self::RelativeMotion { dx, dy } => {
+                crate::relative_delta_ok(*dx) && crate::relative_delta_ok(*dy)
+            }
         };
         if valid {
             Ok(())
@@ -456,6 +475,50 @@ impl MotionDatagram {
         self.position.validate()
     }
 }
+/// 一次会话选定的指针语义。续租不能改它。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionPointerMode {
+    /// 绝对逻辑坐标。datagram 可用时对外仍是 hybrid。
+    #[default]
+    Absolute,
+    /// 设备计数相对位移。
+    Relative,
+    /// 只有可靠输入。
+    Reliable,
+}
+impl MotionPointerMode {
+    /// serde 跳过默认绝对模式，让旧 JSON 往返保持不变。
+    pub fn is_absolute(mode: &Self) -> bool {
+        matches!(mode, Self::Absolute)
+    }
+}
+/// 不可靠相对位移。授权仍绑定 QUIC 对端和会话令牌。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelativeMotionDatagram {
+    pub session_id: InputSessionId,
+    pub token: InputToken,
+    /// 可靠 Enter/Transition 建立的输入状态世代。
+    pub state_epoch: u64,
+    /// 与绝对坐标共用的会话内单调序号，从 1 开始。
+    pub motion_seq: u64,
+    /// 向右为正的设备计数。
+    pub dx: f64,
+    /// 向下为正的设备计数。
+    pub dy: f64,
+}
+impl RelativeMotionDatagram {
+    /// 拒绝空身份、零序号、非有限值和超过 32768 的增量。
+    pub fn validate(&self) -> Result<()> {
+        if self.session_id.0.is_nil() || self.token.0 == [0; 32] || self.state_epoch == 0 || self.motion_seq == 0 {
+            return Err(invalid("invalid relative motion identity"));
+        }
+        if !crate::relative_delta_ok(self.dx) || !crate::relative_delta_ok(self.dy) {
+            return Err(invalid("invalid relative motion delta"));
+        }
+        Ok(())
+    }
+}
 /// Reliable barriers and convergence snapshots for a negotiated hybrid session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HybridInputUpdate {
@@ -490,7 +553,10 @@ impl HybridInputUpdate {
                     return Err(invalid("invalid hybrid transition bounds"));
                 }
                 for event in events {
-                    if matches!(event, SharedInputEvent::Motion { .. }) {
+                    if matches!(
+                        event,
+                        SharedInputEvent::Motion { .. } | SharedInputEvent::RelativeMotion { .. }
+                    ) {
                         return Err(invalid("motion is not allowed inside a hybrid transition"));
                     }
                     event.validate()?;
@@ -541,12 +607,21 @@ pub enum InputShareMessage {
     RequestHybrid {
         session_id: InputSessionId,
         target_display: DisplayId,
+        /// 控制端原始相对采集已就绪。旧请求缺省为否，因此仍走绝对坐标。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        relative_ready: bool,
     },
     GrantHybrid {
         session_id: InputSessionId,
         token: InputToken,
         ttl_ms: u32,
         motion_enabled: bool,
+        /// 本租约固定的指针模式。缺省绝对坐标，续租必须原样回显。
+        #[serde(default, skip_serializing_if = "MotionPointerMode::is_absolute")]
+        pointer_mode: MotionPointerMode,
+        /// 没有选用相对模式时的原因。不记录坐标。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pointer_fallback: Option<String>,
     },
     Hybrid {
         session_id: InputSessionId,
@@ -673,8 +748,14 @@ impl InputShareMessage {
                 return Err(invalid("invalid hybrid request identity"));
             }
             Self::GrantHybrid {
-                session_id, token, ..
-            } if session_id.0.is_nil() || token.0 == [0; 32] => {
+                session_id,
+                token,
+                pointer_fallback,
+                ..
+            } if session_id.0.is_nil()
+                || token.0 == [0; 32]
+                || pointer_fallback.as_ref().is_some_and(|reason| reason.len() > 256) =>
+            {
                 return Err(invalid("invalid hybrid grant identity"));
             }
             _ => {}
@@ -1075,18 +1156,23 @@ mod tests {
             InputShareMessage::RequestHybrid {
                 session_id,
                 target_display: DisplayId::new("main"),
+                relative_ready: false,
             },
             InputShareMessage::GrantHybrid {
                 session_id,
                 token,
                 ttl_ms: 1500,
                 motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
             InputShareMessage::GrantHybrid {
                 session_id,
                 token,
                 ttl_ms: 1500,
                 motion_enabled: false,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             },
             InputShareMessage::Hybrid {
                 session_id,
@@ -1159,7 +1245,8 @@ mod tests {
         assert!(
             InputShareMessage::RequestHybrid {
                 session_id: InputSessionId(Uuid::nil()),
-                target_display: DisplayId::new("main")
+                target_display: DisplayId::new("main"),
+                relative_ready: false,
             }
             .validate()
             .is_err()
@@ -1169,7 +1256,9 @@ mod tests {
                 session_id: InputSessionId::new(),
                 token: InputToken([0; 32]),
                 ttl_ms: 1500,
-                motion_enabled: true
+                motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             }
             .validate()
             .is_err()
@@ -1179,7 +1268,9 @@ mod tests {
                 session_id: InputSessionId::new(),
                 token: InputToken::new(),
                 ttl_ms: 0,
-                motion_enabled: true
+                motion_enabled: true,
+                pointer_mode: MotionPointerMode::Absolute,
+                pointer_fallback: None,
             }
             .validate()
             .is_err()
@@ -1361,6 +1452,23 @@ pub struct InputSharingScene {
     #[serde(default)]
     pub ssid: Option<String>,
     pub settings: InputSharingSettings,
+}
+
+#[cfg(test)]
+mod display_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn physical_size_is_optional_and_bounded() {
+        let json = r#"{"generation":1,"displays":[{"id":"m","frame_x":0.0,"frame_y":0.0,"width":100,"height":100,"scale_factor":1.0,"rotation_degrees":0,"is_primary":true}]}"#;
+        let topology: DisplayTopology = serde_json::from_str(json).unwrap();
+        assert!(topology.validate().is_ok());
+        assert!(topology.displays[0].physical_width_mm.is_none());
+
+        let mut invalid = topology;
+        invalid.displays[0].physical_width_mm = Some(f64::NAN);
+        assert!(invalid.validate().is_err());
+    }
 }
 impl InputSharingScene {
     pub fn new(name: String, settings: InputSharingSettings) -> Result<Self> {

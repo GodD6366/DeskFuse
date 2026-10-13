@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
+import Charts
 import DeskFuseEngine
+
+/// 图表底部色条的卡顿来源颜色。建议由引擎侧生成，Swift 只负责呈现。
+private let hitchCaptureColor = Color.orange
+private let hitchNetworkColor = Color.blue
 
 struct InputView: View {
     @Bindable var store: AppStore
@@ -9,27 +14,33 @@ struct InputView: View {
     @State private var updatingSettings = false
     @State private var retryingInput = false
     @State private var reconnectingDevices: Set<String> = []
+    @State private var openSuggestionId: String?
     @AppStorage("input.displayLayoutTipDismissed") private var displayLayoutTipDismissed = false
 
     var body: some View {
         GeometryReader { geometry in
             if snapshot.input.canConfigure {
-                VStack(alignment: .leading, spacing: 18) {
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 18) {
                     ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .center, spacing: 16) {
+                        HStack(alignment: .top, spacing: 16) {
                             heading
                             Spacer(minLength: 16)
                             headerActions
                         }
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 12) {
                             heading
                             HStack { Spacer(minLength: 0); headerActions }
                         }
                     }
                     if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
                     layout
+                        .frame(minHeight: 480, idealHeight: 560, maxHeight: 620)
+                    qualityChart
+                    }
+                    .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
+                    .padding(.vertical, SystemSettingsMetrics.pageTopInset)
                 }
-                .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
                 FeatureGateView(
@@ -80,6 +91,526 @@ struct InputView: View {
         }
     }
 
+    /// 最近 60 秒里某一秒的往返延迟。秒数从窗口起点算起，0 是 60 秒前。
+    /// 相邻采样间隔超过 2 秒就断开，避免把空档连成一条斜线。
+    private struct LatencyPoint: Identifiable {
+        let second: Double
+        let rttMs: Double
+        let series: Int
+        var id: Double { second }
+    }
+
+    /// 图表底部色条的一格：这一秒出现过卡顿，颜色区分来源。
+    private struct HitchTick: Identifiable {
+        let second: Double
+        let isCapture: Bool
+        var id: Double { second }
+    }
+
+    private var qualityChart: some View {
+        let quality = snapshot.input.quality
+        let points = latencyPoints(quality)
+        let hitches = hitchTicks(quality)
+        let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0 || !points.isEmpty
+        let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? points.last?.rttMs
+        var levels = points.map(\.rttMs)
+        if let peak = quality.rttMaxMs { levels.append(peak) }
+        let ceiling = latencyCeiling(levels)
+        let series = latencySeriesColor(quality.rttP95Ms ?? typical)
+        let status = qualityStatus(quality, hasSignal: hasSignal)
+        let blocked = inputBlockedReason
+        let showsPeak = quality.rttMaxMs.map { peak in
+            guard let typical else { return true }
+            return peak > typical + 0.2 && peak > typical * 1.25
+        } ?? false
+        let calloutSecond = latencyCalloutSecond(points)
+        let runCount = Dictionary(grouping: points, by: \.series).mapValues(\.count)
+        return VStack(alignment: .leading, spacing: 16) {
+            qualityHeader(status: blocked != nil ? ("暂不可用", Color.orange) : status)
+            if let blocked, points.isEmpty {
+                qualityPlaceholder(title: "输入暂不可用", message: blocked,
+                                   symbol: "exclamationmark.triangle", tint: .orange)
+            } else if points.isEmpty {
+                qualityPlaceholder(title: "等待输入数据",
+                                   message: quality.hitchesPerMinute > 0
+                                    ? "这一分钟有网络卡顿计数，还没有可绘制的往返时间。"
+                                    : "设备连接就绪后，这里会持续显示最近 60 秒的往返延迟。",
+                                   symbol: "waveform.path.ecg", tint: .accentColor)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let typical {
+                        latencyHero(typical: typical, peak: showsPeak ? quality.rttMaxMs : nil)
+                    }
+                    latencyChart(points: points, runCount: runCount, series: series,
+                                 ceiling: ceiling, calloutSecond: calloutSecond, typical: typical,
+                                 hitchTicks: hitches)
+                }
+            }
+            Divider()
+            HStack(spacing: 16) {
+                qualityMetric("P50", milliseconds(quality.rttP50Ms))
+                qualityMetric("P95", milliseconds(quality.rttP95Ms))
+                qualityMetric("网络卡顿", hitchRate(quality.hitchesPerMinute))
+                qualityMetric("慢注入", "\(quality.slowInjections)")
+            }
+            if !hitches.isEmpty {
+                HStack(spacing: 12) {
+                    legendItem(hitchCaptureColor, "注入慢")
+                    legendItem(hitchNetworkColor, "网络卡顿")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            if let fallback = pointerFallback {
+                Label(fallback, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !quality.suggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("优化建议")
+                        .font(.caption.weight(.semibold))
+                    ForEach(quality.suggestions, id: \.id) { suggestion in
+                        Button {
+                            openSuggestionId = openSuggestionId == suggestion.id ? nil : suggestion.id
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Label {
+                                    Text(suggestion.trigger)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } icon: {
+                                    Image(systemName: suggestionSymbol(suggestion.priority))
+                                        .foregroundStyle(suggestionTint(suggestion.priority))
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "info.circle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: Binding(
+                            get: { openSuggestionId == suggestion.id },
+                            set: { shown in if !shown { openSuggestionId = nil } }
+                        ), arrowEdge: .bottom) {
+                            suggestionDetail(suggestion)
+                        }
+                    }
+                }
+            }
+            DisclosureGroup("查看诊断详情") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("当前模式：\(pointerModeLabel)")
+                    Text("数据报通道：\(datagramChannelDescription)")
+                    Text("慢注入 \(quality.slowInjections) 次")
+                    Text("平台没有光标呈现时间。端到端时间是采集排队、发送、往返和注入的估计，不是两台电脑的时钟同步。")
+                    if let error = snapshot.input.error, !error.isEmpty {
+                        Text(error)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            }
+            .font(.caption.weight(.medium))
+            Text("最近 60 秒 · 网络输入路径计时和计数，不记录坐标或按键内容")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(18)
+        .systemSettingsBlock()
+    }
+
+    /// 卡片头部：左侧标题，右侧当前输入模式与状态胶囊。
+    private func qualityHeader(status: (title: String, color: Color)) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Label("流畅度", systemImage: "chart.xyaxis.line")
+                .font(.system(size: 14, weight: .semibold))
+            Spacer(minLength: 8)
+            Text(pointerModeLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            datagramChannelBadge
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 6, height: 6)
+                Text(status.title)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(status.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(status.color.opacity(0.12), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(status.color.opacity(0.25), lineWidth: 0.5)
+            }
+        }
+    }
+
+    /// 数据报通道是否就绪。运动降级到可靠通道后鼠标照常可用，只有这里能看出
+    /// 通道换过，也解释了为什么曲线在降级后仍然只有可靠通道的延迟。
+    private var datagramChannelDescription: String {
+        snapshot.input.quality.datagramReady.map { $0 ? "就绪" : "不可用，运动走可靠传输" } ?? "尚无采样"
+    }
+
+    @ViewBuilder
+    private var datagramChannelBadge: some View {
+        if snapshot.input.quality.datagramReady == false {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                Text("已降级到可靠通道")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.orange.opacity(0.12), in: Capsule())
+            .help("数据报运动通道不可用，移动改走可靠传输：延迟更高，但输入不会中断。检查网络质量或重新连接设备。")
+        }
+    }
+
+    /// 有数据时的主读数：典型往返延迟大号显示，峰值仅在明显偏离典型值时给出。
+    private func latencyHero(typical: Double, peak: Double?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(milliseconds(typical))
+                .font(.system(size: 28, weight: .semibold))
+                .monospacedDigit()
+            Text("典型往返延迟")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if let peak {
+                Text("峰值 \(milliseconds(peak))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 空态与不可用态共用同一占位结构，高度与图表一致，切换时不跳动。
+    private func qualityPlaceholder(title: String, message: String, symbol: String, tint: Color) -> some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.12))
+                    .frame(width: 52, height: 52)
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(tint)
+            }
+            VStack(spacing: 5) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 420)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 168)
+    }
+
+    private func latencyChart(points: [LatencyPoint], runCount: [Int: Int], series: Color,
+                              ceiling: Double, calloutSecond: Double?, typical: Double?,
+                              hitchTicks: [HitchTick]) -> some View {
+        Chart {
+            ForEach(points) { point in
+                if (runCount[point.series] ?? 0) >= 2 {
+                    AreaMark(
+                        x: .value("时间", point.second),
+                        y: .value("往返", point.rttMs),
+                        series: .value("段", point.series)
+                    )
+                    .interpolationMethod(.linear)
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [series.opacity(0.30), series.opacity(0.03)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    LineMark(
+                        x: .value("时间", point.second),
+                        y: .value("往返", point.rttMs),
+                        series: .value("段", point.series)
+                    )
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(series)
+                } else if points.count == 1 {
+                    RuleMark(
+                        x: .value("时间", point.second),
+                        yStart: .value("往返", 0.0),
+                        yEnd: .value("往返", point.rttMs)
+                    )
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .foregroundStyle(series)
+                }
+            }
+            ForEach(points) { point in
+                if calloutSecond == point.second as Double? {
+                    PointMark(
+                        x: .value("时间", point.second),
+                        y: .value("往返", point.rttMs)
+                    )
+                    .symbolSize(points.count == 1 ? 64 : 28)
+                    .foregroundStyle(series)
+                    .annotation(
+                        position: latencyCalloutPosition(point, ceiling: ceiling),
+                        spacing: 4,
+                        overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .fit(to: .chart))
+                    ) {
+                        Text(milliseconds(point.rttMs))
+                            .font(.caption2.weight(.medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                } else if points.count <= 8 || (runCount[point.series] ?? 0) == 1 || points.last?.second == point.second as Double? {
+                    PointMark(
+                        x: .value("时间", point.second),
+                        y: .value("往返", point.rttMs)
+                    )
+                    .symbolSize(28)
+                    .foregroundStyle(series)
+                }
+            }
+        }
+        .chartYScale(domain: 0.0...(ceiling * 1.28))
+        .chartXScale(domain: -1.0...61.0)
+        .chartXAxis {
+            AxisMarks(values: [0.0, 30.0, 60.0]) { value in
+                AxisValueLabel {
+                    Text(latencyTimeLabel(value.as(Double.self) ?? 0))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0.0, ceiling / 2, ceiling]) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 1))
+                    .foregroundStyle(Color.primary.opacity(0.06))
+                AxisValueLabel {
+                    Text(latencyAxisTick(value.as(Double.self) ?? 0, ceiling: ceiling))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .chartLegend(.hidden)
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                let plot = proxy.plotFrame.map { geometry[$0] } ?? geometry.frame(in: .local)
+                Canvas { context, _ in
+                    for tick in hitchTicks {
+                        guard let x = proxy.position(forX: tick.second) else { continue }
+                        let rect = CGRect(x: x - 1, y: plot.maxY - 6, width: 2, height: 6)
+                        context.fill(Path(roundedRect: rect, cornerRadius: 1),
+                                     with: .color(hitchTickColor(tick)))
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .frame(height: 168)
+        .accessibilityLabel("最近 60 秒往返延迟")
+        .accessibilityValue(milliseconds(typical))
+    }
+
+    /// 底部色条：这一秒出现过卡顿，本机采集和网络分开着色。
+    private func hitchTicks(_ quality: InputQuality) -> [HitchTick] {
+        quality.samples.compactMap { sample in
+            guard sample.hitches > 0 else { return nil }
+            return HitchTick(second: Double(sample.second), isCapture: sample.hitchCapture > 0)
+        }
+    }
+
+    private func hitchTickColor(_ tick: HitchTick) -> Color {
+        tick.isCapture ? hitchCaptureColor : hitchNetworkColor
+    }
+
+    private func legendItem(_ color: Color, _ title: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(color)
+                .frame(width: 3, height: 8)
+            Text(title)
+        }
+    }
+
+    /// 建议详情：做法、预期和复测方法。
+    private func suggestionDetail(_ suggestion: InputQualitySuggestion) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(suggestion.trigger)
+                .font(.caption.weight(.semibold))
+            suggestionDetailRow("做法", suggestion.action)
+            suggestionDetailRow("预期", suggestion.expected)
+            suggestionDetailRow("复测", suggestion.retest)
+        }
+        .padding(12)
+        .frame(width: 320, alignment: .leading)
+    }
+
+    private func suggestionDetailRow(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text(body)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func suggestionSymbol(_ priority: String) -> String {
+        switch priority {
+        case "info": return "info.circle.fill"
+        case "ok": return "checkmark.circle.fill"
+        default: return "lightbulb.fill"
+        }
+    }
+
+    private func suggestionTint(_ priority: String) -> Color {
+        switch priority {
+        case "info": return .secondary
+        case "ok": return .green
+        default: return .orange
+        }
+    }
+
+    private func qualityMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.system(size: 15, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func latencyPoints(_ quality: InputQuality) -> [LatencyPoint] {
+        var series = 0
+        var previous: Double?
+        return quality.samples.compactMap { sample in
+            guard let rtt = sample.rttMs, rtt.isFinite, rtt >= 0 else { return nil }
+            let second = Double(sample.second)
+            if let previous, second - previous > 2 {
+                series += 1
+            }
+            previous = second
+            return LatencyPoint(second: second, rttMs: rtt, series: series)
+        }
+    }
+
+    /// 亚毫秒延迟如果贴着 0 刻度，整数毫秒轴会全部变成 0 ms。刻度至少留出约两成空白。
+    private func latencyCeiling(_ values: [Double]) -> Double {
+        let peak = values.max() ?? 0
+        let steps: [Double] = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+        return steps.first { peak <= $0 * 0.82 } ?? max(peak * 1.25, 1)
+    }
+
+    private func latencySeriesColor(_ p95: Double?) -> Color {
+        guard let p95 else { return .accentColor }
+        if p95 > 50 { return .red }
+        if p95 > 20 { return .orange }
+        return .accentColor
+    }
+
+    private func latencyAxisTick(_ value: Double, ceiling: Double) -> String {
+        let body: String
+        if ceiling < 10 {
+            body = value == 0 || value.rounded() == value
+                ? String(format: "%.0f", value)
+                : String(format: "%.1f", value)
+        } else {
+            body = String(format: "%.0f", value)
+        }
+        return abs(value - ceiling) < 0.05 ? "\(body) ms" : body
+    }
+
+    private func latencyTimeLabel(_ second: Double) -> String {
+        if second <= 0 { return "60秒前" }
+        if second >= 60 { return "现在" }
+        return "30秒前"
+    }
+
+    private func latencyCalloutSecond(_ points: [LatencyPoint]) -> Double? {
+        guard points.count <= 4, let last = points.last else { return nil }
+        guard let peak = points.max(by: { $0.rttMs < $1.rttMs }) else { return last.second }
+        return last.rttMs >= peak.rttMs * 0.98 ? last.second : peak.second
+    }
+
+    private func latencyCalloutPosition(_ point: LatencyPoint, ceiling: Double) -> AnnotationPosition {
+        if point.rttMs > ceiling * 0.72 { return .bottom }
+        if point.second > 48 { return .topLeading }
+        if point.second < 8 { return .topTrailing }
+        return .top
+    }
+
+    private func qualityStatus(_ quality: InputQuality, hasSignal: Bool) -> (title: String, color: Color) {
+        switch quality.grade {
+        case "smooth": return ("流畅", .green)
+        case "fair": return ("一般", .orange)
+        case "poor": return ("较差", .red)
+        default:
+            return hasSignal ? ("采样较少", .secondary) : ("空闲", .secondary)
+        }
+    }
+
+    private func hitchRate(_ value: Double) -> String {
+        value == 0 ? "0" : String(format: "%.1f 次/分钟", value)
+    }
+
+    private var pointerModeLabel: String {
+        let summary = snapshot.input.summary
+        if summary.contains("相对移动") { return "相对移动" }
+        if summary.contains("绝对坐标") { return "绝对坐标" }
+        if summary.contains("可靠路径") { return "可靠路径" }
+        return "等待会话"
+    }
+
+    private var pointerFallback: String? {
+        let summary = snapshot.input.summary
+        guard let marker = ["相对移动", "绝对坐标", "可靠路径"].first(where: { summary.contains($0) }),
+              let range = summary.range(of: marker) else { return nil }
+        let rest = summary[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        guard rest.hasPrefix("·") else { return nil }
+        let reason = rest.dropFirst().trimmingCharacters(in: .whitespaces)
+        return reason.isEmpty ? nil : String(reason)
+    }
+
+    private var inputBlockedReason: String? {
+        if let error = snapshot.input.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+            return error
+        }
+        if snapshot.input.summary.contains("权限") {
+            return snapshot.input.summary
+        }
+        return nil
+    }
+
+    private func milliseconds(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        if value > 0 && value < 0.1 {
+            return String(format: "%.2f ms", value)
+        }
+        return String(format: "%.1f ms", value)
+    }
+
     private var receiverState: some View {
         VStack(spacing: 20) {
             Image(systemName: snapshot.input.managedPaused ? "pause.circle" : "keyboard")
@@ -89,6 +620,7 @@ struct InputView: View {
                 .font(.system(size: 26, weight: .bold))
             Text(snapshot.input.summary).font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            qualityChart
             if snapshot.input.managed {
                 Button("停止被控") { store.reclaim() }
                     .modifier(NativeGlassAction())
@@ -107,7 +639,9 @@ struct InputView: View {
     }
 
     private var heading: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        /// 标题与开关行视作页头的一组：行间距对齐 SystemSettingsPageHeader
+        /// 标题-副行的密度，26pt 大标题不再拖着整组垂直居中。
+        VStack(alignment: .leading, spacing: 6) {
             Text("当前屏幕排布").font(.system(size: 26, weight: .bold)).fixedSize()
             HStack(spacing: 8) {
                 Text("本机主控").font(.callout.weight(.medium))
@@ -235,6 +769,7 @@ struct InputView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
+        .systemSettingsBlock()
     }
 
 }

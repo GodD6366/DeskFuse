@@ -61,8 +61,8 @@ struct MenuBarClipboardRow: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 10).padding(.vertical, 10)
             .frame(minHeight: 64)
-            .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
+            .background(selected ? DeskFuseBrand.selectionFill : .clear, in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous).strokeBorder(selected ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -160,10 +160,10 @@ struct MenuBarClipboardCard: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(selected ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
+            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
+                .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
                 .overlay(alignment: .bottomTrailing) { watermark }
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
             VStack(spacing: 0) {
                 if hasTitle {
                     ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
@@ -188,12 +188,12 @@ struct MenuBarClipboardCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
                 .strokeBorder(selected ? Color.accentColor.opacity(0.25) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
         // A stacked single + double tap makes the single click wait out the
         // double-click interval, which reads as the card responding half a beat
         // late. The double tap is simultaneous instead, exactly like the list

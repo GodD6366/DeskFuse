@@ -75,7 +75,7 @@ pub struct SharingDisplay {
     pub ready: bool,
 }
 impl SharingDisplay {
-    fn rect(&self) -> Rect {
+    pub(crate) fn rect(&self) -> Rect {
         Rect::new(
             self.x,
             self.y,
@@ -83,7 +83,7 @@ impl SharingDisplay {
             f64::from(self.display.height),
         )
     }
-    fn clamp(&self, p: Point) -> Point {
+    pub(crate) fn clamp(&self, p: Point) -> Point {
         Point::new(
             p.x.clamp(0.0, f64::from(self.display.width.saturating_sub(1))),
             p.y.clamp(0.0, f64::from(self.display.height.saturating_sub(1))),
@@ -100,6 +100,8 @@ pub enum SharingAction {
     Route {
         target: DisplayKey,
         event: SharedInputEvent,
+        /// 同一次采样的原始相对计数。策略层不猜测模式，调用方只在有原始增量时填入。
+        relative: Option<(f64, f64)>,
     },
     Reclaim,
     LockChanged(bool),
@@ -388,12 +390,14 @@ impl SharingController {
                         x: self.position.x,
                         y: self.position.y,
                     },
+                    relative: None,
                 });
             }
         } else if self.is_remote() {
             actions.push(SharingAction::Route {
                 target: self.active.clone().expect("remote has display"),
                 event,
+                relative: None,
             });
         }
         actions
@@ -646,6 +650,7 @@ impl SharingController {
                 event: SharedInputEvent::Modifiers {
                     modifiers: self.modifiers,
                 },
+                relative: None,
             });
         }
     }
@@ -678,6 +683,8 @@ mod tests {
                 scale_factor: 2.0,
                 rotation_degrees: 90,
                 is_primary: true,
+                physical_width_mm: None,
+                physical_height_mm: None,
             },
             x: placed.0,
             y: placed.1,
@@ -956,6 +963,7 @@ mod tests {
                     vec![SharingAction::Route {
                         target: target.clone(),
                         event,
+                        relative: None,
                     }],
                     "an ordinary held key must keep its repeat/release stream"
                 );
@@ -1128,6 +1136,7 @@ mod tests {
                 vec![SharingAction::Route {
                     target: c.active_display().unwrap().clone(),
                     event: release,
+                    relative: None,
                 }],
                 "Caps is a modifier edge, so crossing must not swallow its release"
             );

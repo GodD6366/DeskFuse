@@ -198,6 +198,7 @@ struct ClipboardMasonryGrid<Card: View>: View {
                                     ForEach(columns[index], id: \.id) { item in
                                         card(item, item.id == selected)
                                             .id(item.id)
+                                            .transition(.opacity)
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .top)
@@ -206,6 +207,7 @@ struct ClipboardMasonryGrid<Card: View>: View {
                     case .fullWidth(let item):
                         card(item, item.id == selected)
                             .id(item.id)
+                            .transition(.opacity)
                     }
                 }
                 if hasMore {
@@ -217,6 +219,50 @@ struct ClipboardMasonryGrid<Card: View>: View {
             .padding(.vertical, 8)
         }
         .scrollIndicators(.hidden)
+        /// 新条目插入时淡入；不带动效的列重排（move）会让两列抖动，瀑布流只用 opacity。
+        .animation(Motion.snappy, value: items.map(\.id))
+    }
+}
+
+/// 卡片内容类型，决定卡片内部的排版分支。
+enum ClipboardCardKind {
+    case link, code, image, file, text
+
+    static func kind(for item: HistoryItem) -> ClipboardCardKind {
+        if item.hasImage { return .image }
+        if item.fileCount > 0 { return .file }
+        let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        if linkURL(in: text) != nil { return .link }
+        if looksLikeCode(text) { return .code }
+        return .text
+    }
+
+    static func linkURL(in text: String) -> URL? {
+        guard !text.contains(where: \.isWhitespace),
+              let url = URL(string: text),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// 保守的代码/JSON 启发式：任何一条都不命中就当纯文本，宁漏判勿误判。
+    static func looksLikeCode(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 24 else { return false }
+        let lines = trimmed.components(separatedBy: "\n")
+        guard lines.count >= 2 else { return false }
+        if (trimmed.hasPrefix("{") || trimmed.hasPrefix("[")) && trimmed.contains(":") { return true }
+        let first = lines.first?.trimmingCharacters(in: .whitespaces) ?? ""
+        let keywords = ["func ", "def ", "import ", "class ", "struct ", "enum ", "return ", "const ",
+                        "let ", "var ", "function ", "#include", "public ", "private ", "if let ", "for (", "await "]
+        if keywords.contains(where: { first.hasPrefix($0) }) { return true }
+        let keyValueLines = lines.filter { line in
+            let line = line.trimmingCharacters(in: .whitespaces)
+            return line.hasPrefix("\"") && line.contains("\":")
+        }.count
+        if keyValueLines >= 2 { return true }
+        let indented = lines.filter { $0.hasPrefix("    ") || $0.hasPrefix("\t") }.count
+        return indented >= 2 && trimmed.contains("=")
     }
 }
 
@@ -236,41 +282,56 @@ struct ClipboardHistoryCard: View {
     @State private var thumbnail: NSImage?
     @State private var loading = false
     @State private var editingTitle = false
+    @State private var hovering = false
+    @State private var hoveringActions = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// Keeps a single card from growing with a long text or a tall image.
-    private static let maxContentHeight: CGFloat = 236
+    /// 图片卡片只限制最大高度，横竖图都按自身比例展示。
+    private static let maxImageHeight: CGFloat = 200
 
     var body: some View {
+        let kind = ClipboardCardKind.kind(for: item)
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(selected ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
+            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
+                .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .controlBackgroundColor))
                 .overlay(alignment: .bottomTrailing) { watermark }
-                .clipShape(RoundedRectangle(cornerRadius: 12))
             VStack(spacing: 0) {
                 if hasTitle {
                     ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
                 }
-                VStack(alignment: .leading, spacing: 10) {
-                    content
-                    if hasMetadata {
-                        metadata.frame(maxWidth: .infinity, alignment: .center)
-                    }
+                VStack(alignment: .leading, spacing: 6) {
+                    cardContent(kind)
+                    footer
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
+                .strokeBorder(
+                    selected ? DeskFuseBrand.accent : DeskFuseBrand.cardBorder,
+                    lineWidth: selected ? DeskFuseBrand.selectionStrokeWidth : DeskFuseBrand.cardRestStrokeWidth
+                )
         }
-        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(
+            color: hovering ? DeskFuseBrand.cardHoverShadowColor : DeskFuseBrand.cardShadowColor,
+            radius: hovering ? DeskFuseBrand.cardHoverShadowRadius : DeskFuseBrand.cardShadowRadius,
+            y: hovering ? DeskFuseBrand.cardHoverShadowY : DeskFuseBrand.cardShadowY
+        )
+        .offset(y: hovering ? -1 : 0)
+        .animation(Motion.snappy, value: selected)
+        .contentShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
         .onTapGesture(perform: onSelect)
+        .onHover { over in withMotion(.snappy) { hovering = over } }
         .clipboardHistoryContextMenu(ClipboardHistoryMenuContext(
             item: item, title: title, memberships: memberships, meta: meta,
             copyEnabled: client != nil,
             onEditTitle: { editingTitle = true }, onDelete: onDelete))
+        /// 浮层放在右键菜单层之上，保证按钮是全卡最顶层的可命中元素。
+        .overlay(alignment: .topTrailing) { hoverActions }
         .sheet(isPresented: $editingTitle) {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }
@@ -294,49 +355,166 @@ struct ClipboardHistoryCard: View {
                 .frame(width: 96, height: 96)
                 .rotationEffect(.degrees(-45))
                 .offset(x: 24, y: 24)
-                .opacity(0.05)
+                .opacity(DeskFuseBrand.watermarkOpacity)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
     }
 
-    private var hasTitle: Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
-    private var hasMetadata: Bool { item.copiedDate != nil || ocrHit || (meta?.remote == true && meta?.available == false) }
-
-    private var metadata: some View {
-        ZStack {
-            if let date = item.copiedDate {
-                Text(Self.timeFormatter.string(from: date))
-                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-            }
-            HStack(spacing: 4) {
-                if ocrHit {
-                    Image(systemName: "text.viewfinder")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .help("由图片识别文字匹配")
+    /// 悬停时右上角浮现的快捷操作。容器不施加任何 hit-test 修改：SwiftUI
+    /// 布局容器只在其内容（按钮）处接收点击，padding 与间距留白自动穿透到
+    /// 卡片的点击选中与拖拽框选。hoveringActions 保证指针移到 glass 按钮上
+    /// 时浮层不闪失；浮层位于右键菜单 overlay 之上，按钮是全卡最顶层的命中目标。
+    @ViewBuilder private var hoverActions: some View {
+        if hovering || hoveringActions {
+            HStack(spacing: 6) {
+                ClipboardCardActionButton(systemImage: "doc.on.doc", help: "复制") {
+                    ClipboardItemActions.copy(item.id, format: .original, paste: false)
                 }
-                if meta?.remote == true && meta?.available == false {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .help("使用时从来源设备获取")
-                }
-                Spacer(minLength: 0)
+                .disabled(client == nil)
+                ClipboardCardActionButton(systemImage: "trash", help: "删除", action: onDelete)
             }
+            .padding(6)
+            .transition(.opacity)
+            .onHover { over in withMotion(.snappy) { hoveringActions = over } }
         }
-        .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder private var content: some View {
-        if item.hasImage {
+    private var hasTitle: Bool { title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+
+    @ViewBuilder private func cardContent(_ kind: ClipboardCardKind) -> some View {
+        switch kind {
+        case .image:
             ClipboardCardImage(
                 image: thumbnail ?? selectedImage,
                 loading: loading,
-                maxHeight: Self.maxContentHeight,
+                maxHeight: Self.maxImageHeight,
                 unavailable: meta?.remote == true && meta?.available == false ? "待获取图片" : "图片不可用"
             )
-        } else {
-            ClipboardCardText(text: item.clipboardTitle, lineLimit: 10, maxHeight: Self.maxContentHeight)
+        case .file:
+            fileContent
+        case .link:
+            linkContent
+        case .code:
+            codeContent
+        case .text:
+            textContent
         }
+    }
+
+    private var linkParts: (host: String, path: String)? {
+        let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = ClipboardCardKind.linkURL(in: text), let host = url.host else { return nil }
+        let path = url.path.removingPercentEncoding ?? url.path
+        return (host, path == "/" ? "" : path)
+    }
+
+    /// 链接卡片：链接图标 + 域名/路径两行，正文省略。
+    private var linkContent: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "link")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(linkParts?.host ?? item.clipboardTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                if let path = linkParts?.path, !path.isEmpty {
+                    Text(path)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    /// 代码/JSON 卡片：等宽字体，底板比背景深一档。
+    private var codeContent: some View {
+        Text(item.clipboardTitle)
+            .font(.system(size: 12.5, design: .monospaced))
+            .lineSpacing(2)
+            .lineLimit(8)
+            .multilineTextAlignment(.leading)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(codeFillOpacity), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var codeFillOpacity: Double {
+        if reduceTransparency { return colorScheme == .dark ? 0.08 : 0.06 }
+        return colorScheme == .dark ? 0.06 : 0.04
+    }
+
+    /// 文件卡片：文件图标 + 文件名 + 大小的紧凑行。
+    private var fileContent: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(DeskFuseBrand.fusionBlue)
+                .frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.clipboardTitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Text(item.fileCount > 1 ? "\(item.fileCount) 项 · \(byteCount(item.length))" : byteCount(item.length))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 纯文本卡片：最多 8 行，可能被截断时底部 20pt 渐隐。
+    private var textContent: some View {
+        Text(item.clipboardTitle)
+            .font(.system(size: 13))
+            .lineSpacing(4)
+            .lineLimit(8)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .mask {
+                if textClamped { Self.bottomFade } else { Color.black }
+            }
+    }
+
+    /// 预览明显超过 8 行时才启用渐隐，短文本不被 mask 误伤。
+    private var textClamped: Bool {
+        item.preview.trimmingCharacters(in: .whitespacesAndNewlines).count >= 240
+    }
+
+    /// 底部约 20pt 的线性渐隐。
+    private static let bottomFade = LinearGradient(
+        stops: [
+            .init(color: .black, location: 0),
+            .init(color: .black, location: 0.92),
+            .init(color: .clear, location: 1),
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
+    /// 卡片底部固定 footer：时间 + 来源设备，右侧保留状态图标。
+    private var footer: some View {
+        HStack(spacing: 6) {
+            if let date = item.copiedDate {
+                Text(Self.timeFormatter.string(from: date))
+                    .monospacedDigit()
+            }
+            Text(meta?.originDevice ?? item.source)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if ocrHit {
+                Image(systemName: "text.viewfinder")
+                    .help("由图片识别文字匹配")
+            }
+            if meta?.remote == true && meta?.available == false {
+                Image(systemName: "arrow.down.circle")
+                    .help("使用时从来源设备获取")
+            }
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -345,6 +523,43 @@ struct ClipboardHistoryCard: View {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+/// 悬停浮层的圆钮：macOS 26 用 glass，旧版本与减弱透明度时用实色底。
+private struct ClipboardCardActionButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+    @State private var copied = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Button(action: perform) {
+            Image(systemName: copied ? "checkmark" : systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(copied ? DeskFuseBrand.accent : (enabled ? Color.primary : Color.secondary))
+        .modifier(NativeGlassBackdrop(cornerRadius: 12))
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    /// 复制是即发即弃的请求；按钮本地给 1.2 秒对勾反馈并触发触感。
+    private func perform() {
+        action()
+        guard !copied else { return }
+        copied = true
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            withMotion(.snappy) { copied = false }
+        }
+    }
 }
 
 /// 按图片自身比例占位，只限制最大高度，避免横图被塞进竖向空框。

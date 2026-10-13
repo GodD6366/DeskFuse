@@ -102,7 +102,11 @@ struct WorkflowShortcutSettings: View {
     let manageWorkflows: () -> Void
     @State private var editing: WorkflowDefinition?
     var body: some View {
-        Section {
+        SystemSettingsFormBlock(
+            title: "工作流",
+            titleSymbol: "photo.on.rectangle",
+            footer: "点击右侧组合键即可修改。停用的流程不会响应快捷键；全局触发需要辅助功能权限。"
+        ) {
             ForEach(store.workflowDefinitions) { flow in
                 HStack(spacing: 12) {
                     Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary).frame(width: 24)
@@ -129,8 +133,7 @@ struct WorkflowShortcutSettings: View {
                 }.padding(.vertical, 6)
             }
             Button("管理工作流…", action: manageWorkflows)
-        } header: { Label("工作流", systemImage: "photo.on.rectangle") }
-          footer: { Text("点击右侧组合键即可修改。停用的流程不会响应快捷键；全局触发需要辅助功能权限。") }
+        }
         .sheet(item: $editing) { flow in WorkflowShortcutSheet(store: store, initial: flow) { editing = nil } }
     }
 }

@@ -3,7 +3,9 @@ import DeskFuseEngine
 
 /// Full-page keyboard/mouse sharing editor. The page replaces the old modal
 /// sheet, so the same controls live in 设置 → 键鼠共享 and are one click away
-/// from the 鼠标共享 header.
+/// from the 鼠标共享 header. 跨屏方式、快捷键、布局与 Wi-Fi 主控选择暂不
+/// 暴露设置项：底层默认值与快捷键注册保持生效，主控按 Wi-Fi 的记忆
+/// 由引擎静默完成。
 struct InputSharingSettingsView: View {
     @Bindable var store: AppStore
     @State private var draft: InputSettings
@@ -11,8 +13,6 @@ struct InputSharingSettingsView: View {
     @State private var saving = false
     @State private var status: String?
     @State private var failure: String?
-    @State private var remember = true
-    @State private var selectedController = ""
 
     init(store: AppStore, initial: InputSettings) {
         self.store = store
@@ -25,18 +25,9 @@ struct InputSharingSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Form {
+            SystemSettingsFormPage {
                 controllerSection.disabled(snapshot?.input.managed == true)
-                switchSection.disabled(snapshot?.input.managed == true)
-                shortcutSection.disabled(snapshot?.input.managed == true)
-                if snapshot?.input.canConfigure == true {
-                    layoutSection
-                }
-                if snapshot?.input.managed != true {
-                    environmentSection
-                }
             }
-            .formStyle(.grouped)
             SettingsSaveFooter(dirty: dirty, saving: saving, canSave: dirty && snapshot?.input.managed != true, canRevert: dirty,
                 status: status, error: failure,
                 revert: { draft = saved; failure = nil; status = nil }, save: save)
@@ -52,82 +43,13 @@ struct InputSharingSettingsView: View {
     // MARK: - 主控
 
     private var controllerSection: some View {
-        Section("主控") {
+        SystemSettingsFormBlock(title: "主控") {
             Toggle("此设备作为主控", isOn: Binding(get: { draft.controller }, set: setController))
             Toggle("共享键鼠", isOn: Binding(get: { draft.enabled }, set: setSharingEnabled))
                 .disabled(!draft.controller)
-            Text("作为主控时，可以在「鼠标共享」页面添加设备屏幕并分享键鼠。")
+            Text("作为主控时，可以在「鼠标共享」页面添加设备屏幕并分享键鼠。当前 Wi-Fi 会自动记住生效的主控：切换主控或关闭主控也会自动更新保存的记忆；回到该 Wi-Fi 时自动恢复主控与屏幕排布，未匹配的网络自动暂停，其余设置保持保存。")
                 .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var switchSection: some View {
-        Section("跨屏方式") {
-            Picker("触发方式", selection: $draft.switchMode) {
-                Text("立即穿越").tag(SwitchMode.instant)
-                Text("停留 250 毫秒").tag(SwitchMode.dwell)
-                Text("双触边缘").tag(SwitchMode.doubleTap)
-            }
-            ForEach(0..<4) { index in
-                Toggle(["禁用左上角", "禁用右上角", "禁用左下角", "禁用右下角"][index],
-                       isOn: cornerBinding(index))
-            }
-            Stepper("边角范围：\(draft.cornerSize) pt", value: $draft.cornerSize, in: 0...256)
-        }
-    }
-
-    private var shortcutSection: some View {
-        Section("快捷键") {
-            ShortcutEditor(store: store, shortcuts: $draft.shortcuts)
-        }
-    }
-
-    // MARK: - 布局与 Wi-Fi
-
-    private var layoutSection: some View {
-        Section("布局") {
-            if let ssid = snapshot?.input.ssid {
-                LabeledContent("当前网络", value: ssid)
-                Text("屏幕排布改动后会自动保存，并在回到该网络时恢复；只恢复排布，不会自动开启共享。")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("读取到唯一的 Wi-Fi 名称后，屏幕排布改动会自动按网络保存。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("前往权限设置") { store.openSettings(tab: SettingsCategory.permissions.rawValue) }
-                    .buttonStyle(.link)
-            }
-        }
-    }
-
-    private var environmentSection: some View {
-        Section("按 Wi-Fi 自动选择主控") {
-            Text(snapshot?.input.environmentMessage ?? "等待网络状态")
-                .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Wi-Fi 读取权限…") { store.openSettings(tab: SettingsCategory.permissions.rawValue) }
-            Text("权限统一在“设置 → 权限”中管理。匹配网络自动恢复主控，未匹配网络自动暂停；原有布局和共享开关保持保存。")
-                .font(.caption).foregroundStyle(.secondary)
-            Picker("主控", selection: $selectedController) {
-                Text("选择设备").tag("")
-                if let snapshot {
-                    Text(snapshot.localName).tag(snapshot.localId)
-                    ForEach(snapshot.devices.filter(\.member), id: \.id) { Text($0.name).tag($0.id) }
-                }
-            }
-            Toggle("记住当前 Wi-Fi", isOn: $remember)
-            Button("使用此主控") {
-                store.error = nil
-                store.send(.chooseController(id: selectedController, remember: remember))
-            }
-            .disabled(selectedController.isEmpty)
-            ForEach(snapshot?.input.rules ?? [], id: \.ssid) { rule in
-                HStack {
-                    Text(rule.ssid)
-                    Spacer()
-                    Text(controllerName(rule.controller)).foregroundStyle(.secondary)
-                    Button("删除") { store.send(.forgetEnvironment(ssid: rule.ssid)) }
-                }
-            }
         }
     }
 
@@ -142,21 +64,6 @@ struct InputSharingSettingsView: View {
     private func setSharingEnabled(_ enabled: Bool) {
         draft.enabled = enabled
         if enabled { draft.controller = true }
-    }
-
-    private func controllerName(_ id: String) -> String {
-        if id == snapshot?.localId { return snapshot?.localName ?? "本机" }
-        return snapshot?.devices.first { $0.id == id }?.name ?? "离线设备"
-    }
-
-    private func cornerBinding(_ index: Int) -> Binding<Bool> {
-        Binding(
-            get: { draft.disabledCorners & (1 << index) != 0 },
-            set: { on in
-                if on { draft.disabledCorners |= 1 << index }
-                else { draft.disabledCorners &= ~(1 << index) }
-            }
-        )
     }
 
     private func save() {

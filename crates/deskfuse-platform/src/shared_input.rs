@@ -20,6 +20,11 @@ pub struct CaptureSample {
     pub global_y: f64,
     pub delta_x: f64,
     pub delta_y: f64,
+    /// 原始设备计数。像素差仍留在 `delta_*`，供边缘检测和绝对坐标回退。
+    pub raw_dx: f64,
+    pub raw_dy: f64,
+    /// 为假时 `raw_*` 不能当成相对移动。零增量也可以为真。
+    pub has_raw: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum CaptureEvent {

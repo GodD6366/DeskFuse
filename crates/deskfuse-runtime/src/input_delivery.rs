@@ -93,6 +93,45 @@ impl InputDelivery {
                 return true;
             }
         }
+        if is_relative(&event) {
+            let combined = state.pending.back().and_then(|last| {
+                if !can_coalesce_relative(last, &event) {
+                    return None;
+                }
+                let RuntimeEvent::SharedInputReceived { events: previous, .. } = last else {
+                    return None;
+                };
+                let RuntimeEvent::SharedInputReceived {
+                    events: incoming,
+                    sequence,
+                    ..
+                } = &event
+                else {
+                    return None;
+                };
+                let (left_x, left_y) = relative_sum(previous)?;
+                let (right_x, right_y) = relative_sum(incoming)?;
+                let dx = left_x + right_x;
+                let dy = left_y + right_y;
+                if !deskfuse_core::relative_delta_ok(dx) || !deskfuse_core::relative_delta_ok(dy) {
+                    return None;
+                }
+                Some((*sequence, dx, dy))
+            });
+            if let Some((sequence, dx, dy)) = combined
+                && let Some(RuntimeEvent::SharedInputReceived {
+                    events,
+                    sequence: queued,
+                    ..
+                }) = state.pending.back_mut()
+            {
+                *queued = sequence;
+                *events = vec![SharedInputEvent::RelativeMotion { dx, dy }];
+                drop(state);
+                self.ready.notify_one();
+                return true;
+            }
+        }
         if state.pending.len() >= self.capacity {
             self.invalidate(&mut state, "native input delivery queue overflow");
             drop(state);
@@ -177,6 +216,31 @@ fn is_motion(event: &RuntimeEvent) -> bool {
         if !events.is_empty() && events.iter().all(|event| matches!(event, SharedInputEvent::Motion { .. })))
 }
 
+fn is_relative(event: &RuntimeEvent) -> bool {
+    matches!(event, RuntimeEvent::SharedInputReceived { events, .. }
+        if !events.is_empty()
+            && events
+                .iter()
+                .all(|event| matches!(event, SharedInputEvent::RelativeMotion { .. })))
+}
+
+fn relative_sum(events: &[SharedInputEvent]) -> Option<(f64, f64)> {
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    for event in events {
+        let SharedInputEvent::RelativeMotion { dx: x, dy: y } = event else {
+            return None;
+        };
+        dx += *x;
+        dy += *y;
+    }
+    if deskfuse_core::relative_delta_ok(dx) && deskfuse_core::relative_delta_ok(dy) {
+        Some((dx, dy))
+    } else {
+        None
+    }
+}
+
 fn can_coalesce(previous: &RuntimeEvent, next: &RuntimeEvent) -> bool {
     match (previous, next) {
         (
@@ -198,6 +262,37 @@ fn can_coalesce(previous: &RuntimeEvent, next: &RuntimeEvent) -> bool {
             },
         ) => {
             is_motion(previous)
+                && a_peer == b_peer
+                && a_session == b_session
+                && a_display == b_display
+                && a_epoch == b_epoch
+                && b_sequence > a_sequence
+        }
+        _ => false,
+    }
+}
+
+fn can_coalesce_relative(previous: &RuntimeEvent, next: &RuntimeEvent) -> bool {
+    match (previous, next) {
+        (
+            RuntimeEvent::SharedInputReceived {
+                peer_id: a_peer,
+                session_id: a_session,
+                target_display: a_display,
+                state_epoch: a_epoch,
+                sequence: a_sequence,
+                ..
+            },
+            RuntimeEvent::SharedInputReceived {
+                peer_id: b_peer,
+                session_id: b_session,
+                target_display: b_display,
+                state_epoch: b_epoch,
+                sequence: b_sequence,
+                ..
+            },
+        ) => {
+            is_relative(previous)
                 && a_peer == b_peer
                 && a_session == b_session
                 && a_display == b_display

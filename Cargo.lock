@@ -680,6 +680,7 @@ dependencies = [
  "deskfuse-core",
  "getrandom 0.4.3",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

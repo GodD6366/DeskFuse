@@ -252,7 +252,7 @@ impl AppModel {
         let mut model = Self {
             local: Device {
                 id: "unknown".to_owned(),
-                name: "本机 · DeskFuse".to_owned(),
+                name: "这台 Mac".to_owned(),
                 subtitle: "网络运行时不可用".to_owned(),
                 route_source: RouteSource::Direct,
                 health: Health::Offline,
@@ -526,7 +526,30 @@ impl AppModel {
         }
         if self.input_sharing.settings.role == deskfuse_core::InputShareRole::Controller {
             if self.input_sharing.settings.enabled {
-                "本机主控已开启".into()
+                let mut text = String::from("本机主控已开启");
+                if let Some(link) = self
+                    .input_sharing
+                    .links
+                    .iter()
+                    .find(|link| link.control_session.is_some())
+                {
+                    let mode = match link.motion_mode.as_deref() {
+                        Some("relative") => "相对移动",
+                        Some("hybrid") => "绝对坐标",
+                        _ => "可靠路径",
+                    };
+                    text.push_str(" · ");
+                    text.push_str(mode);
+                    if let Some(reason) = link
+                        .motion_fallback_reason
+                        .as_deref()
+                        .filter(|reason| !reason.is_empty())
+                    {
+                        text.push_str(" · ");
+                        text.push_str(reason);
+                    }
+                }
+                text
             } else {
                 "本机主控已关闭".into()
             }
@@ -884,7 +907,7 @@ fn input_reason_label(reason: Option<&str>) -> &str {
 fn local_device(id: DeviceId, status: RuntimeStatus) -> Device {
     Device {
         id: id.to_hex(),
-        name: "本机 · DeskFuse".to_owned(),
+        name: "这台 Mac".to_owned(),
         subtitle: format!("设备 ID · {}", short_id(id)),
         route_source: RouteSource::Direct,
         health: status.to_health(),

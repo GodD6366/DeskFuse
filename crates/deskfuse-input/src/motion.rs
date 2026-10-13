@@ -52,6 +52,18 @@ impl MotionReceiver {
         self.latest_motion_seq
     }
 
+    /// 相对包只抬高水位，不产生绝对坐标事件。更晚到达的旧绝对包因此不能把光标拉回去。
+    pub fn note_motion_seq(&mut self, motion_seq: u64) {
+        if motion_seq > self.latest_motion_seq {
+            self.latest_motion_seq = motion_seq;
+        }
+    }
+
+    /// 可靠 Enter 之后、Leave 之前才接受不可靠移动。
+    pub fn motion_open(&self) -> bool {
+        !self.closed && self.state_epoch != 0
+    }
+
     /// Receive reliable input and return its complete, indivisible injection batch.
     ///
     /// Reliable messages must have strictly increasing nonzero sequence numbers.

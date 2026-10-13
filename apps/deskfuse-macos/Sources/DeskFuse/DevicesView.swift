@@ -108,7 +108,7 @@ struct DevicesView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
                             Text(showsApplications ? "远程应用" : "设备")
-                                .font(.system(size: 27, weight: .bold))
+                                .font(.system(size: 26, weight: .bold))
                             if showsApplications { FeatureBadge() }
                         }
                         Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
@@ -428,8 +428,8 @@ struct DevicesView: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
-            selected == device.id ? Color.accentColor.opacity(0.14) : .clear,
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            selected == device.id ? DeskFuseBrand.selectionFill : .clear,
+            in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
         )
         .background(NativeListSelection())
         .tag(device.id)
@@ -459,8 +459,8 @@ struct DevicesView: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
-            selected == snapshot.localId ? Color.accentColor.opacity(0.14) : .clear,
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            selected == snapshot.localId ? DeskFuseBrand.selectionFill : .clear,
+            in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
         )
         .background(NativeListSelection())
         .tag(snapshot.localId)
@@ -532,23 +532,27 @@ struct DevicesView: View {
                         .frame(maxWidth: .infinity, minHeight: 360)
                 }
             }
-            .padding(28)
+            .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
+            .padding(.vertical, SystemSettingsMetrics.pageTopInset)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(.clear)
     }
 
     private func remoteDetail(_ device: Device) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 14) {
             deviceHeader(device)
+                .padding(20)
+                .systemSettingsBlock()
             DeviceRoutesPanel(routes: device.routes) { store.send(.refreshDevices) }
+                .systemSettingsBlock()
             transferActivity
             operations(for: device)
         }
     }
 
     private var localDetail: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 16) {
             DeviceProductIconView(
                 displayName: snapshot.localName,
@@ -563,6 +567,8 @@ struct DevicesView: View {
                 }
                 Spacer(minLength: 0)
             }
+            .padding(20)
+            .systemSettingsBlock()
             infoCard {
                 infoRow("运行状态", symbol: "power", value: snapshot.runtimeStatus)
                 Divider()
@@ -576,6 +582,9 @@ struct DevicesView: View {
                     Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .systemSettingsBlock()
             }
         }
     }
@@ -792,10 +801,10 @@ struct DevicesView: View {
     }
 }
 
+/// 详情区的分组表面：统一走系统设置风格的浅灰圆角 block。
 private struct DeviceDetailsSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .modifier(NativeGlassCardSurface(cornerRadius: 14))
+        content.systemSettingsBlock()
     }
 }
 
@@ -809,27 +818,12 @@ struct PairingRow: View {
                 // Icon container with gradient background
                 ZStack {
                     Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.accentColor.opacity(0.18),
-                                    Color.accentColor.opacity(0.08)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .fill(DeskFuseBrand.fusionGradient.opacity(0.15))
                         .frame(width: 56, height: 56)
 
                     Image(systemName: "person.crop.circle.badge.plus")
                         .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.accentColor, Color.accentColor.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .foregroundStyle(DeskFuseBrand.fusionGradient)
                 }
 
                 // Content
@@ -882,17 +876,7 @@ struct PairingRow: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.15),
-                            Color.white.opacity(0.05)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+                .strokeBorder(DeskFuseBrand.fusionGradient.opacity(0.4), lineWidth: 1)
         }
         .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
@@ -941,19 +925,12 @@ struct PairingRow: View {
                         .padding(.vertical, 9)
                 }
                 .buttonStyle(.plain)
-                .background(
-                    LinearGradient(
-                        colors: [
-                            Color.accentColor,
-                            Color.accentColor.opacity(0.9)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .background(DeskFuseBrand.fusionGradient)
+                /// 白字压在青色一端的对比度不足，压一层极淡黑色保证深浅色下可读。
+                .overlay { Capsule().fill(Color.black.opacity(0.12)) }
                 .clipShape(Capsule())
                 .contentShape(Capsule())
-                .shadow(color: Color.accentColor.opacity(0.3), radius: 8, y: 4)
+                .shadow(color: DeskFuseBrand.fusionBlue.opacity(0.3), radius: 8, y: 4)
             }
         }
     }

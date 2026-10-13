@@ -238,12 +238,12 @@ impl SharedInputCapture for WindowsSharingCapture {
 }
 impl WindowsSharingCapture {
     fn convert(&mut self, event: NativeCaptureEvent) -> PlatformResult<CaptureEvent> {
-        let (global_x, global_y) = match event {
-            NativeCaptureEvent::MouseMove { x, y }
-            | NativeCaptureEvent::MouseButton { x, y, .. }
-            | NativeCaptureEvent::Scroll { x, y, .. } => physical_to_global(x, y)?,
+        let ((global_x, global_y), raw) = match event {
+            NativeCaptureEvent::MouseMove { x, y, raw } => (physical_to_global(x, y)?, raw),
+            NativeCaptureEvent::MouseButton { x, y, .. }
+            | NativeCaptureEvent::Scroll { x, y, .. } => (physical_to_global(x, y)?, None),
             NativeCaptureEvent::Key { .. } | NativeCaptureEvent::Modifiers(_) => {
-                self.last_position.unwrap_or_default()
+                (self.last_position.unwrap_or_default(), None)
             }
         };
         let previous = self.last_position.replace((global_x, global_y));
@@ -293,6 +293,9 @@ impl WindowsSharingCapture {
             global_y,
             delta_x,
             delta_y,
+            raw_dx: raw.map(|(dx, _)| f64::from(dx)).unwrap_or(0.0),
+            raw_dy: raw.map(|(_, dy)| f64::from(dy)).unwrap_or(0.0),
+            has_raw: raw.is_some(),
         }))
     }
 }
@@ -559,6 +562,7 @@ fn injection_worker(
     };
     let mut state_epoch = 0;
     let mut scroll_residual = (0.0, 0.0);
+    let mut motion_residual = (0.0, 0.0);
     loop {
         let command = match receiver.recv_timeout(Duration::from_millis(20)) {
             Ok(command) => command,
@@ -591,10 +595,12 @@ fn injection_worker(
                         &display,
                         &events,
                         &mut scroll_residual,
+                        &mut motion_residual,
                     )
                 }
             }
             InjectionCommand::Release(reply) => {
+                motion_residual = (0.0, 0.0);
                 let result = injector
                     .release_all()
                     .map_err(|_| PlatformError::InputInjectionFailed);
@@ -605,11 +611,13 @@ fn injection_worker(
                 result
             }
             InjectionCommand::Stop => {
+                motion_residual = (0.0, 0.0);
                 let _ = injector.release_all();
                 break;
             }
         };
         if let Err(failure) = result {
+            motion_residual = (0.0, 0.0);
             lease.retire();
             let _ = injector.release_all();
             error.publish(failure);
@@ -625,6 +633,7 @@ fn inject_batch(
     display: &DisplayDescriptor,
     events: &[SharedInputEvent],
     scroll_residual: &mut (f64, f64),
+    motion_residual: &mut (f64, f64),
 ) -> PlatformResult<()> {
     let displays = native_displays()?;
     let native = displays
@@ -639,6 +648,7 @@ fn inject_batch(
         event
             .validate()
             .map_err(|_| PlatformError::InputInjectionFailed)?;
+        let started = Instant::now();
         match event {
             SharedInputEvent::Motion { x, y } => {
                 let (physical_x, physical_y) = native
@@ -678,6 +688,21 @@ fn inject_batch(
             SharedInputEvent::Modifiers { modifiers } => injector
                 .set_modifiers(legacy_modifiers_to_hid(*modifiers))
                 .map_err(|_| PlatformError::InputInjectionFailed)?,
+            SharedInputEvent::RelativeMotion { dx, dy } => {
+                let total_x = motion_residual.0 + dx;
+                let total_y = motion_residual.1 + dy;
+                let step_x = total_x.round();
+                let step_y = total_y.round();
+                let next = (total_x - step_x, total_y - step_y);
+                let ix = step_x as i32;
+                let iy = step_y as i32;
+                if ix != 0 || iy != 0 {
+                    injector
+                        .move_relative(ix, iy)
+                        .map_err(|_| PlatformError::InputInjectionFailed)?;
+                }
+                *motion_residual = next;
+            }
             SharedInputEvent::Scroll { dx, dy } => {
                 scroll_residual.0 += dx;
                 scroll_residual.1 += dy;
@@ -690,6 +715,10 @@ fn inject_batch(
                     .map_err(|_| PlatformError::InputInjectionFailed)?;
             }
         }
+        // 慢注入计数和阶段均值各记一份：均值会把少数几次长卡顿摊平到看不见。
+        let inject_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        deskfuse_core::note_injection_duration(inject_micros);
+        deskfuse_core::record_input_stage(deskfuse_core::InputStage::Inject, inject_micros);
     }
     Ok(())
 }

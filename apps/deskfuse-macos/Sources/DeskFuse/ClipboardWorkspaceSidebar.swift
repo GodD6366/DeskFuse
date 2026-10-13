@@ -8,27 +8,33 @@ private struct WorkflowSyncCard: View {
         Button {
             AppStore.shared.openSettings(tab: "clipboard", clipboardSegment: "workflows")
         } label: {
-            HStack {
+            HStack(spacing: 9) {
                 Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: SystemSettingsMetrics.iconSize, height: SystemSettingsMetrics.iconSize)
+                    .foregroundStyle(DeskFuseBrand.fusionGradient)
                 Text("工作流")
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
+                    .font(.system(size: 13))
+                Spacer(minLength: 0)
                 Text(String(workflows.definitions.count))
                     .font(.system(size: 11))
-                    .opacity(0.8)
+                    .foregroundStyle(.secondary)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .opacity(0.7)
+                    .foregroundStyle(.tertiary)
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .frame(height: 36)
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous))
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.blue, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .systemSettingsBlock()
+        .overlay {
+            RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous)
+                .strokeBorder(DeskFuseBrand.fusionGradient, lineWidth: 1)
+        }
+        .help("在设置中管理工作流")
     }
 }
 
@@ -64,6 +70,8 @@ struct ClipboardWorkspaceSidebar: View {
                 .padding(12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .textBackgroundColor))
+        // 这一栏和它右侧的历史列表同属内容区，用同一个亮底，靠 ClipboardView
+        // 的 Divider 分栏；只有最外层的主侧栏用材质灰底。
+        .systemSettingsContentBackground()
     }
 }

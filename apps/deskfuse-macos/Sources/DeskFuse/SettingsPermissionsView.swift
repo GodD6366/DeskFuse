@@ -10,22 +10,11 @@ struct SettingsPermissionsView: View {
     @State private var screenRecordingGranted = false
 
     var body: some View {
-        Form {
-            Section {
-                ForEach(permissions, id: \.name) { permission in
-                    permissionRow(permission)
-                }
-                if #available(macOS 14.2, *) {
-                    screenRecordingRow
-                }
-                wifiPermissionRow
-                if permissions.isEmpty {
-                    Text("正在读取系统权限…").foregroundStyle(.secondary)
-                }
-            } header: {
-                HStack {
-                    Text("系统权限")
-                    Spacer()
+        SystemSettingsFormPage {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    SystemSettingsSectionLabel(title: "系统权限")
+                    Spacer(minLength: 0)
                     Button {
                         store.send(.refreshPermissions)
                         refreshScreenRecordingPermission()
@@ -33,19 +22,40 @@ struct SettingsPermissionsView: View {
                         Label("刷新", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .controlSize(.small)
                 }
-            } footer: {
-                HStack {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(permissions, id: \.name) { permission in
+                        permissionRow(permission)
+                        Divider()
+                    }
+                    if #available(macOS 14.2, *) {
+                        screenRecordingRow
+                        Divider()
+                    }
+                    wifiPermissionRow
+                    if permissions.isEmpty {
+                        Text("正在读取系统权限…").foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .systemSettingsBlock()
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("状态来自 macOS。仅展示 DeskFuse 实际使用的系统权限。")
-                    Spacer()
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                     if store.permissionPrompt.hasSuppressedPermissions {
                         Button("恢复启动授权提醒") { store.permissionPrompt.resetSuppression() }
                             .buttonStyle(.borderless)
+                            .font(.caption)
                     }
                 }
+                .padding(.horizontal, 4)
             }
         }
-        .formStyle(.grouped)
         .onAppear {
             refreshScreenRecordingPermission()
         }

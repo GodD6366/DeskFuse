@@ -191,6 +191,8 @@ fn topology(role: Role) -> DisplayTopology {
                 scale_factor: 2.0,
                 rotation_degrees: 0,
                 is_primary: primary,
+                physical_width_mm: None,
+                physical_height_mm: None,
             })
             .collect(),
     }
@@ -833,6 +835,7 @@ async fn controller(
                         session_id: session,
                         target_display: target(round),
                         events,
+                        relative: None,
                     },
                 )
                 .await?;
@@ -893,6 +896,7 @@ async fn controller(
                 session_id: session,
                 target_display: target(round),
                 events: frame(round, 0),
+                relative: None,
             },
         )
         .await?;

@@ -260,6 +260,16 @@ mod native {
             )
         }
 
+        /// 设备计数相对移动。不带绝对坐标标志，也不改本机保存的绝对位置。
+        /// # Errors
+        /// Returns unsupported input, unavailable desktop, or a native injection failure.
+        pub fn move_relative(&self, dx: i32, dy: i32) -> Result<(), InputError> {
+            if dx == 0 && dy == 0 {
+                return Ok(());
+            }
+            send_mouse(dx, dy, 0, MOUSEEVENTF_MOVE)
+        }
+
         /// # Errors
         /// Returns unsupported input, unavailable desktop, or a native injection failure.
         pub fn mouse_button(

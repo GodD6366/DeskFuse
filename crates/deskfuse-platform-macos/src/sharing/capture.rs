@@ -114,11 +114,30 @@ impl Shared {
         {
             let delta_x = previous.delta_x + sample.delta_x;
             let delta_y = previous.delta_y + sample.delta_y;
+            let (raw_dx, raw_dy, has_raw) = match (previous.has_raw, sample.has_raw) {
+                (true, true) => {
+                    let summed_x = previous.raw_dx + sample.raw_dx;
+                    let summed_y = previous.raw_dy + sample.raw_dy;
+                    if deskfuse_core::relative_delta_ok(summed_x)
+                        && deskfuse_core::relative_delta_ok(summed_y)
+                    {
+                        (summed_x, summed_y, true)
+                    } else {
+                        (0.0, 0.0, false)
+                    }
+                }
+                (true, false) => (previous.raw_dx, previous.raw_dy, true),
+                (false, true) => (sample.raw_dx, sample.raw_dy, true),
+                (false, false) => (0.0, 0.0, false),
+            };
             let captured_at = previous.captured_at;
             *previous = sample;
             previous.captured_at = captured_at;
             previous.delta_x = delta_x;
             previous.delta_y = delta_y;
+            previous.raw_dx = raw_dx;
+            previous.raw_dy = raw_dy;
+            previous.has_raw = has_raw;
         } else {
             if events.len() == QUEUE_SIZE {
                 drop(events);
@@ -521,6 +540,10 @@ fn refresh_local_motion(
         x: live.0,
         y: live.1,
     };
+    // 可见光标的位置差是像素，不是设备计数。
+    sample.raw_dx = 0.0;
+    sample.raw_dy = 0.0;
+    sample.has_raw = false;
     true
 }
 struct Context {
@@ -728,6 +751,9 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
             global_y: position.y,
             delta_x: 0.0,
             delta_y: 0.0,
+            raw_dx: 0.0,
+            raw_dy: 0.0,
+            has_raw: false,
         };
         shared.push(sample(SharedInputEvent::Modifiers { modifiers }));
         for code in 0..=255 {
@@ -967,6 +993,9 @@ unsafe extern "C" fn tap_callback(
                 global_y: sample.global_y,
                 delta_x: 0.0,
                 delta_y: 0.0,
+                raw_dx: 0.0,
+                raw_dy: 0.0,
+                has_raw: false,
             }) {
                 context.fail_open(2);
                 return event;
@@ -1141,6 +1170,9 @@ unsafe fn decode_event(kind: u32, event: CGEventRef) -> Option<CaptureSample> {
         global_y: position.y,
         delta_x: dx,
         delta_y: dy,
+        raw_dx: 0.0,
+        raw_dy: 0.0,
+        has_raw: false,
     })
 }
 
@@ -1213,6 +1245,9 @@ mod tests {
             global_y: 20.0,
             delta_x: 1.0,
             delta_y: 2.0,
+            raw_dx: 0.0,
+            raw_dy: 0.0,
+            has_raw: false,
         }
     }
     #[test]
@@ -1223,7 +1258,12 @@ mod tests {
         old.global_y = 50.0;
         old.delta_x = -120.0;
         assert!(!refresh_local_motion(&mut old, (98.0, 50.0), &mut previous));
+        old.has_raw = true;
+        old.raw_dx = 4.0;
+        old.raw_dy = -2.0;
         assert!(refresh_local_motion(&mut old, (97.0, 50.0), &mut previous));
+        assert!(!old.has_raw);
+        assert_eq!((old.raw_dx, old.raw_dy), (0.0, 0.0));
         assert_eq!(old.global_x, 97.0);
         assert_eq!(old.delta_x, -1.0);
         assert_eq!(old.delta_y, 0.0);
@@ -1670,9 +1710,10 @@ mod tests {
                 sample.global_x,
                 sample.global_y,
                 sample.delta_x,
-                sample.delta_y
+                sample.delta_y,
+                sample.has_raw
             ),
-            (-850.0, 42.0, -7.0, 11.0)
+            (-850.0, 42.0, -7.0, 11.0, false)
         );
     }
     #[test]

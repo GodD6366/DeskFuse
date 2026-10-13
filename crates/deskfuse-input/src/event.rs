@@ -173,7 +173,9 @@ impl ScrollDelta {
 pub struct PointerSample {
     /// Display where the observation was made.
     pub display_id: DisplayId,
-    /// Display-local pointer position.
+    /// 拓扑空间坐标，不是屏内坐标。状态机用它与该屏在共享坐标系里的矩形
+    /// 直接做边距判定（见 `CrossingStateMachine::find_unique_edge`），
+    /// 因此调用方必须先叠加该屏的布局偏移，再喂进来。
     pub position: Point,
     /// Monotonic timestamp in milliseconds.
     pub timestamp: Timestamp,

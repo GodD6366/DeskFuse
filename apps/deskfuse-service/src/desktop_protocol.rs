@@ -1,6 +1,17 @@
 //! Desktop session-bound IPC. See `docs/WINDOWS_DESKTOP_IPC.md`.
+use deskfuse_input::quality::InputQualityReport;
 use deskfuse_platform::{BoundaryErrorCode, PlatformCommand, PlatformEvent};
 use serde::{Deserialize, Serialize};
+
+/// 缺省质量报告。`empty` 必须为真，否则跳过序列化后再读回来会变成非空闲。
+pub(crate) fn idle_quality() -> InputQualityReport {
+    InputQualityReport {
+        empty: true,
+        grade: "idle".into(),
+        present_supported: false,
+        ..InputQualityReport::default()
+    }
+}
 
 #[cfg(windows)]
 pub use deskfuse_transfer::{DeferredEntryKind, DeferredFileEntry, FileTransferView};
@@ -116,6 +127,9 @@ pub enum Command {
         session_epoch: u64,
         after_sequence: u64,
         desktop: InputDesktop,
+        /// helper 进程交来的采集和注入耗时。旧 helper 省略时按零处理。
+        #[serde(default, skip_serializing_if = "deskfuse_core::PendingStages::is_empty")]
+        stages: deskfuse_core::PendingStages,
     },
     InputFault {
         message: String,
@@ -131,6 +145,9 @@ pub enum Command {
         target_display: String,
         batch: u64,
         events: Vec<deskfuse_core::SharedInputEvent>,
+        /// 这一批里累加的设备计数。缺省表示没有相对移动。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relative: Option<(f64, f64)>,
     },
     LeaveInputControl {
         session_id: String,
@@ -410,6 +427,9 @@ pub struct InputState {
     pub remote_topologies: Vec<RemoteTopologyView>,
     /// Input session links with granted control sessions.
     pub links: Vec<LinkView>,
+    /// 服务进程里的质量报告。helper 进程的采集和注入不在这里。
+    #[serde(default = "idle_quality", skip_serializing_if = "InputQualityReport::is_idle")]
+    pub quality: InputQualityReport,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ControlView {
@@ -435,6 +455,8 @@ pub struct LinkView {
     pub control_session: Option<String>,
     pub lease_revision: u64,
     pub motion_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_fallback_reason: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub enum InputDelivery {

@@ -128,16 +128,17 @@ struct WorkflowSettingsView: View {
     }
     private var editor: some View {
         VStack(spacing: 0) {
-            Form {
+            SystemSettingsFormPage {
                 if let original, workflows.first(where: { $0.id == original.id }) != original {
-                    Section {
+                    SystemSettingsFormBlock {
                         Text("其他设备已更新或删除此工作流。当前草稿已保留；保存会创建新修订。")
                             .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                         Button("放弃草稿并载入最新版本") { load(selectedID) }
                     }
                 }
 
-                Section("流程") {
+                SystemSettingsFormBlock(title: "流程") {
                     TextField("名称", text: value(\.name, fallback: ""))
                     Picker("接受内容", selection: value(\.input_type, fallback: .any)) {
                         ForEach(WorkflowContent.allCases) { Text($0.title).tag($0) }
@@ -145,18 +146,16 @@ struct WorkflowSettingsView: View {
                     Toggle("启用流程", isOn: value(\.enabled, fallback: true))
                     WorkflowShortcutRecorder(store: store, shortcut: Binding(get: { draft?.shortcut }, set: { draft?.shortcut = $0 }), workflowID: draft?.id)
                 }
-                Section {
+                SystemSettingsFormBlock(
+                    title: "依次处理",
+                    footer: "中间结果不会写入剪贴板，源文件保持不变。图片步骤不遍历文件夹，混合非图片文件会明确失败；目标体积约束最终输出。用每行右侧的箭头调整步骤顺序，终点始终保留在末尾。"
+                ) {
                     ForEach(Array((draft?.steps ?? []).indices), id: \.self) { index in
                         WorkflowStepEditor(step: Binding(get: { draft?.steps.indices.contains(index) == true ? draft!.steps[index] : .init(kind: .copy) }, set: { if draft?.steps.indices.contains(index) == true { draft?.steps[index] = $0 } }), index: index,
                             canMoveUp: index > 0 && !(draft?.steps[index].kind.terminal ?? true),
                             canMoveDown: index + 2 < (draft?.steps.count ?? 0),
                             move: { offset in draft?.steps.swapAt(index, index + offset) },
                             remove: { draft?.steps.remove(at: index) })
-                    }
-                    .onMove { source, destination in
-                        guard let steps = draft?.steps, destination < steps.count,
-                              !source.contains(steps.count - 1) else { return }
-                        draft?.steps.move(fromOffsets: source, toOffset: destination)
                     }
                     Menu("添加动作", systemImage: "plus") {
                         ForEach(WorkflowAction.allCases.filter { !$0.terminal }) { action in
@@ -169,12 +168,11 @@ struct WorkflowSettingsView: View {
                     ForEach(draft?.incompatibilities ?? [], id: \.self) { issue in
                         Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     }
-                } header: { Text("依次处理") } footer: {
-                    Text("中间结果不会写入剪贴板，源文件保持不变。图片步骤不遍历文件夹，混合非图片文件会明确失败；目标体积约束最终输出。上下移动或拖动步骤可调整顺序，终点始终保留在末尾。")
                 }
-                Section { WorkflowRulesView(store: store) }
-            }.formStyle(.grouped)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                SystemSettingsFormBlock {
+                    WorkflowRulesView(store: store)
+                }
+            }
             if !WorkflowStore.shared.runs.isEmpty || WorkflowStore.shared.error != nil {
                 Divider()
                 ScrollView {

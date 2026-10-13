@@ -191,6 +191,18 @@ struct ClipboardLibraryState: Codable {
         return result
     }
 
+    /// 设备 ID → 界面展示名，与历史来源走同一套规范化。
+    ///
+    /// 直接取 `devices` 里的原始名会漏出引擎内部的本机名「本机 · DeskFuse」，
+    /// 而预览头部、元数据行和来源筛选显示的都是规范化的「这台 Mac」，
+    /// 同一台机器在界面上出现两种叫法。
+    func displayDeviceNames(snapshot: EngineSnapshot?) -> [String: String] {
+        Dictionary(
+            devices.map { ($0.id, displaySource($0.name, id: $0.id, snapshot: snapshot)) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+    }
+
     private func displaySource(_ name: String, id: String?, snapshot: EngineSnapshot?) -> String {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let candidate = id ?? cleanName.replacingOccurrences(of: "远端 ", with: "")

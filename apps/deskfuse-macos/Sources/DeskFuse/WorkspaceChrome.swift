@@ -1,16 +1,5 @@
 import SwiftUI
 
-/// Content stays opaque; only the card casts a shadow onto the window canvas.
-struct WorkspaceContentSurface: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
-    }
-}
-
 enum WorkspaceControlMetrics {
     static let height: CGFloat = 36
     static let horizontalInset: CGFloat = 12
@@ -37,7 +26,7 @@ private struct WorkspaceControlSurface: ViewModifier {
 
     @ViewBuilder func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: WorkspaceControlMetrics.cornerRadius)
-        let tint: Color? = destructive ? .red : (prominent ? .blue : nil)
+        let tint: Color? = destructive ? .red : (prominent ? DeskFuseBrand.accent : nil)
         if let tint {
             if #available(macOS 26.0, *), !reduceTransparency {
                 content
@@ -101,57 +90,28 @@ struct SidebarVisibilityButton: View {
     }
 }
 
-/// Sidebar row keeps an explicit per-element style: macOS sidebar Lists tint
-/// `Label` icons with the accent color, which would override the design's
-/// black navigation glyphs.
-struct SidebarNavRow: View {
-    let title: String
-    let symbol: String
-    let selected: Bool
-    var badge: String? = nil
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .medium))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                .frame(width: 24, alignment: .center)
-            Text(title)
-                .font(.system(size: 16, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .lineLimit(1)
-            if let badge {
-                FeatureBadge(text: badge)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color(red: 0.89, green: 0.93, blue: 1.0) : .clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .background(NativeListSelection())
-        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
-    }
-}
-
 struct FeatureBadge: View {
     let text: String
+    /// 位于蓝色选中行内时改用白字，避免橙字落在强调色底上不可读。
+    var onAccent = false
 
-    init(text: String = "Beta") {
+    init(text: String = "Beta", onAccent: Bool = false) {
         self.text = text
+        self.onAccent = onAccent
     }
 
     var body: some View {
         Text(text)
             .font(.system(size: 10, weight: .semibold, design: .rounded))
-            .foregroundStyle(.orange)
+            .foregroundStyle(onAccent ? Color.white : Color.orange)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color.orange.opacity(0.12), in: Capsule())
+            .background(onAccent ? Color.white.opacity(0.22) : Color.orange.opacity(0.12), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.orange.opacity(0.28), lineWidth: 0.5)
+                Capsule().strokeBorder(
+                    onAccent ? Color.white.opacity(0.35) : Color.orange.opacity(0.28),
+                    lineWidth: 0.5
+                )
             }
             .accessibilityLabel(text)
     }

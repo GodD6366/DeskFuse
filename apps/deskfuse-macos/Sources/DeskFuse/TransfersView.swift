@@ -8,14 +8,8 @@ struct TransfersView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("传输").font(.system(size: 26, weight: .bold))
-                            Text("文件在目标设备粘贴时传输，也可以从暂存区立即发送。")
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 18) {
+                    SystemSettingsPageHeader("传输", subtitle: "文件在目标设备粘贴时传输，也可以从暂存区立即发送。") {
                         WorkspaceChromeButton("暂存区", systemImage: "tray", help: "打开文件暂存区（⇧⌘D）") {
                             store.shelf?.show()
                         }
@@ -27,24 +21,36 @@ struct TransfersView: View {
                         Divider().frame(height: 18)
                         summary("可重试", count: transfers.filter { $0.canRetry }.count, color: .orange)
                     }
-                    .padding(.vertical, 16)
-                    .modifier(NativeGlassBackdrop(cornerRadius: 14))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .systemSettingsBlock()
                     if !transfers.isEmpty {
                         LazyVStack(spacing: 0) {
                             ForEach(transfers, id: \.id) { task in
                                 TransferQueueRow(store: store, task: task, compact: geometry.size.width < 860)
-                                Divider()
+                                    .padding(.horizontal, 16)
+                                if task.id != transfers.last?.id { SystemSettingsBlockDivider(inset: 16) }
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .modifier(NativeGlassCardSurface(cornerRadius: 16))
+                        .padding(.vertical, 4)
+                        .systemSettingsBlock()
+                    } else {
+                        ContentUnavailableView {
+                            Label {
+                                Text("没有传输任务")
+                            } icon: {
+                                Image(systemName: "arrow.up.arrow.down")
+                                    .foregroundStyle(DeskFuseBrand.fusionGradient)
+                            }
+                        } description: {
+                            Text("在目标设备粘贴文件时会自动开始传输。")
+                        }
+                            .frame(maxWidth: .infinity).padding(.vertical, 24)
+                            .systemSettingsBlock()
                     }
-                    ContentUnavailableView(transfers.isEmpty ? "没有传输任务" : "没有其他传输任务",
-                                           systemImage: "arrow.up.arrow.down",
-                                           description: Text("在目标设备粘贴文件时会自动开始传输。"))
-                        .frame(maxWidth: .infinity).padding(.vertical, 24)
                 }
-                .padding(28)
+                .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
+                .padding(.vertical, SystemSettingsMetrics.pageTopInset)
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
             }
             .background(.clear)

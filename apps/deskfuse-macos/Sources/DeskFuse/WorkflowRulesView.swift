@@ -87,7 +87,7 @@ struct WorkflowRulesView: View {
         Binding(get: { rule?[keyPath: key] ?? fallback }, set: { rule?[keyPath: key] = $0 })
     }
     private func deviceName(_ id: String) -> String {
-        if id == localID { return store.snapshot?.localName ?? "本机" }
+        if id == localID { return store.snapshot?.localName ?? "这台 Mac" }
         return peers.first { $0.id == id }?.name ?? "设备 \(id.prefix(8))"
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {

@@ -19,6 +19,13 @@ struct ClipboardPreviewPane: View {
     @State private var savedImageURL: URL?
 
     var body: some View {
+        paneContent
+            .id(item.id)
+            .transition(.opacity)
+            .animation(Motion.settle, value: item.id)
+    }
+
+    private var paneContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             Group {
@@ -26,8 +33,10 @@ struct ClipboardPreviewPane: View {
                 else { previewCanvas }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
             if let ocrText, !ocrText.isEmpty { ocrSection(ocrText) }
             WorkflowRunStatusView(compact: true)
+            Divider()
             metadataCard
             VStack(alignment: .leading, spacing: 12) {
                 if let stagingHint {
@@ -58,6 +67,7 @@ struct ClipboardPreviewPane: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(Motion.snappy, value: availability)
     }
 
     private var sourceLabel: some View {
@@ -73,6 +83,7 @@ struct ClipboardPreviewPane: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background((hasMissingFiles ? Color.orange : Color.accentColor).opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
             .fixedSize()
+            .transition(.scale(scale: 0.9).combined(with: .opacity))
     }
 
     private var previewCanvas: some View {
@@ -88,7 +99,6 @@ struct ClipboardPreviewPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(NativeGlassBackdrop(cornerRadius: 14))
     }
 
     /// Recognized image text is local derived data shown read-only so the user
@@ -107,7 +117,6 @@ struct ClipboardPreviewPane: View {
             Label("识别文字", systemImage: "text.viewfinder").font(.callout)
         }
         .padding(12)
-        .modifier(NativeGlassBackdrop(cornerRadius: 10))
     }
 
     private func imagePreview(_ image: NSImage) -> some View {
@@ -222,9 +231,11 @@ struct ClipboardPreviewPane: View {
         WorkspaceChromeButton(copying ? "正在准备…" : copied ? "已复制" : "复制",
                               systemImage: copied ? "checkmark" : "doc.on.doc",
                               help: hasMissingFiles ? "来源文件已不可用，请重新复制" : "将原始内容放回剪贴板",
-                              prominent: true, action: copyContent)
+                              prominent: !copied, action: copyContent)
             .disabled(copying || hasMissingFiles)
             .keyboardShortcut("c", modifiers: .command)
+            /// 复制成功：实心主按钮退回 glass，对勾用品牌 accent 色。
+            .foregroundStyle(copied ? DeskFuseBrand.accent : Color.primary)
     }
 
     @ViewBuilder private func stagingButton(compact: Bool) -> some View {
@@ -307,7 +318,6 @@ struct ClipboardPreviewPane: View {
         .font(.callout)
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(NativeGlassBackdrop(cornerRadius: 14))
     }
 
     private func metadataRow(_ label: String, value: String) -> some View {

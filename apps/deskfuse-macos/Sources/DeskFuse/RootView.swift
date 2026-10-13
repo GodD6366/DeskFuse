@@ -15,7 +15,7 @@ struct RootView: View {
             workspace
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .tint(.blue)
+        .tint(DeskFuseBrand.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
@@ -59,8 +59,7 @@ struct RootView: View {
                 localDeviceRequest: store.deviceSelectionRequest
             )
         }
-        .modifier(WorkspaceContentSurface())
-        .padding(12)
+        .systemSettingsContentBackground()
         .ignoresSafeArea(.container, edges: .top)
     }
 

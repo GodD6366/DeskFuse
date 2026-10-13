@@ -646,6 +646,9 @@ pub trait ControlTransport: Send + Sync {
 
     /// Retire other input routes after the actor reaches a local-cursor boundary.
     fn select_input_route(&self, _peer: DeviceId, _session: deskfuse_core::TransportSessionId) {}
+
+    /// 给活跃输入会话采一次质量样本，默认什么都不做。
+    fn sample_input_quality(&self) {}
     /// Establish input or prepare a better physical route without closing the current one.
     async fn ensure_input_link(
         &self,
@@ -700,6 +703,14 @@ pub trait ControlTransport: Send + Sync {
         _peer: DeviceId,
         _session: deskfuse_core::TransportSessionId,
         _motion: deskfuse_core::MotionDatagram,
+    ) -> Result<(), TransportError> {
+        Err(TransportError::Closed)
+    }
+    fn send_input_relative(
+        &self,
+        _peer: DeviceId,
+        _session: deskfuse_core::TransportSessionId,
+        _motion: deskfuse_core::RelativeMotionDatagram,
     ) -> Result<(), TransportError> {
         Err(TransportError::Closed)
     }
@@ -2169,6 +2180,11 @@ impl ControlTransport for QuinnTransport {
             self.input.select_route(peer, session);
         }
     }
+    fn sample_input_quality(&self) {
+        if self.config.input_service {
+            self.input.sample_quality();
+        }
+    }
     async fn ensure_input_link(
         &self,
         peer: DeviceId,
@@ -2331,6 +2347,17 @@ impl ControlTransport for QuinnTransport {
             return Err(TransportError::RevokedPeer(peer));
         }
         self.input.send_motion(peer, session, motion)
+    }
+    fn send_input_relative(
+        &self,
+        peer: DeviceId,
+        session: deskfuse_core::TransportSessionId,
+        motion: deskfuse_core::RelativeMotionDatagram,
+    ) -> Result<(), TransportError> {
+        if self.is_revoked(peer)? {
+            return Err(TransportError::RevokedPeer(peer));
+        }
+        self.input.send_relative(peer, session, motion)
     }
     fn cancel_input_motion(
         &self,

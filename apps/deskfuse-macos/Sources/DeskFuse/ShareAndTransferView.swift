@@ -75,15 +75,8 @@ struct ShareAndTransferView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("分享与传输").font(.system(size: 26, weight: .bold))
-                            Text("局域网内扫码分享剪贴板列表，或查看设备之间的文件传输。")
-                                .font(.callout).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 16) {
+                    SystemSettingsPageHeader("分享与传输", subtitle: "局域网内扫码分享剪贴板列表，或查看设备之间的文件传输。") {
                         WorkspaceChromeButton("暂存区", systemImage: "tray", help: "打开文件暂存区（⇧⌘D）") {
                             store.shelf?.show()
                         }
@@ -98,7 +91,8 @@ struct ShareAndTransferView: View {
                     receiveTasksCard
                     transfersSection(compact: geometry.size.width < 860)
                 }
-                .padding(28)
+                .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
+                .padding(.vertical, SystemSettingsMetrics.pageTopInset)
                 .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
             }
             .background(.clear)
@@ -398,7 +392,7 @@ struct ShareAndTransferView: View {
     }
 
     private func transfersSection(compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        card {
             VStack(alignment: .leading, spacing: 6) {
                 Text("传输任务").font(.headline)
                 Text("文件在目标设备粘贴时传输，也可以从暂存区立即发送。")
@@ -411,22 +405,26 @@ struct ShareAndTransferView: View {
                 Divider().frame(height: 18)
                 summary("可重试", count: snapshot.transfers.filter { $0.canRetry }.count, color: .orange)
             }
-            .padding(.vertical, 16)
-            .modifier(NativeGlassBackdrop(cornerRadius: 14))
+            .padding(.vertical, 8)
             if !snapshot.transfers.isEmpty {
                 LazyVStack(spacing: 0) {
                     ForEach(snapshot.transfers, id: \.id) { task in
                         TransferQueueRow(store: store, task: task, compact: compact)
-                        Divider()
+                        if task.id != snapshot.transfers.last?.id { Divider() }
                     }
                 }
-                .padding(.horizontal, 16)
-                .modifier(NativeGlassCardSurface(cornerRadius: 16))
             }
             if snapshot.transfers.isEmpty {
-                ContentUnavailableView("没有传输任务",
-                                       systemImage: "arrow.up.arrow.down",
-                                       description: Text("在目标设备粘贴文件时会自动开始传输。"))
+                ContentUnavailableView {
+                    Label {
+                        Text("没有传输任务")
+                    } icon: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .foregroundStyle(DeskFuseBrand.fusionGradient)
+                    }
+                } description: {
+                    Text("在目标设备粘贴文件时会自动开始传输。")
+                }
                     .frame(maxWidth: .infinity).padding(.vertical, 24)
             }
         }
@@ -439,10 +437,11 @@ struct ShareAndTransferView: View {
         }.frame(maxWidth: .infinity)
     }
 
+    /// 分组 block：浅灰圆角承载一个功能区，替代原先只有内边距的伪卡片。
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16, content: content)
             .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(NativeGlassCardSurface(cornerRadius: 16))
+            .systemSettingsBlock()
     }
 
     @MainActor private func refresh() async {

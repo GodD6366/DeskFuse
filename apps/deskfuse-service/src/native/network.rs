@@ -22,7 +22,8 @@ const INPUT_CAPABILITIES: Capabilities = Capabilities::from_bits(
     Capabilities::INPUT_SHARING.bits()
         | Capabilities::DEVICE_NETWORK.bits()
         | Capabilities::INPUT_ACTIVATION.bits()
-        | Capabilities::INPUT_MOTION_DATAGRAM_V1.bits(),
+        | Capabilities::INPUT_MOTION_DATAGRAM_V1.bits()
+        | Capabilities::INPUT_RELATIVE_MOTION_V1.bits(),
 );
 
 pub struct Network {

@@ -15,7 +15,7 @@ struct SettingsWindowView: View {
                     .padding(16)
             }
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
-        .tint(.blue)
+        .tint(DeskFuseBrand.accent)
         .onAppear {
             store.showSettingsWindow = { openSettings() }
             applyPendingTab()

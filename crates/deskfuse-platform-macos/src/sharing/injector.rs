@@ -28,7 +28,24 @@ use tokio::sync::Notify;
 unsafe extern "C" {
     fn CGEventSetLocation(event: core_graphics::sys::CGEventRef, location: CGPoint);
     fn CGEventSourceSetUserData(source: core_graphics::sys::CGEventSourceRef, user_data: i64);
+    // 空事件源返回的事件只用来读当前光标位置，读完必须释放。
+    // 测试用注入的假光标，不需要这几个符号。
+    #[cfg(not(test))]
+    fn CGEventCreate(
+        source: core_graphics::sys::CGEventSourceRef,
+    ) -> core_graphics::sys::CGEventRef;
+    #[cfg(not(test))]
+    fn CGEventGetLocation(event: core_graphics::sys::CGEventRef) -> CGPoint;
+    #[cfg(not(test))]
+    fn CFRelease(value: *const std::ffi::c_void);
 }
+
+/// 与真实光标对账的最小间隔。漂移是慢过程，按显示帧节流即可，不必每个
+/// 相对事件都创建一次 Quartz 事件。
+const CURSOR_RECONCILE_INTERVAL: Duration = Duration::from_millis(8);
+
+/// 内部位置与真实光标相差超过这个逻辑点距离就采纳真实光标。
+const CURSOR_DRIFT_TOLERANCE: f64 = 2.0;
 
 type Reply = SyncSender<PlatformResult<()>>;
 const MAILBOX_CAPACITY: usize = 256;
@@ -714,9 +731,16 @@ struct NativeInjector {
     modifier_keys: BTreeSet<u16>,
     modifiers: u64,
     scroll_residual: (f64, f64),
+    /// 相对移动的小数残差。整数部分才发给 Quartz。
+    motion_residual: (f64, f64),
     clicks: BTreeMap<u8, (Instant, CGPoint, i64)>,
+    /// 上次与真实光标对账的时刻。
+    last_reconcile: Instant,
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<CGEvent>>,
+    /// 测试可以设置的假光标；生产走系统查询。
+    #[cfg(test)]
+    fake_cursor: std::cell::RefCell<Option<CGPoint>>,
 }
 impl NativeInjector {
     fn new() -> PlatformResult<Self> {
@@ -739,9 +763,16 @@ impl NativeInjector {
             modifier_keys: BTreeSet::new(),
             modifiers: 0,
             scroll_residual: (0.0, 0.0),
+            motion_residual: (0.0, 0.0),
             clicks: BTreeMap::new(),
+            // 首次相对移动就该对账，因此把上次时刻推到间隔之前。
+            last_reconcile: Instant::now()
+                .checked_sub(CURSOR_RECONCILE_INTERVAL)
+                .unwrap_or_else(Instant::now),
             #[cfg(test)]
             posted: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            fake_cursor: std::cell::RefCell::new(None),
         })
     }
     fn post(&self, event: CGEvent) {
@@ -754,12 +785,75 @@ impl NativeInjector {
         #[cfg(test)]
         self.posted.borrow_mut().push(event);
     }
+    /// 读系统当前的真实光标位置。空事件源返回的事件带当前光标坐标。
+    #[cfg(not(test))]
+    fn system_cursor() -> Option<CGPoint> {
+        // SAFETY: 空源是合法的默认源；返回的事件由这里负责释放。
+        unsafe {
+            let event = CGEventCreate(std::ptr::null_mut());
+            if event.is_null() {
+                return None;
+            }
+            let location = CGEventGetLocation(event);
+            CFRelease(event.cast());
+            Some(location)
+        }
+    }
+    /// 让内部位置追上真实光标。macOS 的绝对注入必须自己维护位置：远端只给
+    /// 相对步长，落点由 self.position 累加得出。真实光标一旦被系统钳制、被
+    /// 别的程序移动，或落点被系统改写，内部基准就会脱节，之后每一步都带着
+    /// 这个偏移，表现出来就是指针越走越偏。偏差超过容差就采纳真实光标，
+    /// 与上游 Windows 侧注入的 2 像素吸收一致。
+    fn reconcile_cursor(&mut self, now: Instant) {
+        if now.duration_since(self.last_reconcile) < CURSOR_RECONCILE_INTERVAL {
+            return;
+        }
+        self.last_reconcile = now;
+        #[cfg(test)]
+        let actual = *self.fake_cursor.borrow();
+        #[cfg(not(test))]
+        let actual = Self::system_cursor();
+        let Some(actual) = actual else {
+            return;
+        };
+        if (actual.x - self.position.x).hypot(actual.y - self.position.y) > CURSOR_DRIFT_TOLERANCE {
+            self.position = actual;
+        }
+    }
+    fn post_pointer(&mut self, point: CGPoint, delta_x: f64, delta_y: f64) -> PlatformResult<()> {
+        let button = self.buttons.iter().next().copied();
+        let kind = match button {
+            Some(0) => CGEventType::LeftMouseDragged,
+            Some(1) => CGEventType::RightMouseDragged,
+            Some(_) => CGEventType::OtherMouseDragged,
+            None => CGEventType::MouseMoved,
+        };
+        let event = CGEvent::new_mouse_event(
+            self.source.clone(),
+            kind,
+            point,
+            native_button(button.unwrap_or(0)),
+        )
+        .map_err(|()| PlatformError::InputInjectionFailed)?;
+        if let Some(button) = button {
+            event.set_integer_value_field(
+                EventField::MOUSE_EVENT_BUTTON_NUMBER,
+                i64::from(button),
+            );
+        }
+        event.set_double_value_field(EventField::MOUSE_EVENT_DELTA_X, delta_x);
+        event.set_double_value_field(EventField::MOUSE_EVENT_DELTA_Y, delta_y);
+        self.position = point;
+        self.positioned = true;
+        self.post(event);
+        Ok(())
+    }
     fn inject(
         &mut self,
         display: &DisplayDescriptor,
         event: &SharedInputEvent,
     ) -> PlatformResult<()> {
-        let inject_start = super::timing::enabled().then(Instant::now);
+        let inject_start = Instant::now();
         event
             .validate()
             .map_err(|_| PlatformError::InputInjectionFailed)?;
@@ -772,45 +866,38 @@ impl NativeInjector {
                     return Err(PlatformError::InputInjectionFailed);
                 }
                 let point = CGPoint::new(display.frame_x + x, display.frame_y + y);
-                let button = self.buttons.iter().next().copied();
-                let kind = match button {
-                    Some(0) => CGEventType::LeftMouseDragged,
-                    Some(1) => CGEventType::RightMouseDragged,
-                    Some(_) => CGEventType::OtherMouseDragged,
-                    None => CGEventType::MouseMoved,
+                let delta_x = if self.positioned {
+                    point.x - self.position.x
+                } else {
+                    0.0
                 };
-                let event = CGEvent::new_mouse_event(
-                    self.source.clone(),
-                    kind,
-                    point,
-                    native_button(button.unwrap_or(0)),
-                )
-                .map_err(|()| PlatformError::InputInjectionFailed)?;
-                if let Some(button) = button {
-                    event.set_integer_value_field(
-                        EventField::MOUSE_EVENT_BUTTON_NUMBER,
-                        i64::from(button),
-                    );
+                let delta_y = if self.positioned {
+                    point.y - self.position.y
+                } else {
+                    0.0
+                };
+                self.post_pointer(point, delta_x, delta_y)?;
+            }
+            SharedInputEvent::RelativeMotion { dx, dy } => {
+                // 绝对 Enter 会先定位。未定位时不能把光标打到原点。
+                if !self.positioned {
+                    return Err(PlatformError::InputInjectionFailed);
                 }
-                event.set_double_value_field(
-                    EventField::MOUSE_EVENT_DELTA_X,
-                    if self.positioned {
-                        point.x - self.position.x
-                    } else {
-                        0.0
-                    },
-                );
-                event.set_double_value_field(
-                    EventField::MOUSE_EVENT_DELTA_Y,
-                    if self.positioned {
-                        point.y - self.position.y
-                    } else {
-                        0.0
-                    },
-                );
-                self.position = point;
-                self.positioned = true;
-                self.post(event);
+                // 相对步长要从真实光标累加，否则外部移动会让指针持续偏移。
+                self.reconcile_cursor(inject_start);
+                let total_x = self.motion_residual.0 + dx;
+                let total_y = self.motion_residual.1 + dy;
+                let step_x = total_x.trunc();
+                let step_y = total_y.trunc();
+                let saved = self.motion_residual;
+                self.motion_residual = (total_x - step_x, total_y - step_y);
+                if step_x != 0.0 || step_y != 0.0 {
+                    let point = CGPoint::new(self.position.x + step_x, self.position.y + step_y);
+                    if let Err(error) = self.post_pointer(point, step_x, step_y) {
+                        self.motion_residual = saved;
+                        return Err(error);
+                    }
+                }
             }
             SharedInputEvent::Button { button, pressed } => {
                 if !self.positioned {
@@ -922,16 +1009,18 @@ impl NativeInjector {
                 self.post(event);
             }
         }
-        if let Some(inject_start) = inject_start {
-            let inject_time = inject_start.elapsed();
-            if inject_time >= Duration::from_micros(500) {
-                super::timing::record!(
-                    "inject_single_slow",
-                    inject_time,
-                    format!("event={:?}", event),
-                );
-            }
+        let inject_time = inject_start.elapsed();
+        let inject_micros = u64::try_from(inject_time.as_micros()).unwrap_or(u64::MAX);
+        if inject_time >= Duration::from_micros(500) {
+            super::timing::record!(
+                "inject_single_slow",
+                inject_time,
+                format!("event={:?}", event),
+            );
         }
+        // 慢注入计数和阶段均值各记一份：均值会把少数几次长卡顿摊平到看不见。
+        deskfuse_core::note_injection_duration(inject_micros);
+        deskfuse_core::record_input_stage(deskfuse_core::InputStage::Inject, inject_micros);
         Ok(())
     }
     fn post_button(&self, button: u8, pressed: bool, count: i64) -> PlatformResult<()> {
@@ -1002,6 +1091,7 @@ impl NativeInjector {
         }
         self.clicks.clear();
         self.scroll_residual = (0.0, 0.0);
+        self.motion_residual = (0.0, 0.0);
         self.positioned = false;
         error.map_or(Ok(()), Err)
     }
@@ -1655,7 +1745,38 @@ mod tests {
             scale_factor: 2.0,
             rotation_degrees: 90,
             is_primary: false,
+            physical_width_mm: None,
+            physical_height_mm: None,
         }
+    }
+    #[test]
+    fn relative_motion_resumes_from_the_real_cursor_after_external_drift() {
+        let mut n = NativeInjector::new().unwrap();
+        let d = display();
+        n.inject(&d, &SharedInputEvent::Motion { x: 100.0, y: 200.0 })
+            .unwrap();
+        assert_eq!((n.position.x, n.position.y), (-800.0, 100.0));
+        // 别的程序或系统钳制把真实光标挪走，内部位置不再代表屏幕上的点。
+        *n.fake_cursor.borrow_mut() = Some(CGPoint::new(-700.0, 140.0));
+        n.last_reconcile = Instant::now() - Duration::from_millis(50);
+        n.inject(&d, &SharedInputEvent::RelativeMotion { dx: 5.0, dy: -3.0 })
+            .unwrap();
+        // 步长从真实光标续上，而不是从脱节的 (-800, 100) 继续累加。
+        assert_eq!((n.position.x, n.position.y), (-695.0, 137.0));
+    }
+    #[test]
+    fn cursor_disagreement_within_tolerance_keeps_the_internal_position() {
+        let mut n = NativeInjector::new().unwrap();
+        let d = display();
+        n.inject(&d, &SharedInputEvent::Motion { x: 100.0, y: 200.0 })
+            .unwrap();
+        // 一像素的差异可能只是系统取整，不该改写内部基准。
+        *n.fake_cursor.borrow_mut() = Some(CGPoint::new(-799.0, 100.0));
+        n.last_reconcile = Instant::now() - Duration::from_millis(50);
+        n.inject(&d, &SharedInputEvent::RelativeMotion { dx: 1.0, dy: 0.0 })
+            .unwrap();
+        // 采纳了真实光标就会走到 -798，未采纳才停在 -799。
+        assert_eq!((n.position.x, n.position.y), (-799.0, 100.0));
     }
     #[test]
     fn native_mouse_coordinates_drag_double_click_and_side_button_ledger() {

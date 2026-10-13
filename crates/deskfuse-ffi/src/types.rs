@@ -439,6 +439,53 @@ pub struct InputState {
     pub environment_conflict: bool,
     pub candidates: Vec<String>,
     pub rules: Vec<EnvironmentRule>,
+    pub quality: InputQuality,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct InputQuality {
+    pub grade: String,
+    pub rtt_p50_ms: Option<f64>,
+    pub rtt_p95_ms: Option<f64>,
+    pub rtt_max_ms: Option<f64>,
+    pub hitches_per_minute: f64,
+    pub slow_injections: u32,
+    pub samples: Vec<InputQualitySample>,
+    pub suggestions: Vec<InputQualitySuggestion>,
+    /// 最近一次采样时数据报运动通道是否就绪。为假表示运动已降级到可靠通道；
+    /// 为空表示窗口里还没有采样。它是「为什么曲线不动」的唯一线索，因为降级
+    /// 后鼠标照常可用，只有这里能看出通道换过。
+    pub datagram_ready: Option<bool>,
+}
+
+/// 一条可执行、可复测的优化建议。
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct InputQualitySuggestion {
+    /// 稳定标识，复测时用它对照。
+    pub id: String,
+    /// `act` 需要处理、`info` 只是说明、`ok` 无需动作。
+    pub priority: String,
+    /// 触发这条建议的指标。
+    pub trigger: String,
+    /// 用户可以做的动作。
+    pub action: String,
+    /// 期望改善的指标。
+    pub expected: String,
+    /// 操作后如何再测。
+    pub retest: String,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct InputQualitySample {
+    /// Seconds from the beginning of the rolling 60-second window.
+    pub second: i64,
+    pub rtt_ms: Option<f64>,
+    /// 这一秒的卡顿总数，等于网络与本机采集两类之和。
+    pub hitches: u32,
+    /// 这一秒网络路径造成的卡顿。
+    pub hitch_network: u32,
+    /// 这一秒本机采集排队造成的卡顿。
+    pub hitch_capture: u32,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 #[allow(clippy::struct_excessive_bools)] // Independent native status flags.
@@ -646,6 +693,97 @@ impl From<&EngineState> for EngineSnapshot {
     fn from(s: &EngineState) -> Self {
         let m = &s.model;
         let input = &m.input_sharing;
+        let quality_records = deskfuse_transport::motion_diag::quality_snapshot();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let cutoff = now_ms.saturating_sub(60_000);
+        let mut quality = deskfuse_platform::timing::InputQualityWindow::default();
+        let mut observed_seconds = std::collections::BTreeSet::new();
+        let mut samples = std::collections::BTreeMap::<i64, (Vec<f64>, u32, u32)>::new();
+        let mut max_rtt_ms = None;
+        // 记录按时间追加，循环走到最后就是最新一次采样的通道状态。
+        let mut datagram_ready = None;
+        for record in quality_records
+            .iter()
+            .filter(|record| record.timestamp_ms >= cutoff)
+        {
+            datagram_ready = Some(record.ready);
+            let second = (record.timestamp_ms.saturating_sub(cutoff) / 1_000) as i64;
+            let sample = samples.entry(second).or_default();
+            if record.rtt_micros > 0 {
+                let rtt_ms = record.rtt_micros as f64 / 1_000.0;
+                sample.0.push(rtt_ms);
+                max_rtt_ms = Some(max_rtt_ms.map_or(rtt_ms, |max: f64| max.max(rtt_ms)));
+            }
+            if observed_seconds.insert(record.timestamp_ms / 1_000) {
+                quality.observe_motion_second();
+            }
+            if record.rtt_micros > 0 {
+                quality.observe_rtt(record.rtt_micros as f64 / 1_000.0);
+            }
+            quality.observe_slow_injections(record.slow_injections);
+            let hitch_count = u64::from(record.hitches);
+            sample.1 = sample.1.saturating_add(hitch_count.min(32) as u32);
+            for _ in 0..hitch_count.min(32) {
+                quality.observe_hitch(
+                    deskfuse_platform::timing::HitchSource::Network,
+                    (record.rtt_micros as f64 / 1_000.0).max(16.0),
+                );
+            }
+            // 采集排队平均达到 8 ms 才算一次本机采集卡顿，与慢注入同阈值。
+            let average_capture_micros = record
+                .capture_queue_micros
+                .checked_div(record.capture_count)
+                .unwrap_or(0);
+            if average_capture_micros >= 8_000 {
+                sample.2 = sample.2.saturating_add(1);
+                quality.observe_hitch(
+                    deskfuse_platform::timing::HitchSource::Capture,
+                    average_capture_micros as f64 / 1_000.0,
+                );
+            }
+        }
+        let quality = quality.snapshot();
+        // 建议直接来自诊断报告，避免 Swift 再复制一份阈值规则。
+        let lease_link = input
+            .links
+            .iter()
+            .find(|link| link.control_session.is_some());
+        let quality_report = deskfuse_input::quality::build_report(
+            &deskfuse_core::quality_ticks(),
+            lease_link
+                .and_then(|link| link.motion_mode.as_deref())
+                .unwrap_or_default(),
+            lease_link.and_then(|link| link.motion_fallback_reason.as_deref()),
+        );
+        let suggestions = quality_report
+            .suggestions
+            .iter()
+            .map(|item| InputQualitySuggestion {
+                id: item.id.clone(),
+                priority: item.priority.clone(),
+                trigger: item.trigger.clone(),
+                action: item.action.clone(),
+                expected: item.expected.clone(),
+                retest: item.retest.clone(),
+            })
+            .collect();
+        let samples = samples
+            .into_iter()
+            .map(|(second, (mut rtts, hitch_network, hitch_capture))| {
+                rtts.sort_by(f64::total_cmp);
+                let rtt_ms = (!rtts.is_empty()).then(|| rtts[rtts.len() / 2]);
+                InputQualitySample {
+                    second,
+                    rtt_ms,
+                    hitches: hitch_network.saturating_add(hitch_capture),
+                    hitch_network,
+                    hitch_capture,
+                }
+            })
+            .collect();
         let local = m.local.id.clone();
         let mut devices = m
             .network_graph_peers()
@@ -900,6 +1038,17 @@ impl From<&EngineState> for EngineSnapshot {
                         controller: id.to_string(),
                     })
                     .collect(),
+                quality: InputQuality {
+                    grade: format!("{:?}", quality.grade).to_lowercase(),
+                    rtt_p50_ms: quality.rtt_p50_ms,
+                    rtt_p95_ms: quality.rtt_p95_ms,
+                    rtt_max_ms: max_rtt_ms,
+                    hitches_per_minute: quality.hitches_per_minute,
+                    slow_injections: quality.slow_injections,
+                    samples,
+                    suggestions,
+                    datagram_ready,
+                },
             },
             update: UpdateState {
                 github: m.updates.github.is_some(),

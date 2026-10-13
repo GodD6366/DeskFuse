@@ -66,9 +66,10 @@ struct GeneralSettingsView: View {
                 }
             }
             .font(.system(size: 15))
-            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 36).padding(.bottom, 32)
+            .padding(.horizontal, SystemSettingsMetrics.formPageHorizontalInset)
+            .padding(.bottom, SystemSettingsMetrics.formPageBottomInset)
         }
     }
 
@@ -113,12 +114,12 @@ struct SettingsGroupCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            SystemSettingsSectionLabel(title: title)
             VStack(alignment: .leading, spacing: 12, content: content)
-                .padding(16)
+                .padding(SystemSettingsMetrics.blockPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .modifier(NativeGlassCardSurface(cornerRadius: 16))
+                .systemSettingsBlock()
         }
     }
 }

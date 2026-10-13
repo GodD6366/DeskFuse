@@ -4,10 +4,14 @@
 use super::{InputHub, InputTransportEvent, Session};
 use crate::TransportError;
 use deskfuse_core::{
-    Capabilities, ConnectionContext, DeviceId, InputSessionId, InputToken, MotionDatagram,
-    TransportSessionId,
+    Capabilities, ConnectionContext, DeviceId, InputSessionId, InputStage, InputToken,
+    MotionDatagram, QualityObservation, RelativeMotionDatagram, TransportSessionId,
+    note_quality_tick, record_input_stage, relative_delta_ok,
 };
-use deskfuse_protocol::{MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, encode_motion_datagram};
+use deskfuse_protocol::{
+    MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, decode_relative_motion_datagram,
+    encode_motion_datagram, encode_relative_motion_datagram,
+};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -20,6 +24,8 @@ use tokio::sync::Notify;
 
 const MAX_CONTROL_SLOTS: usize = 8;
 const PROBE_INTERVAL: Duration = Duration::from_millis(250);
+/// 质量窗口的独立采样节奏。`sample_diagnostics` 自身再按一秒节流。
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_RECEIVE_SLOTS: usize = 512; // Increased from 128 to reduce event replacement
 // Disjoint from the protocol's motion framing; exact length and nonce are checked.
@@ -92,6 +98,7 @@ pub(super) struct MotionLink {
     started: AtomicBool,
     probe: Mutex<ProbeState>,
     pending: Mutex<BTreeMap<InputSessionId, MotionDatagram>>,
+    pending_relative: Mutex<BTreeMap<InputSessionId, RelativeMotionDatagram>>,
     wake: Notify,
     sent: AtomicU64,
     received: AtomicU64,
@@ -101,6 +108,7 @@ pub(super) struct MotionLink {
     /// Last diagnostics sample, so an export gets a steady trace without the
     /// motion path paying for a sample per position.
     diag_at: Mutex<Option<Instant>>,
+    quality_counters: Mutex<Option<(u64, u64, u64)>>,
 }
 impl MotionLink {
     pub(super) fn is_ready(&self) -> bool {
@@ -112,9 +120,6 @@ impl MotionLink {
     /// connection lock; a `force` sample fires regardless, so the moment the
     /// path is declared unusable is captured while debug collection is enabled.
     pub(super) fn sample_diagnostics(&self, session: &Session, event: &'static str, force: bool) {
-        if !deskfuse_core::debug_logging::enabled() {
-            return;
-        }
         let now = Instant::now();
         let Ok(mut last) = self.diag_at.try_lock() else {
             return;
@@ -126,12 +131,55 @@ impl MotionLink {
         }
         *last = Some(now);
         drop(last);
-        let Ok(pending) = self.pending.try_lock() else {
+        let (Ok(pending), Ok(relative)) = (self.pending.try_lock(), self.pending_relative.try_lock())
+        else {
             return;
         };
-        let pending_send = pending.len();
+        let pending_send = pending.len() + relative.len();
         drop(pending);
+        drop(relative);
         let path = session.connection.stats().path;
+        let dropped = self.dropped.load(Ordering::Relaxed);
+        let lost_packets = path.lost_packets;
+        let congestion_events = path.congestion_events;
+        let hitches = if let Ok(mut previous) = self.quality_counters.try_lock() {
+            let current = (dropped, lost_packets, congestion_events);
+            let hitches = previous.map_or(0, |old| {
+                current
+                    .0
+                    .saturating_sub(old.0)
+                    .saturating_add(current.1.saturating_sub(old.1))
+                    .saturating_add(current.2.saturating_sub(old.2))
+            });
+            *previous = Some(current);
+            hitches.min(u32::MAX as u64) as u32
+        } else {
+            0
+        };
+        let rtt_micros = path.rtt.as_micros().min(u128::from(u64::MAX)) as u64;
+        // 先折叠这一秒的阶段计数再记录：慢注入次数只能从这个返回值拿到，
+        // 它已经从原子计数里取走了。
+        let tick = note_quality_tick(QualityObservation {
+            timestamp_ms: crate::motion_diag::timestamp_ms().min(u128::from(u64::MAX)) as u64,
+            rtt_micros,
+            hitches,
+            pending_send: u32::try_from(pending_send).unwrap_or(u32::MAX),
+            sent: self.sent.load(Ordering::Relaxed),
+            dropped,
+            replaced: self.send_replaced.load(Ordering::Relaxed),
+        });
+        crate::motion_diag::record_quality(crate::motion_diag::QualityRecord {
+            timestamp_ms: crate::motion_diag::timestamp_ms(),
+            rtt_micros,
+            hitches,
+            slow_injections: tick.slow_injections,
+            capture_queue_micros: tick.capture_queue_micros,
+            capture_count: tick.capture_count,
+            ready: self.ready.load(Ordering::Acquire),
+        });
+        if !deskfuse_core::debug_logging::enabled() {
+            return;
+        }
         crate::motion_diag::record(crate::motion_diag::MotionDiagRecord {
             timestamp_ms: crate::motion_diag::timestamp_ms(),
             event,
@@ -146,17 +194,20 @@ impl MotionLink {
             received: self.received.load(Ordering::Relaxed),
             send_replaced: self.send_replaced.load(Ordering::Relaxed),
             receive_replaced: self.receive_replaced.load(Ordering::Relaxed),
-            dropped: self.dropped.load(Ordering::Relaxed),
+            dropped,
             pending_send,
             rtt_micros: path.rtt.as_micros().min(u128::from(u64::MAX)) as u64,
             sent_packets: path.sent_packets,
-            lost_packets: path.lost_packets,
-            congestion_events: path.congestion_events,
+            lost_packets,
+            congestion_events,
         });
     }
     pub(super) fn close(&self) {
         self.ready.store(false, Ordering::Release);
         if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+        if let Ok(mut pending) = self.pending_relative.lock() {
             pending.clear();
         }
         self.wake.notify_one();
@@ -181,6 +232,83 @@ impl MotionLink {
         self.wake.notify_one();
         Ok(())
     }
+
+    /// 同一会话累加相对计数。超上限时丢掉该槽，不发出非法大包。
+    fn enqueue_relative(&self, motion: RelativeMotionDatagram) -> Result<(), TransportError> {
+        let mut pending = self
+            .pending_relative
+            .lock()
+            .map_err(|_| TransportError::Closed)?;
+        if let Some(previous) = pending.get(&motion.session_id).cloned() {
+            if previous.token == motion.token && previous.state_epoch == motion.state_epoch {
+                if motion.motion_seq <= previous.motion_seq {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                let dx = previous.dx + motion.dx;
+                let dy = previous.dy + motion.dy;
+                if !relative_delta_ok(dx) || !relative_delta_ok(dy) {
+                    pending.remove(&motion.session_id);
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.send_replaced.fetch_add(1, Ordering::Relaxed);
+                    drop(pending);
+                    self.wake.notify_one();
+                    return Ok(());
+                }
+                pending.insert(
+                    motion.session_id,
+                    RelativeMotionDatagram {
+                        dx,
+                        dy,
+                        motion_seq: motion.motion_seq,
+                        ..motion
+                    },
+                );
+                drop(pending);
+                self.wake.notify_one();
+                return Ok(());
+            }
+            if previous.token == motion.token && previous.state_epoch > motion.state_epoch {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            self.send_replaced.fetch_add(1, Ordering::Relaxed);
+        } else if pending.len() >= MAX_CONTROL_SLOTS {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(TransportError::Closed);
+        }
+        pending.insert(motion.session_id, motion);
+        drop(pending);
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    fn pop_outgoing(&self) -> Option<OutgoingMotion> {
+        if let Ok(mut pending) = self.pending.lock()
+            && let Some((_, motion)) = pending.pop_first()
+        {
+            return Some(OutgoingMotion::Absolute(motion));
+        }
+        if let Ok(mut pending) = self.pending_relative.lock()
+            && let Some((_, motion)) = pending.pop_first()
+        {
+            return Some(OutgoingMotion::Relative(motion));
+        }
+        None
+    }
+
+    fn has_outgoing(&self) -> bool {
+        self.pending.lock().is_ok_and(|pending| !pending.is_empty())
+            || self
+                .pending_relative
+                .lock()
+                .is_ok_and(|pending| !pending.is_empty())
+    }
+}
+
+enum OutgoingMotion {
+    Absolute(MotionDatagram),
+    Relative(RelativeMotionDatagram),
 }
 
 struct ReceivedMotion {
@@ -188,9 +316,15 @@ struct ReceivedMotion {
     context: ConnectionContext,
     motion: MotionDatagram,
 }
+struct ReceivedRelative {
+    peer: DeviceId,
+    context: ConnectionContext,
+    motion: RelativeMotionDatagram,
+}
 #[derive(Default)]
 pub(super) struct MotionInbox {
     pending: Mutex<BTreeMap<(TransportSessionId, InputSessionId), ReceivedMotion>>,
+    relative: Mutex<BTreeMap<(TransportSessionId, InputSessionId), ReceivedRelative>>,
     ready: Notify,
 }
 impl MotionInbox {
@@ -226,10 +360,84 @@ impl MotionInbox {
         self.ready.notify_one();
         Some(replaced)
     }
+
+    /// 接收侧同样累加。只留最新相对包会丢掉已经在途的位移。
+    fn enqueue_relative(&self, session: &Session, motion: RelativeMotionDatagram) -> Option<bool> {
+        let mut pending = self.relative.lock().ok()?;
+        let key = (session.context.session_id, motion.session_id);
+        // 先拷出要比较的字段，再改槽，避免借用还活着时 remove。
+        let previous = pending.get(&key).map(|item| {
+            (
+                item.motion.token,
+                item.motion.state_epoch,
+                item.motion.motion_seq,
+                item.motion.dx,
+                item.motion.dy,
+            )
+        });
+        let replaced = if let Some((token, epoch, seq, prev_dx, prev_dy)) = previous {
+            if token == motion.token && epoch == motion.state_epoch {
+                if motion.motion_seq <= seq {
+                    return None;
+                }
+                let dx = prev_dx + motion.dx;
+                let dy = prev_dy + motion.dy;
+                if !relative_delta_ok(dx) || !relative_delta_ok(dy) {
+                    pending.remove(&key);
+                    self.ready.notify_one();
+                    return Some(true);
+                }
+                let mut combined = motion;
+                combined.dx = dx;
+                combined.dy = dy;
+                pending.insert(
+                    key,
+                    ReceivedRelative {
+                        peer: session.peer,
+                        context: session.context.clone(),
+                        motion: combined,
+                    },
+                );
+                drop(pending);
+                self.ready.notify_one();
+                return Some(false);
+            }
+            if token == motion.token && epoch > motion.state_epoch {
+                return None;
+            }
+            true
+        } else {
+            if pending.len() >= MAX_RECEIVE_SLOTS
+                || pending.keys().filter(|(id, _)| *id == key.0).count() >= MAX_CONTROL_SLOTS
+            {
+                return None;
+            }
+            false
+        };
+        pending.insert(
+            key,
+            ReceivedRelative {
+                peer: session.peer,
+                context: session.context.clone(),
+                motion,
+            },
+        );
+        drop(pending);
+        self.ready.notify_one();
+        Some(replaced)
+    }
+
     pub(super) async fn recv(&self) -> InputTransportEvent {
         loop {
             if let Some(received) = self.pending.lock().ok().and_then(|mut p| p.pop_first()) {
                 return InputTransportEvent::Motion {
+                    peer_id: received.1.peer,
+                    context: received.1.context,
+                    motion: received.1.motion,
+                };
+            }
+            if let Some(received) = self.relative.lock().ok().and_then(|mut p| p.pop_first()) {
+                return InputTransportEvent::RelativeMotion {
                     peer_id: received.1.peer,
                     context: received.1.context,
                     motion: received.1.motion,
@@ -242,9 +450,15 @@ impl MotionInbox {
         if let Ok(mut pending) = self.pending.lock() {
             pending.retain(|(id, _), _| *id != transport);
         }
+        if let Ok(mut pending) = self.relative.lock() {
+            pending.retain(|(id, _), _| *id != transport);
+        }
     }
     fn remove(&self, transport: TransportSessionId, control: InputSessionId) {
         if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&(transport, control));
+        }
+        if let Ok(mut pending) = self.relative.lock() {
             pending.remove(&(transport, control));
         }
     }
@@ -315,7 +529,12 @@ impl InputHub {
             send_replaced: link.send_replaced.load(Ordering::Relaxed),
             receive_replaced: link.receive_replaced.load(Ordering::Relaxed),
             dropped: link.dropped.load(Ordering::Relaxed),
-            pending_send: link.pending.lock().map(|p| p.len()).unwrap_or_default(),
+            pending_send: link.pending.lock().map(|p| p.len()).unwrap_or_default()
+                + link
+                    .pending_relative
+                    .lock()
+                    .map(|p| p.len())
+                    .unwrap_or_default(),
             rtt_micros: path.rtt.as_micros().min(u128::from(u64::MAX)) as u64,
             lost_packets: path.lost_packets,
             sent_packets: path.sent_packets,
@@ -354,6 +573,36 @@ impl InputHub {
         session.motion.enqueue(motion)
     }
 
+    pub fn send_relative(
+        &self,
+        peer: DeviceId,
+        id: TransportSessionId,
+        motion: RelativeMotionDatagram,
+    ) -> Result<(), TransportError> {
+        motion
+            .validate()
+            .map_err(|_| TransportError::MalformedPeer("invalid relative motion datagram"))?;
+        let bytes = encode_relative_motion_datagram(&motion).map_err(TransportError::Protocol)?;
+        let session = self
+            .sessions
+            .lock()
+            .map_err(|_| TransportError::Closed)?
+            .get(&id)
+            .filter(|s| s.peer == peer && s.live() && s.context.input_eligible())
+            .cloned()
+            .ok_or(TransportError::Closed)?;
+        if !datagram_supported(&session)
+            || !session.motion.ready.load(Ordering::Acquire)
+            || session
+                .connection
+                .max_datagram_size()
+                .is_none_or(|max| bytes.len() > max)
+        {
+            return Err(TransportError::Closed);
+        }
+        session.motion.enqueue_relative(motion)
+    }
+
     pub fn cancel_motion(&self, peer: DeviceId, id: TransportSessionId, control: InputSessionId) {
         if let Some(session) = self
             .sessions
@@ -365,6 +614,9 @@ impl InputHub {
             // can be reinserted after cancellation. QUIC-queued/late network data
             // still requires runtime epoch/session validation.
             if let Ok(mut pending) = session.motion.pending.lock() {
+                pending.remove(&control);
+            }
+            if let Ok(mut pending) = session.motion.pending_relative.lock() {
                 pending.remove(&control);
             }
             self.motion_inbox.remove(id, control);
@@ -391,6 +643,19 @@ impl InputHub {
             return;
         };
         let hub = self.clone();
+        // 独立采样器：质量曲线只描述链路本身，不能挂在 `ready` 或探针发送成功上。
+        // ready 掉了之后运动改走可靠通道、drain 队列也随之空掉，原先那条
+        // 「ready 才采样」的路径会让曲线毫无提示地冻在降级前的位置。
+        let sampling = session.clone();
+        executor.spawn(async move {
+            while sampling.live() {
+                tokio::select! {
+                    _ = tokio::time::sleep(SAMPLE_INTERVAL) => {}
+                    _ = sampling.cancel.notified() => break,
+                }
+                sampling.motion.sample_diagnostics(&sampling, "sample", false);
+            }
+        });
         let reader = session.clone();
         executor.spawn(async move {
             let mut last_ping_response: Option<tokio::time::Instant> = None;
@@ -438,6 +703,27 @@ impl InputHub {
                     reader.motion.dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
+                if bytes.len() >= 4 && bytes[..4] == [b'D', b'F', b'R', 1] {
+                    let Ok(motion) = decode_relative_motion_datagram(&bytes) else {
+                        reader.motion.dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    reader.motion.received.fetch_add(1, Ordering::Relaxed);
+                    match hub.motion_inbox.enqueue_relative(&reader, motion) {
+                        Some(true) => {
+                            reader
+                                .motion
+                                .receive_replaced
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Some(false) => {}
+                        None => {
+                            reader.motion.dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    reader.motion.sample_diagnostics(&reader, "receive", false);
+                    continue;
+                }
                 let Ok(motion) = decode_motion_datagram(&bytes) else {
                     reader.motion.dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -478,6 +764,7 @@ impl InputHub {
                     probing.motion.close();
                     break;
                 }
+                // 采样由 start_motion 里的独立采样器负责，与这里的探针成败无关。
                 tokio::select! {
                     _ = tokio::time::sleep(PROBE_INTERVAL) => {},
                     _ = probing.cancel.notified() => break,
@@ -516,30 +803,24 @@ impl InputHub {
                         break 'drain;
                     }
 
-                    let motion = session
-                        .motion
-                        .pending
-                        .lock()
-                        .ok()
-                        .and_then(|mut pending| pending.pop_first().map(|(_, motion)| motion));
+                    let next = session.motion.pop_outgoing();
 
-                    let Some(motion) = motion else {
+                    let Some(next) = next else {
                         // Final check: if mailbox became non-empty between our last
-                        // pop_first() and here, drain again instead of sleeping.
-                        if session
-                            .motion
-                            .pending
-                            .lock()
-                            .ok()
-                            .is_some_and(|pending| !pending.is_empty())
-                        {
+                        // pop and here, drain again instead of sleeping.
+                        if session.motion.has_outgoing() {
                             continue 'drain;
                         }
                         break 'drain;
                     };
 
                     let encode_start = Instant::now();
-                    let encoded = encode_motion_datagram(&motion).ok();
+                    let encoded = match &next {
+                        OutgoingMotion::Absolute(motion) => encode_motion_datagram(motion).ok(),
+                        OutgoingMotion::Relative(motion) => {
+                            encode_relative_motion_datagram(motion).ok()
+                        }
+                    };
                     let encode_time = encode_start.elapsed();
 
                     let send_start = Instant::now();
@@ -551,6 +832,10 @@ impl InputHub {
 
                     let health_lost = if sent {
                         session.motion.sent.fetch_add(1, Ordering::Relaxed);
+                        record_input_stage(
+                            InputStage::Send,
+                            u64::try_from(send_time.as_micros()).unwrap_or(u64::MAX),
+                        );
                         batch_sent += 1;
                         false
                     } else {
@@ -841,8 +1126,35 @@ mod tests {
             &InputShareMessage::RequestHybrid {
                 session_id: InputSessionId::new(),
                 target_display: DisplayId("display".into()),
+                relative_ready: false,
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn ready_link_keeps_sampling_quality_without_motion() {
+        let (server, client, a, b) = super::super::tests::connections().await;
+        let caps = Capabilities::INPUT_SHARING | Capabilities::INPUT_MOTION_DATAGRAM_V1;
+        let a = session(a, client.local_addr().unwrap(), caps);
+        let b = session(b, server.local_addr().unwrap(), caps);
+        let sender = InputHub::new();
+        let receiver = InputHub::new();
+        assert!(sender.admit_session(a.clone()));
+        assert!(receiver.admit_session(b.clone()));
+        sender.start_motion(a.clone());
+        receiver.start_motion(b.clone());
+        ready(&a, &b).await;
+        // No motion is sent at all: the probe loop alone must keep the
+        // once-per-second quality records flowing so the chart stays continuous.
+        let baseline = crate::motion_diag::quality_snapshot().len();
+        tokio::time::sleep(Duration::from_millis(2_300)).await;
+        let sampled = crate::motion_diag::quality_snapshot().len();
+        assert!(
+            sampled >= baseline + 2,
+            "ready links must keep sampling without motion: {baseline} -> {sampled}"
+        );
+        sender.invalidate_peer(a.peer);
+        receiver.invalidate_peer(b.peer);
     }
 
     #[tokio::test]

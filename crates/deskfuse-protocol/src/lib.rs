@@ -13,6 +13,7 @@ pub mod core;
 mod error;
 mod identity;
 mod motion;
+mod relative_motion;
 pub mod update;
 pub mod wire;
 
@@ -32,6 +33,7 @@ pub use identity::{
     device_id_for_public_key, sign_hello, sign_hello_in_place, verify_hello,
 };
 pub use motion::{MAX_MOTION_DATAGRAM_SIZE, decode_motion_datagram, encode_motion_datagram};
+pub use relative_motion::{decode_relative_motion_datagram, encode_relative_motion_datagram};
 pub use wire::envelope::Message;
 pub use wire::{
     ClipboardUpdate, DisplayInfo, Envelope, Error, Goodbye, Hello, HelloAck, InputEndpoints,

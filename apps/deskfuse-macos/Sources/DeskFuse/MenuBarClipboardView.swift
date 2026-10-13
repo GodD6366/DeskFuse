@@ -49,6 +49,8 @@ struct MenuBarClipboardView: View {
     private var automaticOCR: Bool
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
+    /// 设备 ID → 展示名，本机统一为「这台 Mac」，与历史来源和预览头部一致。
+    private var deviceNames: [String: String] { library.displayDeviceNames(snapshot: store.snapshot) }
     private var sourceChoices: [ClipboardLibraryChoice] {
         library.sourceChoices(legacyNames: history.map(\.source), snapshot: store.snapshot)
     }
@@ -171,6 +173,7 @@ struct MenuBarClipboardView: View {
             VStack(spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "rectangle.on.rectangle").font(.system(size: 19))
+                        .modifier(BrandGlow())
                     Text("最近剪贴板").font(.system(size: 16, weight: .semibold))
                     Spacer(minLength: 4)
                     ClipboardDisplayModePicker(mode: $displayMode)
@@ -277,9 +280,7 @@ struct MenuBarClipboardView: View {
                                 client: store.client,
                                 appID: item.sourceAppId,
                                 meta: rows[item.id].map { row in
-                                    let originDevice = row.source_device_id.flatMap { deviceId in
-                                        library.devices.first(where: { $0.id == deviceId })?.name
-                                    }
+                                    let originDevice = row.source_device_id.flatMap { deviceNames[$0] }
                                     return ClipboardItemMeta(
                                         remote: row.remote ?? false,
                                         available: row.available ?? true,
@@ -323,9 +324,7 @@ struct MenuBarClipboardView: View {
                                         client: store.client, appID: item.sourceAppId,
                                         title: titles[item.id],
                                         meta: rows[item.id].map { row in
-                                            let originDevice = row.source_device_id.flatMap { deviceId in
-                                                library.devices.first(where: { $0.id == deviceId })?.name
-                                            }
+                                            let originDevice = row.source_device_id.flatMap { deviceNames[$0] }
                                             return ClipboardItemMeta(
                                                 remote: row.remote ?? false,
                                                 available: row.available ?? true,

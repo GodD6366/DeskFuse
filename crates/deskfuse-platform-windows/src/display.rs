@@ -31,6 +31,36 @@ use windows_sys::Win32::{
 
 use deskfuse_platform::MainDisplayGeometry;
 
+fn physical_panel_size(device_path: &str) -> Option<(f64, f64)> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY, RegGetValueW,
+    };
+    let key: Vec<u16> = crate::display_edid::registry_path(device_path)?
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let value: Vec<u16> = "EDID".encode_utf16().chain(Some(0)).collect();
+    let mut bytes = [0u8; 4096];
+    let mut len = 4096u32;
+    // SAFETY: terminated UTF-16 names and a writable buffer of the supplied size.
+    // Read-only lookup; absent, oversized or inaccessible EDID is optional metadata.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_BINARY,
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    crate::display_edid::panel_size_mm(bytes.get(..usize::try_from(len).ok()?)?)
+}
+
 /// A native snapshot is required to invert protocol display-local coordinates.
 #[derive(Clone, Debug)]
 pub struct NativeDisplay {
@@ -273,6 +303,7 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
             .filter(|v| *v > 0)
             .ok_or(PlatformError::DisplayUnavailable)?
             .cast_unsigned();
+        let panel = physical_panel_size(path);
         result.push(NativeDisplay {
             descriptor: DisplayDescriptor {
                 id: stable_monitor_id(path).into(),
@@ -285,6 +316,8 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
                 scale_factor: monitor.scale,
                 rotation_degrees: *rotation,
                 is_primary: monitor.primary,
+                physical_width_mm: panel.map(|(width, _)| width),
+                physical_height_mm: panel.map(|(_, height)| height),
             },
             physical_left: monitor.bounds.left,
             physical_top: monitor.bounds.top,
@@ -320,6 +353,8 @@ fn topology_from_native(displays: &[NativeDisplay]) -> PlatformResult<DisplayTop
         d.scale_factor.to_bits().hash(&mut hash);
         d.rotation_degrees.hash(&mut hash);
         d.is_primary.hash(&mut hash);
+        d.physical_width_mm.map(f64::to_bits).hash(&mut hash);
+        d.physical_height_mm.map(f64::to_bits).hash(&mut hash);
     }
     let topology = DisplayTopology {
         generation: hash.finish(),
@@ -381,6 +416,8 @@ mod tests {
                 scale_factor: 1.5,
                 rotation_degrees: 90,
                 is_primary: false,
+                physical_width_mm: None,
+                physical_height_mm: None,
             },
             physical_left: -1920,
             physical_top: -150,

@@ -326,6 +326,16 @@ pub trait TransportProvider: Send + Sync {
             "motion datagrams unavailable".into(),
         ))
     }
+    fn send_input_relative(
+        &self,
+        _peer: DeviceId,
+        _session: TransportSessionId,
+        _motion: deskfuse_core::RelativeMotionDatagram,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Transport(
+            "relative motion datagrams unavailable".into(),
+        ))
+    }
     fn cancel_input_motion(
         &self,
         _peer: DeviceId,
@@ -347,6 +357,7 @@ pub trait TransportProvider: Send + Sync {
         ))
     }
     fn select_input_route(&self, _peer: DeviceId, _session: TransportSessionId) {}
+    fn sample_input_quality(&self) {}
     fn ensure_input_link(&self, _peer: DeviceId, _endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
         Box::pin(async { Err(RuntimeError::Transport("LAN connection unavailable".into())) })
     }
@@ -516,6 +527,14 @@ where
     ) -> Result<(), RuntimeError> {
         (**self).send_input_motion(peer, session, motion)
     }
+    fn send_input_relative(
+        &self,
+        peer: DeviceId,
+        session: TransportSessionId,
+        motion: deskfuse_core::RelativeMotionDatagram,
+    ) -> Result<(), RuntimeError> {
+        (**self).send_input_relative(peer, session, motion)
+    }
     fn cancel_input_motion(
         &self,
         peer: DeviceId,
@@ -537,6 +556,9 @@ where
     }
     fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
         (**self).select_input_route(peer, session);
+    }
+    fn sample_input_quality(&self) {
+        (**self).sample_input_quality();
     }
     fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
         (**self).ensure_input_link(peer, endpoints)
@@ -1097,6 +1119,8 @@ pub enum RuntimeCommand {
         session_id: InputSessionId,
         target_display: DisplayId,
         events: Vec<SharedInputEvent>,
+        /// 与本批第一条移动同采样的原始相对计数。`None` 表示没有原始增量。
+        relative: Option<(f64, f64)>,
     },
     #[serde(skip)]
     LeaveInputControl {
@@ -4357,6 +4381,16 @@ where
             .send_input_motion(peer, session, motion)
             .map_err(|e| RuntimeError::Transport(e.to_string()))
     }
+    fn send_input_relative(
+        &self,
+        peer: DeviceId,
+        session: TransportSessionId,
+        motion: deskfuse_core::RelativeMotionDatagram,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .send_input_relative(peer, session, motion)
+            .map_err(|e| RuntimeError::Transport(e.to_string()))
+    }
     fn cancel_input_motion(
         &self,
         peer: DeviceId,
@@ -4380,6 +4414,9 @@ where
     }
     fn select_input_route(&self, peer: DeviceId, session: TransportSessionId) {
         self.inner.select_input_route(peer, session);
+    }
+    fn sample_input_quality(&self) {
+        self.inner.sample_input_quality();
     }
     fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
         let inner = self.inner.clone();

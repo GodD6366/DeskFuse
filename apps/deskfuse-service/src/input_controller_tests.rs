@@ -26,6 +26,8 @@ fn topology() -> DisplayTopology {
             scale_factor: 1.0,
             rotation_degrees: 0,
             is_primary: true,
+            physical_width_mm: None,
+            physical_height_mm: None,
         }],
     }
 }
@@ -54,6 +56,7 @@ fn controller_commands_round_trip() {
                     repeat: false,
                 },
             ],
+            relative: None,
         },
         ipc::Command::LeaveInputControl {
             session_id: session(),
@@ -100,6 +103,7 @@ fn controller_commands_round_trip() {
         target_display: "d".into(),
         batch: 1,
         events: Vec::new(),
+        relative: None,
     };
     let text = serde_json::to_string(&send).expect("serialize");
     assert!(text.contains("\"SendInputEvents\""), "{text}");
@@ -177,7 +181,9 @@ fn input_state_carries_layout_and_control_views() {
             control_session: Some(session()),
             lease_revision: 3,
             motion_mode: Some("hybrid".into()),
+            motion_fallback_reason: None,
         }],
+        quality: ipc::idle_quality(),
     };
     let text = serde_json::to_string(&state).expect("serialize state");
     for field in [

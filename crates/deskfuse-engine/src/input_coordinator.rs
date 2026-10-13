@@ -29,6 +29,38 @@ use std::{
 
 const LEASE_TTL: Duration = Duration::from_millis(1500);
 
+/// 把本样本的设备计数挂到第一条鼠标移动上。像素差仍留给边缘检测。
+fn attach_captured_relative(actions: &mut [SharingAction], has_raw: bool, dx: f64, dy: f64) {
+    if !has_raw {
+        return;
+    }
+    if !deskfuse_core::relative_delta_ok(dx) || !deskfuse_core::relative_delta_ok(dy) {
+        return;
+    }
+    let Some(SharingAction::Route { relative, .. }) = actions.iter_mut().find(|action| {
+        matches!(
+            action,
+            SharingAction::Route {
+                event: SharedInputEvent::Motion { .. },
+                ..
+            }
+        )
+    }) else {
+        return;
+    };
+    *relative = match *relative {
+        None => Some((dx, dy)),
+        Some((left, right)) => {
+            let (sum_x, sum_y) = (left + dx, right + dy);
+            if deskfuse_core::relative_delta_ok(sum_x) && deskfuse_core::relative_delta_ok(sum_y) {
+                Some((sum_x, sum_y))
+            } else {
+                Some((left, right))
+            }
+        }
+    };
+}
+
 pub struct InputCoordinator {
     stopping: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -588,7 +620,11 @@ impl State {
                         Err("控制租约已失效".into())
                     }
                 }
-                SharingAction::Route { target, event } => {
+                SharingAction::Route {
+                    target,
+                    event,
+                    relative,
+                } => {
                     if let Some(lease) = &self.outbound {
                         let first_motion = matches!(&event, SharedInputEvent::Motion { .. })
                             .then(|| self.crossing_started.take())
@@ -598,6 +634,7 @@ impl State {
                                 session_id: lease.session,
                                 target_display: target.display_id,
                                 events: vec![event],
+                                relative,
                             })
                             .map_err(|e| e.to_string());
                         if let Some(started) = first_motion {
@@ -947,6 +984,7 @@ async fn run(
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
     let mut previous_ui_snapshot: Option<InputSharingSnapshot> = None;
+    let mut last_quality_ui_refresh = Instant::now();
     let mut recording_active = false;
     let started = Instant::now();
     let mut next_refresh = Instant::now();
@@ -1171,7 +1209,13 @@ async fn run(
                             if (recording_active || state.effective.role != InputShareRole::Controller)
                                 && !matches!(&sample.event, SharedInputEvent::Key {code,pressed:true,modifiers,..} if hotkey_bindings(&state.effective).is_reclaim(*code,*modifiers)) {continue;}
                             let global = Point::new(sample.global_x, sample.global_y);
-                            let actions = state.policy.handle_input(sample.event, global, Vector2::new(sample.delta_x,sample.delta_y), started.elapsed().as_millis() as u64);
+                            let (has_raw, raw_dx, raw_dy) = (sample.has_raw, sample.raw_dx, sample.raw_dy);
+                            let mut actions = state.policy.handle_input(sample.event, global, Vector2::new(sample.delta_x,sample.delta_y), started.elapsed().as_millis() as u64);
+                            attach_captured_relative(&mut actions, has_raw, raw_dx, raw_dy);
+                            deskfuse_core::record_input_stage(
+                                deskfuse_core::InputStage::CaptureQueue,
+                                u64::try_from(sample.captured_at.elapsed().as_micros()).unwrap_or(u64::MAX),
+                            );
                             // Count exactly the positions this machine hands to the
                             // peer, so the peer's inbound summary can be compared
                             // against it one-for-one.
@@ -1302,8 +1346,12 @@ async fn run(
                     };
                     state.report_native(&runtime,&snapshot,status,reason).await;
                     if recording_active {let _=ui.unbounded_send(UiEvent::InputRecordingReady(true));}
-                    if previous_ui_snapshot.as_ref() != Some(&snapshot) {
+                    let quality_refresh = last_quality_ui_refresh.elapsed() >= Duration::from_secs(1);
+                    if previous_ui_snapshot.as_ref() != Some(&snapshot) || quality_refresh {
                         previous_ui_snapshot = Some(snapshot.clone());
+                        if quality_refresh {
+                            last_quality_ui_refresh = Instant::now();
+                        }
                         let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(snapshot.clone())));
                     }
                     if previous_permission != Some(permission) {
@@ -1744,6 +1792,8 @@ mod tests {
             scale_factor: 2.0,
             rotation_degrees: 0,
             is_primary: x == 0.0,
+            physical_width_mm: None,
+            physical_height_mm: None,
         }
     }
     #[test]

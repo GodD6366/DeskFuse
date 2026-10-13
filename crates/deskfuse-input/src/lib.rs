@@ -8,12 +8,14 @@
 #![warn(missing_debug_implementations, missing_docs)]
 
 mod batch;
+pub mod bridge;
 mod crossing;
 mod event;
 mod geometry;
 pub mod layout;
 mod lease;
 mod motion;
+pub mod quality;
 pub mod sharing;
 mod topology;
 
@@ -35,4 +37,8 @@ pub use lease::{
     LeaseTokenError,
 };
 pub use motion::{FUTURE_MOTION_TTL_MS, MAX_FUTURE_STATE_EPOCH_DELTA, MotionReceiver};
+pub use quality::{
+    current_report, normalize_pointer, retest, DisplayGeometry, InputQualityReport,
+    NormalizedMotion, QualityHistory, QualitySuggestion,
+};
 pub use topology::{DevicePlacement, DeviceRole, DisplayId, EdgeMapping, Topology, TopologyError};

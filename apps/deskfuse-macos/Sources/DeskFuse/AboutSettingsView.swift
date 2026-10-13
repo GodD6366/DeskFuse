@@ -14,7 +14,7 @@ struct AboutSettingsView: View {
                 HStack(spacing: 14) {
                     Image(systemName: "rectangle.on.rectangle")
                         .font(.system(size: 34, weight: .light))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(DeskFuseBrand.accent)
                         .frame(width: 52, height: 52)
                         .modifier(NativeGlassBackdrop(cornerRadius: 14))
                     VStack(alignment: .leading, spacing: 4) {
@@ -36,9 +36,10 @@ struct AboutSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 36).padding(.bottom, 32)
+            .padding(.horizontal, SystemSettingsMetrics.formPageHorizontalInset)
+            .padding(.bottom, SystemSettingsMetrics.formPageBottomInset)
         }
     }
 }

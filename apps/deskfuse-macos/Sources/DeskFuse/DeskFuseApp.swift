@@ -13,7 +13,12 @@ import DeskFuseEngine
                 .background(WindowIdentity())
         }
         .defaultSize(width: 1200, height: 780)
-        .windowStyle(.titleBar)
+        // hiddenTitleBar 与 WindowChromeMarker 的手动配置等价（透明标题栏、
+        // 隐藏标题、无分隔线），但由 SwiftUI 自己持有：场景因 store 发布而重建时
+        // 它会重新应用该配置，不会把 titlebarAppearsTransparent 覆盖回 NO。
+        // 用 .titleBar 时重建会把标题栏材质恢复，窗口 resign key 的瞬间
+        // 标题栏背景以灰色横条盖在伸入标题栏区的内容上（键鼠共享页最明显）。
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
             ClipboardCommands()
@@ -39,7 +44,7 @@ import DeskFuseEngine
                 .background(SettingsWindowChrome())
         }
         .defaultSize(width: 960, height: 720)
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
     }
 

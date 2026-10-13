@@ -28,6 +28,20 @@ enum SettingsCategory: String, CaseIterable {
         case .about: "info.circle"
         }
     }
+
+    /// 侧栏彩色方块图标的识别色，与主窗口同名功能保持同色。
+    var color: Color {
+        switch self {
+        case .general: .gray
+        case .input: .purple
+        case .permissions: .red
+        case .storage: .teal
+        case .clipboard: .blue
+        case .shortcuts: .indigo
+        case .updates: .green
+        case .about: .gray
+        }
+    }
 }
 
 struct SettingsCategoryBar: View {
@@ -35,20 +49,23 @@ struct SettingsCategoryBar: View {
     var body: some View {
         List(selection: $selection) {
             ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
-                SidebarNavRow(
+                SystemSettingsSidebarRow(
                     title: category.title,
                     symbol: category.symbol,
+                    color: category.color,
                     selected: selection == category.rawValue
                 )
                 .tag(category.rawValue)
+                .listRowInsets(SystemSettingsMetrics.rowInsets)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 28)
+        .environment(\.defaultMinListRowHeight, SystemSettingsMetrics.rowHeight)
         .padding(.top, 12)
+        .systemSettingsSidebarBackground()
         .accessibilityLabel("设置分类")
     }
 }

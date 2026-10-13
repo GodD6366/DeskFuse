@@ -34,7 +34,8 @@ struct DisplayLayout: View {
             let scale = viewport.scale
 
             ZStack(alignment: .topLeading) {
-                Rectangle().fill(.regularMaterial)
+                // 底色由外层 systemSettingsBlock 提供，这里只画点阵：
+                // 画布再铺一层材质会和外层分组叠成两层灰底。
                 Canvas { context, size in
                     var dots = Path()
                     for x in stride(from: 16.0, to: size.width, by: 24.0) {
@@ -152,6 +153,7 @@ struct DisplayLayout: View {
                             )
                             .disabled(editingDisabled)
                             .padding(10)
+                            .frame(width: display.width * scale, height: display.height * scale, alignment: .center)
                         }
                     }
                     .frame(width: display.width * scale, height: display.height * scale)
@@ -183,7 +185,6 @@ struct DisplayLayout: View {
                             }
                         }
                     }
-                    .help(screenHelp(display, reconnecting: reconnecting))
                     .accessibilityElement(children: canReconnect ? .contain : .ignore)
                     .accessibilityLabel("屏幕 \(index + 1)，\(display.name)，\(display.layoutSizeLabel)，\(display.ready ? "已就绪" : "未就绪")")
                     .accessibilityHint(canReconnect ? "未正式连接。可重新连接并通知对端准备键鼠共享。" : "")
@@ -206,7 +207,7 @@ struct DisplayLayout: View {
                 if layoutTipVisible && dragging == nil {
                     HStack(spacing: 7) {
                         Image(systemName: "hand.draw")
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(DeskFuseBrand.accent)
                         Text("拖动屏幕调整位置，松手自动吸附")
                             .font(.caption)
                         Button {
@@ -227,8 +228,8 @@ struct DisplayLayout: View {
                     .allowsHitTesting(true)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.5)))
+            // 只用来裁掉拖动溢出，圆角与外层分组对齐；不再单独铺底或描边。
+            .clipShape(RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous))
         }
         .onChange(of: snapshot.input.displays) { _, displays in confirmMove(using: displays) }
         .onDisappear { resetDrag() }
@@ -291,18 +292,6 @@ struct DisplayLayout: View {
         }
         let connected = snapshot.devices.first(where: { $0.id == display.deviceId })?.connected == true
         return connected && display.ready ? .connected : .offline
-    }
-
-    private func screenHelp(_ display: Display, reconnecting: Bool) -> String {
-        let status: String
-        if display.ready {
-            status = "已就绪"
-        } else if reconnecting {
-            status = "正在重新连接"
-        } else {
-            status = "未就绪，可点中间的重连按钮通知对端准备连接"
-        }
-        return "\(display.name)\(display.local ? " · 本机" : "") · \(status)\n拖动自动吸附边缘；同一设备的屏幕整体移动，松手贴合相邻屏幕。"
     }
 
     @discardableResult

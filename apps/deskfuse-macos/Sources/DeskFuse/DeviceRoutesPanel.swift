@@ -25,7 +25,7 @@ struct DeviceRoutesPanel: View {
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 0) {
-                    HStack(spacing: 12) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text("").frame(width: 24)
                         Text("地址").frame(maxWidth: .infinity, alignment: .leading)
                         Text("发现来源").frame(width: 128, alignment: .leading)
@@ -37,7 +37,7 @@ struct DeviceRoutesPanel: View {
                     .padding(.vertical, 10)
                     Divider()
                     ForEach(routes, id: \.id) { route in
-                        HStack(spacing: 12) {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
                             Image(systemName: route.active ? "circle.inset.filled" : "circle")
                                 .font(.system(size: 18))
                                 .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
@@ -79,7 +79,6 @@ struct DeviceRoutesPanel: View {
                         if route.id != routes.last?.id { Divider().padding(.horizontal, 14) }
                     }
                 }
-                .modifier(NativeGlassCardSurface(cornerRadius: 12))
                 if routes.count == 1 {
                     Text("目前仅发现这一条候选地址，不代表设备只有一个网络接口。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -87,9 +86,9 @@ struct DeviceRoutesPanel: View {
             }
             Text("同一地址只显示一次。自动模式按实测握手延迟选择最快可达线路；刷新会立即重测候选地址，不会中断当前连接。")
                 .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .modifier(NativeGlassCardSurface(cornerRadius: 14))
     }
 }

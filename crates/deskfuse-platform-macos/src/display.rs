@@ -32,12 +32,14 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
     use core_foundation::{base::TCFType, string::CFString, uuid::CFUUID};
     use core_foundation_sys::uuid::{CFUUIDCreateString, CFUUIDRef};
     use core_graphics::display::CGDisplay;
+    use core_graphics::geometry::CGSize;
     use std::hash::{Hash, Hasher};
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> CFUUIDRef;
         fn CGDisplayVendorNumber(display: u32) -> u32;
         fn CGDisplayModelNumber(display: u32) -> u32;
+        fn CGDisplayScreenSize(display: u32) -> CGSize;
     }
     let mut displays = Vec::new();
     for id in CGDisplay::active_displays().map_err(|_| PlatformError::DisplayUnavailable)? {
@@ -71,6 +73,12 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
             .display_mode()
             .map(|mode| mode.pixel_width() as f64 / mode.width().max(1) as f64)
             .unwrap_or(1.0);
+        // CoreGraphics reports the panel's EDID size in millimetres. Some
+        // virtual displays return zero; those deliberately fall back to the
+        // existing logical-point model.
+        let physical = unsafe { CGDisplayScreenSize(id) };
+        let physical_width_mm = (physical.width > 1.0).then_some(physical.width);
+        let physical_height_mm = (physical.height > 1.0).then_some(physical.height);
         displays.push(deskfuse_core::DisplayDescriptor {
             id: name.into(),
             frame_x: bounds.origin.x,
@@ -80,6 +88,8 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
             scale_factor: scale,
             rotation_degrees: (display.rotation().round() as u16) % 360,
             is_primary: id == CGDisplay::main().id,
+            physical_width_mm,
+            physical_height_mm,
         });
     }
     displays.sort_by(|a, b| a.id.cmp(&b.id));
@@ -93,6 +103,8 @@ pub fn display_topology() -> PlatformResult<deskfuse_core::DisplayTopology> {
         d.scale_factor.to_bits().hash(&mut hash);
         d.rotation_degrees.hash(&mut hash);
         d.is_primary.hash(&mut hash);
+        d.physical_width_mm.map(f64::to_bits).hash(&mut hash);
+        d.physical_height_mm.map(f64::to_bits).hash(&mut hash);
     }
     let topology = deskfuse_core::DisplayTopology {
         generation: hash.finish(),

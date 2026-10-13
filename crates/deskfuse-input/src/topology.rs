@@ -171,38 +171,56 @@ impl EdgeMapping {
         self.target_overlap_start + ratio * (self.target_overlap_end - self.target_overlap_start)
     }
 
-    /// Maps a source point to the target edge. Values outside the shared
-    /// segment are clamped to the target edge's endpoints.
+    /// 把源屏上的一个点映射到目标屏，并保留越过源边的位移量。
+    ///
+    /// 与固定内缩不同，越界量会被保留：指针扫进目标屏几个像素，就落在目标屏内
+    /// 几个像素，而不是被压回贴着边界的同一个像素。沿边坐标按绝对坐标搬移后再
+    /// 钳制到目标矩形，因此两块屏尺寸不同时穿越仍然对齐。
+    ///
+    /// `source_zone` 把源边按该宽度外扩后再测量越界量。操作系统会把本机指针钳制
+    /// 在屏内，本机源在最后一个像素就完成移交，因此需要补偿 `1.0`；远端指针由增量
+    /// 积分得到、报告的是真实越界量，取 `0.0`。`target_inset` 让落点再离开进入边
+    /// 一个像素，同样只对**本机目标**必要——否则被钳制的本机指针会立刻再次触发。
+    ///
+    /// 入参与返回值都是拓扑空间坐标。
     #[must_use]
-    pub fn map_position(&self, source_point: Point) -> Point {
-        let source_along = if self.from_edge.is_horizontal() {
-            source_point.x
-        } else {
-            source_point.y
-        };
-        let target_along = self.map_along(source_along);
-        self.target_rect
-            .point_on_edge(self.to_edge, target_along, 0.0)
-    }
-
-    /// Maps a point on a source rectangle to a point just inside the target
-    /// rectangle, using the actual target rectangle's geometry.
-    #[must_use]
-    pub fn map_point_with_rects(
+    pub fn map_landing(
         &self,
         source_point: Point,
         source_rect: Rect,
-        target_rect: Rect,
-        inward_distance: f64,
+        source_zone: f64,
+        target_inset: f64,
     ) -> Point {
-        let source_along = if self.from_edge.is_horizontal() {
-            source_point.x
-        } else {
-            source_point.y
+        let inward = source_rect.signed_distance_to_edge(source_point, self.from_edge);
+        let (along, overflow) = match self.from_edge {
+            Edge::Left => (source_point.y, inward - source_zone),
+            Edge::Right => (source_point.y, source_zone - inward),
+            Edge::Top => (source_point.x, inward - source_zone),
+            Edge::Bottom => (source_point.x, source_zone - inward),
         };
-        let target_along = self.map_along(source_along);
-        let _ = source_rect;
-        target_rect.point_on_edge(self.to_edge, target_along, inward_distance.max(0.0))
+        let (mut x, mut y) = match self.from_edge {
+            Edge::Left => (self.target_rect.right() + overflow, along),
+            Edge::Right => (self.target_rect.x + overflow, along),
+            Edge::Top => (along, self.target_rect.bottom() + overflow),
+            Edge::Bottom => (along, self.target_rect.y + overflow),
+        };
+        if target_inset > 0.0 {
+            match self.from_edge {
+                Edge::Left => x = x.min(self.target_rect.right() - 1.0 - target_inset),
+                Edge::Right => x = x.max(self.target_rect.x + target_inset),
+                Edge::Top => y = y.min(self.target_rect.bottom() - 1.0 - target_inset),
+                Edge::Bottom => y = y.max(self.target_rect.y + target_inset),
+            }
+        }
+        // 内缩在钳制之前，与生产顺序一致：内缩可能把落点推出矩形，由钳制兜底。
+        // 用 min/max 而不是 clamp：退化尺寸的屏幕不应让这里 panic。
+        x = x
+            .max(self.target_rect.x)
+            .min(self.target_rect.right() - 1.0);
+        y = y
+            .max(self.target_rect.y)
+            .min(self.target_rect.bottom() - 1.0);
+        Point::new(x, y)
     }
 }
 
@@ -527,5 +545,105 @@ mod tests {
             .expect("mapping");
         assert!((mapping.map_along(25.0) - 25.0).abs() < 1e-6);
         assert!((mapping.map_along(100.0) - 100.0).abs() < 1e-6);
+    }
+
+    /// 对齐生产 `remote_overflow_is_preserved_at_next_display`：指针从中间的远端屏
+    /// 再向右越界 7 个像素，落点必须保留这 7 个像素，而不是被压回目标屏的左边缘。
+    #[test]
+    fn landing_preserves_remote_overflow_beyond_the_target_edge() {
+        let topology = Topology::with_placements(
+            "a",
+            [
+                DevicePlacement::controller("a", Rect::new(0.0, 0.0, 100.0, 100.0)),
+                DevicePlacement::controlled("b", Rect::new(100.0, 0.0, 100.0, 100.0)),
+                DevicePlacement::controlled("c", Rect::new(200.0, 0.0, 100.0, 100.0)),
+            ],
+        )
+        .expect("valid topology");
+        let mapping = topology
+            .mapping_for(&DisplayId::from("b"), Edge::Right)
+            .expect("b to c");
+        let source_rect = Rect::new(100.0, 0.0, 100.0, 100.0);
+        // 远端指针由增量积分得到，报告的是真实越界量，不需要一点触发区补偿。
+        let landing = mapping.map_landing(Point::new(207.0, 50.0), source_rect, 0.0, 0.0);
+        assert_eq!(landing, Point::new(207.0, 50.0));
+    }
+
+    /// 对齐生产 `instant_crossing...` 的落点 `(0.0, 50.0)`：本机指针被系统钳制，
+    /// 在最后一个像素就移交，源边要按一点触发区外扩，否则落点会多算一个像素。
+    #[test]
+    fn landing_compensates_the_local_one_point_jump_zone() {
+        let topology = topology();
+        let mapping = topology
+            .mapping_for(&DisplayId::from("main"), Edge::Right)
+            .expect("main to right");
+        let source_rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let landing = mapping.map_landing(Point::new(99.0, 50.0), source_rect, 1.0, 0.0);
+        assert_eq!(landing, Point::new(100.0, 50.0));
+    }
+
+    /// 目标是本机屏时落点要多内缩一个像素，否则被钳制的本机指针会立刻再次触发
+    /// 这条边。对齐生产反向穿越锁死的 `99.0` / `98.0`。
+    #[test]
+    fn landing_insets_a_local_target_away_from_its_entry_edge() {
+        let topology = topology();
+        let mapping = topology
+            .mapping_for(&DisplayId::from("right"), Edge::Left)
+            .expect("right to main");
+        let source_rect = Rect::new(100.0, 0.0, 100.0, 100.0);
+        let source_point = Point::new(99.0, 50.0);
+        assert_eq!(
+            mapping.map_landing(source_point, source_rect, 0.0, 0.0),
+            Point::new(99.0, 50.0)
+        );
+        assert_eq!(
+            mapping.map_landing(source_point, source_rect, 0.0, 1.0),
+            Point::new(98.0, 50.0)
+        );
+    }
+
+    /// 目标比源矮时，沿边坐标被钳制在目标内，指针不会落到目标屏之外。
+    #[test]
+    fn landing_clamps_the_along_edge_coordinate_into_a_smaller_target() {
+        let topology = Topology::with_placements(
+            "main",
+            [
+                DevicePlacement::controller("main", Rect::new(0.0, 0.0, 100.0, 100.0)),
+                DevicePlacement::controlled("short", Rect::new(100.0, 0.0, 100.0, 40.0)),
+            ],
+        )
+        .expect("valid topology");
+        let mapping = topology
+            .mapping_for(&DisplayId::from("main"), Edge::Right)
+            .expect("main to short");
+        let source_rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let landing = mapping.map_landing(Point::new(101.0, 80.0), source_rect, 1.0, 0.0);
+        assert_eq!(landing, Point::new(102.0, 39.0));
+    }
+
+    /// 无论越界多远、目标屏多小，落点都必须留在目标矩形内且不 panic——内缩可能把
+    /// 落点推出退化尺寸的目标屏，必须由最后的钳制兜底。
+    #[test]
+    fn landing_stays_inside_the_target_rect_for_extreme_inputs() {
+        let topology = Topology::with_placements(
+            "main",
+            [
+                DevicePlacement::controller("main", Rect::new(0.0, 0.0, 100.0, 100.0)),
+                DevicePlacement::controlled("tiny", Rect::new(100.0, 0.0, 1.0, 1.0)),
+            ],
+        )
+        .expect("valid topology");
+        let mapping = topology
+            .mapping_for(&DisplayId::from("main"), Edge::Right)
+            .expect("main to tiny");
+        let source_rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        for point in [
+            Point::new(101.0, 10.0),
+            Point::new(5_000.0, -3_000.0),
+            Point::new(-900.0, 99.0),
+        ] {
+            let landing = mapping.map_landing(point, source_rect, 1.0, 1.0);
+            assert_eq!(landing, Point::new(100.0, 0.0), "point {point:?}");
+        }
     }
 }

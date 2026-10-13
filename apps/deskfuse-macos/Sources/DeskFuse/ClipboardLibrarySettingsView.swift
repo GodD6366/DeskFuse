@@ -22,8 +22,8 @@ struct ClipboardLibrarySettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Form {
-                Section("快捷键") {
+            SystemSettingsFormPage {
+                SystemSettingsFormBlock(title: "快捷键") {
                     ClipboardShortcutSettings(store: AppStore.shared, shortcut: Binding(
                         get: { shortcut },
                         set: { key in
@@ -31,30 +31,34 @@ struct ClipboardLibrarySettingsView: View {
                                 key_code: key?.key_code ?? 9, modifiers: key?.modifiers ?? 0x180000)
                         }), onRecordingChange: { recording = $0 })
                 }
-                Section("普通历史") {
+                SystemSettingsFormBlock(title: "普通历史") {
                     HStack {
                         Text("保留天数")
                         TextField("天数", value: $draft.retention_days, format: .number).frame(width: 80)
                     }
                     Text("默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Section("跨设备搜索") {
+                SystemSettingsFormBlock(title: "跨设备搜索") {
                     Toggle("同步标题与识别文字到其他设备", isOn: Binding(
                         get: { draft.sync_index ?? true },
                         set: { draft.sync_index = $0 }))
                     Text("只同步标题、识别文字和元数据这类小体积索引，方便在其它设备搜索；图片/文件正文仍在需要时按需获取。关闭后不再发布也不再接收远端索引。")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("清除已同步的远端索引") { library.clearRemoteIndex() }
                     Text("清除其它设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Section("图片文字识别") {
+                SystemSettingsFormBlock(title: "图片文字识别") {
                     Toggle("自动识别图片文字", isOn: $draftAutomaticOCR)
                     Text("默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Section("排除 App") {
+                SystemSettingsFormBlock(title: "排除 App") {
                     ForEach(draft.excluded_apps) { app in
                         HStack {
                             Text(app.name).textSelection(.enabled)
@@ -72,12 +76,13 @@ struct ClipboardLibrarySettingsView: View {
                     }
                     Text("新复制仍正常实时同步，但发送端和接收端不保存历史。不会删除已有历史或手动列表内容；此配置仅属于当前设备。")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("本页修改统一在点击底部“保存”后生效。")
                     .font(.caption).foregroundStyle(.secondary)
-            }.formStyle(.grouped)
-                .disabled(original == nil || saving)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 4)
+            }
+            .disabled(original == nil || saving)
             if original == nil {
                 HStack {
                     if loading { ProgressView().controlSize(.small); Text("正在读取设置…") }

@@ -74,7 +74,7 @@ struct ClipboardLibraryTabs: View {
                 .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 9)
                 .frame(minHeight: spacious ? WorkspaceControlMetrics.height : 34)
                 .foregroundStyle(selectedListID == id ? Color.accentColor : .secondary)
-                .background(selectedListID == id ? Color.accentColor.opacity(0.14)
+                .background(selectedListID == id ? DeskFuseBrand.selectionFill
                             : spacious ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
                             in: RoundedRectangle(cornerRadius: spacious ? 9 : 100))
                 .contentShape(RoundedRectangle(cornerRadius: spacious ? 9 : 100))
@@ -82,32 +82,37 @@ struct ClipboardLibraryTabs: View {
     }
 
     private func verticalTab(_ name: String, id: String?, symbol: String, count: Int?) -> some View {
-        Button { selectedListID = id } label: {
-            HStack(spacing: 10) {
+        let selected = selectedListID == id
+        let shape = RoundedRectangle(cornerRadius: SystemSettingsMetrics.rowCorner, style: .continuous)
+        return Button { selectedListID = id } label: {
+            HStack(spacing: 9) {
                 Image(systemName: symbol)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .frame(width: 18)
                 Text(name).lineLimit(1)
                 Spacer(minLength: 0)
-                if let count { Text("\(count)").font(.caption).monospacedDigit().foregroundStyle(.secondary) }
+                if let count {
+                    Text("\(count)").font(.caption).monospacedDigit()
+                        .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
+                }
             }
-            .font(.callout)
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .foregroundStyle(selectedListID == id ? Color.accentColor : Color.primary)
-            .background(selectedListID == id ? Color.accentColor.opacity(0.14) : .clear,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(Rectangle())
+            .font(.system(size: 13))
+            .padding(.horizontal, 8)
+            .frame(height: SystemSettingsMetrics.rowHeight)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear), in: shape)
+            .animation(Motion.snappy, value: selected)
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selectedListID == id ? .isSelected : [])
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func symbol(for list: ClipboardLibraryList) -> String {
         switch list.name {
         case "图片": "photo"
         case "文件": "folder"
-        case "文字": "text.alignleft"
+        case "纯文本", "文字": "text.alignleft"
         default: list.kind == "smart" ? "line.3.horizontal.decrease.circle" : "list.bullet"
         }
     }

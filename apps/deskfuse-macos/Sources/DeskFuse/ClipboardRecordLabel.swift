@@ -74,14 +74,23 @@ struct ClipboardReadingSurface: ViewModifier {
 struct ClipboardPopupSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    /// 面板窗口是 `isOpaque = false`，玻璃会直接透出壁纸和后面的窗口，
+    /// 桌面偏暗时整个面板跟着发闷，选中态的浅色填充也被压掉。
+    /// 在玻璃下面垫一层半透明窗口底色压住透色：材质质感保留，
+    /// 底色深浅仍由系统语义色决定，不硬编码具体颜色。
+    private static let baseOpacity: Double = 0.6
+
     @ViewBuilder func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        let base = Color(nsColor: .windowBackgroundColor).opacity(Self.baseOpacity)
         if reduceTransparency {
             content.background(Color(nsColor: .windowBackgroundColor), in: shape)
         } else if #available(macOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
+                .background(base, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)
+                .background(base, in: shape)
         }
     }
 }

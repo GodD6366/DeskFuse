@@ -25,19 +25,18 @@ struct SettingsView: View, Equatable {
     var body: some View {
         HStack(spacing: 0) {
             SettingsCategoryBar(selection: $selectedTab)
-                .frame(width: 196)
+                .frame(width: 200)
             VStack(alignment: .leading, spacing: 0) {
                 Text((SettingsCategory(rawValue: selectedTab) ?? .general).title)
-                    .font(.system(size: 28, weight: .bold))
-                    .padding(.horizontal, 36).padding(.top, 24).padding(.bottom, 20)
+                    .font(.system(size: 26, weight: .bold))
+                    .padding(.horizontal, 26).padding(.top, 20).padding(.bottom, 16)
                 SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
                     SettingsPageContainer.Page(id: category.rawValue,
                         content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))
                 })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .modifier(WorkspaceContentSurface())
-            .padding(12)
+            .systemSettingsContentBackground()
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .onAppear {
@@ -95,14 +94,16 @@ struct SettingsView: View, Equatable {
             }
         case .storage:
             VStack(spacing: 0) {
-                Form {
-                    Section("文件传输") {
+                SystemSettingsFormPage {
+                    SystemSettingsFormBlock(title: "文件传输") {
                         Text("默认在目标设备粘贴时传输。")
+                            .foregroundStyle(.secondary)
                         Toggle("小文件提前传输", isOn: $prefetch)
                         HStack { Text("整批阈值"); TextField("MiB", value: $threshold, format: .number).frame(width: 90); Text("MiB") }.disabled(!prefetch)
                         HStack { Text("缓存上限"); TextField("MiB", value: $maximum, format: .number).frame(width: 90); Text("MiB") }
-                    }.disabled(savingFiles || savedFiles == nil)
-                    Section("暂存区发送") {
+                    }
+                    .disabled(savingFiles || savedFiles == nil)
+                    SystemSettingsFormBlock(title: "暂存区发送") {
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("接收位置")
@@ -117,18 +118,17 @@ struct SettingsView: View, Equatable {
                             Button("选择…", action: chooseDownloadDirectory)
                                 .disabled(savingFiles || savedFiles == nil)
                         }
-                        HStack(spacing: 10) {
-                            Text("从文件暂存区发送到此设备的文件会直接保存到这里。")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                            if !downloadDirectory.isEmpty {
-                                Button("恢复下载文件夹") { downloadDirectory = "" }
-                                    .buttonStyle(.link)
-                                    .font(.caption)
-                            }
+                        Text("从文件暂存区发送到此设备的文件会直接保存到这里。")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !downloadDirectory.isEmpty {
+                            Button("恢复下载文件夹") { downloadDirectory = "" }
+                                .buttonStyle(.link)
+                                .font(.caption)
                         }
-                    }.disabled(savingFiles || savedFiles == nil)
-                    Section("本地存储") {
+                    }
+                    .disabled(savingFiles || savedFiles == nil)
+                    SystemSettingsFormBlock(title: "本地存储") {
                         if let cache = presentation.cache {
                             LabeledContent("已使用", value: "\(byteCount(cache.used)) / \(byteCount(cache.maximum))")
                             LabeledContent("活跃任务", value: "\(cache.active)")
@@ -136,10 +136,11 @@ struct SettingsView: View, Equatable {
                         }
                         Button("清除历史传输文件…", role: .destructive) { clearCache = true }
                         Button("清空剪贴板历史…", role: .destructive) { clearHistory = true }
-                        Text("清理保护正在接收、粘贴和导出的内容，不删除用户源文件或已粘贴副本。").font(.caption).foregroundStyle(.secondary)
+                        Text("清理保护正在接收、粘贴和导出的内容，不删除用户源文件或已粘贴副本。")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                }.formStyle(.grouped)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 SettingsSaveFooter(dirty: filesDirty, saving: savingFiles,
                     canSave: savedFiles != nil && (filesDirty || fileSaveFailure != nil),
                     canRevert: filesDirty, status: fileSaveStatus, error: fileSaveFailure,
@@ -173,12 +174,16 @@ struct SettingsView: View, Equatable {
                 },
                 configureInput: { selectedTab = SettingsCategory.input.rawValue })
         case .updates:
-            Form {
-                if let update = presentation.update {
-                    UpdateControls(store: store, update: update)
+            SystemSettingsFormPage {
+                SystemSettingsFormBlock {
+                    if let update = presentation.update {
+                        UpdateControls(store: store, update: update)
+                    }
+                    Text("可随时手动检查；后台每 12 小时检查一次。GitHub 签名包自动下载安装，内部签名版沿用局域网下载和空闲安装流程。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("可随时手动检查；后台每 12 小时检查一次。GitHub 签名包自动下载安装，内部签名版沿用局域网下载和空闲安装流程。").font(.caption).foregroundStyle(.secondary)
-            }.formStyle(.grouped)
+            }
         case .about:
             AboutSettingsView()
         }
