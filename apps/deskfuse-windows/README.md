@@ -6,9 +6,11 @@ Windows 11 x64 原生客户端，使用 **WinUI 3 / Windows App SDK**（`net8.0-
 
 ## 已接入
 
-- 四页功能侧栏（剪贴板 / 键鼠共享 / 设备 / 传输 / 工作流）、剪贴板历史三栏（列表 / 筛选 / 预览）、设置窗口、暂存区窗口、RemoteApp 管理窗口、系统托盘和按用户/会话约束的单实例。再次打开会激活原实例；关闭窗口隐藏，从托盘退出结束桌面进程。
-- 托盘最近 20 条历史可显式恢复；主窗口选择只预览。搜索、内容类型与来源筛选、文字/图片/本机文件可用性预览。
-- 本机剪贴板历史与本机偏好持久化（`%LOCALAPPDATA%\DeskFuse\desktop`）；停止记录不关闭单独启用的同步。
+- 主导航按 macOS 分为「工作区」（剪贴板 / 鼠标共享 / 远程应用）与「连接」（设备 / 分享与传输）；使用具名页面路由。远程应用页面承载现有本机应用发布管理器，尚不代表远端应用客户端能力完成。
+- 设置按通用 / 剪贴板 / 存储 / 工作流 / 更新分类；已有工作流编辑器移入设置，剪贴板保留快捷入口。侧栏底部显示版本与设置。暂存区、系统托盘和按用户/会话约束的单实例保留；再次打开激活原实例，关闭主窗口隐藏，从托盘退出结束桌面进程。
+- 本地历史按当前用户本地持久化，默认保留 30 天，可配置；不设历史条数或累计大小上限。选择只预览，明确复制才恢复；支持搜索、内容类型与来源筛选、文字/图片/本机文件可用性预览、标题与文字编辑。
+- 通用设置补齐 Windows 保持唤醒：调用系统电源执行状态，阻止系统与显示器休眠；设置持久化，退出客户端释放执行状态。
+- 本机剪贴板历史与本机偏好持久化（`%LOCALAPPDATA%\\DeskFuse\\desktop`）；停止记录不关闭单独启用的同步。
 - 通过经过 SCM 服务 PID 核对的桌面 Named Pipe v2 读取真实设备、邀请、连接、候选路径和能力状态。自动发现与手动 IPv4 邀请保留接收方确认。
 - 文字/PNG/HTML/RTF 同步与应用回执；16 MiB 通道上限，选择或重启不重放历史。原生变更先失效旧远端意图，再选择性发布新内容。
 - 跨设备文件按需传输：本机 CF_HDROP 复制或暂存区「发送到设备」按需报价；远端报价在「传输」页显示，选择目标文件夹后按需下载，桌面把校验后的文件复制到目标位置并放入剪贴板后才向对端确认。重名自动改名，不静默覆盖。
@@ -44,7 +46,7 @@ Win32 替换对照（不引入 WinForms 依赖）：
 
 | WPF/框架用法 | WinUI 3 实现 |
 |---|---|
-| `System.Windows.Clipboard` + `Clipboard.GetFileDropList` | `NativeClipboard`：Win32 `AddClipboardFormatListener`（经 `WindowMessageHook` 子类化）与 `CF_UNICODETEXT`/`CF_HDROP`/`CF_DIB(V5)`/`HTML Format`/`Rich Text Format`/`PNG` 读写；序列号、owner 标记、prepare→commit 与容量上限语义不变 |
+| `System.Windows.Clipboard` + `Clipboard.GetFileDropList` | `NativeClipboard`：Win32 `AddClipboardFormatListener`（经 `WindowMessageHook` 子类化）与 `CF_UNICODETEXT`/`CF_HDROP`/`CF_DIB(V5)`/`HTML Format`/`Rich Text Format`/`PNG` 读写；序列号、owner 标记、prepare→commit 与单次传输容量限制语义不变 |
 | `PngBitmapEncoder/Decoder`、`BitmapFrame`、`BitmapSource` | `System.Drawing.Common`（CF_DIBV5 回退与 PNG 编解码）+ `BitmapImage`（预览） |
 | `HwndSource.AddHook`（`WM_CLIPBOARDUPDATE`/`WM_HOTKEY`） | `WindowMessageHook`（`SetWindowLongPtrW` + `CallWindowProcW` 链式窗口过程） |
 | `System.Windows.Forms.Screen.AllScreens` | `MonitorLayout`（`EnumDisplayMonitors`/`GetMonitorInfoW`） |

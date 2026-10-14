@@ -10,7 +10,8 @@ namespace DeskFuse.Windows;
 public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePort, ClipboardApplyPort, FileDataObjectPort
 {
     private readonly NativeClipboard native;
-    private readonly ClipboardHistory history = new();
+    private readonly ClipboardHistory history;
+    private readonly DispatcherQueueTimer historyMaintenance;
     private readonly ServiceClient service;
     private readonly DispatcherQueue dispatcher;
     private IShelfHost? shelf;
@@ -23,6 +24,20 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private long? generation;
     private bool captureEnabled = true;
     private bool syncEnabled;
+    private bool keepAwake;
+    private int historyRetentionDays = 30;
+    public bool KeepAwake => keepAwake;
+    public bool SetKeepAwake(bool enabled)
+    {
+        if (keepAwake == enabled) return true;
+        bool previous = keepAwake;
+        keepAwake = enabled;
+        if (SavePreferences()) return true;
+        keepAwake = previous;
+        return false;
+    }
+
+    public int HistoryRetentionDays => historyRetentionDays;
     private string? preferencesError;
     private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop", "settings-v1.json");
     /// <summary>Shelf window factory. Wired by the app so the controller keeps no UI type.</summary>
@@ -48,6 +63,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         this.dispatcher = dispatcher;
         native = new NativeClipboard(dispatcher);
         LoadPreferences();
+        history = new ClipboardHistory(historyRetentionDays);
+        historyMaintenance = dispatcher.CreateTimer();
+        historyMaintenance.Interval = TimeSpan.FromHours(1);
+        historyMaintenance.Tick += (_, _) => { if (!disposed) history.Prune(); };
+        historyMaintenance.Start();
         native.Changed += LocalChanged;
         native.LocalInvalidated += ObserveNativeChange;
         native.Error += message => { ObserveNativeChange(); Error?.Invoke(message); };
@@ -101,7 +121,22 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     internal async Task<ClipboardContent> ApplyTypedAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token = default) =>
         await ((ClipboardApplyPort)this).ApplyAsync(content, expectedRevision, sessionEpoch, sequence, token);
 
-    private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false);
+    private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false, bool KeepAwake = false, int HistoryRetentionDays = 30);
+
+    public void SetHistoryRetentionDays(int days)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(days, 1);
+        if (days == historyRetentionDays) return;
+        int previous = historyRetentionDays;
+        historyRetentionDays = days;
+        if (!SavePreferences())
+        {
+            historyRetentionDays = previous;
+            throw new IOException("保留天数保存失败，历史保留规则未改变。");
+        }
+        // Only prune once the new policy is durably saved.
+        history.SetRetentionDays(days);
+    }
 
     private void LoadPreferences()
     {
@@ -110,27 +145,32 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             if (!File.Exists(preferencesFile)) return;
             if (new FileInfo(preferencesFile).Length > 8192) throw new InvalidDataException();
             var preferences = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(preferencesFile)) ?? throw new InvalidDataException();
+            if (preferences.HistoryRetentionDays < 1) throw new InvalidDataException();
             captureEnabled = preferences.CaptureEnabled;
             syncEnabled = preferences.SyncEnabled;
+            keepAwake = preferences.KeepAwake;
+            historyRetentionDays = preferences.HistoryRetentionDays;
         }
         catch (Exception) { preferencesError = "无法读取本机偏好；本次使用默认设置，原文件未改变。"; }
     }
 
-    private void SavePreferences()
+    private bool SavePreferences()
     {
         string temporary = preferencesFile + ".tmp";
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(preferencesFile)!);
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new Preferences(captureEnabled, syncEnabled)));
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new Preferences(captureEnabled, syncEnabled, keepAwake, historyRetentionDays)));
             File.Move(temporary, preferencesFile, overwrite: true);
             preferencesError = null;
+            return true;
         }
         catch (Exception)
         {
             preferencesError = "设置仅在本次会话生效，无法保存到当前用户目录。";
             Error?.Invoke(preferencesError);
             try { if (File.Exists(temporary)) File.Delete(temporary); } catch (Exception) { }
+            return false;
         }
     }
 
@@ -244,8 +284,21 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         catch (Exception) { if (!disposed) Error?.Invoke("远端剪贴板应用回执未送达，请检查连接状态。"); }
     }
 
+    public void SaveEditedContent(ClipboardContent content)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (paused) throw new InvalidOperationException("当前会话不可写入剪贴板，请解锁后重试。");
+        native.Write(content);
+        // Own writes are deliberately ignored by the clipboard listener; enqueue
+        // this explicit edit through the same capture/publication path once.
+        LocalChanged(content);
+    }
+
     public void Restore(ClipboardEntry entry)
     {
+        history.Prune();
+        if (!history.Entries.Any(current => current.Id == entry.Id))
+            throw new InvalidOperationException("记录已删除或过期，请重新选择。");
         native.Write(entry.Content);
         observedNativeSequence = native.SequenceNumber;
         _ = InvalidateAndPublishAsync(entry.Content);
@@ -539,6 +592,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         service.SnapshotChanged -= Snapshot;
         service.ConnectionChanged -= Connection;
         native.LocalInvalidated -= ObserveNativeChange;
+        historyMaintenance.Stop();
         native.Dispose();
         shelf?.Shutdown();
         history.Dispose();

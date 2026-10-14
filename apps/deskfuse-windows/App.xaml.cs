@@ -14,6 +14,7 @@ public partial class App : Application
     private ServiceClient? service;
     private DesktopClipboardController? clipboard;
     private InputHelperProcess? inputHelper;
+    private PowerStateController? power;
     private MainWindow? window;
     internal bool Exiting { get; private set; }
 
@@ -36,7 +37,13 @@ public partial class App : Application
         var dispatcher = DispatcherQueue.GetForCurrentThread();
         service = new ServiceClient(dispatcher);
         clipboard = new DesktopClipboardController(service, dispatcher);
-        window = new MainWindow(service, clipboard);
+        power = new PowerStateController(clipboard.KeepAwake);
+        window = new MainWindow(service, clipboard, power);
+        if (power.StartupFailed)
+        {
+            clipboard.SetKeepAwake(false);
+            window.Notify("Windows 未接受保持唤醒请求，已恢复为系统默认休眠行为。");
+        }
         window.Closed += (_, _) => Cleanup();
         clipboard.ShelfFactory = () => new ShelfWindow(clipboard.Native, clipboard.History, clipboard);
         clipboard.Start(window.Handle);
@@ -115,6 +122,7 @@ public partial class App : Application
         activationStop?.Cancel();
         inputHelper?.Dispose();
         clipboard?.Dispose();
+        power?.Dispose();
         service?.Dispose();
         tray?.Dispose();
         activate?.Dispose();

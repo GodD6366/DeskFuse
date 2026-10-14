@@ -6,11 +6,10 @@ using Microsoft.UI.Xaml.Media;
 namespace DeskFuse.Windows;
 
 /// Local-only RemoteApp registry editor. The LocalSystem service performs all
-/// HKLM/TSAppAllowList writes; this window never elevates or edits the registry.
-public sealed class RemoteAppWindow
+/// HKLM/TSAppAllowList writes; this page never elevates or edits the registry.
+public sealed class RemoteAppPage : UserControl
 {
     private readonly ServiceClient service;
-    private readonly Window window = new();
     private readonly ListBox registered = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
     private readonly ListBox installed = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
     private readonly TextBlock status = new() { Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
@@ -18,12 +17,9 @@ public sealed class RemoteAppWindow
     private readonly TextBox displayName = new();
     private readonly TextBox path = new();
 
-    public RemoteAppWindow(ServiceClient service)
+    public RemoteAppPage(ServiceClient service)
     {
         this.service = service;
-        AppIcon.Apply(window);
-        window.AppWindow.Title = "Windows RemoteApp";
-        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(840, 600));
 
         var root = new Grid { Margin = new Thickness(24) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -33,14 +29,14 @@ public sealed class RemoteAppWindow
         var header = new Grid { Margin = new Thickness(0, 0, 0, 8) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var title = new TextBlock { Text = "Windows RemoteApp", FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+        var title = new TextBlock { Text = "远程应用", FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(title, 0); header.Children.Add(title);
         var refresh = new Button { Content = "刷新", Padding = new Thickness(16, 6, 16, 6), Margin = new Thickness(0, 0, 0, 0) };
         refresh.Click += async (_, _) => await Refresh();
         Grid.SetColumn(refresh, 1); header.Children.Add(refresh);
         Grid.SetRow(header, 0); root.Children.Add(header);
 
-        var notice = new TextBlock { Text = "RemoteApp 使用 Windows 原生 RDP/NLA；macOS 端会单独建立 RDP 连接。这里仅管理服务端 TSAppAllowList，不读取或保存 Windows 密码。", Margin = new Thickness(0, 0, 0, 16), Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+        var notice = new TextBlock { Text = "管理这台 Windows 共享的应用，其他已配对设备可以连接使用。连接时需要 Windows 登录凭据，DeskFuse 不保存密码。", Margin = new Thickness(0, 0, 0, 16), Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
         Grid.SetRow(notice, 1); root.Children.Add(notice);
 
         var columns = new Grid();
@@ -97,7 +93,8 @@ public sealed class RemoteAppWindow
         right.Children.Add(status);
         Grid.SetColumn(right, 1); columns.Children.Add(right);
 
-        _ = Refresh();
+        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Loaded += async (_, _) => await Refresh();
     }
 
     private static Style ItemStyle() => new(typeof(ListBoxItem))
@@ -160,8 +157,6 @@ public sealed class RemoteAppWindow
         }
         catch (Exception ex) { status.Text = ex.Message; }
     }
-
-    public void Show() { window.AppWindow.Show(); window.Activate(); }
 
     private sealed record RegisteredEntry(string Name, string DisplayName, string Path)
     {

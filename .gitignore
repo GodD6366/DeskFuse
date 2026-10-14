@@ -82,6 +82,8 @@ identity.key
 # Windows native desktop build outputs.
 /apps/deskfuse-windows/bin/
 /apps/deskfuse-windows/obj/
+/tools/DeskFuse.HistoryChecks/bin/
+/tools/DeskFuse.HistoryChecks/obj/
 
 # Website dependencies and Pages build output (web/ → /site).
 /web/node_modules/

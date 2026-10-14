@@ -9,6 +9,7 @@ namespace DeskFuse.Windows;
 public sealed record ClipboardEntry(string Id, ClipboardContent Content, string SourceId,
     string SourceName, DateTimeOffset CreatedAt)
 {
+    public string? CustomTitle { get; init; }
     [JsonIgnore]
     public string Kind => Content.Files is { Count: > 0 } ? "files" : Content.Mime == "image/png" ? "image" : "text";
     [JsonIgnore]
@@ -17,7 +18,7 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     [JsonIgnore]
     public string CreatedLabel => CreatedAt.LocalDateTime.ToString("g");
     [JsonIgnore]
-    public string Title => Kind switch
+    public string Title => !string.IsNullOrWhiteSpace(CustomTitle) ? CustomTitle : Kind switch
     {
         "files" => Content.Files!.Count == 1 ? Path.GetFileName(Content.Files[0].TrimEnd(Path.DirectorySeparatorChar)) : $"{Content.Files!.Count} 个文件或文件夹",
         "image" => "PNG 图片",
@@ -35,9 +36,8 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
 /// <summary>User-local history only. Clearing references never deletes original or pasted files.</summary>
 public sealed class ClipboardHistory : IDisposable
 {
-    private const int MaxEntries = 200;
-    private const long MaxBytes = 64 * 1024 * 1024;
-    private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
+    private readonly Func<DateTimeOffset> now;
+    public int RetentionDays { get; private set; }
     private readonly string directory;
     private readonly string file;
     private readonly Channel<ClipboardEntry[]> saves = Channel.CreateBounded<ClipboardEntry[]>(new BoundedChannelOptions(1)
@@ -47,20 +47,29 @@ public sealed class ClipboardHistory : IDisposable
     public ObservableCollection<ClipboardEntry> Entries { get; } = new();
     public string? StorageError { get; private set; }
 
-    public ClipboardHistory()
+    public ClipboardHistory() : this(30) { }
+
+    public ClipboardHistory(int retentionDays) : this(
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop"),
+        retentionDays, () => DateTimeOffset.UtcNow) { }
+
+    // Explicit storage and clock keep migration/retention checks away from user history.
+    internal ClipboardHistory(string directory, int retentionDays, Func<DateTimeOffset> now)
     {
-        directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop");
+        ArgumentOutOfRangeException.ThrowIfLessThan(retentionDays, 1);
+        RetentionDays = retentionDays;
+        this.now = now;
+        this.directory = directory;
         file = Path.Combine(directory, "clipboard-history-v1.json");
         try
         {
             Directory.CreateDirectory(directory);
             if (File.Exists(file))
             {
-                if (new FileInfo(file).Length > MaxBytes * 2) throw new IOException("历史索引超过限制");
                 var entries = JsonSerializer.Deserialize<ClipboardEntry[]>(File.ReadAllText(file)) ?? [];
                 var seen = new HashSet<(string Source, string Fingerprint)>();
-                foreach (var entry in entries.Take(MaxEntries))
-                    if (Valid(entry) && DateTimeOffset.Now - entry.CreatedAt <= Retention
+                foreach (var entry in entries)
+                    if (Valid(entry) && !Expired(entry)
                         && seen.Add((entry.SourceId, entry.Content.Fingerprint()))) Entries.Add(entry);
                 Trim();
             }
@@ -74,10 +83,9 @@ public sealed class ClipboardHistory : IDisposable
     {
         if (entry is null || entry.Content is null || entry.Content.Data is null || entry.Id is null
             || entry.SourceName is null || entry.SourceId is null
-            || entry.Content.Representations?.Any(r => r is null || r.Data is null) is true
-            || entry.Content.SizeBytes > MaxBytes) return false;
+            || entry.Content.Representations?.Any(r => r is null || r.Data is null) is true) return false;
         if (entry.Content.Mime == ClipboardContent.LocalFilesMime)
-            return entry.Content.Files is { Count: > 0 and <= 512 } && entry.SourceId == "local"
+            return entry.Content.Files is { Count: > 0 } && entry.SourceId == "local"
                    && entry.Content.Files.All(p => p is not null && Path.IsPathFullyQualified(p) && !p.StartsWith(@"\\", StringComparison.Ordinal));
         return entry.Content.Files is null && entry.Content.Mime is "text/plain" or "image/png" or "text/html" or "text/rtf";
     }
@@ -86,24 +94,56 @@ public sealed class ClipboardHistory : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (content.Files is not null && sourceId != "local") throw new InvalidOperationException("远端绝对文件路径不可进入本地历史");
-        var entry = new ClipboardEntry(Guid.NewGuid().ToString("N"), content, sourceId, sourceName, DateTimeOffset.Now);
-        if (!Valid(entry)) throw new InvalidOperationException("历史内容无效或过大");
+        var entry = new ClipboardEntry(Guid.NewGuid().ToString("N"), content, sourceId, sourceName, now());
+        if (!Valid(entry)) throw new InvalidOperationException("历史内容格式无效");
         var fingerprint = content.Fingerprint();
         // Preserve source and every rich representation; repair only exact duplicates.
-        foreach (var duplicate in Entries.Where(e => e.SourceId == sourceId && e.Content.Fingerprint() == fingerprint).ToArray())
-            Entries.Remove(duplicate);
+        var duplicates = Entries.Where(e => e.SourceId == sourceId && e.Content.Fingerprint() == fingerprint).ToArray();
+        entry = entry with { CustomTitle = duplicates.FirstOrDefault(e => !string.IsNullOrWhiteSpace(e.CustomTitle))?.CustomTitle };
+        foreach (var duplicate in duplicates) Entries.Remove(duplicate);
         Entries.Insert(0, entry); Trim(); ScheduleSave(); return entry;
     }
 
     private void Trim()
     {
-        long size = 0;
         for (var i = 0; i < Entries.Count;)
         {
-            size += Entries[i].SizeBytes;
-            if (DateTimeOffset.Now - Entries[i].CreatedAt > Retention || i >= MaxEntries || size > MaxBytes) Entries.RemoveAt(i);
+            var entry = Entries[i];
+            if (Expired(entry)) Entries.RemoveAt(i);
             else i++;
         }
+    }
+
+    private bool Expired(ClipboardEntry entry) => (now() - entry.CreatedAt).TotalDays > RetentionDays;
+
+    public void SetRetentionDays(int days)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        ArgumentOutOfRangeException.ThrowIfLessThan(days, 1);
+        RetentionDays = days;
+        Prune();
+    }
+
+    public void Prune()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        int count = Entries.Count;
+        Trim();
+        if (Entries.Count != count) ScheduleSave();
+    }
+
+    public ClipboardEntry SetTitle(string id, string? title)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (StorageError is not null) throw new IOException(StorageError);
+        Prune();
+        int index = Entries.ToList().FindIndex(entry => entry.Id == id);
+        if (index < 0) throw new InvalidOperationException("记录已删除或过期，请重新选择。");
+        var normalized = string.Concat((title ?? "").Trim().EnumerateRunes().Take(200).Select(rune => rune.ToString()));
+        var updated = Entries[index] with { CustomTitle = normalized.Length == 0 ? null : normalized };
+        Entries[index] = updated;
+        ScheduleSave();
+        return updated;
     }
 
     public void Remove(ClipboardEntry entry) { Entries.Remove(entry); ScheduleSave(); }

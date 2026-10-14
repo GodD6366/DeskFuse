@@ -16,9 +16,11 @@ public sealed partial class MainWindow : Window
 {
     private readonly ServiceClient service;
     private readonly DesktopClipboardController clipboard;
+    private readonly PowerStateController power;
     private readonly WorkflowExecutionPort workflowExecution;
     private SettingsWindow? settings;
-    private RemoteAppWindow? remoteApps;
+    private WorkspacePage selectedPage = WorkspacePage.Clipboard;
+    private enum WorkspacePage { Clipboard, Input, RemoteApplications, Devices, ShareAndTransfer }
     private List<DeviceRow> devices = [];
     private bool updatingHistory;
     private bool updatingDevices;
@@ -33,6 +35,7 @@ public sealed partial class MainWindow : Window
     private WorkflowRecord? editingWorkflow;
     private Border? draggingDisplay;
     private global::Windows.Foundation.Point dragOrigin;
+    private readonly Dictionary<string, ClipboardContentEditorWindow> contentEditors = [];
     private readonly Dictionary<int, WorkflowRecord> hotkeys = [];
     private const uint WmHotKey = 0x0312;
     private const uint ModAlt = 0x0001;
@@ -43,11 +46,14 @@ public sealed partial class MainWindow : Window
     /// <summary>Set by the app before a real shutdown; otherwise close hides to tray.</summary>
     public bool AllowClose { get; set; }
 
-    public MainWindow(ServiceClient service, DesktopClipboardController clipboard)
+    public MainWindow(ServiceClient service, DesktopClipboardController clipboard, PowerStateController power)
     {
         this.service = service;
         this.clipboard = clipboard;
+        this.power = power;
         InitializeComponent();
+        LocalVersion.Text = $"v{AppVersion.Display}";
+        Navigate(WorkspacePage.Clipboard);
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         AppIcon.Apply(this);
         AppWindow.Title = "DeskFuse";
@@ -55,8 +61,8 @@ public sealed partial class MainWindow : Window
         // ~78% of the work area, centered, never below a readable minimum.
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(Handle);
         var workArea = global::Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(windowId, global::Microsoft.UI.Windowing.DisplayAreaFallback.Nearest).WorkArea;
-        int windowWidth = Math.Clamp((int)(workArea.Width * 0.78), 1280, workArea.Width);
-        int windowHeight = Math.Clamp((int)(workArea.Height * 0.82), 800, workArea.Height);
+        int windowWidth = Math.Clamp((int)(workArea.Width * 0.78), Math.Min(1280, workArea.Width), workArea.Width);
+        int windowHeight = Math.Clamp((int)(workArea.Height * 0.82), Math.Min(800, workArea.Height), workArea.Height);
         if (AppWindow.Presenter is global::Microsoft.UI.Windowing.OverlappedPresenter presenter)
         {
             presenter.PreferredMinimumWidth = Math.Min(1080, workArea.Width);
@@ -66,7 +72,12 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new global::Windows.Graphics.SizeInt32(windowWidth, windowHeight));
         AppWindow.Closing += (_, args) =>
         {
-            if (AllowClose) { RemoveHotkeys(); return; }
+            if (AllowClose)
+            {
+                foreach (var editor in contentEditors.Values.ToArray()) editor.Close();
+                RemoveHotkeys();
+                return;
+            }
             args.Cancel = true;
             HideToTray();
         };
@@ -94,15 +105,30 @@ public sealed partial class MainWindow : Window
 
     private void NavigationChanged(object sender, SelectionChangedEventArgs args)
     {
-        if (ClipboardPage is null) return;
-        ClipboardPage.Visibility = Navigation.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
-        InputPage.Visibility = Navigation.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-        DevicesPage.Visibility = Navigation.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
-        TransfersPage.Visibility = Navigation.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
-        WorkflowsPage.Visibility = Navigation.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
-        if (Navigation.SelectedIndex == 1) DrawInputLayout(latest.HasValue && latest.Value.TryGetProperty("input", out var layoutInput) ? layoutInput : default);
-        if (Navigation.SelectedIndex == 4) _ = LoadWorkflowsAsync();
+        if (Navigation.SelectedItem is ListBoxItem { Tag: string tag }
+            && Enum.TryParse<WorkspacePage>(tag, out var page)) ShowPage(page);
     }
+
+    private void Navigate(WorkspacePage page)
+    {
+        Navigation.SelectedItem = Navigation.Items.OfType<ListBoxItem>().Single(item => item.Tag as string == page.ToString());
+        ShowPage(page);
+    }
+
+    private void ShowPage(WorkspacePage page)
+    {
+        selectedPage = page;
+        ClipboardPage.Visibility = page == WorkspacePage.Clipboard ? Visibility.Visible : Visibility.Collapsed;
+        InputPage.Visibility = page == WorkspacePage.Input ? Visibility.Visible : Visibility.Collapsed;
+        DevicesPage.Visibility = page == WorkspacePage.Devices ? Visibility.Visible : Visibility.Collapsed;
+        TransfersPage.Visibility = page == WorkspacePage.ShareAndTransfer ? Visibility.Visible : Visibility.Collapsed;
+        RemoteApplicationsPage.Visibility = page == WorkspacePage.RemoteApplications ? Visibility.Visible : Visibility.Collapsed;
+        if (page == WorkspacePage.RemoteApplications)
+            RemoteApplicationsPage.Content ??= new RemoteAppPage(service);
+        if (page == WorkspacePage.Input) DrawInputLayout(latest.HasValue && latest.Value.TryGetProperty("input", out var layoutInput) ? layoutInput : default);
+    }
+
+    private void WorkflowsClick(object sender, RoutedEventArgs args) => ShowSettings("workflows");
 
     private void HistoryFilterChanged(object sender, RoutedEventArgs args) => RefreshHistory();
 
@@ -138,6 +164,8 @@ public sealed partial class MainWindow : Window
     {
         var entry = HistoryList.SelectedItem as ClipboardEntry;
         CopyButton.IsEnabled = entry is not null;
+        EditTitleButton.IsEnabled = entry is not null;
+        EditContentButton.IsEnabled = entry?.Kind == "text";
         AddShelfButton.IsEnabled = entry is not null;
         ImagePreview.Source = null;
         ImagePreview.Visibility = Visibility.Collapsed;
@@ -177,6 +205,41 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void EditHistoryContentClick(object sender, RoutedEventArgs args)
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "text" } entry) return;
+        if (!contentEditors.TryGetValue(entry.Id, out var editor))
+        {
+            editor = new ClipboardContentEditorWindow(entry, content =>
+            {
+                clipboard.SaveEditedContent(content);
+                Notify("编辑内容已复制；开启历史记录时将保存为新记录。");
+            });
+            editor.Closed += () => contentEditors.Remove(entry.Id);
+            contentEditors.Add(entry.Id, editor);
+        }
+        editor.Show();
+    }
+
+    private async void EditHistoryTitleClick(object sender, RoutedEventArgs args)
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
+        var editor = new TextBox { Text = entry.CustomTitle ?? "", PlaceholderText = "留空恢复默认标题", AcceptsReturn = false };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot, Title = "编辑标题", Content = editor,
+            PrimaryButtonText = "保存", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary,
+        };
+        dialog.Opened += (_, _) => { editor.Focus(FocusState.Programmatic); editor.SelectAll(); };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        try
+        {
+            clipboard.History.SetTitle(entry.Id, editor.Text);
+            Notify("标题已更新。");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
     private void DeleteHistoryClick(object sender, RoutedEventArgs args)
     {
         if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
@@ -206,8 +269,8 @@ public sealed partial class MainWindow : Window
 
     public void ShowRemoteApps()
     {
-        if (remoteApps is null) remoteApps = new RemoteAppWindow(service);
-        remoteApps.Show();
+        Navigate(WorkspacePage.RemoteApplications);
+        RestoreFromTray();
     }
 
     private void RevealClick(object sender, RoutedEventArgs args)
@@ -325,7 +388,7 @@ public sealed partial class MainWindow : Window
     {
         if (ShortcutBindings is null || updatingInputSettings || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
         if (!settings.TryGetProperty("shortcuts", out var shortcuts) || shortcuts.ValueKind != JsonValueKind.Object) return;
-        string[] names = ["left", "right", "up", "down", "lock"];
+        string[] names = ["left", "right", "up", "down", "lock", "emergency"];
         var lines = names.Select(name =>
         {
             var shortcut = shortcuts.TryGetProperty(name, out var value) ? value : default;
@@ -430,12 +493,12 @@ public sealed partial class MainWindow : Window
     {
         if (updatingInputSettings || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings)) return;
         var lines = ShortcutBindings.Text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (lines.Length != 5) { Notify("需要按左、右、上、下、锁定顺序填写五行快捷键。 "); return; }
+        if (lines.Length != 6) { Notify("需要按左、右、上、下、锁定、紧急释放顺序填写六行快捷键。 "); return; }
         try
         {
             var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
             var shortcuts = node["shortcuts"]?.AsObject() ?? throw new FormatException();
-            string[] names = ["left", "right", "up", "down", "lock"];
+            string[] names = ["left", "right", "up", "down", "lock", "emergency"];
             for (int i = 0; i < names.Length; i++)
             {
                 var values = lines[i].Split(',', StringSplitOptions.TrimEntries);
@@ -930,17 +993,24 @@ public sealed partial class MainWindow : Window
     internal void Notify(string message) => Notice.Text = message;
 
     private void FileOfferArrived(string peer, string names) =>
-        Notify($"{peer} 发来文件：{names}。在“传输”页选择位置接收。");
+        Notify($"{peer} 发来文件：{names}。在“分享与传输”页选择位置接收。");
 
     private void FileTransferDone(string id, string detail, bool success) =>
         Notify(success ? detail : $"文件传输未完成：{detail}");
 
     private void SettingsClick(object sender, RoutedEventArgs args) => ShowSettings();
 
-    public void ShowSettings()
+    public void ShowSettings() => ShowSettings("general");
+
+    private void ShowSettings(string category)
     {
-        if (settings is null) settings = new SettingsWindow(clipboard, service);
-        settings.Show();
+        if (settings is null)
+        {
+            PageHost.Children.Remove(WorkflowsPage);
+            WorkflowsPage.Visibility = Visibility.Visible;
+            settings = new SettingsWindow(clipboard, service, power, WorkflowsPage, () => _ = LoadWorkflowsAsync());
+        }
+        settings.Show(category);
     }
 
     private void KeyboardShortcut(object sender, KeyRoutedEventArgs args)
@@ -948,8 +1018,8 @@ public sealed partial class MainWindow : Window
         bool control = IsDown(global::Windows.System.VirtualKey.Control);
         if (control && args.Key == global::Windows.System.VirtualKey.F)
         {
-            if (Navigation.SelectedIndex == 2) DeviceSearch.Focus(FocusState.Programmatic);
-            else { Navigation.SelectedIndex = 0; HistorySearch.Focus(FocusState.Programmatic); }
+            if (selectedPage == WorkspacePage.Devices) DeviceSearch.Focus(FocusState.Programmatic);
+            else { Navigate(WorkspacePage.Clipboard); HistorySearch.Focus(FocusState.Programmatic); }
             args.Handled = true;
         }
         else if (control && args.Key == (global::Windows.System.VirtualKey)0xBC /* OEM_COMMA */) { ShowSettings(); args.Handled = true; }

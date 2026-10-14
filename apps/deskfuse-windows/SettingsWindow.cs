@@ -1,92 +1,93 @@
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace DeskFuse.Windows;
 
-/// <summary>Settings window: sectioned cards, native Fluent metrics.</summary>
+/// <summary>Persistent settings navigation with the existing workflow editor hosted in place.</summary>
 public sealed class SettingsWindow
 {
     private readonly Window window = new();
-    private readonly TextBlock serviceStatus = new() { Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"], Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"], Margin = new Thickness(0, 6, 0, 0) };
-    private readonly TextBlock historyStatus = new() { Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"], Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"], Margin = new Thickness(0, 10, 0, 0) };
+    private readonly ListBox navigation = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
+    private readonly ContentControl page = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
+    private readonly TextBlock title = new() { FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(24, 24, 24, 16) };
+    private readonly TextBlock serviceStatus = Description("");
+    private readonly TextBlock generalStatus = Description("");
+    private readonly TextBlock historyStatus = Description("");
+    private readonly Dictionary<string, UIElement> pages = [];
+    private readonly Action loadWorkflows;
+    private readonly ServiceClient service;
+    private readonly DesktopClipboardController clipboard;
+    private readonly PowerStateController power;
+    private readonly CheckBox sync;
+    private bool updatingAwake;
 
-    public SettingsWindow(DesktopClipboardController clipboard, ServiceClient service)
+    public SettingsWindow(DesktopClipboardController clipboard, ServiceClient service, PowerStateController power, UIElement workflows, Action loadWorkflows)
     {
+        this.service = service;
+        this.clipboard = clipboard;
+        this.power = power;
+        this.loadWorkflows = loadWorkflows;
         AppIcon.Apply(window);
         window.AppWindow.Title = "DeskFuse 设置";
-        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(700, 800));
+        var id = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(WinRT.Interop.WindowNative.GetWindowHandle(window));
+        var work = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(id, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest).WorkArea;
+        window.AppWindow.Resize(new global::Windows.Graphics.SizeInt32(Math.Min(1120, work.Width), Math.Min(800, work.Height)));
+        window.AppWindow.Closing += (_, args) => { args.Cancel = true; window.AppWindow.Hide(); };
 
-        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(32, 24, 32, 24) };
-        var content = new StackPanel { MaxWidth = 560, Spacing = 16 };
-        scroll.Content = content;
-        window.Content = scroll;
+        var root = new Grid();
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(196) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        navigation.Margin = new Thickness(12, 24, 12, 12);
+        root.Children.Add(navigation);
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        body.Children.Add(title);
+        Grid.SetRow(page, 1);
+        body.Children.Add(page);
+        Grid.SetColumn(body, 1);
+        root.Children.Add(body);
+        window.Content = root;
 
-        // 标题
-        content.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        content.Children.Add(serviceStatus);
+        sync = new CheckBox { Content = "自动同步剪贴板", IsChecked = clipboard.SyncEnabled };
+        sync.Checked += (_, _) => clipboard.SyncEnabled = true;
+        sync.Unchecked += (_, _) => clipboard.SyncEnabled = false;
+        var awake = new CheckBox { Content = "保持电脑唤醒", IsChecked = clipboard.KeepAwake };
+        awake.Checked += (_, _) => { if (!updatingAwake) SetKeepAwake(awake, true); };
+        awake.Unchecked += (_, _) => { if (!updatingAwake) SetKeepAwake(awake, false); };
+        AddPage("general", "通用", Form(
+            Section("剪贴板同步", new StackPanel { Spacing = 12, Children = { sync, Description("同步之后的新复制内容。开启时不会重新发送历史。") } }),
+            Section("后台运行", new StackPanel { Spacing = 12, Children = { awake, Description("阻止系统自动休眠和显示器休眠；退出 DeskFuse 时自动恢复系统默认行为。"), generalStatus } }),
+            Section("本机状态", serviceStatus)));
 
-        // 本机剪贴板
-        content.Children.Add(Section("本机剪贴板", new StackPanel
+        var capture = new CheckBox { Content = "记录新的剪贴板历史", IsChecked = clipboard.CaptureEnabled };
+        capture.Checked += (_, _) => clipboard.CaptureEnabled = true;
+        capture.Unchecked += (_, _) => clipboard.CaptureEnabled = false;
+        AddPage("clipboard", "剪贴板", Form(Section("本机历史", new StackPanel
         {
             Spacing = 12,
-            Children =
-            {
-                CreateCaptureToggle(clipboard),
-                new TextBlock
-                {
-                    Text = "停止记录不关闭已单独开启的同步。只保存当前用户的历史。启动与重连不会自动恢复或重新发送历史内容。跨设备同步在主窗口单独开启。",
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    TextWrapping = TextWrapping.Wrap,
-                },
-                new Button { Content = "清空本机历史", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 0) }
-                    .Also(button => button.Click += (_, _) =>
-                    {
-                        try { clipboard.Clear(); historyStatus.Text = "本机历史已清空；用户源文件和已粘贴文件未删除。"; }
-                        catch (Exception) { historyStatus.Text = "历史清理未完成，请检查用户存储目录权限。"; }
-                    }),
-                historyStatus,
-            },
-        }));
+            Children = { capture, Description("停止记录不关闭已开启的同步。历史只属于当前用户。"), HistoryRetentionSettings(root) },
+        })));
 
-        // 文件与缓存
-        content.Children.Add(Section("文件与缓存", new StackPanel
+        var clear = new Button { Content = "清空剪贴板历史…", HorizontalAlignment = HorizontalAlignment.Left };
+        clear.Click += async (_, _) =>
         {
-            Children =
+            var dialog = new ContentDialog
             {
-                new TextBlock
-                {
-                    Text = "本地暂存只保存引用，不预读文件正文。跨设备文件按需传输已接入：远端文件完整下载并逐文件校验后落地，缓存位于服务保护目录；接收的文件在传输页选择目标位置。Explorer OLE 按完整目录 manifest 延迟下载，首次粘贴请求时才读取并校验文件正文。",
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    TextWrapping = TextWrapping.Wrap,
-                },
-            },
-        }));
-
-        // 版本与更新
-        content.Children.Add(Section("版本与更新", new StackPanel
-        {
-            Spacing = 8,
-            Children =
-            {
-                new TextBlock { Text = $"DeskFuse {SupportLinks.VersionLabel}" },
-                new TextBlock
-                {
-                    Text = "Windows 自动更新安装通道尚未接入。请使用匹配版本的 Windows 安装包更新客户端与服务。",
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    TextWrapping = TextWrapping.Wrap,
-                },
-                new TextBlock
-                {
-                    Text = "关闭主窗口保留系统托盘；从托盘选择“退出 DeskFuse”才结束客户端。Windows 服务由系统独立管理。",
-                    Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    TextWrapping = TextWrapping.Wrap,
-                },
-            },
-        }));
-
-        // 帮助与反馈
+                XamlRoot = root.XamlRoot, Title = "清空所有本机剪贴板历史？",
+                Content = "此操作无法撤销。用户源文件和已粘贴文件会保留。",
+                PrimaryButtonText = "清空历史", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
+            };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            try { clipboard.Clear(); historyStatus.Text = "本机历史已清空。"; }
+            catch (Exception) { historyStatus.Text = "历史清理未完成，请检查用户存储目录权限。"; }
+        };
+        AddPage("storage", "存储", Form(
+            Section("文件传输", Description("默认在目标设备使用文件时传输。在“分享与传输”查看任务、接收文件和打开暂存区。")),
+            Section("本地存储", new StackPanel { Spacing = 12, Children = { clear, historyStatus } })));
+        AddPage("workflows", "工作流", workflows);
         var feedback = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         var report = new Button { Content = "反馈问题…" };
         report.Click += (_, _) => SupportLinks.ReportProblem(service.LatestSnapshot);
@@ -94,52 +95,159 @@ public sealed class SettingsWindow
         known.Click += (_, _) => SupportLinks.Open(SupportLinks.IssuesUrl);
         feedback.Children.Add(report);
         feedback.Children.Add(known);
-        content.Children.Add(Section("帮助与反馈", new StackPanel
+        AddPage("updates", "更新", Form(
+            Section("版本与更新", new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = $"DeskFuse {AppVersion.Display}" },
+                    Description("此版本尚不支持自动安装更新。请使用匹配版本的 Windows 安装包更新客户端与服务。"),
+                },
+            }),
+            Section("帮助与反馈", new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    Description("遇到问题时打开反馈页，版本、系统和服务状态已经填好，只需描述发生了什么。"),
+                    feedback,
+                },
+            })));
+        navigation.SelectionChanged += (_, _) =>
+        {
+            if (navigation.SelectedItem is not ListBoxItem { Tag: string key } item) return;
+            title.Text = item.Content as string ?? "设置";
+            page.Content = pages[key];
+            if (key == "workflows") loadWorkflows();
+        };
+    }
+
+    private UIElement HistoryRetentionSettings(FrameworkElement root)
+    {
+        var days = new NumberBox
+        {
+            Header = "保留天数", Value = clipboard.HistoryRetentionDays, Minimum = 1, Maximum = int.MaxValue,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+            ValidationMode = NumberBoxValidationMode.Disabled, HorizontalAlignment = HorizontalAlignment.Left, Width = 200,
+        };
+        var message = Description("");
+        var save = new Button { Content = "保存", IsEnabled = false };
+        var revert = new Button { Content = "撤销修改", IsEnabled = false };
+        bool saving = false;
+        void RefreshActions()
+        {
+            bool dirty = days.Value != clipboard.HistoryRetentionDays;
+            save.IsEnabled = !saving && dirty && double.IsFinite(days.Value) && days.Value >= 1
+                && days.Value <= int.MaxValue && days.Value == Math.Truncate(days.Value);
+            revert.IsEnabled = !saving && dirty;
+            days.IsEnabled = !saving;
+        }
+        days.ValueChanged += (_, _) => { message.Text = ""; RefreshActions(); };
+        revert.Click += (_, _) => { days.Value = clipboard.HistoryRetentionDays; message.Text = ""; RefreshActions(); };
+        save.Click += async (_, _) =>
+        {
+            if (!save.IsEnabled) return;
+            int submitted = (int)days.Value;
+            saving = true;
+            RefreshActions();
+            try
+            {
+                if (submitted < clipboard.HistoryRetentionDays)
+                {
+                    var confirm = new ContentDialog
+                    {
+                        XamlRoot = root.XamlRoot, Title = "缩短历史保留时间？",
+                        Content = $"保存后将清理超过 {submitted} 天的历史。用户源文件和已粘贴文件会保留。",
+                        PrimaryButtonText = "保存并清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
+                    };
+                    if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+                }
+                clipboard.SetHistoryRetentionDays(submitted);
+                message.Text = "已保存";
+            }
+            catch (IOException ex) { message.Text = ex.Message; }
+            finally { saving = false; RefreshActions(); }
+        };
+        return new StackPanel
         {
             Spacing = 12,
             Children =
             {
-                new TextBlock
-                {
-                    Text = "遇到问题时打开反馈页，版本、系统和服务状态已经填好，只需描述发生了什么。",
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    TextWrapping = TextWrapping.Wrap,
-                },
-                feedback,
+                days,
+                Description("默认保留 30 天。到期记录会在后台清理，关闭面板不影响清理。历史不设条数或累计大小上限；单次跨设备传输仍遵守传输通道限制。"),
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { save, revert } },
+                message,
             },
-        }));
-
-        if (service.LatestSnapshot is JsonElement snapshot) RefreshService(snapshot);
-    }
-
-    private static UIElement Section(string title, UIElement body)
-    {
-        var panel = new StackPanel { Spacing = 10 };
-        panel.Children.Add(new TextBlock { Text = title, FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        var card = new Border
-        {
-            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
-            BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(20),
-            Child = body,
         };
-        panel.Children.Add(card);
-        return panel;
     }
 
-    private static CheckBox CreateCaptureToggle(DesktopClipboardController clipboard)
+    private void SetKeepAwake(CheckBox toggle, bool enabled)
     {
-        var capture = new CheckBox { Content = "记录新的剪贴板历史", IsChecked = clipboard.CaptureEnabled };
-        capture.Checked += (_, _) => clipboard.CaptureEnabled = true;
-        capture.Unchecked += (_, _) => clipboard.CaptureEnabled = false;
-        return capture;
+        if (!clipboard.SetKeepAwake(enabled))
+        {
+            updatingAwake = true;
+            try { toggle.IsChecked = clipboard.KeepAwake; } finally { updatingAwake = false; }
+            generalStatus.Text = "保持唤醒设置无法保存，请检查当前用户目录权限。";
+            return;
+        }
+        if (!power.SetEnabled(enabled))
+        {
+            clipboard.SetKeepAwake(!enabled);
+            updatingAwake = true;
+            try { toggle.IsChecked = clipboard.KeepAwake; } finally { updatingAwake = false; }
+            generalStatus.Text = "Windows 未接受保持唤醒请求，设置未启用。";
+            return;
+        }
+        generalStatus.Text = enabled ? "已阻止系统自动休眠和显示器休眠。" : "已恢复系统默认休眠行为。";
     }
+
+    private void AddPage(string key, string label, UIElement content)
+    {
+        pages.Add(key, content);
+        navigation.Items.Add(new ListBoxItem { Tag = key, Content = label, Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(0, 0, 0, 4), CornerRadius = new CornerRadius(6) });
+    }
+
+    private static UIElement Form(params UIElement[] sections)
+    {
+        var content = new StackPanel { Spacing = 24 };
+        foreach (var section in sections) content.Children.Add(section);
+        return new ScrollViewer { Content = content, Padding = new Thickness(24, 0, 24, 24), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private static TextBlock Description(string text) => new()
+    {
+        Text = text, TextWrapping = TextWrapping.Wrap,
+        Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+    };
+
+    private static UIElement Section(string heading, UIElement body) => new StackPanel
+    {
+        Spacing = 10,
+        Children =
+        {
+            new TextBlock { Text = heading, FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold },
+            new Border
+            {
+                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+                BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(20), Child = body,
+            },
+        },
+    };
 
     public void RefreshService(JsonElement snapshot) => serviceStatus.Text = $"服务版本 {snapshot.String("package_version")} · {(snapshot.Bool("network_running") ? "网络运行中" : "网络未就绪")}";
 
-    public void Show() { window.AppWindow.Show(); window.Activate(); }
+    public void Show(string category = "general")
+    {
+        if (service.LatestSnapshot is JsonElement snapshot) RefreshService(snapshot);
+        sync.IsChecked = clipboard.SyncEnabled;
+        var item = navigation.Items.OfType<ListBoxItem>().Single(x => x.Tag as string == category);
+        if (ReferenceEquals(navigation.SelectedItem, item) && category == "workflows") loadWorkflows();
+        navigation.SelectedItem = item;
+        window.AppWindow.Show();
+        window.Activate();
+    }
 }
 
 internal static class FluentExtensions

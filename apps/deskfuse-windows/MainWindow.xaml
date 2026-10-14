@@ -11,24 +11,10 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <!-- Command bar -->
-    <Grid Grid.Row="0" Margin="24,16,24,8">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="Auto" />
-      </Grid.ColumnDefinitions>
-      <TextBlock Text="DeskFuse" FontSize="{StaticResource DisplayFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
-      <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-        <Button Content="暂存区" Click="ShelfClick" />
-        <Button Content="设置" Click="SettingsClick" />
-        <Button Content="RemoteApp" Click="RemoteAppsClick" Margin="0,0,0,8" />
-      </StackPanel>
-    </Grid>
-
     <!-- Body -->
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="220" />
+        <ColumnDefinition x:Name="SidebarColumn" Width="248" />
         <ColumnDefinition Width="*" />
       </Grid.ColumnDefinitions>
 
@@ -40,8 +26,12 @@
             <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
           <StackPanel>
-            <TextBlock Text="工作空间" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="10,0,0,12" />
-            <ListBox x:Name="Navigation" SelectionChanged="NavigationChanged" SelectedIndex="0" Background="Transparent" BorderThickness="0">
+            <StackPanel Orientation="Horizontal" Margin="10,8,0,8" Spacing="10">
+              <FontIcon Glyph="&#xE8A7;" FontSize="28" />
+              <TextBlock Text="DeskFuse" FontSize="24" FontWeight="SemiBold" />
+            </StackPanel>
+            <TextBlock Text="在所有设备间，自由流转" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="10,0,0,20" />
+            <ListBox x:Name="Navigation" SelectionChanged="NavigationChanged" Background="Transparent" BorderThickness="0">
               <ListBox.Resources>
                 <Style TargetType="ListBoxItem">
                   <Setter Property="Padding" Value="12,10" />
@@ -51,24 +41,28 @@
                   <Setter Property="MinHeight" Value="40" />
                 </Style>
               </ListBox.Resources>
-              <ListBoxItem Content="剪贴板" />
-              <ListBoxItem Content="键鼠共享" />
-              <ListBoxItem Content="设备" />
-              <ListBoxItem Content="传输" />
-              <ListBoxItem Content="工作流" />
+              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="工作区" FontSize="12" MinHeight="32" />
+              <ListBoxItem Tag="Clipboard"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8C8;" FontSize="16" /><TextBlock Text="剪贴板" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="Input"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE962;" FontSize="16" /><TextBlock Text="鼠标共享" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="RemoteApplications"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8A7;" FontSize="16" /><TextBlock Text="远程应用" /></StackPanel></ListBoxItem>
+              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="连接" FontSize="12" MinHeight="32" Margin="0,12,0,2" />
+              <ListBoxItem Tag="Devices"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE772;" FontSize="16" /><TextBlock Text="设备" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="ShareAndTransfer"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8AB;" FontSize="16" /><TextBlock Text="分享与传输" /></StackPanel></ListBoxItem>
             </ListBox>
           </StackPanel>
           <StackPanel Grid.Row="1" Margin="8,0,8,0">
             <Border Style="{StaticResource DividerBorder}" Margin="0,0,0,12" />
             <TextBlock x:Name="LocalName" FontSize="{StaticResource SubtitleFontSize}" FontWeight="SemiBold" Text="这台 Windows" />
-            <TextBlock x:Name="LocalStatus" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="正在连接服务…" Margin="0,6,0,0" />
+            <TextBlock x:Name="LocalStatus" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="正在连接服务…" Margin="0,6,0,0" TextWrapping="Wrap" />
+            <TextBlock x:Name="LocalVersion" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Margin="0,6,0,8" />
+            <Button Content="设置" Click="SettingsClick" HorizontalAlignment="Stretch" />
           </StackPanel>
         </Grid>
       </Border>
 
       <!-- Pages -->
-      <Grid Grid.Column="1">
-        <!-- Clipboard -->
+      <Grid x:Name="PageHost" Grid.Column="1">
+        <ContentControl x:Name="RemoteApplicationsPage" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
         <Grid x:Name="ClipboardPage">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="320" MinWidth="280" MaxWidth="380" />
@@ -83,6 +77,7 @@
             <StackPanel Margin="0,0,0,12">
               <TextBlock Text="剪贴板" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
               <TextBlock Text="在设备之间，接着用" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,16" />
+              <Button Content="工作流" Click="WorkflowsClick" HorizontalAlignment="Left" />
               <TextBox x:Name="HistorySearch" TextChanged="HistoryFilterChanged" PlaceholderText="搜索剪贴板内容 (Ctrl+F)" />
               <ComboBox x:Name="KindFilter" SelectedIndex="0" SelectionChanged="HistoryFilterChanged">
                 <ComboBoxItem Content="全部内容" />
@@ -104,6 +99,8 @@
                   </ListBox.Resources>
                   <ListBox.ContextFlyout>
                     <MenuFlyout>
+                      <MenuFlyoutItem Text="编辑内容…" Click="EditHistoryContentClick" />
+                      <MenuFlyoutItem Text="编辑标题…" Click="EditHistoryTitleClick" />
                       <MenuFlyoutItem Text="删除记录" Click="DeleteHistoryClick" />
                     </MenuFlyout>
                   </ListBox.ContextFlyout>
@@ -149,6 +146,12 @@
               <StackPanel Orientation="Horizontal">
                 <Button x:Name="CopyButton" Content="复制" Style="{StaticResource AccentButtonStyle}" Click="CopyClick" IsEnabled="False" />
                 <Button x:Name="AddShelfButton" Content="加入暂存区" Click="AddShelfClick" IsEnabled="False" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal">
+                <Button x:Name="EditContentButton" Content="编辑内容" Click="EditHistoryContentClick" IsEnabled="False" />
+                <Button x:Name="EditTitleButton" Content="编辑标题" Click="EditHistoryTitleClick" IsEnabled="False" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal">
                 <Button x:Name="RevealButton" Content="在资源管理器中显示" Click="RevealClick" Visibility="Collapsed" />
                 <Button x:Name="FitButton" Content="适合窗口 / 填满" Click="FitClick" Visibility="Collapsed" Margin="0,0,0,8" />
               </StackPanel>
@@ -255,7 +258,7 @@
         <ScrollViewer x:Name="TransfersPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="24,12,24,16">
             <StackPanel Margin="0,0,0,12">
-              <TextBlock Text="传输" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
+              <TextBlock Text="分享与传输" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
               <TextBlock Text="远端文件按需传输：接收的文件经过完整校验后落盘，并放入本机剪贴板。" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,6,0,0" />
             </StackPanel>
             <Border Style="{StaticResource CardBorder}">
@@ -288,7 +291,7 @@
             </Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,12">
               <TextBlock Text="工作流" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
-              <TextBlock Text="与 Rust 工作流模型相同的本地目录" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,6,0,16" />
+              <TextBlock Text="管理内容处理步骤和工作流快捷键" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,6,0,16" />
               <Button Content="新建工作流" Click="NewWorkflowClick" HorizontalAlignment="Left" Margin="0,0,0,0" />
             </StackPanel>
             <Border Grid.Row="1" Style="{StaticResource CardBorder}" Padding="4">
