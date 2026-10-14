@@ -211,6 +211,258 @@ async fn invite(owner: &Node, recipient: &mut Node) {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forgotten_network_owner_requires_local_consent_after_sync_and_restart() {
+    use deskfuse_identity::{NetworkOperation, SignedNetworkOperation};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = cert.key_pair.serialize_der();
+    let a = Node::new(151, "owner", &der, &key).await;
+    let mut b = Node::new(152, "member", &der, &key).await;
+    invite(&a, &mut b).await;
+    wait(|| connected(&a, 1) && connected(&b, 1)).await;
+    b.runtime
+        .send(RuntimeCommand::forget_peer(a.id))
+        .await
+        .unwrap();
+    wait(|| b.runtime.snapshot().peers.iter().all(|p| p.id != a.id)).await;
+
+    // A member cannot edit the owner's roster. Force the unchanged signed
+    // roster through the actual QUIC sync path instead of waiting for a tick.
+    let roster = a.store.get_device_network().unwrap().unwrap();
+    let payload = SignedNetworkOperation::signed(
+        NetworkOperation::Roster(roster.clone()),
+        &LocalIdentity::from_bytes(&[151; 32]).unwrap(),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let endpoint = Endpoint::new("127.0.0.1", b.transport.local_addr().unwrap().port()).unwrap();
+    a.transport
+        .network_exchange(b.id, endpoint, payload.clone())
+        .await
+        .unwrap();
+    assert!(
+        !b.trust.is_trusted(&a.id).unwrap(),
+        "roster sync restored forgotten trust"
+    );
+    assert!(b.runtime.snapshot().peers.iter().all(|p| p.id != a.id));
+    assert!(
+        !b.runtime
+            .snapshot_view()
+            .device_network
+            .blocked_peer_ids
+            .contains(&a.id)
+    );
+    assert!(
+        !b.runtime
+            .snapshot_view()
+            .device_network
+            .member_ids
+            .contains(&a.id)
+    );
+
+    let trust = b.trust.clone();
+    let store = b.store.clone();
+    b.runtime.shutdown_and_wait().await.unwrap();
+    let mut b = Node::with_state(
+        152,
+        "member",
+        &der,
+        &key,
+        trust,
+        store,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let endpoint = Endpoint::new("127.0.0.1", b.transport.local_addr().unwrap().port()).unwrap();
+    a.transport
+        .network_exchange(b.id, endpoint, payload)
+        .await
+        .unwrap();
+    assert!(
+        !b.trust.is_trusted(&a.id).unwrap(),
+        "restart lost the forget decision"
+    );
+    assert!(b.runtime.snapshot().peers.iter().all(|p| p.id != a.id));
+
+    // Forgetting remains distinct from blocking: an owner can invite again,
+    // but an existing network must not silently accept on the member's behalf.
+    let identity = LocalIdentity::from_bytes(&[151; 32]).unwrap();
+    for accepted in [false, true] {
+        let offer = deskfuse_identity::NetworkOffer::signed(
+            roster.clone(),
+            b.id,
+            (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64)
+                .saturating_add(120_000),
+            &identity,
+        )
+        .unwrap();
+        let payload = SignedNetworkOperation::signed(NetworkOperation::Offer(offer), &identity)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let transport = a.transport.clone();
+        let endpoint =
+            Endpoint::new("127.0.0.1", b.transport.local_addr().unwrap().port()).unwrap();
+        let exchange =
+            tokio::spawn(async move { transport.network_exchange(b.id, endpoint, payload).await });
+        let request = b.next_pairing().await;
+        assert!(!b.trust.is_trusted(&a.id).unwrap());
+        b.runtime
+            .send(if accepted {
+                RuntimeCommand::approve_pairing(request.request_id())
+            } else {
+                RuntimeCommand::reject_pairing(request.request_id())
+            })
+            .await
+            .unwrap();
+        exchange.await.unwrap().unwrap();
+        if !accepted {
+            assert!(!b.trust.is_trusted(&a.id).unwrap());
+            assert!(
+                b.store
+                    .get_network_trust_origins()
+                    .unwrap()
+                    .unwrap()
+                    .forgotten
+                    .contains(&a.id)
+            );
+        }
+    }
+    wait(|| b.trust.is_trusted(&a.id).unwrap()).await;
+    assert!(
+        b.runtime
+            .snapshot_view()
+            .device_network
+            .member_ids
+            .contains(&a.id)
+    );
+    a.runtime.shutdown_and_wait().await.unwrap();
+    b.runtime.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forgotten_network_member_stays_forgotten_during_new_rosters_until_local_connect() {
+    use deskfuse_identity::{NetworkOperation, SignedNetworkOperation};
+    let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = cert.key_pair.serialize_der();
+    let a = Node::new(153, "owner", &der, &key).await;
+    let mut b = Node::new(154, "member B", &der, &key).await;
+    let mut c = Node::new(155, "member C", &der, &key).await;
+    invite(&a, &mut b).await;
+    invite(&a, &mut c).await;
+    wait(|| connected(&a, 2) && connected(&b, 2) && connected(&c, 2)).await;
+    b.runtime
+        .send(RuntimeCommand::forget_peer(c.id))
+        .await
+        .unwrap();
+    wait(|| b.runtime.snapshot().peers.iter().all(|p| p.id != c.id)).await;
+    let mut roster = a.store.get_device_network().unwrap().unwrap().roster;
+    roster.epoch += 1;
+    let roster =
+        SignedNetworkRoster::signed(roster, &LocalIdentity::from_bytes(&[153; 32]).unwrap())
+            .unwrap();
+    let payload = SignedNetworkOperation::signed(
+        NetworkOperation::Roster(roster),
+        &LocalIdentity::from_bytes(&[153; 32]).unwrap(),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let endpoint = Endpoint::new("127.0.0.1", b.transport.local_addr().unwrap().port()).unwrap();
+    a.transport
+        .network_exchange(b.id, endpoint, payload)
+        .await
+        .unwrap();
+    assert!(!b.trust.is_trusted(&c.id).unwrap());
+    assert!(b.trust.is_trusted(&a.id).unwrap());
+    assert!(b.runtime.snapshot().peers.iter().all(|p| p.id != c.id));
+    assert!(
+        b.runtime
+            .snapshot_view()
+            .device_network
+            .blocked_peer_ids
+            .is_empty()
+    );
+
+    b.hint(&c);
+    wait(|| {
+        b.runtime
+            .snapshot_view()
+            .discovered_peers
+            .iter()
+            .any(|p| p.peer_id == c.id)
+    })
+    .await;
+    assert!(
+        !b.trust.is_trusted(&c.id).unwrap(),
+        "rediscovery is not consent"
+    );
+    b.runtime.send(RuntimeCommand::connect(c.id)).await.unwrap();
+    wait(|| connected(&b, 2)).await;
+    assert!(
+        !b.store
+            .get_network_trust_origins()
+            .unwrap()
+            .unwrap()
+            .forgotten
+            .contains(&c.id)
+    );
+    a.runtime.shutdown_and_wait().await.unwrap();
+    b.runtime.shutdown_and_wait().await.unwrap();
+    c.runtime.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn network_owner_can_reinvite_a_forgotten_member() {
+    let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = cert.key_pair.serialize_der();
+    let a = Node::new(156, "owner", &der, &key).await;
+    let mut b = Node::new(157, "member", &der, &key).await;
+    invite(&a, &mut b).await;
+    wait(|| connected(&a, 1) && connected(&b, 1)).await;
+    a.runtime
+        .send(RuntimeCommand::forget_peer(b.id))
+        .await
+        .unwrap();
+    wait(|| {
+        a.runtime.snapshot().peers.iter().all(|p| p.id != b.id)
+            && b.runtime
+                .snapshot_view()
+                .device_network
+                .network_id
+                .is_none()
+    })
+    .await;
+    assert!(!a.trust.is_trusted(&b.id).unwrap());
+    assert!(
+        a.runtime
+            .snapshot_view()
+            .device_network
+            .blocked_peer_ids
+            .is_empty()
+    );
+    invite(&a, &mut b).await;
+    wait(|| connected(&a, 1) && connected(&b, 1)).await;
+    assert!(
+        !a.store
+            .get_network_trust_origins()
+            .unwrap()
+            .unwrap()
+            .forgotten
+            .contains(&b.id)
+    );
+    a.runtime.shutdown_and_wait().await.unwrap();
+    b.runtime.shutdown_and_wait().await.unwrap();
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_quic_three_nodes_recipient_approval_mesh_clipboard_and_revoke() {
     let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
@@ -578,6 +830,7 @@ async fn corrupt_roster_leave_uses_independently_loaded_origins_and_preserves_le
         .set_network_trust_origins(NetworkTrustOrigins {
             introduced: BTreeSet::from([introduced.device_id()]),
             network_revoked: BTreeSet::new(),
+            forgotten: BTreeSet::new(),
         })
         .unwrap();
     let trust = MemoryTrustStore::new();

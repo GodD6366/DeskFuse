@@ -14,6 +14,9 @@ pub struct EngineState {
     pub cache: TransferCacheSnapshot,
     pub cache_message: Option<String>,
     pub recording: bool,
+    pub input_quality: Option<deskfuse_runtime::input_service_types::InputServiceQuality>,
+    /// One fallback observation per second; never fabricate past history.
+    pub idle_quality_samples: std::collections::VecDeque<(u128, f64)>,
     pub file_paste_acquiring: std::collections::BTreeSet<String>,
     pub file_paste_sources: std::collections::BTreeMap<String, String>,
     pub file_paste_retryable: std::collections::BTreeSet<String>,
@@ -29,6 +32,8 @@ impl Default for EngineState {
             cache: Default::default(),
             cache_message: None,
             recording: false,
+            input_quality: None,
+            idle_quality_samples: Default::default(),
             file_paste_acquiring: Default::default(),
             file_paste_sources: Default::default(),
             file_paste_retryable: Default::default(),
@@ -37,6 +42,29 @@ impl Default for EngineState {
     }
 }
 impl EngineState {
+    pub fn sample_idle_input_quality(&mut self, timestamp_ms: u128) {
+        let rtt = self
+            .model
+            .network_graph_peers()
+            .into_iter()
+            .chain(self.model.discovered_peers.iter())
+            .filter(|peer| peer.health == crate::model::Health::Ready)
+            .flat_map(|peer| {
+                peer.routes
+                    .iter()
+                    .filter(|route| Some(route.id) == peer.selected_route_id)
+            })
+            .filter_map(|route| route.rtt_ms)
+            .max()
+            .unwrap_or(0);
+        self.idle_quality_samples
+            .push_back((timestamp_ms, f64::from(rtt)));
+        while self.idle_quality_samples.len() > 60 {
+            self.idle_quality_samples.pop_front();
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// 状态未变时返回 false，调用方不得因此刷新 Swift 快照。
     pub fn apply(&mut self, event: UiEvent) -> bool {
         let model = &mut self.model;
@@ -109,6 +137,13 @@ impl EngineState {
                     return false;
                 }
                 model.input_sharing = *snapshot;
+                true
+            }
+            UiEvent::InputQualitySnapshot(quality) => {
+                if self.input_quality.as_ref() == Some(&quality) {
+                    return false;
+                }
+                self.input_quality = Some(quality);
                 true
             }
             UiEvent::PermissionSnapshot(snapshot) => {

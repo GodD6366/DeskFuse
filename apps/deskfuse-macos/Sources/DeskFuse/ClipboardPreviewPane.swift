@@ -7,6 +7,7 @@ struct ClipboardPreviewPane: View {
     @Bindable var store: AppStore
     let item: HistoryItem
     let title: String?
+    var appID: String? = nil
     let content: ClipboardContent
     let media: ClipboardMedia
     let image: NSImage?
@@ -26,14 +27,18 @@ struct ClipboardPreviewPane: View {
     }
 
     private var paneContent: some View {
+        GeometryReader { geometry in
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             header
             Group {
-                if let image { imagePreview(image) }
+                if let image {
+                    imagePreview(image)
+                        .frame(height: max(240, min(440, geometry.size.height * 0.55)))
+                }
                 else { previewCanvas }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let ocrText, !ocrText.isEmpty { ocrSection(ocrText) }
             WorkflowRunStatusView(compact: true)
             Divider()
@@ -41,7 +46,7 @@ struct ClipboardPreviewPane: View {
             VStack(alignment: .leading, spacing: 12) {
                 if let stagingHint {
                     Text(stagingHint)
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).workspaceSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 NativeGlassGroup {
@@ -49,21 +54,23 @@ struct ClipboardPreviewPane: View {
                 }
             }
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let displayTitle {
                 Text(displayTitle)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 17, weight: .semibold))
                     .lineLimit(2).truncationMode(.middle)
                     .textSelection(.enabled)
             }
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { sourceLabel; availabilityBadge }
-                VStack(alignment: .leading, spacing: 8) { sourceLabel; availabilityBadge }
+                HStack(spacing: 10) { sourceLabel; if item.fileCount > 0 { availabilityBadge } }
+                VStack(alignment: .leading, spacing: 8) { sourceLabel; if item.fileCount > 0 { availabilityBadge } }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,7 +79,7 @@ struct ClipboardPreviewPane: View {
 
     private var sourceLabel: some View {
         Text("来自 \(item.source) · \(item.fileCount > 0 ? "\(item.fileCount) 项" : byteCount(item.length))")
-            .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            .font(.callout).workspaceSecondaryText().lineLimit(1)
             .help(item.copiedDate.map { "复制于 \($0.formatted(date: .abbreviated, time: .standard))" } ?? item.source)
     }
 
@@ -89,7 +96,7 @@ struct ClipboardPreviewPane: View {
     private var previewCanvas: some View {
         Group {
             if !content.filePaths.isEmpty {
-                filesPreview
+                filesPreview.frame(height: min(280, CGFloat(content.filePaths.count) * 82 + 24))
             } else if item.fileCount > 0 {
                 ContentUnavailableView(content.canRequestFiles ? "文件尚未在本地" : "文件不可用", systemImage: "doc.badge.arrow.up", description: Text(content.canRequestFiles ? "使用时从来源设备获取；来源设备需要保持连接。" : "来源文件或缓存已不可用，请重新复制。"))
             } else if item.hasImage {
@@ -98,7 +105,7 @@ struct ClipboardPreviewPane: View {
                 textPreview
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Recognized image text is local derived data shown read-only so the user
@@ -138,12 +145,12 @@ struct ClipboardPreviewPane: View {
         VStack(spacing: 0) {
         if let document = ClipboardCodeDocument.detect(content.text) {
             ClipboardCodePreview(document: document)
+                .frame(height: min(300, CGFloat(document.text.components(separatedBy: "\n").count) * 22 + 80))
             if content.truncated {
                 Text("预览已截断；复制会恢复完整内容。")
-                    .font(.caption).foregroundStyle(.secondary).padding(8)
+                    .font(.caption).workspaceSecondaryText().padding(8)
             }
         } else {
-        ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text(content.text)
                     .font(.system(size: 15))
@@ -152,11 +159,10 @@ struct ClipboardPreviewPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if content.truncated {
                     Label("预览已截断；复制会恢复完整内容。", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).workspaceSecondaryText()
                 }
             }
-            .padding(24)
-        }
+            .padding(.vertical, 12)
         }
         }
     }
@@ -300,7 +306,7 @@ struct ClipboardPreviewPane: View {
                 else { finderButton }
             }
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.caption).workspaceSecondaryText()
     }
 
     private var metadataCard: some View {
@@ -311,6 +317,9 @@ struct ClipboardPreviewPane: View {
                 metadataRow("尺寸", value: "\(width) × \(height)")
             }
             metadataRow("来源设备", value: item.source)
+            if let appID, !appID.isEmpty {
+                metadataRow("来源应用", value: ClipboardAppInfoCache.shared.name(for: appID) ?? appID)
+            }
             if let date = item.copiedDate {
                 metadataRow("添加时间", value: date.formatted(date: .abbreviated, time: .shortened))
             }
@@ -323,10 +332,10 @@ struct ClipboardPreviewPane: View {
     private func metadataRow(_ label: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(label)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .frame(width: 62, alignment: .leading)
             Text(value)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .lineLimit(1)
                 .truncationMode(.middle)

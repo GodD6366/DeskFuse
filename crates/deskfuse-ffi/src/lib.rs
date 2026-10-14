@@ -225,11 +225,19 @@ impl Engine {
    let mut listener:Option<Box<dyn EngineListener>>=None;
    let mut paste_monitor=None;
    let mut snapshot_dirty=false;
+   let mut quality_refresh:Option<std::time::Instant>=None;
    futures::executor::block_on(async move{
     loop {
      futures::select!{
       control=controls.next()=>match control {
-       Some(Control::FlushSnapshot)=>{if snapshot_dirty {if let Some(l)=&listener{let snapshot=EngineSnapshot::from(&*event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner));l.on_event(EngineEvent::Snapshot{snapshot});}snapshot_dirty=false;}},
+       Some(Control::FlushSnapshot)=>{
+        if quality_refresh.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(1)) {
+         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+         event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sample_idle_input_quality(now);
+         quality_refresh=Some(std::time::Instant::now());snapshot_dirty=true;
+        }
+        if snapshot_dirty {if let Some(l)=&listener{let snapshot=EngineSnapshot::from(&*event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner));l.on_event(EngineEvent::Snapshot{snapshot});}snapshot_dirty=false;}
+       },
        Some(Control::Subscribe(next,ack))=>{listener=Some(next);let snapshot=EngineSnapshot::from(&*event_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner));if let Some(l)=&listener{l.on_event(EngineEvent::Snapshot{snapshot});}let _=ack.send(());},
        Some(Control::Unsubscribe(ack))=>{listener=None;let _=ack.send(());},
        Some(Control::Workflow(event))=>{if let Err(message)=event_workflows.start(event.id,deskfuse_engine::workflow::WorkflowInput::Clipboard,deskfuse_engine::workflow::WorkflowOutputMode::Configured,event.target_pid)&& let Some(l)=&listener{l.on_event(EngineEvent::CommandFailed{request_id:0,message});}},

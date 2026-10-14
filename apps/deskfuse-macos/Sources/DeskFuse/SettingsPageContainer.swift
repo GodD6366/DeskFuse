@@ -22,7 +22,7 @@ struct SettingsPageContainer: NSViewControllerRepresentable {
         controller.transitionOptions = []
         controller.canPropagateSelectedChildViewControllerTitle = false
         for page in pages {
-            let host = NSHostingController(rootView: page.content)
+            let host = NSHostingController(rootView: AnyView(page.content.environment(\.self, context.environment)))
             // Fill the parent; an empty form must not shrink the tab container.
             host.sizingOptions = []
             let item = NSTabViewItem(viewController: host)
@@ -36,7 +36,7 @@ struct SettingsPageContainer: NSViewControllerRepresentable {
     func updateNSViewController(_ controller: NSTabViewController, context: Context) {
         for (item, page) in zip(controller.tabViewItems, pages) {
             if let host = item.viewController as? NSHostingController<AnyView> {
-                host.rootView = page.content
+                host.rootView = AnyView(page.content.environment(\.self, context.environment))
             }
         }
         selectPage(in: controller)

@@ -173,7 +173,7 @@ private struct ShelfWindowContent: View {
 
     var body: some View {
         if reduceTransparency {
-            ShelfView(controller: controller)
+            ShelfView(controller: controller).floatingWorkspaceStyle()
                 .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
         } else {
             ShelfNativeGlass(controller: controller)
@@ -182,16 +182,17 @@ private struct ShelfWindowContent: View {
 }
 
 private struct ShelfNativeGlass: NSViewRepresentable {
+    @Environment(\.colorScheme) private var scheme
     let controller: ShelfController
 
     func makeNSView(context: Context) -> NSView {
-        let content = NSHostingView(rootView: ShelfView(controller: controller))
+        let content = NSHostingView(rootView: ShelfView(controller: controller).floatingWorkspaceStyle())
         content.sizingOptions = []
         let background: NSView
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
-            // The shelf is a lightweight desktop overlay, not an opaque popover.
-            glass.style = .clear
+            // Regular glass protects text contrast over both light and dark desktops.
+            glass.style = .regular
             glass.cornerRadius = 20
             if #available(macOS 27.0, *) { glass.effectIsInteractive = true }
             glass.contentView = content
@@ -207,6 +208,7 @@ private struct ShelfNativeGlass: NSViewRepresentable {
             material.addSubview(content)
             background = material
         }
+        background.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: background.leadingAnchor),
@@ -217,7 +219,9 @@ private struct ShelfNativeGlass: NSViewRepresentable {
         return background
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+    }
 }
 
 final class ShelfPanel: NSPanel { override var canBecomeKey: Bool { true }; override var canBecomeMain: Bool { false } }
@@ -246,7 +250,7 @@ struct ShelfView: View {
                 // height the representable inflates the row and pushes all
                 // controls down, leaving a large blank strip above them.
                 ShelfWindowDragHandle()
-                    .frame(maxWidth: .infinity, maxHeight: 28)
+                    .frame(maxWidth: .infinity, maxHeight: WorkspaceControlMetrics.compactHeight)
                 Menu {
                     let targets = controller.store.snapshot?.devices.filter { $0.trusted && $0.connected } ?? []
                     if targets.isEmpty { Text("没有可发送的在线设备") }
@@ -258,7 +262,7 @@ struct ShelfView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: 28, height: 28)
+                .frame(width: WorkspaceControlMetrics.compactHeight, height: WorkspaceControlMetrics.compactHeight)
                 .disabled(controller.files.isEmpty || controller.preparing)
                 .help(controller.files.isEmpty ? "先拖入文件，再选择发送设备" : "发送到设备")
                 Button { controller.toggleExpanded() } label: {
@@ -279,7 +283,7 @@ struct ShelfView: View {
                     Image(systemName: "tray.and.arrow.down")
                         .font(.system(size: 36, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("拖入文件").font(.headline)
+                    Text("拖入文件").font(WorkspaceTypography.section)
                     Text("文件会暂存在这里，拖出即可取用")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -303,7 +307,7 @@ struct ShelfView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("\(controller.files.count) 个项目")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(WorkspaceTypography.heading)
                             .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
                             .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
                         Text("拖出全部文件")
@@ -311,7 +315,7 @@ struct ShelfView: View {
                     }
                     Spacer(minLength: 8)
                     Button("查看全部") { controller.toggleExpanded() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WorkspaceButtonStyle(compact: true))
                         .controlSize(.small)
                         .help("展开暂存区")
                 }
@@ -338,7 +342,7 @@ struct ShelfView: View {
             .labelStyle(.iconOnly)
             .font(.system(size: 12, weight: .medium))
             .symbolRenderingMode(.monochrome)
-            .frame(width: 28, height: 28)
+            .frame(width: WorkspaceControlMetrics.compactHeight, height: WorkspaceControlMetrics.compactHeight)
             .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
     }

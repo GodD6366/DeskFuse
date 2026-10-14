@@ -4,7 +4,7 @@ import DeskFuseEngine
 struct ShortcutSettingsPage: View {
     @Bindable var store: AppStore
     let manageWorkflows: () -> Void
-    let configureInput: () -> Void
+    let openInput: () -> Void
     private let directions = ShortcutEditor.titles
 
     var body: some View {
@@ -30,7 +30,7 @@ struct ShortcutSettingsPage: View {
                             }.padding(.vertical, 3)
                         }
                         if !input.managed {
-                            Button("编辑键鼠快捷键…", action: configureInput)
+                            Button("打开键鼠共享", action: openInput)
                         } else {
                             Text(input.summary).font(.caption).foregroundStyle(.secondary)
                             if input.managed {

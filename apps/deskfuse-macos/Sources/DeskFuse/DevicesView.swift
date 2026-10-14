@@ -107,13 +107,12 @@ struct DevicesView: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
-                            Text(showsApplications ? "远程应用" : "设备")
-                                .font(.system(size: 26, weight: .bold))
-                            if showsApplications { FeatureBadge() }
+                            Text("设备列表")
+                                .font(WorkspaceTypography.section)
                         }
                         Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
                             .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .workspaceSecondaryText()
                     }
                     Spacer(minLength: 0)
                     Button {
@@ -121,24 +120,24 @@ struct DevicesView: View {
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 15, weight: .medium))
-                            .frame(width: 34, height: 34)
+                            .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
                     }
                     .buttonStyle(.plain)
                     .modifier(NativeGlassBackdrop(cornerRadius: 10))
-                    .controlSize(.large)
+                    .controlSize(.small)
                     .help("手动输入 IPv4 地址")
                     .accessibilityLabel("手动输入 IPv4 地址")
                     .popover(isPresented: $showManualPairing, arrowEdge: .top) {
-                        manualPairPopover
+                        manualPairPopover.floatingWorkspaceStyle()
                     }
                     Button { store.send(.refreshDevices) } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 15, weight: .medium))
-                            .frame(width: 34, height: 34)
+                            .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
                     }
                     .buttonStyle(.plain)
                     .modifier(NativeGlassBackdrop(cornerRadius: 10))
-                    .controlSize(.large)
+                    .controlSize(.small)
                     .help("刷新设备")
                     .accessibilityLabel("刷新设备")
                     if !showsApplications {
@@ -150,11 +149,11 @@ struct DevicesView: View {
                         } label: {
                             Image(systemName: "arrow.down.app")
                                 .font(.system(size: 15, weight: .medium))
-                                .frame(width: 34, height: 34)
+                                .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
                         }
                         .buttonStyle(.plain)
                         .modifier(NativeGlassBackdrop(cornerRadius: 10))
-                        .controlSize(.large)
+                        .controlSize(.small)
                         .disabled(batchUpdateCandidates.isEmpty)
                         .help("批量触发 \(batchUpdateCandidates.count) 台设备更新")
                         .accessibilityLabel("批量触发设备更新")
@@ -163,7 +162,7 @@ struct DevicesView: View {
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                     TextField("搜索设备名称、IP 地址…", text: $search)
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
@@ -171,7 +170,7 @@ struct DevicesView: View {
                     if !search.isEmpty {
                         Button { search = "" } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
+                                .workspaceSecondaryText()
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("清除设备搜索")
@@ -181,21 +180,21 @@ struct DevicesView: View {
                             .font(.system(size: 16, weight: .medium))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
                     .help("设备筛选")
                     .accessibilityLabel("设备筛选")
                 }
                 .font(.system(size: 13))
                 .padding(.horizontal, 12)
-                .frame(height: 38)
+                .frame(height: WorkspaceControlMetrics.height)
                 .modifier(NativeGlassBackdrop(cornerRadius: 10))
                 .overlay {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(searchFocused ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 2)
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 28)
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
             .padding(.bottom, 14)
 
             if !snapshot.pairing.isEmpty {
@@ -205,13 +204,13 @@ struct DevicesView: View {
             }
 
             List(selection: $selected) {
-                if localMatches {
+                if localMatches && !showsApplications {
                     Section {
                         localDeviceRow
                     } header: {
                         Text("本机")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .workspaceSecondaryText()
                             .textCase(nil)
                             .padding(.top, 8)
                             .padding(.bottom, 4)
@@ -223,7 +222,7 @@ struct DevicesView: View {
                 if paired.isEmpty && nearby.isEmpty && blocked.isEmpty {
                     Text(search.isEmpty ? "尚未发现其他设备" : "没有匹配的设备")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .listRowSeparator(.hidden)
                         .padding(.vertical, 20)
@@ -259,7 +258,7 @@ struct DevicesView: View {
             } header: {
                 Text("\(title)（\(count)）")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
                     .textCase(nil)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
@@ -300,7 +299,7 @@ struct DevicesView: View {
                                 .frame(width: 5, height: 5)
                             Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                                .workspaceSecondaryText()
                         }
                     }
 
@@ -313,31 +312,14 @@ struct DevicesView: View {
                                 .scaleEffect(0.75)
                         } else {
                             HStack(spacing: 6) {
-                                Button {
+                                Button("拒绝") {
                                     store.send(.reject(requestId: request.id), pairing: request.id)
-                                } label: {
-                                    Text("拒绝")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
                                 }
-                                .buttonStyle(.plain)
-                                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
-                                .clipShape(Capsule())
-
-                                Button {
+                                .buttonStyle(WorkspaceButtonStyle(compact: true))
+                                Button("允许") {
                                     store.send(.approve(requestId: request.id), pairing: request.id)
-                                } label: {
-                                    Text("允许")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 6)
                                 }
-                                .buttonStyle(.plain)
-                                .background(Color.orange)
-                                .clipShape(Capsule())
+                                .buttonStyle(WorkspaceButtonStyle(prominent: true, compact: true))
                             }
                         }
                     }
@@ -371,7 +353,7 @@ struct DevicesView: View {
                 .font(.headline)
             Text("配对仍需对方确认。")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
             HStack(spacing: 8) {
                 TextField("192.168.1.10", text: $ip)
                     .textFieldStyle(.roundedBorder)
@@ -402,7 +384,7 @@ struct DevicesView: View {
                         .frame(width: 7, height: 7)
                     Text(listDetail(for: device))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .lineLimit(1)
                 }
             }
@@ -450,7 +432,7 @@ struct DevicesView: View {
                     .lineLimit(1)
                 Text(snapshot.runtimeStatus)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -520,7 +502,7 @@ struct DevicesView: View {
                 if let message = snapshot.pairingMessage {
                     Text(message)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .textSelection(.enabled)
                 }
                 if selected == snapshot.localId {
@@ -560,7 +542,7 @@ struct DevicesView: View {
                 size: 58
             )
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(snapshot.localName).font(.system(size: 25, weight: .bold))
+                    Text(snapshot.localName).font(WorkspaceTypography.section)
                     Label(snapshot.runtimeStatus, systemImage: "circle.fill")
                         .font(.callout)
                         .foregroundStyle(snapshot.error == nil ? Color.green : Color.orange)
@@ -577,10 +559,10 @@ struct DevicesView: View {
             if snapshot.networkId != nil {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("退出设备网络", systemImage: "rectangle.portrait.and.arrow.right") { confirmLeave = true }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WorkspaceButtonStyle(destructive: true))
                         .tint(.red)
                     Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).workspaceSecondaryText()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
@@ -597,7 +579,7 @@ struct DevicesView: View {
             )
             VStack(alignment: .leading, spacing: 7) {
                 Text(device.name)
-                    .font(.system(size: 25, weight: .bold))
+                    .font(WorkspaceTypography.section)
                     .lineLimit(1)
                 HStack(spacing: 8) {
                     Circle().fill(device.connected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 10, height: 10)
@@ -606,12 +588,12 @@ struct DevicesView: View {
                         .foregroundStyle(device.connected ? Color.primary : Color.secondary)
                     Text("· \(device.endpoint)")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .lineLimit(1)
                 }
                 Text(device.detail)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -627,7 +609,7 @@ struct DevicesView: View {
                 Button("刷新连接", systemImage: "arrow.clockwise") { store.send(.refreshDevices) }
             } label: {
                 Image(systemName: "ellipsis")
-                    .frame(width: 34, height: 34)
+                    .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
             }
             .menuStyle(.borderlessButton)
             .modifier(NativeGlassBackdrop(cornerRadius: 10))
@@ -647,7 +629,7 @@ struct DevicesView: View {
             let recent = Array(snapshot.transfers.prefix(3))
             if recent.isEmpty {
                 Text("暂无传输任务")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).workspaceSecondaryText()
                     .padding(.vertical, 8)
             } else {
                 VStack(spacing: 0) {
@@ -668,7 +650,7 @@ struct DevicesView: View {
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.name).font(.callout.weight(.medium)).lineLimit(1)
-                Text(task.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(task.detail).font(.caption).workspaceSecondaryText().lineLimit(1)
             }
             .frame(minWidth: 90, maxWidth: 180, alignment: .leading)
             if task.total > 0 {
@@ -683,7 +665,7 @@ struct DevicesView: View {
                 .lineLimit(1)
             if task.phase == .completed {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
             } else if task.canRetry {
                 Button { store.send(.retryTransfer(id: task.id)) } label: {
                     Image(systemName: "arrow.clockwise")
@@ -695,7 +677,7 @@ struct DevicesView: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .accessibilityLabel("取消传输")
             }
         }
@@ -710,7 +692,7 @@ struct DevicesView: View {
                     Button("允许重新配对", systemImage: "checkmark.shield") {
                         store.send(.allowPairing(peerId: device.id))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WorkspaceButtonStyle())
                 } else if !device.trusted {
                     Button("邀请配对", systemImage: "person.badge.plus") {
                         store.send(.pair(peerId: device.id))
@@ -720,16 +702,16 @@ struct DevicesView: View {
                     Button(device.connected ? "断开连接" : "重新连接", systemImage: device.connected ? "pin.slash" : "arrow.clockwise") {
                         store.send(device.connected ? .disconnect(peerId: device.id) : .connect(peerId: device.id))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WorkspaceButtonStyle())
                     Button("忘记设备", systemImage: "trash", role: .destructive) {
                         forgetTarget = device.id
                         confirmForget = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WorkspaceButtonStyle())
                     Button("触发更新", systemImage: "arrow.down.app") {
                         store.send(.triggerPeerUpdate(peerId: device.id))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WorkspaceButtonStyle())
                     .disabled(!device.connected || !device.canTriggerUpdate)
                     .help(device.canTriggerUpdate
                           ? "请求 \(device.name) 立即检查并安装可用更新"
@@ -740,12 +722,12 @@ struct DevicesView: View {
                         blockTarget = device.id
                         confirmBlock = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WorkspaceButtonStyle())
                     .tint(.red)
                 }
                 Spacer(minLength: 0)
             }
-            .controlSize(.large)
+            .controlSize(.small)
         }
     }
 
@@ -767,11 +749,11 @@ struct DevicesView: View {
             Image(systemName: symbol)
                 .font(.system(size: 17))
                 .frame(width: 24)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
             Text(title)
                 .frame(width: 62, alignment: .leading)
             Text(value.isEmpty ? "暂无信息" : value)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -840,7 +822,7 @@ struct PairingRow: View {
                             .frame(width: 6, height: 6)
                         Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
                             .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+                            .workspaceSecondaryText()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -891,7 +873,7 @@ struct PairingRow: View {
                     .scaleEffect(0.8)
                 Text("处理中")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -902,7 +884,7 @@ struct PairingRow: View {
                 } label: {
                     Text("拒绝")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .padding(.horizontal, 18)
                         .padding(.vertical, 9)
                 }

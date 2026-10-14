@@ -113,6 +113,7 @@ pub enum UiEvent {
     Quit,
     PermissionSnapshot(PermissionSnapshot),
     InputSharingSnapshot(Box<deskfuse_core::InputSharingSnapshot>),
+    InputQualitySnapshot(deskfuse_runtime::input_service_types::InputServiceQuality),
     InputLockStatus(bool),
     InputRecordingReady(bool),
     PairingDecision {

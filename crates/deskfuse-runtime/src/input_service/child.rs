@@ -170,6 +170,7 @@ impl ChildConnection {
             },
             input: Default::default(),
             diagnostics: String::new(),
+            quality: Default::default(),
             last_command: 0,
         });
         let signal = stopping.clone();

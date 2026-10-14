@@ -133,6 +133,15 @@ impl Actor {
             self.reply_to_member(relay, "目标设备在网络协调设备上已被阻止，请先解除阻止");
             return Ok(());
         }
+        if self
+            .device_network
+            .origins
+            .forgotten
+            .contains(&target.device_id)
+        {
+            self.reply_to_member(relay, "协调设备已忘记目标设备，请先在协调设备上重新配对");
+            return Ok(());
+        }
         if self.device_network.pending.len() >= 16
             || self
                 .device_network
@@ -269,9 +278,13 @@ impl Actor {
                 }));
             }
             let roster = roster.ok_or_else(|| invalid("missing accepted network roster"))?;
-            if !roster.roster.members.iter().any(|m| m.device_id == target) {
-                return Err(invalid("accepted roster omits invited device"));
-            }
+            let member = roster
+                .roster
+                .members
+                .iter()
+                .find(|m| m.device_id == target)
+                .cloned()
+                .ok_or_else(|| invalid("accepted roster omits invited device"))?;
             // A periodic sync may already have delivered the migration roster.
             if self.device_network.roster.as_ref() != Some(&roster) {
                 self.accept_network_roster(owner.device_id, roster).await?;
@@ -282,6 +295,7 @@ impl Actor {
                     self.admit_network_member(member).await?;
                 }
             }
+            self.admit_network_member_with_consent(member).await?;
             Ok::<_, RuntimeError>(())
         }
         .await;

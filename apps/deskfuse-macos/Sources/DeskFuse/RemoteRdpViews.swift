@@ -3,32 +3,101 @@ import AppKit
 import Observation
 import DeskFuseRemoteApplication
 
+enum RemoteRdpAppPresentation {
+    static func windowsBasename(_ path: String) -> String {
+        path.split(separator: "\\", omittingEmptySubsequences: true).last.map(String.init) ?? path
+    }
+
+    static func title(name: String, displayName: String, path: String) -> String {
+        let display = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let basename = windowsBasename(path)
+        let displayProgram = normalizedProgramName(display)
+        let pathProgram = normalizedProgramName(basename)
+        let friendlyNames = [
+            "chrome": "Google Chrome",
+            "msedge": "Microsoft Edge",
+            "notepad": "记事本",
+            "iexplore": "Internet Explorer",
+            "mstsc": "远程桌面连接",
+        ]
+
+        if let friendly = friendlyNames[displayProgram] {
+            return friendly
+        }
+        if !display.isEmpty {
+            let matchesPathProgram = display.caseInsensitiveCompare(basename) == .orderedSame
+                || displayProgram == pathProgram
+            if matchesPathProgram, let friendly = friendlyNames[pathProgram] {
+                return friendly
+            }
+            return display
+        }
+        if let friendly = friendlyNames[pathProgram] {
+            return friendly
+        }
+        return name
+    }
+
+    static func isSystemOrInternal(displayName: String, path: String) -> Bool {
+        let components = path.split(separator: "\\", omittingEmptySubsequences: true)
+            .map { $0.lowercased() }
+        let isWindowsSystemApp = components.indices.contains { index in
+            index + 1 < components.count
+                && components[index] == "windows"
+                && components[index + 1] == "systemapps"
+        }
+        let displayBasename = windowsBasename(displayName)
+        let executable = windowsBasename(path)
+        let isDiagnostic = [displayBasename, executable].contains {
+            $0.caseInsensitiveCompare("IEDIAGCMD.EXE") == .orderedSame
+        }
+        return isWindowsSystemApp || isDiagnostic
+    }
+
+    private static func normalizedProgramName(_ value: String) -> String {
+        let lowercased = value.lowercased()
+        return lowercased.hasSuffix(".exe") ? String(lowercased.dropLast(4)) : lowercased
+    }
+}
+
 /// Windows RemoteApp picker. The Windows catalog is intentionally separate from
 /// the Mac media catalog: launching an entry starts a native RDP window rather
 /// than asking the Windows host to capture a desktop surface.
 @available(macOS 14.2, *)
 struct RemoteRdpPicker: View {
+    private enum AppScope: String, CaseIterable {
+        case all = "全部"
+        case favorites = "收藏"
+    }
+
     @Bindable var session: RemoteRdpSession
     var embedded = false
     var launch: (RemoteRdpApp, String?, String?) -> Void
     @State private var username = ""
     @State private var password = ""
-    @State private var rememberCredentials = false
+    @State private var rememberCredentials = true
     @State private var credentialsMessage: String?
     @State private var selected: RemoteRdpApp?
+    @State private var searchText = ""
+    @State private var showsCredentialInfo = false
+    @State private var appScope = AppScope.all
+    @State private var favoriteAppIDs = Set<String>()
+    @State private var systemAppsAreExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "windowslogo")
                     .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
-                Text("Windows 远程应用").font(.title2.weight(.semibold))
+                    .workspaceSecondaryText()
+                Text("Windows 远程应用").font(WorkspaceTypography.section)
                 FeatureBadge()
                 Spacer()
                 if session.phase == .connecting { ProgressView() }
-                Button("刷新") { session.refresh() }
-                    .disabled(session.phase == .connecting)
+                if !embedded {
+                    Button("刷新") { session.refresh() }
+                        .disabled(session.phase == .connecting)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Divider().padding(.top, 14)
@@ -38,6 +107,7 @@ struct RemoteRdpPicker: View {
         .padding(.vertical, embedded ? 16 : 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
+            favoriteAppIDs = Set(UserDefaults.standard.stringArray(forKey: favoritesKey) ?? [])
             if let credential = session.savedCredential {
                 username = credential.username
                 password = credential.password
@@ -55,7 +125,7 @@ struct RemoteRdpPicker: View {
         } else if session.phase == .idle || session.phase == .connecting {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("正在读取 Windows 应用…").foregroundStyle(.secondary)
+                Text("正在读取 Windows 应用…").workspaceSecondaryText()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if session.apps.isEmpty {
@@ -65,21 +135,69 @@ struct RemoteRdpPicker: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     credentials
-                    Text("选择应用")
-                        .font(.headline)
-                        .padding(.top, 4)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 12)], spacing: 12) {
-                        ForEach(session.apps, id: \.name) { app in
-                            appButton(app)
+                    HStack {
+                        Text("选择应用")
+                            .font(.headline)
+                        Spacer()
+                        Picker("应用范围", selection: $appScope) {
+                            ForEach(AppScope.allCases, id: \.self) { scope in
+                                Text(scope.rawValue).tag(scope)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 132)
+                        TextField("搜索 Windows 应用", text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 240)
+                    }
+                    .padding(.top, 4)
+                    if !credentialsAreReady {
+                        Label("请先填写 Windows 用户名和账户密码，之后才能打开应用。", systemImage: "lock.fill")
+                            .font(.callout)
+                            .workspaceSecondaryText()
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    if visibleApps.isEmpty {
+                        if appScope == .favorites, searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ContentUnavailableView("还没有收藏的应用", systemImage: "star",
+                                description: Text("点按应用卡片右上角的星标即可收藏。"))
+                                .frame(maxWidth: .infinity, minHeight: 180)
+                        } else {
+                            ContentUnavailableView.search(text: searchText)
+                                .frame(maxWidth: .infinity, minHeight: 180)
+                        }
+                    } else {
+                        if !regularApps.isEmpty {
+                            appGrid(regularApps)
+                        }
+                        if !systemApps.isEmpty {
+                            Button {
+                                systemAppsAreExpanded.toggle()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: systemSectionIsExpanded ? "chevron.down" : "chevron.right")
+                                    Text("系统与内部组件")
+                                    Text("\(systemApps.count)")
+                                        .workspaceSecondaryText()
+                                }
+                                .font(.callout.weight(.medium))
+                            }
+                            .buttonStyle(.plain)
+                            if systemSectionIsExpanded {
+                                appGrid(systemApps)
+                            }
                         }
                     }
-                    Text("使用 Windows 账户密码（不是 PIN）。凭据按设备保存在 macOS 钥匙串（可关闭）；不会发送到 DeskFuse 服务端。需已启用远程桌面和相应防火墙规则。")
+                    Text("Windows 主机需已启用远程桌面和相应防火墙规则。")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                     if let selected, session.launchedName == selected.name {
                         Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).workspaceSecondaryText()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -95,13 +213,56 @@ struct RemoteRdpPicker: View {
                 .textFieldStyle(.roundedBorder)
             SecureField("Windows 密码", text: $password)
                 .textFieldStyle(.roundedBorder)
-            Toggle("使用 macOS 钥匙串记住此设备的登录凭据", isOn: $rememberCredentials)
+            HStack(spacing: 6) {
+                Text("使用 Windows 账户密码，而不是 PIN。")
+                    .font(.caption)
+                    .workspaceSecondaryText()
+                Button {
+                    showsCredentialInfo.toggle()
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.plain)
+                .help("查看凭据安全说明")
+                .popover(isPresented: $showsCredentialInfo) {
+                    Text("用户名和密码仅用于连接这台 Windows 设备，不会发送到 DeskFuse 服务端。启用记住凭据后，凭据仅保存在本机的 macOS 钥匙串中。")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 300, alignment: .leading)
+                        .padding()
+                }
+            }
+            Toggle("记住登录凭据（仅保存在本机 macOS 钥匙串）", isOn: $rememberCredentials)
                 .onChange(of: rememberCredentials) { _, remember in
                     if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
                 }
             if let credentialsMessage {
                 Text(credentialsMessage).font(.caption).foregroundStyle(.orange)
             }
+        }
+    }
+
+    private func appGrid(_ apps: [RemoteRdpApp]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 12)], spacing: 12) {
+            ForEach(apps, id: \.name) { app in
+                appTile(app)
+            }
+        }
+    }
+
+    private func appTile(_ app: RemoteRdpApp) -> some View {
+        ZStack(alignment: .topTrailing) {
+            appButton(app)
+            Button {
+                toggleFavorite(app.name)
+            } label: {
+                Image(systemName: favoriteAppIDs.contains(app.name) ? "star.fill" : "star")
+                    .foregroundStyle(favoriteAppIDs.contains(app.name) ? Color.accentColor : .secondary)
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+            .help(favoriteAppIDs.contains(app.name) ? "取消收藏" : "收藏")
+            .accessibilityLabel("\(favoriteAppIDs.contains(app.name) ? "取消收藏" : "收藏") \(RemoteRdpAppPresentation.title(name: app.name, displayName: app.displayName, path: app.path))")
         }
     }
 
@@ -120,16 +281,69 @@ struct RemoteRdpPicker: View {
             launch(app, username.isEmpty ? nil : username, password.isEmpty ? nil : password)
         } label: {
             VStack(spacing: 8) {
-                Image(systemName: "app.fill").font(.system(size: 28)).foregroundStyle(.secondary)
-                Text(app.displayName.isEmpty ? app.name : app.displayName)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(Color.accentColor.opacity(0.12))
+                    Image(systemName: "macwindow")
+                        .font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .frame(width: 42, height: 42)
+                .accessibilityHidden(true)
+                Text(RemoteRdpAppPresentation.title(name: app.name, displayName: app.displayName, path: app.path))
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, minHeight: 86)
         }
-        .buttonStyle(.bordered)
-        .disabled(username.isEmpty || password.isEmpty)
-        .help(app.path)
+        .buttonStyle(WorkspaceButtonStyle())
+        .disabled(!credentialsAreReady)
+        .help(appHelp(for: app))
+    }
+
+    private var credentialsAreReady: Bool {
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !password.isEmpty
+    }
+
+    private var visibleApps: [RemoteRdpApp] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return session.apps.filter { app in
+            let isInScope = appScope == .all || favoriteAppIDs.contains(app.name)
+            guard isInScope else { return false }
+            guard !query.isEmpty else { return true }
+            return RemoteRdpAppPresentation.title(name: app.name, displayName: app.displayName, path: app.path)
+                .localizedCaseInsensitiveContains(query)
+                || app.name.localizedCaseInsensitiveContains(query)
+                || app.path.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var regularApps: [RemoteRdpApp] {
+        visibleApps.filter { !RemoteRdpAppPresentation.isSystemOrInternal(displayName: $0.displayName, path: $0.path) }
+    }
+
+    private var systemApps: [RemoteRdpApp] {
+        visibleApps.filter { RemoteRdpAppPresentation.isSystemOrInternal(displayName: $0.displayName, path: $0.path) }
+    }
+
+    private var systemSectionIsExpanded: Bool {
+        systemAppsAreExpanded || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var favoritesKey: String {
+        "remote-rdp-favorites.\(session.peerID)"
+    }
+
+    private func toggleFavorite(_ appID: String) {
+        if !favoriteAppIDs.insert(appID).inserted {
+            favoriteAppIDs.remove(appID)
+        }
+        UserDefaults.standard.set(favoriteAppIDs.sorted(), forKey: favoritesKey)
+    }
+
+    private func appHelp(for app: RemoteRdpApp) -> String {
+        [app.name, app.path].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     private func statusView(_ title: String, systemImage: String, message: String) -> some View {
@@ -223,7 +437,7 @@ private struct RemoteRdpViewer: View {
             }
             if let error = session.certificateTrustError { Text(error).foregroundStyle(.orange) }
             Button(session.savedCertificateFingerprint == nil ? "核对后信任并重试" : "核对后替换指纹并重试") { session.trustCurrentCertificate() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(WorkspaceButtonStyle(prominent: true))
                 .disabled(session.certificateTrustInProgress)
         }
         .padding()

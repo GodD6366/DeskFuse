@@ -523,7 +523,7 @@ private struct TransferQueueRow: View {
                 } else if task.phase != .completed {
                     Button("取消") { store.send(.cancelTransfer(id: task.id)) }
                 }
-            }.controlSize(.large).frame(width: 76)
+            }.controlSize(.small).frame(width: 76)
         }.padding(.vertical, 22)
     }
 

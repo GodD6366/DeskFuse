@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum WorkspaceControlMetrics {
+    static let compactHeight: CGFloat = 32
     static let height: CGFloat = 36
     static let horizontalInset: CGFloat = 12
     static let cornerRadius: CGFloat = 10
@@ -8,17 +9,19 @@ enum WorkspaceControlMetrics {
 }
 
 struct WorkspaceControlLabel: ViewModifier {
+    var compact = false
     func body(content: Content) -> some View {
         content
             .font(WorkspaceControlMetrics.font)
             .lineLimit(1)
             .padding(.horizontal, WorkspaceControlMetrics.horizontalInset)
-            .frame(height: WorkspaceControlMetrics.height)
+            .frame(minHeight: compact ? WorkspaceControlMetrics.compactHeight : WorkspaceControlMetrics.height)
             .contentShape(RoundedRectangle(cornerRadius: WorkspaceControlMetrics.cornerRadius))
     }
 }
 
 private struct WorkspaceControlSurface: ViewModifier {
+    @Environment(\.quietWorkspace) private var quiet
     let prominent: Bool
     let destructive: Bool
     @Environment(\.isEnabled) private var enabled
@@ -28,7 +31,10 @@ private struct WorkspaceControlSurface: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: WorkspaceControlMetrics.cornerRadius)
         let tint: Color? = destructive ? .red : (prominent ? DeskFuseBrand.accent : nil)
         if let tint {
-            if #available(macOS 26.0, *), !reduceTransparency {
+            if quiet {
+                content.foregroundStyle(enabled ? Color.white : Color.secondary)
+                    .background(enabled ? tint : Color(nsColor: .controlBackgroundColor), in: shape)
+            } else if #available(macOS 26.0, *), !reduceTransparency {
                 content
                     .foregroundStyle(enabled ? Color.white : Color.secondary)
                     .glassEffect(.regular.tint(enabled ? tint : .clear).interactive(), in: shape)
@@ -38,8 +44,26 @@ private struct WorkspaceControlSurface: ViewModifier {
                     .background(enabled ? tint : Color(nsColor: .controlBackgroundColor), in: shape)
             }
         } else {
-            content.modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
+            content
+                .foregroundStyle(enabled ? Color.primary : Color.secondary)
+                .modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
+                .opacity(enabled ? 1 : 0.55)
         }
+    }
+}
+
+/// Shared action geometry; only the surface changes between pages and panels.
+struct WorkspaceButtonStyle: ButtonStyle {
+    var prominent = false
+    var destructive = false
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(WorkspaceControlLabel(compact: compact))
+            .modifier(WorkspaceControlSurface(prominent: prominent,
+                destructive: destructive || configuration.role == .destructive))
+            .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
 
@@ -64,10 +88,8 @@ struct WorkspaceChromeButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .modifier(WorkspaceControlLabel())
-                .modifier(WorkspaceControlSurface(prominent: prominent, destructive: destructive))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkspaceButtonStyle(prominent: prominent, destructive: destructive))
         .help(help ?? title)
     }
 }

@@ -10,11 +10,15 @@ const CHUNK: usize = 128 * 1024;
 const MAX_BLOB: usize = 257 * 1024 * 1024;
 // Maximum frame size for Operations messages. Must match receive limit.
 const MAX_OPERATIONS_FRAME: usize = CHUNK * 2 + 64 * 1024; // 327,680 bytes
+const MAX_OPERATIONS_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Frame {
     Hello {
         version: u32,
+        // Old v1 peers ignore this field and keep receiving ordinary frames.
+        #[serde(default)]
+        operation_chunks: bool,
     },
     Pull {
         after: u64,
@@ -23,6 +27,14 @@ enum Frame {
         after: u64,
         next: u64,
         operations: Vec<Value>,
+    },
+    OperationsChunk {
+        after: u64,
+        next: u64,
+        hash: String,
+        total: usize,
+        offset: usize,
+        data: String,
     },
     BlobRequest {
         hash: String,
@@ -37,6 +49,7 @@ enum Frame {
         hash: String,
     },
 }
+
 struct PeerWorker {
     generation: u64,
     tx: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -115,7 +128,7 @@ async fn send(
     let bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
 
     // Check frame size before sending to prevent infinite retransmission
-    if matches!(frame, Frame::Operations { .. }) && bytes.len() > MAX_OPERATIONS_FRAME {
+    if bytes.len() > MAX_OPERATIONS_FRAME {
         if deskfuse_core::debug_logging::enabled() {
             eprintln!(
                 "[library_sync] peer={:?} BLOCKED oversized Operations frame: {} bytes (limit: {})",
@@ -142,6 +155,142 @@ async fn send(
 }
 fn valid_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+/// Keep large operations intact, including their UUID, clock and search text.
+/// Sending one chunk per worker turn lets both peers drain their receive queues.
+struct OperationsTransfer {
+    after: u64,
+    next: u64,
+    hash: String,
+    bytes: Vec<u8>,
+    offset: usize,
+}
+impl OperationsTransfer {
+    fn new(after: u64, next: u64, bytes: Vec<u8>) -> Result<Self, String> {
+        if bytes.len() > MAX_OPERATIONS_BYTES {
+            return Err("列表操作超过分块传输上限".into());
+        }
+        Ok(Self {
+            after,
+            next,
+            hash: hex::encode(Sha256::digest(&bytes)),
+            bytes,
+            offset: 0,
+        })
+    }
+    fn chunk(&self) -> Frame {
+        let end = (self.offset + CHUNK).min(self.bytes.len());
+        Frame::OperationsChunk {
+            after: self.after,
+            next: self.next,
+            hash: self.hash.clone(),
+            total: self.bytes.len(),
+            offset: self.offset,
+            data: hex::encode(&self.bytes[self.offset..end]),
+        }
+    }
+    fn advance(&mut self) -> bool {
+        self.offset = (self.offset + CHUNK).min(self.bytes.len());
+        self.offset == self.bytes.len()
+    }
+}
+fn prepare_operations(
+    after: u64,
+    next: u64,
+    operations: Vec<Value>,
+    supports_chunks: bool,
+) -> Result<(Option<Frame>, Option<OperationsTransfer>), String> {
+    let frame = Frame::Operations {
+        after,
+        next,
+        operations,
+    };
+    let bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
+    if bytes.len() <= MAX_OPERATIONS_FRAME {
+        return Ok((Some(frame), None));
+    }
+    if !supports_chunks {
+        return Err("对端需升级以支持大列表操作分块同步".into());
+    }
+    Ok((None, Some(OperationsTransfer::new(after, next, bytes)?)))
+}
+
+#[derive(Default)]
+struct OperationsReceiver(Option<OperationsAssembly>);
+struct OperationsAssembly {
+    after: u64,
+    next: u64,
+    hash: String,
+    total: usize,
+    bytes: Vec<u8>,
+}
+impl OperationsReceiver {
+    fn receive(&mut self, cursor: u64, frame: Frame) -> Result<Option<Frame>, String> {
+        let Frame::OperationsChunk {
+            after,
+            next,
+            hash,
+            total,
+            offset,
+            data,
+        } = frame
+        else {
+            return Ok(Some(frame));
+        };
+        if after != cursor || next <= after {
+            return Ok(None);
+        }
+        if !valid_hash(&hash)
+            || total == 0
+            || total > MAX_OPERATIONS_BYTES
+            || data.len() > CHUNK * 2
+        {
+            return Err("列表操作分块无效".into());
+        }
+        let data = hex::decode(data).map_err(|_| "列表操作分块编码无效")?;
+        if data.is_empty() || offset.checked_add(data.len()).is_none_or(|end| end > total) {
+            return Err("列表操作分块范围无效".into());
+        }
+        if offset == 0 {
+            self.0 = Some(OperationsAssembly {
+                after,
+                next,
+                hash: hash.clone(),
+                bytes: Vec::new(),
+                total,
+            });
+        }
+        let Some(current) = self.0.as_mut() else {
+            return Ok(None);
+        };
+        if current.after != after
+            || current.next != next
+            || current.hash != hash
+            || current.total != total
+            || current.bytes.len() != offset
+        {
+            self.0 = None;
+            return Ok(None);
+        }
+        current.bytes.extend(data);
+        if current.bytes.len() != total {
+            return Ok(None);
+        }
+        let current = self.0.take().unwrap();
+        if hex::encode(Sha256::digest(&current.bytes)) != hash {
+            return Err("列表操作 SHA-256 校验失败".into());
+        }
+        let frame: Frame =
+            serde_json::from_slice(&current.bytes).map_err(|_| "列表操作编码无效")?;
+        match frame {
+            Frame::Operations {
+                after: a,
+                next: n,
+                ref operations,
+            } if a == after && n == next && operations.len() == 1 => Ok(Some(frame)),
+            _ => Err("列表操作分块游标无效".into()),
+        }
+    }
 }
 fn blob_hashes(value: &Value, found: &mut std::collections::BTreeSet<String>) {
     match value {
@@ -183,25 +332,30 @@ async fn worker(
     let mut blob_task = BlobTask(None);
     let mut receive_updated = std::time::Instant::now();
     let mut ready = false;
+    let mut supports_chunks = false;
+    let mut outgoing_operations: Option<OperationsTransfer> = None;
+    let mut incoming_operations = OperationsReceiver::default();
+    let mut operations_updated = std::time::Instant::now();
     let mut hello_attempts = 0;
     let mut cursor = 0;
     let mut pending = std::collections::BTreeSet::<String>::new();
     let mut receiving: Option<(String, usize, Vec<u8>)> = None;
 
-    // Track failed send attempts to prevent infinite retries
-    let mut failed_operations: HashMap<u64, usize> = HashMap::new();
-    const MAX_SEND_FAILURES: usize = 5;
     loop {
         if runtime.control_generation(peer) != Some(generation) {
             return Ok(());
         }
         tokio::select! {
+            biased; // Drain received chunks before sending more, keeping the bounded queue clear.
             _ = timer.tick() => {
                 if !ready {
                     hello_attempts += 1;
                     if hello_attempts > 10 { return Err("对端尚未响应列表同步协议，请更新两端应用".into()); }
                 }
-                send(&runtime, peer, generation, if ready { Frame::Pull { after: cursor } } else { Frame::Hello { version: 1 } }).await?;
+                if operations_updated.elapsed() > Duration::from_secs(30) { incoming_operations.0 = None; }
+                if !ready || incoming_operations.0.is_none() {
+                    send(&runtime, peer, generation, if ready { Frame::Pull { after: cursor } } else { Frame::Hello { version: 1, operation_chunks: true } }).await?;
+                }
                 if receive_updated.elapsed() > Duration::from_secs(30) { receiving = None; }
                 if ready && receiving.is_none() {
                     // Payloads requested on demand from the UI are queued in the
@@ -225,57 +379,31 @@ async fn worker(
             bytes = rx.recv() => {
                 let Some(bytes) = bytes else { return Ok(()); };
                 let frame: Frame = serde_json::from_slice(&bytes).map_err(|_| "无效列表协议帧")?;
+                if matches!(frame, Frame::OperationsChunk { .. }) {
+                    if !ready || !supports_chunks { return Err("未协商列表分块能力".into()); }
+                    operations_updated = std::time::Instant::now();
+                }
+                let Some(frame) = incoming_operations.receive(cursor, frame)? else { continue; };
                 match frame {
-                    Frame::Hello { version } => {
+                    Frame::Hello { version, operation_chunks } => {
                         if version != 1 { return Err("对端需升级列表同步协议".into()); }
-                        if !ready { send(&runtime, peer, generation, Frame::Hello { version: 1 }).await?; }
+                        if !ready { send(&runtime, peer, generation, Frame::Hello { version: 1, operation_chunks: true }).await?; }
+                        supports_chunks = operation_chunks;
                         ready = true;
                         send(&runtime, peer, generation, Frame::Pull { after: cursor }).await?;
                     }
                     _ if !ready => continue,
                     Frame::Pull { after } => {
+                        if outgoing_operations.is_some() { continue; }
                         // One operation per frame bounds the wire. seq is the sender's
                         // local append-log cursor, not a Lamport version or remote cursor.
                         let operations = library.export_operations(after, 1)?;
                         let next = operations.last().and_then(|o| o.get("seq")).and_then(Value::as_u64).unwrap_or(after);
                         if !operations.is_empty() && next <= after { return Err("列表操作缺少递增 seq".into()); }
 
-                        // Check if we've failed to send this operation too many times
-                        if let Some(&failure_count) = failed_operations.get(&after)
-                            && failure_count >= MAX_SEND_FAILURES
-                        {
-                                if deskfuse_core::debug_logging::enabled() {
-                                    eprintln!(
-                                        "[library_sync] peer={:?} skipping operation at seq={} after {} failed attempts",
-                                        peer, after, failure_count
-                                    );
-                                }
-                                // Skip this operation and advance cursor to prevent infinite loop
-                                let skip_frame = Frame::Operations { after, next, operations: vec![] };
-                                send(&runtime, peer, generation, skip_frame).await?;
-                                continue;
-                        }
-
-                        let result = send(&runtime, peer, generation, Frame::Operations { after, next, operations: operations.clone() }).await;
-
-                        if let Err(ref e) = result {
-                            // Track send failures for oversized operations
-                            if e.contains("超过限制") || e.contains("oversized") {
-                                let count = failed_operations.entry(after).or_insert(0);
-                                *count += 1;
-                                if deskfuse_core::debug_logging::enabled() {
-                                    eprintln!(
-                                        "[library_sync] peer={:?} failed to send operation at seq={} (attempt {}/{}): {}",
-                                        peer, after, count, MAX_SEND_FAILURES, e
-                                    );
-                                }
-                            }
-                        } else {
-                            // Clear failure count on success
-                            failed_operations.remove(&after);
-                        }
-
-                        result?;
+                        let (frame, transfer) = prepare_operations(after, next, operations, supports_chunks)?;
+                        outgoing_operations = transfer;
+                        if let Some(frame) = frame { send(&runtime, peer, generation, frame).await?; }
                     }
                     Frame::Operations { after, next, operations } => {
                         if after != cursor || next < after || operations.len() > 1 { continue; }
@@ -297,6 +425,7 @@ async fn worker(
                         // Storage validates, deduplicates by persistent operation UUID,
                         // resolves versions/tombstones, and commits atomically before ACK.
                         library.merge_operations(operations)?;
+                        incoming_operations.0 = None;
                         let mut completed = Vec::new();
                         for hash in &pending { if library.read_blob(hash)?.is_some() { completed.push(hash.clone()); } }
                         for hash in completed { pending.remove(&hash); }
@@ -350,6 +479,7 @@ async fn worker(
                             receiving = None;
                         }
                     }
+                    Frame::OperationsChunk { .. } => unreachable!("chunks are assembled before dispatch"),
                     Frame::Missing { hash } => {
                         if deskfuse_core::debug_logging::enabled() {
                             eprintln!("[library_sync] peer={:?} blob missing hash={}", peer, hash);
@@ -358,6 +488,191 @@ async fn worker(
                     }
                 }
             }
+            _ = async {}, if outgoing_operations.is_some() => {
+                let transfer = outgoing_operations.as_mut().unwrap();
+                send(&runtime, peer, generation, transfer.chunk()).await?;
+                if transfer.advance() { outgoing_operations = None; }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clipboard_library::Library;
+    use serde_json::json;
+
+    fn deliver(cursor: u64, mut transfer: OperationsTransfer) -> Frame {
+        let mut receiver = OperationsReceiver::default();
+        loop {
+            let bytes = serde_json::to_vec(&transfer.chunk()).unwrap();
+            assert!(bytes.len() <= MAX_OPERATIONS_FRAME);
+            let result = receiver
+                .receive(cursor, serde_json::from_slice(&bytes).unwrap())
+                .unwrap();
+            if transfer.advance() {
+                return result.unwrap();
+            }
+            assert!(result.is_none()); // No operation/cursor ACK before the last chunk.
+        }
+    }
+
+    #[test]
+    fn large_index_does_not_block_later_manual_membership() {
+        let a = Library::open().unwrap();
+        let b = Library::open().unwrap();
+        a.set_local_device("device-a".into()).unwrap();
+        b.set_local_device("device-b".into()).unwrap();
+        a.mutate(r#"{"op":"save_list","list":{"id":"manual","name":"manual","kind":"manual"},"compact":true}"#).unwrap();
+        let text = "中文\"\\\n".repeat(60_000) + "search-tail-marker";
+        let id = a
+            .ingest(
+                &PasteboardSnapshot {
+                    text: Some(text.clone()),
+                    ..Default::default()
+                },
+                "local",
+            )
+            .unwrap()
+            .unwrap();
+        a.mutate(&json!({"op":"membership","list_id":"manual","history_id":id,"present":true,"compact":true}).to_string()).unwrap();
+
+        let mut cursor = 0;
+        let mut chunked = 0;
+        let mut pending = std::collections::BTreeSet::new();
+        // Repeat from cursor zero to cover reconnect/replay deduplication.
+        for _ in 0..2 {
+            loop {
+                let ops = a.export_operations(cursor, 1).unwrap();
+                if ops.is_empty() {
+                    break;
+                }
+                let next = ops[0]["seq"].as_u64().unwrap();
+                let expected = ops.clone();
+                let (frame, transfer) = prepare_operations(cursor, next, ops, true).unwrap();
+                let frame = if let Some(transfer) = transfer {
+                    chunked += 1;
+                    deliver(cursor, transfer)
+                } else {
+                    frame.unwrap()
+                };
+                let Frame::Operations {
+                    after,
+                    next,
+                    operations,
+                } = frame
+                else {
+                    panic!("expected operations");
+                };
+                assert_eq!(after, cursor);
+                assert_eq!(operations, expected);
+                for op in &operations {
+                    if !op["key"].as_str().unwrap().starts_with("index:") {
+                        blob_hashes(op, &mut pending);
+                    }
+                }
+                b.merge_operations(operations).unwrap();
+                cursor = next;
+            }
+            assert!(chunked > 0);
+            let page: Value = serde_json::from_str(
+                &b.query(r#"{"op":"items","list_id":"manual","include_total":true}"#)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(page["total"], 1);
+            let archived = page["items"][0]["id"].as_u64().unwrap();
+            for hash in &pending {
+                b.write_blob(hash, &a.read_blob(hash).unwrap().unwrap())
+                    .unwrap();
+            }
+            assert_eq!(
+                b.snapshot(archived).unwrap().text.as_deref(),
+                Some(text.as_str())
+            );
+            let search: Value = serde_json::from_str(
+                &b.query(r#"{"op":"items","query":"search-tail-marker","include_total":true}"#)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(!search["items"].as_array().unwrap().is_empty());
+            cursor = 0;
+        }
+    }
+
+    #[test]
+    fn old_peers_keep_small_frames_and_require_upgrade_for_large_operations() {
+        let frame: Frame = serde_json::from_str(r#"{"kind":"hello","version":1}"#).unwrap();
+        assert!(matches!(
+            frame,
+            Frame::Hello {
+                version: 1,
+                operation_chunks: false
+            }
+        ));
+        let (small, transfer) =
+            prepare_operations(0, 1, vec![json!({"key":"list:test"})], false).unwrap();
+        assert!(matches!(small, Some(Frame::Operations { .. })));
+        assert!(transfer.is_none());
+        assert!(
+            prepare_operations(
+                0,
+                1,
+                vec![json!({"text":"x".repeat(MAX_OPERATIONS_FRAME)})],
+                false
+            )
+            .err()
+            .unwrap()
+            .contains("升级")
+        );
+    }
+
+    #[test]
+    fn chunks_can_restart_but_cannot_commit_gaps_corruption_or_unbounded_data() {
+        let (_, transfer) = prepare_operations(
+            4,
+            9,
+            vec![json!({"text":"x".repeat(MAX_OPERATIONS_FRAME)})],
+            true,
+        )
+        .unwrap();
+        let mut transfer = transfer.unwrap();
+        let mut receiver = OperationsReceiver::default();
+        assert!(receiver.receive(4, transfer.chunk()).unwrap().is_none());
+        transfer.advance();
+        let second = transfer.chunk();
+        transfer.advance();
+        assert!(receiver.receive(4, transfer.chunk()).unwrap().is_none()); // Gap clears partial state.
+        assert!(receiver.receive(4, second).unwrap().is_none());
+        transfer.offset = 0;
+        assert!(receiver.receive(5, transfer.chunk()).unwrap().is_none()); // Stale cursor.
+        assert!(receiver.receive(4, transfer.chunk()).unwrap().is_none());
+        assert!(receiver.receive(4, transfer.chunk()).unwrap().is_none()); // Restart first chunk.
+        loop {
+            transfer.advance();
+            if let Some(Frame::Operations { next: 9, .. }) =
+                receiver.receive(4, transfer.chunk()).unwrap()
+            {
+                break;
+            }
+        }
+        let bytes = serde_json::to_vec(&Frame::Operations {
+            after: 4,
+            next: 9,
+            operations: vec![json!({})],
+        })
+        .unwrap();
+        let mut bad = OperationsTransfer::new(4, 9, bytes).unwrap().chunk();
+        if let Frame::OperationsChunk { hash, .. } = &mut bad {
+            *hash = "0".repeat(64);
+        }
+        assert!(receiver.receive(4, bad).err().unwrap().contains("SHA-256"));
+        let mut bad = transfer.chunk();
+        if let Frame::OperationsChunk { total, offset, .. } = &mut bad {
+            *total = MAX_OPERATIONS_BYTES + 1;
+            *offset = 0;
+        }
+        assert!(receiver.receive(4, bad).is_err());
     }
 }

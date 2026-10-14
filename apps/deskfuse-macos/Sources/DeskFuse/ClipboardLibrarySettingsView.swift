@@ -32,31 +32,25 @@ struct ClipboardLibrarySettingsView: View {
                         }), onRecordingChange: { recording = $0 })
                 }
                 SystemSettingsFormBlock(title: "普通历史") {
-                    HStack {
-                        Text("保留天数")
+                    QuietSettingsRow(title: "保留天数",
+                        detail: "默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。") {
                         TextField("天数", value: $draft.retention_days, format: .number).frame(width: 80)
                     }
-                    Text("默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 SystemSettingsFormBlock(title: "跨设备搜索") {
-                    Toggle("同步标题与识别文字到其他设备", isOn: Binding(
+                    QuietSettingsToggle("同步标题与识别文字到其他设备",
+                        detail: "只同步标题、识别文字和元数据，方便在其他设备搜索；图片和文件正文按需获取。关闭后不再发布或接收远端索引。", isOn: Binding(
                         get: { draft.sync_index ?? true },
                         set: { draft.sync_index = $0 }))
-                    Text("只同步标题、识别文字和元数据这类小体积索引，方便在其它设备搜索；图片/文件正文仍在需要时按需获取。关闭后不再发布也不再接收远端索引。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("清除已同步的远端索引") { library.clearRemoteIndex() }
-                    Text("清除其它设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    QuietSettingsRow(title: "已同步的远端索引",
+                        detail: "清除其他设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。") {
+                        Button("清除远端索引") { library.clearRemoteIndex() }
+                    }
                 }
                 SystemSettingsFormBlock(title: "图片文字识别") {
-                    Toggle("自动识别图片文字", isOn: $draftAutomaticOCR)
-                    Text("默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    QuietSettingsToggle("自动识别图片文字",
+                        detail: "默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。", isOn: $draftAutomaticOCR)
                 }
                 SystemSettingsFormBlock(title: "排除 App") {
                     ForEach(draft.excluded_apps) { app in
@@ -68,15 +62,15 @@ struct ClipboardLibrarySettingsView: View {
                             }
                         }
                     }
-                    Button("添加应用…") {
-                        guard let id = ClipboardLibraryAppPicker.choose(),
-                              !draft.excluded_apps.contains(where: { $0.bundle_id == id }) else { return }
-                        draft.excluded_apps.append(ClipboardLibraryApp(bundle_id: id,
-                            name: library.apps.first(where: { $0.bundle_id == id })?.name ?? id))
+                    QuietSettingsRow(title: "不保存历史的应用",
+                        detail: "新复制仍正常实时同步，但发送端和接收端不保存历史。不会删除已有历史或手动列表内容；此配置仅属于当前设备。") {
+                        Button("添加应用…") {
+                            guard let id = ClipboardLibraryAppPicker.choose(),
+                                  !draft.excluded_apps.contains(where: { $0.bundle_id == id }) else { return }
+                            draft.excluded_apps.append(ClipboardLibraryApp(bundle_id: id,
+                                name: library.apps.first(where: { $0.bundle_id == id })?.name ?? id))
+                        }
                     }
-                    Text("新复制仍正常实时同步，但发送端和接收端不保存历史。不会删除已有历史或手动列表内容；此配置仅属于当前设备。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("本页修改统一在点击底部“保存”后生效。")
                     .font(.caption).foregroundStyle(.secondary)

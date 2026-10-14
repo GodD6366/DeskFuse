@@ -5,9 +5,10 @@ import DeskFuseEngine
 struct SettingsView: View, Equatable {
     let store: AppStore
     let presentation: SettingsPresentation
+    let destination: SettingsDestination
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.store === rhs.store && lhs.presentation == rhs.presentation
+        lhs.store === rhs.store && lhs.presentation == rhs.presentation && lhs.destination == rhs.destination
     }
     @State private var prefetch = false
     @State private var threshold = 10.0
@@ -20,34 +21,21 @@ struct SettingsView: View, Equatable {
     @State private var clearHistory = false
     @State private var clearCache = false
     @State private var exportingDiagnostics = false
-    @SceneStorage("settings.selectedTab") private var selectedTab = "general"
-    @SceneStorage("settings.clipboardSegment") private var clipboardSegment = "history"
+    private var selectedTab: String { destination.category.rawValue }
+    private var clipboardSegment: Binding<String> {
+        Binding(get: { store.settingsDestination.clipboardSegment },
+                set: { store.settingsDestination.clipboardSegment = $0 })
+    }
     var body: some View {
-        HStack(spacing: 0) {
-            SettingsCategoryBar(selection: $selectedTab)
-                .frame(width: 200)
-            VStack(alignment: .leading, spacing: 0) {
-                Text((SettingsCategory(rawValue: selectedTab) ?? .general).title)
-                    .font(.system(size: 26, weight: .bold))
-                    .padding(.horizontal, 26).padding(.top, 20).padding(.bottom, 16)
-                SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
-                    SettingsPageContainer.Page(id: category.rawValue,
-                        content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))
-                })
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .systemSettingsContentBackground()
+        VStack(alignment: .leading, spacing: 0) {
+            QuietPageHeader(section: "设置", title: destination.category.title)
+            SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
+                SettingsPageContainer.Page(id: category.rawValue,
+                    content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))
+            })
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .onAppear {
-            // 旧版本可能残留已删除分类（如「工作流」），归一回通用页。
-            if SettingsCategory(rawValue: selectedTab) == nil { selectedTab = SettingsCategory.general.rawValue }
-        }
-        .onChange(of: store.pendingClipboardSegment) { _, segment in
-            guard let segment else { return }
-            clipboardSegment = segment
-            store.pendingClipboardSegment = nil
-        }
+        .quietWorkspaceStyle()
         .onChange(of: store.client != nil, initial: true) { _, ready in
             guard ready else { return }
             store.send(.refreshCache)
@@ -86,27 +74,29 @@ struct SettingsView: View, Equatable {
                 ready: store.client != nil, exportingDiagnostics: exportingDiagnostics, exportDiagnostics: exportDiagnostics)
         case .permissions:
             SettingsPermissionsView(store: store, permissions: presentation.permissions)
-        case .input:
-            if let settings = presentation.inputSettings {
-                InputSharingSettingsView(store: store, initial: settings)
-            } else {
-                Text("正在读取键鼠共享设置…").foregroundStyle(.secondary)
-            }
         case .storage:
             VStack(spacing: 0) {
                 SystemSettingsFormPage {
                     SystemSettingsFormBlock(title: "文件传输") {
-                        Text("默认在目标设备粘贴时传输。")
-                            .foregroundStyle(.secondary)
-                        Toggle("小文件提前传输", isOn: $prefetch)
-                        HStack { Text("整批阈值"); TextField("MiB", value: $threshold, format: .number).frame(width: 90); Text("MiB") }.disabled(!prefetch)
-                        HStack { Text("缓存上限"); TextField("MiB", value: $maximum, format: .number).frame(width: 90); Text("MiB") }
+                        QuietSettingsToggle("小文件提前传输",
+                            detail: "默认在目标设备粘贴时传输；开启后，低于整批阈值的文件会提前传输。", isOn: $prefetch)
+                        Divider()
+                        QuietSettingsRow(title: "整批阈值") {
+                            HStack { TextField("MiB", value: $threshold, format: .number).frame(width: 90); Text("MiB") }
+                        }.disabled(!prefetch)
+                        Divider()
+                        QuietSettingsRow(title: "缓存上限") {
+                            HStack { TextField("MiB", value: $maximum, format: .number).frame(width: 90); Text("MiB") }
+                        }
                     }
                     .disabled(savingFiles || savedFiles == nil)
                     SystemSettingsFormBlock(title: "暂存区发送") {
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("接收位置")
+                                Text("从文件暂存区发送到此设备的文件会直接保存到这里。")
+                                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 Text(downloadDirectory.isEmpty ? defaultDownloadDirectory.path : downloadDirectory)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -118,9 +108,6 @@ struct SettingsView: View, Equatable {
                             Button("选择…", action: chooseDownloadDirectory)
                                 .disabled(savingFiles || savedFiles == nil)
                         }
-                        Text("从文件暂存区发送到此设备的文件会直接保存到这里。")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                         if !downloadDirectory.isEmpty {
                             Button("恢复下载文件夹") { downloadDirectory = "" }
                                 .buttonStyle(.link)
@@ -130,15 +117,25 @@ struct SettingsView: View, Equatable {
                     .disabled(savingFiles || savedFiles == nil)
                     SystemSettingsFormBlock(title: "本地存储") {
                         if let cache = presentation.cache {
-                            LabeledContent("已使用", value: "\(byteCount(cache.used)) / \(byteCount(cache.maximum))")
-                            LabeledContent("活跃任务", value: "\(cache.active)")
+                            QuietSettingsRow(title: "已使用") {
+                                Text("\(byteCount(cache.used)) / \(byteCount(cache.maximum))")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider()
+                            QuietSettingsRow(title: "活跃任务") {
+                                Text("\(cache.active)").foregroundStyle(.secondary)
+                            }
                             if !cache.message.isEmpty { Text(cache.message).foregroundStyle(.secondary) }
                         }
-                        Button("清除历史传输文件…", role: .destructive) { clearCache = true }
-                        Button("清空剪贴板历史…", role: .destructive) { clearHistory = true }
-                        Text("清理保护正在接收、粘贴和导出的内容，不删除用户源文件或已粘贴副本。")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Divider()
+                        QuietSettingsRow(title: "历史传输文件",
+                            detail: "保护正在接收、粘贴和导出的内容，不删除用户源文件或已粘贴副本。") {
+                            Button("清除…", role: .destructive) { clearCache = true }
+                        }
+                        Divider()
+                        QuietSettingsRow(title: "剪贴板历史") {
+                            Button("清空…", role: .destructive) { clearHistory = true }
+                        }
                     }
                 }
                 SettingsSaveFooter(dirty: filesDirty, saving: savingFiles,
@@ -148,31 +145,26 @@ struct SettingsView: View, Equatable {
             }
         case .clipboard:
             VStack(spacing: 0) {
-                Picker("", selection: $clipboardSegment) {
+                Picker("", selection: clipboardSegment) {
                     Text("历史").tag("history")
                     Text("工作流").tag("workflows")
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 320)
                 .padding(.horizontal, 36).padding(.bottom, 12)
-                // 用透明度切换而非重建，两个视图各自持有的编辑状态不丢失。
-                ZStack {
-                    ClipboardLibrarySettingsView()
-                        .opacity(clipboardSegment == "history" ? 1 : 0)
-                        .allowsHitTesting(clipboardSegment == "history")
-                    WorkflowSettingsView(store: store)
-                        .opacity(clipboardSegment == "workflows" ? 1 : 0)
-                        .allowsHitTesting(clipboardSegment == "workflows")
-                }
+                SettingsPageContainer(selection: destination.clipboardSegment, pages: [
+                    .init(id: "history", content: AnyView(ClipboardLibrarySettingsView())),
+                    .init(id: "workflows", content: AnyView(WorkflowSettingsView(store: store)))
+                ])
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .shortcuts:
             ShortcutSettingsPage(store: store,
                 manageWorkflows: {
-                    clipboardSegment = "workflows"
-                    selectedTab = SettingsCategory.clipboard.rawValue
+                    store.settingsDestination.clipboardSegment = "workflows"
+                    store.settingsDestination.category = .clipboard
                 },
-                configureInput: { selectedTab = SettingsCategory.input.rawValue })
+                openInput: { store.selectedPage = .input })
         case .updates:
             SystemSettingsFormPage {
                 SystemSettingsFormBlock {

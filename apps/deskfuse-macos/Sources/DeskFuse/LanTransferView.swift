@@ -92,7 +92,7 @@ struct LanTransferView: View {
                 .padding(28)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .background(Color(nsColor: .windowBackgroundColor))
+            .systemSettingsContentBackground()
         }
         .task {
             await refresh()

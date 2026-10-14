@@ -249,19 +249,22 @@ async fn run(
                 status.native.persistence_pending = pending;
                 if let Some(error) = error { status.native.error = Some(format!("输入设置尚未保存：{error}")); }
                 status.native.update_paused = child.pause.load(Ordering::Acquire) == 2;
+                // Always send chart metadata, even when debug logging is disabled
+                // and no pointer events or input-state changes are occurring.
+                if quality_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                    deskfuse_core::fold_pending_stages();
+                    let (mode, fallback) = quality_lease(&status.input);
+                    status.quality.records = deskfuse_transport::motion_diag::quality_snapshot();
+                    status.quality.report = deskfuse_input::quality::build_report(
+                        &deskfuse_core::quality_ticks(), &mode, fallback.as_deref(),
+                    );
+                    quality_line = deskfuse_input::quality::diagnostics_record(
+                        "input_child", &mode, fallback.as_deref(),
+                    );
+                    quality_at = Some(Instant::now());
+                }
                 if let Ok(lines) = diagnostics.try_lock() {
                     status.diagnostics = lines.clone();
-                    // 质量行最多每秒重算一次，避免 50ms 状态循环反复序列化整份报告。
-                    if quality_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
-                        deskfuse_core::fold_pending_stages();
-                        let (mode, fallback) = quality_lease(&status.input);
-                        quality_line = deskfuse_input::quality::diagnostics_record(
-                            "input_child",
-                            &mode,
-                            fallback.as_deref(),
-                        );
-                        quality_at = Some(Instant::now());
-                    }
                     if !quality_line.is_empty() {
                         if !status.diagnostics.ends_with('\n') {
                             status.diagnostics.push('\n');

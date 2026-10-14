@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+enum ClipboardPaneMetrics {
+    static let minimumHistory: CGFloat = 240
+    static let minimumPreview: CGFloat = 340
+    // One divider inside the split, one between grouping and history.
+    static let minimumContentWidth = minimumHistory + minimumPreview + 2
+}
+
 /// Keep the native divider and allow manual resizing, starting history at its
 /// maximum width while preserving the preview's minimum size.
 struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresentable {
@@ -9,16 +16,16 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
     @ViewBuilder let detail: () -> Detail
 
     final class Controller: NSSplitViewController {
-        let historyHost: NSHostingController<History>
-        let detailHost: NSHostingController<Detail>
+        let historyHost: NSHostingController<AnyView>
+        let detailHost: NSHostingController<AnyView>
         private var positioned = false
         private var expanded: Bool
         private var listWidth: CGFloat = 360
 
-        init(history: History, detail: Detail, expanded: Bool) {
+        init(history: History, detail: Detail, expanded: Bool, environment: EnvironmentValues) {
             self.expanded = expanded
-            historyHost = NSHostingController(rootView: history)
-            detailHost = NSHostingController(rootView: detail)
+            historyHost = NSHostingController(rootView: AnyView(history.environment(\.self, environment)))
+            detailHost = NSHostingController(rootView: AnyView(detail.environment(\.self, environment)))
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { nil }
@@ -28,11 +35,11 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
             splitView.isVertical = true
             splitView.dividerStyle = .thin
             let historyItem = NSSplitViewItem(viewController: historyHost)
-            historyItem.minimumThickness = 240
+            historyItem.minimumThickness = ClipboardPaneMetrics.minimumHistory
             historyItem.maximumThickness = 360
             historyItem.holdingPriority = NSLayoutConstraint.Priority(260)
             let detailItem = NSSplitViewItem(viewController: detailHost)
-            detailItem.minimumThickness = 340
+            detailItem.minimumThickness = ClipboardPaneMetrics.minimumPreview
             detailItem.holdingPriority = .defaultLow
             addSplitViewItem(historyItem)
             addSplitViewItem(detailItem)
@@ -66,11 +73,11 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
     }
 
     func makeNSViewController(context: Context) -> Controller {
-        Controller(history: history(), detail: detail(), expanded: expandHistory)
+        Controller(history: history(), detail: detail(), expanded: expandHistory, environment: context.environment)
     }
     func updateNSViewController(_ controller: Controller, context: Context) {
         controller.updateExpansion(expandHistory)
-        controller.historyHost.rootView = history()
-        controller.detailHost.rootView = detail()
+        controller.historyHost.rootView = AnyView(history().environment(\.self, context.environment))
+        controller.detailHost.rootView = AnyView(detail().environment(\.self, context.environment))
     }
 }

@@ -693,7 +693,10 @@ impl From<&EngineState> for EngineSnapshot {
     fn from(s: &EngineState) -> Self {
         let m = &s.model;
         let input = &m.input_sharing;
-        let quality_records = deskfuse_transport::motion_diag::quality_snapshot();
+        let quality_records = s.input_quality.as_ref().map_or_else(
+            deskfuse_transport::motion_diag::quality_snapshot,
+            |quality| quality.records.clone(),
+        );
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -707,7 +710,7 @@ impl From<&EngineState> for EngineSnapshot {
         let mut datagram_ready = None;
         for record in quality_records
             .iter()
-            .filter(|record| record.timestamp_ms >= cutoff)
+            .filter(|record| (cutoff..=now_ms).contains(&record.timestamp_ms))
         {
             datagram_ready = Some(record.ready);
             let second = (record.timestamp_ms.saturating_sub(cutoff) / 1_000) as i64;
@@ -716,6 +719,8 @@ impl From<&EngineState> for EngineSnapshot {
                 let rtt_ms = record.rtt_micros as f64 / 1_000.0;
                 sample.0.push(rtt_ms);
                 max_rtt_ms = Some(max_rtt_ms.map_or(rtt_ms, |max: f64| max.max(rtt_ms)));
+            } else {
+                sample.0.push(0.0);
             }
             if observed_seconds.insert(record.timestamp_ms / 1_000) {
                 quality.observe_motion_second();
@@ -745,18 +750,33 @@ impl From<&EngineState> for EngineSnapshot {
                 );
             }
         }
+        // Idle observations fill only seconds without input-link samples. They
+        // are graph continuity, not packet timings or hitch statistics.
+        for &(timestamp_ms, rtt_ms) in &s.idle_quality_samples {
+            if (cutoff..=now_ms).contains(&timestamp_ms) {
+                let second = (timestamp_ms.saturating_sub(cutoff) / 1_000) as i64;
+                samples
+                    .entry(second)
+                    .or_insert_with(|| (vec![rtt_ms], 0, 0));
+            }
+        }
         let quality = quality.snapshot();
         // 建议直接来自诊断报告，避免 Swift 再复制一份阈值规则。
         let lease_link = input
             .links
             .iter()
             .find(|link| link.control_session.is_some());
-        let quality_report = deskfuse_input::quality::build_report(
-            &deskfuse_core::quality_ticks(),
-            lease_link
-                .and_then(|link| link.motion_mode.as_deref())
-                .unwrap_or_default(),
-            lease_link.and_then(|link| link.motion_fallback_reason.as_deref()),
+        let quality_report = s.input_quality.as_ref().map_or_else(
+            || {
+                deskfuse_input::quality::build_report(
+                    &deskfuse_core::quality_ticks(),
+                    lease_link
+                        .and_then(|link| link.motion_mode.as_deref())
+                        .unwrap_or_default(),
+                    lease_link.and_then(|link| link.motion_fallback_reason.as_deref()),
+                )
+            },
+            |quality| quality.report.clone(),
         );
         let suggestions = quality_report
             .suggestions
@@ -1146,4 +1166,117 @@ pub fn preview_display_move(
         if attach { None } else { Some(snap_distance) },
     )?;
     Ok(LayoutOffset { x, y })
+}
+
+#[cfg(test)]
+mod input_quality_tests {
+    use super::*;
+
+    fn now() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+
+    #[test]
+    fn idle_curve_keeps_observed_seconds_without_faking_packet_statistics() {
+        let mut state = EngineState {
+            input_quality: Some(Default::default()),
+            ..Default::default()
+        };
+        let start = now().saturating_sub(3_000);
+        for second in 0..4 {
+            state.sample_idle_input_quality(start + second * 1_000);
+        }
+        let quality = EngineSnapshot::from(&state).input.quality;
+        assert_eq!(quality.samples.len(), 4);
+        assert!(
+            quality
+                .samples
+                .iter()
+                .all(|sample| sample.rtt_ms == Some(0.0))
+        );
+        assert_eq!(quality.rtt_p50_ms, None);
+        assert_eq!(quality.hitches_per_minute, 0.0);
+        assert_eq!(quality.grade, "idle");
+        assert_eq!(state.revision, 4);
+    }
+
+    #[test]
+    fn service_rtt_and_injection_counts_reach_ui_even_on_reliable_only_link() {
+        let mut state = EngineState::default();
+        let at = now().saturating_sub(100);
+        state.sample_idle_input_quality(at);
+        assert!(state.apply(
+            deskfuse_engine::tokio_bridge::UiEvent::InputQualitySnapshot(
+                deskfuse_runtime::input_service_types::InputServiceQuality {
+                    records: vec![deskfuse_transport::motion_diag::QualityRecord {
+                        timestamp_ms: at,
+                        rtt_micros: 7_500,
+                        hitches: 1,
+                        slow_injections: 2,
+                        capture_queue_micros: 9_000,
+                        capture_count: 1,
+                        ready: false,
+                    }],
+                    report: deskfuse_input::quality::build_report(
+                        &[],
+                        "reliable-only",
+                        Some("test fallback")
+                    ),
+                },
+            )
+        ));
+        let quality = EngineSnapshot::from(&state).input.quality;
+        assert_eq!(quality.samples.len(), 1);
+        assert_eq!(quality.samples[0].rtt_ms, Some(7.5));
+        assert_eq!(quality.samples[0].hitch_network, 1);
+        assert_eq!(quality.samples[0].hitch_capture, 1);
+        assert_eq!(quality.slow_injections, 2);
+        assert_eq!(quality.rtt_p50_ms, Some(7.5));
+        assert_eq!(quality.datagram_ready, Some(false));
+        assert!(!quality.suggestions.is_empty());
+    }
+
+    #[test]
+    fn idle_history_is_bounded_and_uses_only_the_connected_selected_route() {
+        let mut state = EngineState {
+            input_quality: Some(Default::default()),
+            ..Default::default()
+        };
+        let mut peer = state.model.local.clone();
+        peer.id = deskfuse_core::DeviceId::from_bytes([77; 32]).to_hex();
+        peer.trust = model::TrustState::Trusted;
+        peer.health = model::Health::Ready;
+        let mut active = deskfuse_core::RouteCandidate::new(
+            deskfuse_core::Endpoint::new("127.0.0.1", 42425).unwrap(),
+            deskfuse_core::RouteSource::Mdns,
+            deskfuse_core::RouteHealth::Healthy,
+            deskfuse_core::Capabilities::INPUT_SHARING,
+        );
+        active.rtt_ms = Some(12);
+        peer.selected_route_id = Some(active.id);
+        let mut unused = active.clone();
+        unused.id = deskfuse_core::RouteId::new();
+        unused.rtt_ms = Some(999);
+        peer.routes = vec![active, unused];
+        state.model.peers.push(peer);
+        let start = now().saturating_sub(65_000);
+        for second in 0..66 {
+            state.sample_idle_input_quality(start + second * 1_000);
+        }
+        assert_eq!(state.idle_quality_samples.len(), 60);
+        let quality = EngineSnapshot::from(&state).input.quality;
+        assert!(!quality.samples.is_empty());
+        assert!(
+            quality
+                .samples
+                .iter()
+                .all(|sample| sample.rtt_ms == Some(12.0))
+        );
+        state.model.peers[0].health = model::Health::Offline;
+        state.sample_idle_input_quality(now());
+        assert_eq!(state.idle_quality_samples.back().unwrap().1, 0.0);
+    }
 }

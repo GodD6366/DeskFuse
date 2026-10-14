@@ -15,7 +15,6 @@ struct InputView: View {
     @State private var retryingInput = false
     @State private var reconnectingDevices: Set<String> = []
     @State private var openSuggestionId: String?
-    @AppStorage("input.displayLayoutTipDismissed") private var displayLayoutTipDismissed = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -35,7 +34,7 @@ struct InputView: View {
                     }
                     if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
                     layout
-                        .frame(minHeight: 480, idealHeight: 560, maxHeight: 620)
+                        .frame(height: layoutHeight(in: geometry.size))
                     qualityChart
                     }
                     .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
@@ -55,9 +54,7 @@ struct InputView: View {
                     ],
                     permission: .accessibility,
                     actionTitle: "启用键鼠共享",
-                    action: { setSharingEnabled(true) },
-                    secondaryTitle: "打开共享设置",
-                    secondaryAction: { store.openSettings(tab: SettingsCategory.input.rawValue) }
+                    action: { setSharingEnabled(true) }
                 )
                 .padding(28)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,14 +64,14 @@ struct InputView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .systemSettingsContentBackground()
         .sheet(isPresented: $showAddDevice) {
             InputDevicePicker(snapshot: snapshot, adding: updatingSettings, error: store.error, onAdd: { id in
                 setParticipant(id, included: true)
             }, onOpenDevices: {
                 showAddDevice = false
                 store.selectedPage = .devices
-            })
+            }).floatingWorkspaceStyle()
         }
         .onChange(of: snapshot.input.canConfigure) { _, allowed in
             if !allowed { showAddDevice = false }
@@ -107,11 +104,14 @@ struct InputView: View {
         var id: Double { second }
     }
 
+    private var compactQuality: Bool { !snapshot.input.canConfigure }
+
     private var qualityChart: some View {
         let quality = snapshot.input.quality
-        let points = latencyPoints(quality)
+        let sampledPoints = latencyPoints(quality)
+        let points = sampledPoints.isEmpty ? [LatencyPoint(second: 60, rttMs: 0, series: 0)] : sampledPoints
         let hitches = hitchTicks(quality)
-        let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0 || !points.isEmpty
+        let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0
         let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? points.last?.rttMs
         var levels = points.map(\.rttMs)
         if let peak = quality.rttMaxMs { levels.append(peak) }
@@ -125,26 +125,15 @@ struct InputView: View {
         } ?? false
         let calloutSecond = latencyCalloutSecond(points)
         let runCount = Dictionary(grouping: points, by: \.series).mapValues(\.count)
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: compactQuality ? 6 : 16) {
             qualityHeader(status: blocked != nil ? ("暂不可用", Color.orange) : status)
-            if let blocked, points.isEmpty {
-                qualityPlaceholder(title: "输入暂不可用", message: blocked,
-                                   symbol: "exclamationmark.triangle", tint: .orange)
-            } else if points.isEmpty {
-                qualityPlaceholder(title: "等待输入数据",
-                                   message: quality.hitchesPerMinute > 0
-                                    ? "这一分钟有网络卡顿计数，还没有可绘制的往返时间。"
-                                    : "设备连接就绪后，这里会持续显示最近 60 秒的往返延迟。",
-                                   symbol: "waveform.path.ecg", tint: .accentColor)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    if let typical {
-                        latencyHero(typical: typical, peak: showsPeak ? quality.rttMaxMs : nil)
-                    }
-                    latencyChart(points: points, runCount: runCount, series: series,
-                                 ceiling: ceiling, calloutSecond: calloutSecond, typical: typical,
-                                 hitchTicks: hitches)
+            VStack(alignment: .leading, spacing: 10) {
+                if !compactQuality, let typical {
+                    latencyHero(typical: typical, peak: showsPeak ? quality.rttMaxMs : nil)
                 }
+                latencyChart(points: points, runCount: runCount, series: series,
+                             ceiling: ceiling, calloutSecond: calloutSecond, typical: typical,
+                             hitchTicks: hitches)
             }
             Divider()
             HStack(spacing: 16) {
@@ -153,58 +142,26 @@ struct InputView: View {
                 qualityMetric("网络卡顿", hitchRate(quality.hitchesPerMinute))
                 qualityMetric("慢注入", "\(quality.slowInjections)")
             }
-            if !hitches.isEmpty {
+            if !compactQuality, !hitches.isEmpty {
                 HStack(spacing: 12) {
                     legendItem(hitchCaptureColor, "注入慢")
                     legendItem(hitchNetworkColor, "网络卡顿")
                 }
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
             }
-            if let fallback = pointerFallback {
-                Label(fallback, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !quality.suggestions.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("优化建议")
-                        .font(.caption.weight(.semibold))
-                    ForEach(quality.suggestions, id: \.id) { suggestion in
-                        Button {
-                            openSuggestionId = openSuggestionId == suggestion.id ? nil : suggestion.id
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Label {
-                                    Text(suggestion.trigger)
-                                        .multilineTextAlignment(.leading)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                } icon: {
-                                    Image(systemName: suggestionSymbol(suggestion.priority))
-                                        .foregroundStyle(suggestionTint(suggestion.priority))
-                                }
-                                Spacer(minLength: 0)
-                                Image(systemName: "info.circle")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: Binding(
-                            get: { openSuggestionId == suggestion.id },
-                            set: { shown in if !shown { openSuggestionId = nil } }
-                        ), arrowEdge: .bottom) {
-                            suggestionDetail(suggestion)
-                        }
-                    }
-                }
+            if !compactQuality {
+                qualityAdvice(quality)
             }
             DisclosureGroup("查看诊断详情") {
                 VStack(alignment: .leading, spacing: 6) {
+                    if compactQuality {
+                        qualityAdvice(quality)
+                    }
+                    if let blocked {
+                        Text(blocked).foregroundStyle(.orange)
+                    }
+                    Text("每秒更新；空闲时显示设备连接延迟，没有可用延迟时显示 0。")
                     Text("当前模式：\(pointerModeLabel)")
                     Text("数据报通道：\(datagramChannelDescription)")
                     Text("慢注入 \(quality.slowInjections) 次")
@@ -214,17 +171,65 @@ struct InputView: View {
                     }
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
             }
             .font(.caption.weight(.medium))
-            Text("最近 60 秒 · 网络输入路径计时和计数，不记录坐标或按键内容")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            if !compactQuality {
+                Text("最近 60 秒 · 每秒更新，空闲时显示连接延迟或 0")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .padding(18)
+        .padding(compactQuality ? 10 : 18)
         .systemSettingsBlock()
+    }
+
+    @ViewBuilder
+    private func qualityAdvice(_ quality: InputQuality) -> some View {
+        if let fallback = pointerFallback {
+            Label(fallback, systemImage: "info.circle")
+                .font(.caption)
+                .workspaceSecondaryText()
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if !quality.suggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("优化建议")
+                    .font(.caption.weight(.semibold))
+                ForEach(quality.suggestions, id: \.id) { suggestion in
+                    Button {
+                        openSuggestionId = openSuggestionId == suggestion.id ? nil : suggestion.id
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Label {
+                                Text(suggestion.trigger)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: suggestionSymbol(suggestion.priority))
+                                    .foregroundStyle(suggestionTint(suggestion.priority))
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "info.circle")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.caption)
+                        .workspaceSecondaryText()
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: Binding(
+                        get: { openSuggestionId == suggestion.id },
+                        set: { shown in if !shown { openSuggestionId = nil } }
+                    ), arrowEdge: .bottom) {
+                        suggestionDetail(suggestion).floatingWorkspaceStyle()
+                    }
+                }
+            }
+        }
     }
 
     /// 卡片头部：左侧标题，右侧当前输入模式与状态胶囊。
@@ -232,10 +237,11 @@ struct InputView: View {
         HStack(alignment: .center, spacing: 10) {
             Label("流畅度", systemImage: "chart.xyaxis.line")
                 .font(.system(size: 14, weight: .semibold))
+                .fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 8)
             Text(pointerModeLabel)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
             datagramChannelBadge
             HStack(spacing: 5) {
                 Circle()
@@ -285,40 +291,14 @@ struct InputView: View {
                 .monospacedDigit()
             Text("典型往返延迟")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
             Spacer(minLength: 8)
             if let peak {
                 Text("峰值 \(milliseconds(peak))")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
             }
         }
-    }
-
-    /// 空态与不可用态共用同一占位结构，高度与图表一致，切换时不跳动。
-    private func qualityPlaceholder(title: String, message: String, symbol: String, tint: Color) -> some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.12))
-                    .frame(width: 52, height: 52)
-                Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(tint)
-            }
-            VStack(spacing: 5) {
-                Text(title)
-                    .font(.callout.weight(.semibold))
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 420)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 168)
     }
 
     private func latencyChart(points: [LatencyPoint], runCount: [Int: Int], series: Color,
@@ -373,7 +353,7 @@ struct InputView: View {
                     ) {
                         Text(milliseconds(point.rttMs))
                             .font(.caption2.weight(.medium).monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .workspaceSecondaryText()
                     }
                 } else if points.count <= 8 || (runCount[point.series] ?? 0) == 1 || points.last?.second == point.second as Double? {
                     PointMark(
@@ -392,7 +372,7 @@ struct InputView: View {
                 AxisValueLabel {
                     Text(latencyTimeLabel(value.as(Double.self) ?? 0))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                 }
             }
         }
@@ -403,7 +383,7 @@ struct InputView: View {
                 AxisValueLabel {
                     Text(latencyAxisTick(value.as(Double.self) ?? 0, ceiling: ceiling))
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                 }
             }
         }
@@ -422,7 +402,7 @@ struct InputView: View {
             }
             .allowsHitTesting(false)
         }
-        .frame(height: 168)
+        .frame(height: compactQuality ? 84 : 168)
         .accessibilityLabel("最近 60 秒往返延迟")
         .accessibilityValue(milliseconds(typical))
     }
@@ -468,7 +448,7 @@ struct InputView: View {
                 .foregroundStyle(.tertiary)
             Text(body)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -490,12 +470,15 @@ struct InputView: View {
     }
 
     private func qualityMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let layout = compactQuality
+            ? AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 3))
+        return layout {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             Text(value)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: compactQuality ? 13 : 15, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(.primary)
         }
@@ -614,11 +597,11 @@ struct InputView: View {
     private var receiverState: some View {
         VStack(spacing: 20) {
             Image(systemName: snapshot.input.managedPaused ? "pause.circle" : "keyboard")
-                .font(.system(size: 44, weight: .light)).foregroundStyle(.secondary)
+                .font(.system(size: 44, weight: .light)).workspaceSecondaryText()
                 .accessibilityHidden(true)
             Text(snapshot.input.managedPaused ? "已停止被控" : snapshot.input.managed ? "被控状态" : snapshot.input.settings.controller ? "主控已自动暂停" : "等待主控")
-                .font(.system(size: 26, weight: .bold))
-            Text(snapshot.input.summary).font(.callout).foregroundStyle(.secondary)
+                .font(WorkspaceTypography.section)
+            Text(snapshot.input.summary).font(.callout).workspaceSecondaryText()
                 .multilineTextAlignment(.center)
             qualityChart
             if snapshot.input.managed {
@@ -627,12 +610,10 @@ struct InputView: View {
                     .disabled(snapshot.input.managedPaused)
             } else {
                 if snapshot.input.settings.controller {
-                    Text(snapshot.input.environmentMessage).font(.callout).foregroundStyle(.secondary)
+                    Text(snapshot.input.environmentMessage).font(.callout).workspaceSecondaryText()
                         .multilineTextAlignment(.center)
                 }
                 Button(snapshot.input.settings.controller ? "本次使用此 Mac 作为主控" : "在此 Mac 启用主控") { enableAsController() }
-                    .modifier(NativeGlassAction())
-                Button("共享设置") { store.openSettings(tab: SettingsCategory.input.rawValue) }
                     .modifier(NativeGlassAction())
             }
         }.frame(maxWidth: 520)
@@ -640,50 +621,65 @@ struct InputView: View {
 
     private var heading: some View {
         /// 标题与开关行视作页头的一组：行间距对齐 SystemSettingsPageHeader
-        /// 标题-副行的密度，26pt 大标题不再拖着整组垂直居中。
-        VStack(alignment: .leading, spacing: 6) {
-            Text("当前屏幕排布").font(.system(size: 26, weight: .bold)).fixedSize()
-            HStack(spacing: 8) {
-                Text("本机主控").font(.callout.weight(.medium))
-                Toggle("本机主控", isOn: Binding(
-                    get: { snapshot.input.settings.controller },
-                    set: { enabled in
-                        var settings = (store.snapshot ?? snapshot).input.settings
-                        settings.controller = enabled
-                        if !enabled { settings.enabled = false }
-                        applySettings(settings)
-                    }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(updatingSettings || snapshot.input.managed)
-                Image(systemName: "info.circle")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .help("开启后，这台 Mac 可以管理屏幕排布并控制已添加设备；关闭后只参与被控。")
-                    .accessibilityLabel("本机主控说明")
-                Text("共享键鼠").font(.callout.weight(.medium))
-                Toggle("共享键鼠", isOn: Binding(
-                    get: { snapshot.input.settings.enabled },
-                    set: { setSharingEnabled($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(updatingSettings || snapshot.input.managed || !snapshot.input.settings.controller)
+        /// 标题与说明沿用主窗口的统一层级。
+        VStack(alignment: .leading, spacing: 10) {
+            Text("当前屏幕排布").font(WorkspaceTypography.section).fixedSize()
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 28) {
+                    controllerSetting
+                    sharingSetting
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    controllerSetting
+                    sharingSetting
+                }
             }
+        }
+    }
+
+    private var controllerSetting: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle("本机主控", isOn: Binding(
+                get: { snapshot.input.settings.controller },
+                set: { enabled in
+                    var settings = (store.snapshot ?? snapshot).input.settings
+                    settings.controller = enabled
+                    if !enabled { settings.enabled = false }
+                    applySettings(settings)
+                }
+            ))
+            .font(.callout.weight(.medium))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(updatingSettings || snapshot.input.managed)
+            Text("由这台 Mac 管理屏幕排布，作为控制端。")
+                .font(.caption)
+                .workspaceSecondaryText()
+        }
+        .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
+    }
+
+    private var sharingSetting: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle("共享键鼠", isOn: Binding(
+                get: { snapshot.input.settings.enabled },
+                set: { setSharingEnabled($0) }
+            ))
+            .font(.callout.weight(.medium))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(updatingSettings || snapshot.input.managed || !snapshot.input.settings.controller)
+            Text("使用本机键鼠控制已添加的设备。")
+                .font(.caption)
+                .workspaceSecondaryText()
         }
     }
 
     private var headerActions: some View {
         NativeGlassGroup {
             HStack(alignment: .center, spacing: 12) {
-                WorkspaceChromeButton("添加设备屏幕", systemImage: "plus", prominent: true) {
+                WorkspaceChromeButton("添加设备", systemImage: "plus", prominent: true) {
                     showAddDevice = true
-                }
-                WorkspaceChromeButton("共享设置", systemImage: "slider.horizontal.3") {
-                    store.openSettings(tab: SettingsCategory.input.rawValue)
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
@@ -756,20 +752,38 @@ struct InputView: View {
             HStack(alignment: .center, spacing: 12) {
                 Text("\(snapshot.input.displays.count) 个屏幕")
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
+                Spacer(minLength: 8)
+                Text("拖动屏幕以匹配实际摆放位置 · pt 为 macOS 逻辑尺寸")
+                    .font(.caption).workspaceSecondaryText()
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             DisplayLayout(store: store, snapshot: snapshot, onRemoveDevice: { id in
                 setParticipant(id, included: false)
             }, onReconnectDevice: reconnectDevice, reconnecting: reconnectingDevices,
-               editingDisabled: updatingSettings,
-               layoutTipVisible: !displayLayoutTipDismissed,
-               onLayoutInteraction: { displayLayoutTipDismissed = true })
+               editingDisabled: updatingSettings)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
         .systemSettingsBlock()
+    }
+
+    /// Follow the combined desktop aspect ratio while reserving room for the
+    /// quality card in the standard window height.
+    private func layoutHeight(in size: CGSize) -> CGFloat {
+        let displays = snapshot.input.displays
+        guard !displays.isEmpty else { return min(300, max(220, size.height - 430)) }
+        let minX = displays.map(\.x).min() ?? 0
+        let minY = displays.map(\.y).min() ?? 0
+        let maxX = displays.map { $0.x + $0.width }.max() ?? 1
+        let maxY = displays.map { $0.y + $0.height }.max() ?? 1
+        let aspect = max(0.5, (maxX - minX) / max(1, maxY - minY))
+        let contentWidth = max(320, size.width - SystemSettingsMetrics.pageHorizontalInset * 2 - 64)
+        let aspectHeight = contentWidth / aspect + 110
+        let availableHeight = max(220, min(400, size.height - 430))
+        return min(max(220, aspectHeight), availableHeight)
     }
 
 }

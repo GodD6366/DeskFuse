@@ -30,6 +30,15 @@ struct ClipboardLibraryList: Codable, Equatable, Identifiable {
     var match_mode = "all"
     var position: Int = 0
     var rules: [ClipboardLibraryRule] = []
+
+    // Canonical IDs from clipboard_library.rs; names remain editable.
+    var isDefaultTypeGroup: Bool {
+        ["67f10b9a-9f3c-508d-8090-4192e3ea297f", "9bd6453f-f270-5d1e-b806-b7cab97ae197",
+         "96479303-4816-53e6-b7b3-d2b67704d587"].contains(id)
+    }
+    var filtersOnlyImages: Bool {
+        kind == "smart" && rules.count == 1 && rules[0].field == "kind" && rules[0].op == "is" && rules[0].value == "image"
+    }
 }
 struct ClipboardLibraryChoice: Codable, Equatable, Identifiable { var id: String; var name: String }
 struct ClipboardLibraryApp: Codable, Equatable, Identifiable { var bundle_id: String; var name: String; var id: String { bundle_id } }

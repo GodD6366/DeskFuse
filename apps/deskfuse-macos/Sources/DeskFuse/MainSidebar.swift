@@ -6,76 +6,106 @@ import DeskFuseEngine
 struct MainSidebar: View {
     @Bindable var store: AppStore
 
-    var body: some View {
-        List(selection: $store.selectedPage) {
-            Section("功能") {
-                ForEach(Page.allCases.filter { $0 != .devices }) { page in
-                    SystemSettingsSidebarRow(
-                        title: page.rawValue,
-                        symbol: page.symbol,
-                        color: page.color,
-                        selected: store.selectedPage == page,
-                        badge: page == .remoteApplications ? "Beta" : nil
-                    )
-                    .tag(page)
-                    .listRowInsets(SystemSettingsMetrics.rowInsets)
-                    .listRowBackground(Color.clear)
-                }
-            }
-            Section("配置") {
-                SystemSettingsSidebarRow(
-                    title: Page.devices.rawValue,
-                    symbol: Page.devices.symbol,
-                    color: Page.devices.color,
-                    selected: store.selectedPage == .devices
-                )
-                .tag(Page.devices)
-                .listRowInsets(SystemSettingsMetrics.rowInsets)
-                .listRowBackground(Color.clear)
-                Button { store.openSettings() } label: {
-                    SystemSettingsSidebarRow(title: "设置", symbol: "gearshape", color: .gray, selected: false)
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(SystemSettingsMetrics.rowInsets)
-                .listRowBackground(Color.clear)
-            }
-        }
-        .listStyle(.sidebar)
-        .listSectionSeparator(.hidden, edges: .all)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, SystemSettingsMetrics.rowHeight)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        DeskFuseBrandMark()
-                        Text("DeskFuse")
-                            .font(.system(size: 20, weight: .semibold))
-                            .lineLimit(1)
-                            .fixedSize()
-                    }
-                    Text("跨设备工作区")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 20)
-            .padding(.trailing, 12)
-            .padding(.top, 16)
-            .padding(.bottom, 12)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            SidebarDeviceStatus(store: store)
-        }
-        .systemSettingsSidebarBackground()
+    @Environment(\.colorScheme) private var scheme
+    private var categorySelection: Binding<SettingsCategory> {
+        Binding(get: { store.settingsDestination.category }, set: {
+            store.settingsDestination.category = $0
+            store.selectedPage = .settings
+        })
     }
 
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                DeskFuseBrandMark()
+                Text("DeskFuse").font(.system(size: 16, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 16)
 
+            List(selection: $store.selectedPage) {
+                sectionTitle("功能")
+                ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
+                    QuietSidebarRow(title: page.rawValue, symbol: page.symbol,
+                        selected: store.selectedPage == page,
+                        badge: page == .remoteApplications ? "Beta" : nil)
+                        .tag(page)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                sectionTitle("配置")
+                QuietSidebarRow(title: Page.devices.rawValue, symbol: Page.devices.symbol,
+                                selected: store.selectedPage == .devices)
+                    .tag(Page.devices)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .contentMargins(.horizontal, 0, for: .scrollContent)
+            .listSectionSeparator(.hidden, edges: .all)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 32)
+            // Plain List adds an 8 pt row inset; match the settings button's 10 pt edge.
+            .padding(.horizontal, 2)
+
+            VStack(spacing: 4) {
+                Button { store.openSettings() } label: {
+                    QuietSidebarRow(title: "设置", symbol: "gearshape", selected: store.selectedPage == .settings)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                if store.selectedPage == .settings {
+                    List(selection: categorySelection) {
+                        ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
+                            QuietSidebarRow(title: category.title,
+                                            selected: store.settingsDestination.category == category)
+                                .tag(category)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, 32)
+                    .frame(height: CGFloat(SettingsCategory.allCases.count) * 32)
+                    .padding(.leading, 26).padding(.trailing, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(QuietWorkspacePalette.line(scheme))
+                            .frame(width: 1).padding(.leading, 20).padding(.vertical, 4)
+                    }
+                    .accessibilityLabel("设置分类")
+                }
+                SidebarDeviceStatus(store: store)
+            }
+            .padding(.top, 8)
+            .overlay(alignment: .top) {
+                Rectangle().fill(QuietWorkspacePalette.line(scheme)).frame(height: 0.5)
+            }
+        }
+        .quietWorkspaceStyle()
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(QuietWorkspacePalette.line(scheme)).frame(width: 0.5)
+        }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11))
+            .workspaceSecondaryText()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityAddTraits(.isHeader)
+    }
 }
+
 
 private struct DeskFuseBrandMark: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -99,8 +129,7 @@ private struct DeskFuseBrandMark: View {
                     .scaledToFit()
             }
         }
-        .frame(width: 34, height: 34)
-        .modifier(BrandGlow())
+        .frame(width: 22, height: 22)
         .accessibilityHidden(true)
     }
 }
@@ -118,9 +147,9 @@ private struct SidebarDeviceStatus: View {
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
                     }
-                    Text(versionText)
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(.tertiary)
+                    Text("\(store.snapshot?.devices.filter(\.connected).count ?? 0) 台设备已连接")
+                        .font(.system(size: 12, weight: .regular))
+                        .workspaceSecondaryText()
                         .lineLimit(1)
                 }
                 .contentShape(Rectangle())
@@ -146,7 +175,6 @@ private struct SidebarDeviceStatus: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .systemSettingsBlock()
         .padding(.horizontal, 10)
         .padding(.bottom, 10)
     }
@@ -156,10 +184,4 @@ private struct SidebarDeviceStatus: View {
         return store.snapshot == nil || store.starting ? .secondary : .green
     }
 
-    private var versionText: String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        let version = info["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info["CFBundleVersion"] as? String
-        return build.map { "v\(version) (\($0))" } ?? "v\(version)"
-    }
 }

@@ -105,7 +105,7 @@ impl DeviceNetworkState {
                         .members
                         .iter()
                         .map(|m| m.device_id)
-                        .filter(|id| !blocked.contains(id))
+                        .filter(|id| !blocked.contains(id) && !self.origins.forgotten.contains(id))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -210,6 +210,17 @@ impl Actor {
         self.device_network.origins_loaded = true;
         Ok(())
     }
+    pub(super) async fn remember_forgotten_network_peer(
+        &mut self,
+        peer: DeviceId,
+    ) -> Result<(), RuntimeError> {
+        if self.transport.supports_network_pairing() {
+            let mut origins = self.device_network.origins.clone();
+            origins.forgotten.insert(peer);
+            self.persist_network_origins(origins).await?;
+        }
+        Ok(())
+    }
     pub(super) async fn load_device_network(&mut self) {
         let store = self.persistence.clone();
         match task::spawn_blocking(move || store.reconnect_suspended()).await {
@@ -260,6 +271,14 @@ impl Actor {
                 }
                 for peer in &self.device_network.origins.network_revoked {
                     self.blocked.remove(peer);
+                    if let Some(state) = self.peers.get_mut(peer) {
+                        state.trust = TrustState::Unknown;
+                    }
+                }
+                // A forget decision may have persisted before trust/peer
+                // deletion failed. Never restore that stale trust on startup.
+                for peer in &self.device_network.origins.forgotten {
+                    self.trusted.remove(peer);
                     if let Some(state) = self.peers.get_mut(peer) {
                         state.trust = TrustState::Unknown;
                     }
@@ -408,14 +427,23 @@ impl Actor {
         if self.device_network.pending.len() >= 16 {
             return Err(invalid("too many pending network invitations"));
         }
+        let existing_member = self.device_network.roster.as_ref().and_then(|roster| {
+            roster
+                .roster
+                .members
+                .iter()
+                .find(|m| m.device_id == peer)
+                .cloned()
+        });
         if let Some(roster) = &self.device_network.roster {
-            if roster.roster.members.iter().any(|m| m.device_id == peer)
+            if existing_member.is_some()
                 && !self.blocked.contains(&peer)
+                && !self.device_network.origins.forgotten.contains(&peer)
             {
                 self.connect_peer(peer).await;
                 return Ok(());
             }
-            if roster.roster.members.len() >= 32 {
+            if roster.roster.members.len() >= 32 && existing_member.is_none() {
                 return Err(invalid("device network supports at most 32 devices"));
             }
         }
@@ -498,6 +526,20 @@ impl Actor {
             }
         }
         let (endpoint, remote) = selected.ok_or(last_error)?;
+        if let Some(mut member) = existing_member
+            && self.device_network.origins.forgotten.contains(&peer)
+        {
+            // This local request is fresh consent for a still-valid network
+            // member. Verify its live Hello before restoring only this peer;
+            // a roster push or another member's request cannot take this path.
+            if remote.public_key.as_slice() != member.public_key {
+                return Err(invalid("pairing hello does not match network member"));
+            }
+            member.endpoint = endpoint;
+            self.admit_network_member_with_consent(member).await?;
+            self.connect_peer(peer).await;
+            return Ok(());
+        }
         if let Some(roster) = self.device_network.roster.clone()
             && roster.roster.owner.device_id != self.identity.device_id()
         {
@@ -663,6 +705,7 @@ impl Actor {
                             .await;
                     }
                     if !reauthorizing
+                        && !self.device_network.origins.forgotten.contains(&peer)
                         && current.roster.network_id == offer.roster.roster.network_id
                         && current
                             .roster
@@ -951,7 +994,12 @@ impl Actor {
             })?;
             self.persist_network(roster.clone()).await?;
             for joining in &offer.roster.roster.members {
-                self.admit_network_member(joining.clone()).await?;
+                if joining.device_id == peer {
+                    self.admit_network_member_with_consent(joining.clone())
+                        .await?;
+                } else {
+                    self.admit_network_member(joining.clone()).await?;
+                }
             }
             if let Some(incoming) = self.device_network.incoming.remove(&attempt) {
                 let _ = incoming.reply.send(payload);
@@ -975,7 +1023,7 @@ impl Actor {
                 self.blocked.remove(&peer);
             }
             if let Err(error) = self
-                .admit_network_member(offer.roster.roster.owner.clone())
+                .admit_network_member_with_consent(offer.roster.roster.owner.clone())
                 .await
             {
                 if reauthorizing {
@@ -1060,8 +1108,37 @@ impl Actor {
         );
         Ok(())
     }
+    async fn admit_network_member_with_consent(
+        &mut self,
+        member: NetworkMember,
+    ) -> Result<(), RuntimeError> {
+        let peer = member.device_id;
+        let mut origins = self.device_network.origins.clone();
+        let forgotten = origins.forgotten.remove(&peer);
+        if forgotten {
+            self.persist_network_origins(origins).await?;
+        }
+        let result = self.admit_network_member(member).await;
+        if result.is_err() && forgotten {
+            let mut origins = self.device_network.origins.clone();
+            origins.forgotten.insert(peer);
+            self.persist_network_origins(origins).await?;
+            self.trusted.remove(&peer);
+            if let Some(state) = self.peers.get_mut(&peer) {
+                state.trust = TrustState::Unknown;
+            }
+            self.publish();
+        }
+        result
+    }
     async fn admit_network_member(&mut self, member: NetworkMember) -> Result<(), RuntimeError> {
-        if member.device_id == self.identity.device_id() || self.blocked.contains(&member.device_id)
+        if member.device_id == self.identity.device_id()
+            || self.blocked.contains(&member.device_id)
+            || self
+                .device_network
+                .origins
+                .forgotten
+                .contains(&member.device_id)
         {
             return Ok(());
         }
@@ -1159,6 +1236,7 @@ impl Actor {
             && roster.roster.members.iter().all(|m| {
                 m.device_id == self.identity.device_id()
                     || self.blocked.contains(&m.device_id)
+                    || self.device_network.origins.forgotten.contains(&m.device_id)
                     || (self.trusted.contains(&m.device_id)
                         && self.registered_identities.get(&m.device_id) == Some(&m.public_key))
             })
@@ -1386,9 +1464,11 @@ impl Actor {
             // The periodic signed roster may arrive before this response.
             if roster.network_id == joined.roster.network_id && roster.owner == joined.roster.owner
             {
+                let member = joined.roster.owner.clone();
                 if roster.epoch < joined.roster.epoch {
                     self.accept_network_roster(hello.device_id, joined).await?;
                 }
+                self.admit_network_member_with_consent(member).await?;
                 return Ok(PairingOutcome::Accepted);
             }
             if roster != *offered || self.device_network.pending.len() != 1 {
@@ -1396,7 +1476,11 @@ impl Actor {
             }
             self.persist_network(joined.clone()).await?;
             for member in joined.roster.members {
-                self.admit_network_member(member).await?;
+                if member.device_id == outgoing.peer {
+                    self.admit_network_member_with_consent(member).await?;
+                } else {
+                    self.admit_network_member(member).await?;
+                }
             }
             return Ok(PairingOutcome::Accepted);
         }
@@ -1419,7 +1503,8 @@ impl Actor {
             .ok_or_else(|| invalid("network epoch overflow"))?;
         let roster = SignedNetworkRoster::signed(roster, &self.identity).map_err(invalid)?;
         self.persist_network(roster.clone()).await?;
-        self.admit_network_member(decision.member).await?;
+        self.admit_network_member_with_consent(decision.member)
+            .await?;
         self.spawn_network_exchange(
             outgoing.peer,
             outgoing.endpoint.clone(),

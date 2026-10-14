@@ -3,6 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct ClipboardLibraryTabs: View {
+    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.colorScheme) private var scheme
     @Bindable var library = ClipboardLibraryStore.shared
     @Binding var selectedListID: String?
     var spacious = false
@@ -13,18 +15,14 @@ struct ClipboardLibraryTabs: View {
             if vertical {
                 VStack(alignment: .leading, spacing: 4) {
                     verticalTab("全部", id: nil, symbol: "rectangle.stack", count: library.counts["all"])
-                    ForEach(library.lists) { list in
-                        verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: library.counts[list.id])
-                            .contextMenu {
-                                Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
-                                Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
-                                Button("向后移动") { move(list, by: 1) }.disabled(library.lists.last?.id == list.id)
-                                Divider()
-                                Button("删除列表", role: .destructive) {
-                                    if selectedListID == list.id { selectedListID = nil }
-                                    library.perform(["op": "delete_list", "id": list.id])
-                                }
-                            }
+                    sectionLabel("类型")
+                    ForEach(library.lists.filter(\.isDefaultTypeGroup)) { list in
+                        verticalList(list)
+                    }
+                    Divider().padding(.vertical, 6)
+                    sectionLabel("我的分组")
+                    ForEach(library.lists.filter { !$0.isDefaultTypeGroup }) { list in
+                        verticalList(list)
                     }
                     Divider().padding(.vertical, 8)
                     newListButton(label: "新建智能分组", vertical: true)
@@ -61,6 +59,26 @@ struct ClipboardLibraryTabs: View {
             if let selectedListID, !lists.contains(where: { $0.id == selectedListID }) { self.selectedListID = nil }
         }
     }
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title).font(.caption.weight(.medium)).workspaceSecondaryText()
+            .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func verticalList(_ list: ClipboardLibraryList) -> some View {
+        verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: library.counts[list.id])
+            .contextMenu {
+                Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
+                Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
+                Button("向后移动") { move(list, by: 1) }.disabled(library.lists.last?.id == list.id)
+                Divider()
+                Button("删除列表", role: .destructive) {
+                    if selectedListID == list.id { selectedListID = nil }
+                    library.perform(["op": "delete_list", "id": list.id])
+                }
+            }
+    }
+
     private func editTypeGroup(name: String, value: String) {
         editing = ClipboardLibraryList(name: name, kind: "smart",
             rules: [ClipboardLibraryRule(field: "kind", op: "is", value: value)])
@@ -93,14 +111,15 @@ struct ClipboardLibraryTabs: View {
                 Spacer(minLength: 0)
                 if let count {
                     Text("\(count)").font(.caption).monospacedDigit()
-                        .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
+                        .foregroundStyle(selected && !quiet ? Color.white.opacity(0.8) : QuietWorkspacePalette.secondaryText(scheme))
                 }
             }
             .font(.system(size: 13))
             .padding(.horizontal, 8)
             .frame(height: SystemSettingsMetrics.rowHeight)
-            .foregroundStyle(selected ? Color.white : Color.primary)
-            .background(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear), in: shape)
+            .foregroundStyle(selected && !quiet ? Color.white : count == 0 && !selected ? QuietWorkspacePalette.secondaryText(scheme) : Color.primary)
+            .background(selected ? AnyShapeStyle(quiet ? QuietWorkspacePalette.surface(scheme) : Color.accentColor)
+                                 : AnyShapeStyle(.clear), in: shape)
             .animation(Motion.snappy, value: selected)
             .contentShape(shape)
         }

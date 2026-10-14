@@ -18,14 +18,15 @@ struct GeneralSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SettingsGroupCard("功能") {
-                    featureRow(symbol: "doc.on.clipboard", color: .blue,
-                               title: "自动同步剪贴板", isOn: $clipboardEnabled, enabled: ready)
+                    featureRow(symbol: "doc.on.clipboard", title: "自动同步剪贴板",
+                               detail: "关闭主窗口后继续共享，退出 DeskFuse 时停止。",
+                               isOn: $clipboardEnabled, enabled: ready)
                     Divider()
-                    featureRow(symbol: "rectangle.on.rectangle", color: .purple,
+                    featureRow(symbol: "rectangle.on.rectangle",
                                title: "键鼠共享", isOn: $inputSharingEnabled, enabled: ready)
                     if let remoteApplicationEnabled {
                         Divider()
-                        featureRow(symbol: "square.grid.2x2", color: .teal,
+                        featureRow(symbol: "square.grid.2x2",
                                    title: "远程应用", isOn: remoteApplicationEnabled,
                                    enabled: true, beta: remoteApplicationBeta)
                     }
@@ -34,77 +35,55 @@ struct GeneralSettingsView: View {
                         LanWebFeatureToggle(client: lanWebClient)
                     }
                     Divider()
-                    Text("拖拽文件时晃动鼠标可呼出暂存区。\n关闭主窗口后继续共享，退出 DeskFuse 时停止。")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    QuietSettingsRow(title: "文件暂存区", detail: "拖拽文件时晃动鼠标可呼出暂存区。", symbol: "tray") {
+                        EmptyView()
+                    }
                 }
                 SettingsGroupCard("系统") {
                     LoginItemSettingsView()
                     Divider()
-                    settingsToggle("隐藏 Dock 图标", isOn: $hideDockIcon)
+                    QuietSettingsToggle("隐藏 Dock 图标",
+                        detail: "隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。", isOn: $hideDockIcon)
                     Divider()
-                    settingsToggle("保持电脑唤醒", isOn: $keepAwake)
-                    Divider()
-                    Text("隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。\n保持唤醒将阻止系统自动休眠和显示器休眠，关闭应用时自动恢复。")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    QuietSettingsToggle("保持电脑唤醒",
+                        detail: "阻止系统和显示器自动休眠，关闭应用时自动恢复。", isOn: $keepAwake)
                 }
                 SettingsGroupCard("诊断") {
-                    settingsToggle("记录 Debug 日志", isOn: $debugLoggingEnabled, enabled: ready)
+                    QuietSettingsToggle("记录 Debug 日志",
+                        detail: "日志默认开启，按小时保存，自动删除超过 7 天的记录；关闭后仍记录错误。\n不包含剪贴板正文、文件内容或凭据。保存位置：~/Library/Logs/DeskFuse。",
+                        isOn: $debugLoggingEnabled)
+                        .disabled(!ready)
                     Divider()
-                    HStack {
-                        Text("导出诊断")
-                        Spacer(minLength: 16)
+                    QuietSettingsRow(title: "导出诊断",
+                        detail: "附带当前进程、OCR helper 的 RSS / physical footprint 和已链接框架。") {
                         WorkspaceChromeButton(exportingDiagnostics ? "正在导出…" : "导出…", systemImage: "square.and.arrow.up", action: exportDiagnostics)
                             .disabled(!ready || exportingDiagnostics)
                     }
-                    Divider()
-                    Text("日志默认开启，按小时保存，自动删除超过 7 天的日志；导出诊断会附带当前进程、OCR helper 的 RSS/physical footprint 和已链接框架。\n关闭后仍记录错误；不包含剪贴板正文、文件内容或凭据。磁盘日志位于 ~/Library/Logs/DeskFuse。")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 560, alignment: .leading)
                 }
             }
-            .font(.system(size: 15))
-            .frame(maxWidth: SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
+            .font(.system(size: 13))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, SystemSettingsMetrics.formPageHorizontalInset)
+            .padding(.horizontal, 20)
             .padding(.bottom, SystemSettingsMetrics.formPageBottomInset)
         }
     }
 
-    /// 功能总开关行：16pt 彩色符号 + 名称 + 右置开关，与各功能页同源绑定。
-    private func featureRow(symbol: String, color: Color, title: String,
+    /// Functional toggles share the same monochrome row and control dimensions.
+    private func featureRow(symbol: String, title: String, detail: String? = nil,
                             isOn: Binding<Bool>, enabled: Bool, beta: Bool = false) -> some View {
-        HStack(spacing: 16) {
-            Image(systemName: symbol)
-                .font(.system(size: 16))
-                .foregroundStyle(color)
-                .frame(width: 24)
-                .accessibilityHidden(true)
-            Text(title)
-            if beta { FeatureBadge() }
-            Spacer(minLength: 16)
+        QuietSettingsRow(title: title, detail: detail, symbol: symbol, badge: beta ? "Beta" : nil) {
             Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .controlSize(.small)
                 .disabled(!enabled)
         }
     }
 
-    private func settingsToggle(_ title: String, isOn: Binding<Bool>, enabled: Bool = true) -> some View {
-        HStack(spacing: 16) {
-            Text(title)
-            Spacer(minLength: 16)
-            Toggle(title, isOn: isOn)
-                .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                .disabled(!enabled)
-        }
-        .frame(minHeight: WorkspaceControlMetrics.height)
-    }
 }
 
 struct SettingsGroupCard<Content: View>: View {
+    @Environment(\.quietWorkspace) private var quiet
     let title: String
     @ViewBuilder let content: () -> Content
 
@@ -116,8 +95,8 @@ struct SettingsGroupCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SystemSettingsSectionLabel(title: title)
-            VStack(alignment: .leading, spacing: 12, content: content)
-                .padding(SystemSettingsMetrics.blockPadding)
+            VStack(alignment: .leading, spacing: quiet ? 6 : 12, content: content)
+                .padding(quiet ? 14 : SystemSettingsMetrics.blockPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .systemSettingsBlock()
         }
@@ -138,22 +117,18 @@ private struct LanWebFeatureToggle: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "qrcode")
-                .font(.system(size: 16))
-                .foregroundStyle(.orange)
-                .frame(width: 24)
-                .accessibilityHidden(true)
-            Text("局域网扫码分享")
-            Spacer(minLength: 16)
-            if configuring { ProgressView().controlSize(.small) }
-            Toggle("局域网扫码分享", isOn: Binding(
-                get: { state?.enabled ?? false },
-                set: { configure(enabled: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .disabled(state == nil || configuring)
+        QuietSettingsRow(title: "局域网扫码分享", symbol: "qrcode") {
+            HStack(spacing: 8) {
+                if configuring { ProgressView().controlSize(.small) }
+                Toggle("局域网扫码分享", isOn: Binding(
+                    get: { state?.enabled ?? false },
+                    set: { configure(enabled: $0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(state == nil || configuring)
+            }
         }
         .task { await refresh() }
     }

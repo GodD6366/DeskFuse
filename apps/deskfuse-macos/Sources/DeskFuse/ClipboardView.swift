@@ -11,6 +11,7 @@ private struct ClipboardPagePresentation {
 }
 
 struct ClipboardView: View {
+    @Environment(\.colorScheme) private var scheme
     @Bindable var store: AppStore
     let snapshot: EngineSnapshot
     let searchRequest: Int
@@ -25,7 +26,15 @@ struct ClipboardView: View {
     @State private var previewError: String?
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var listID: String?
-    @AppStorage("deskfuse.clipboard.displayMode") private var displayMode: ClipboardDisplayMode = .list
+    @AppStorage("deskfuse.clipboard.textDisplayMode") private var textDisplayMode: ClipboardDisplayMode = .list
+    @AppStorage("deskfuse.clipboard.imageDisplayMode") private var imageDisplayMode: ClipboardDisplayMode = .grid
+    private var imageFilter: Bool { library.lists.first(where: { $0.id == listID })?.filtersOnlyImages == true }
+    private var displayMode: ClipboardDisplayMode { imageFilter ? imageDisplayMode : textDisplayMode }
+    private var displayModeBinding: Binding<ClipboardDisplayMode> {
+        Binding(get: { displayMode }, set: {
+            if imageFilter { imageDisplayMode = $0 } else { textDisplayMode = $0 }
+        })
+    }
     @State private var pageItems: [ClipboardLibraryItem] = []
     @State private var presentation = ClipboardPagePresentation()
     @State private var nextOffset: Int?
@@ -50,50 +59,54 @@ struct ClipboardView: View {
     private var queryKey: String { "\(listID ?? "")|\(search)|\(source ?? "")|\(library.revision)|\(library.reloadRevision)|\(snapshot.history.map(\.id))|\(queryRevision)" }
 
     var body: some View {
-        HStack(spacing: 0) {
-            ClipboardWorkspaceSidebar(selectedListID: $listID)
-                .frame(minWidth: 180, idealWidth: 190, maxWidth: 220)
-            Divider()
-            HistorySplitView(expandHistory: displayMode == .grid) {
-                ClipboardHistoryPane(
-                    items: items, sources: library.sourceChoices(legacyNames: snapshot.history.map(\.source), snapshot: snapshot),
-                    selected: $selected, search: $search, source: $source,
-                    displayMode: $displayMode,
-                    searchRequest: searchRequest, searching: searching,
-                    historyIsEmpty: items.isEmpty && !searching && search.isEmpty && listID == nil,
-                    syncEnabled: Binding(get: { snapshot.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
-                    selectedImage: content?.id == selected ? previewImage : nil,
-                    client: store.client,
-                    appIDs: presentation.appIDs,
-                    titles: presentation.titles,
-                    metas: presentation.metas,
-                    onRename: { id, title in library.rename(id, title: title) },
-                    onDelete: { ids in
-                        for item in items where ids.contains(item.id) {
-                            library.remember(item, memberships: presentation.memberships[item.id] ?? [], title: presentation.titles[item.id])
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                ClipboardWorkspaceSidebar(selectedListID: $listID)
+                    .frame(width: min(196, max(164, geometry.size.width - ClipboardPaneMetrics.minimumContentWidth)))
+                Divider()
+                HistorySplitView(expandHistory: displayMode == .grid) {
+                    ClipboardHistoryPane(
+                        items: items, sources: library.sourceChoices(legacyNames: snapshot.history.map(\.source), snapshot: snapshot),
+                        selected: $selected, search: $search, source: $source,
+                        displayMode: displayModeBinding,
+                        searchRequest: searchRequest, searching: searching,
+                        historyIsEmpty: items.isEmpty && !searching && search.isEmpty && listID == nil,
+                        syncEnabled: Binding(get: { snapshot.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
+                        selectedImage: content?.id == selected ? previewImage : nil,
+                        client: store.client,
+                        appIDs: presentation.appIDs,
+                        titles: presentation.titles,
+                        metas: presentation.metas,
+                        onRename: { id, title in library.rename(id, title: title) },
+                        onDelete: { ids in
+                            for item in items where ids.contains(item.id) {
+                                library.remember(item, memberships: presentation.memberships[item.id] ?? [], title: presentation.titles[item.id])
+                            }
+                            library.delete(ids)
+                            rebuildPresentation()
+                            if let id = selected, library.isLocallyDeleted(id) { selected = items.first?.id }
+                            cancelCopy(); copyError = nil; copiedID = nil
+                        },
+                        listID: $listID, total: search.isEmpty && source == nil ? library.counts[listID ?? "all"] ?? total : total, memberships: presentation.memberships,
+                        hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, loadMore: { Task { await loadPage(append: true) } }
+                    )
+                } detail: {
+                    VStack(spacing: 0) {
+                        if let error = copyError ?? library.error ?? snapshot.clipboardError {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(16)
                         }
-                        library.delete(ids)
-                        rebuildPresentation()
-                        if let id = selected, library.isLocallyDeleted(id) { selected = items.first?.id }
-                        cancelCopy(); copyError = nil; copiedID = nil
-                    },
-                    listID: $listID, total: search.isEmpty && source == nil ? library.counts[listID ?? "all"] ?? total : total, memberships: presentation.memberships,
-                    hasMore: nextOffset != nil, paginationOffset: nextOffset ?? 0, paginationGeneration: paginationGeneration, loadMore: { Task { await loadPage(append: true) } }
-                )
-            } detail: {
-                VStack(spacing: 0) {
-                    if let error = copyError ?? library.error ?? snapshot.clipboardError {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.callout).foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
+                        detail.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: ClipboardPaneMetrics.minimumPreview, maxWidth: .infinity, maxHeight: .infinity)
+                    .background(QuietWorkspacePalette.surface(scheme))
                 }
-                .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .quietWorkspaceStyle()
         .task {
             while !Task.isCancelled {
                 await library.refresh()
@@ -122,6 +135,9 @@ struct ClipboardView: View {
         }
         .onDisappear {
             cancelCopy()
+            // A visit to embedded settings keeps the workspace's loaded rows,
+            // preview and scroll position; leaving the workspace still cleans up.
+            guard store.selectedPage != .settings else { return }
             pageRequest = UUID(); searching = false
             content = nil; media = nil; previewImage = nil
             pageItems = []; nextOffset = nil; nextCursor = nil; presentation = ClipboardPagePresentation()
@@ -345,6 +361,7 @@ struct ClipboardView: View {
             ContentUnavailableView("无法读取预览", systemImage: "exclamationmark.triangle", description: Text(previewError))
         } else if let content, content.id == selected, let media, let item = items.first(where: { $0.id == content.id }) {
             ClipboardPreviewPane(store: store, item: item, title: presentation.titles[item.id],
+                                 appID: presentation.appIDs[item.id],
                                  content: content, media: media, image: previewImage,
                                  ocrText: pageItems.first(where: { $0.id == content.id })?.ocr_text,
                                  copying: copyToken != nil, copied: copiedID == item.id, copyContent: { prepareCopy(content.id) })

@@ -45,6 +45,8 @@ struct RemoteApplicationPicker: View {
     var embedded = false
     var select: (RemoteApplicationInfo) -> Void
     @Bindable private var remote = RemoteApplicationManager.shared
+    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var category: RemoteApplicationCategory = .all
     @State private var selection: UUID?
@@ -71,7 +73,7 @@ struct RemoteApplicationPicker: View {
                     Text(session.failure ?? session.status).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center).textSelection(.enabled)
                     if !session.active && !session.busy {
-                        Button("重新连接") { session.refreshApplications() }.buttonStyle(.borderedProminent)
+                        Button("重新连接") { session.refreshApplications() }.buttonStyle(WorkspaceButtonStyle(prominent: true))
                     }
                 }.padding(32)
                 Spacer()
@@ -120,9 +122,9 @@ struct RemoteApplicationPicker: View {
     }
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "square.grid.2x2").font(.system(size: 20, weight: .regular)).foregroundStyle(.secondary)
+            Image(systemName: "square.grid.2x2").font(WorkspaceTypography.body).foregroundStyle(.secondary)
             TextField("应用程序", text: $session.applicationQuery)
-                .textFieldStyle(.plain).font(.system(size: 20, weight: .regular))
+                .textFieldStyle(.plain).font(WorkspaceTypography.body)
                 .focused($searchFocused)
                 .onSubmit { if let first = applications.first { select(first) } }
                 .onKeyPress(.downArrow) {
@@ -145,11 +147,7 @@ struct RemoteApplicationPicker: View {
     private var categories: some View {
         HStack(spacing: 8) {
             ViewThatFits(in: .horizontal) {
-                Group {
-                    if #available(macOS 26.0, *) {
-                        GlassEffectContainer(spacing: 5) { categoryButtons }
-                    } else { categoryButtons }
-                }
+                NativeGlassGroup { categoryButtons }
                 Picker("分类", selection: $category) {
                     ForEach(RemoteApplicationCategory.allCases) { item in
                         Text(item.rawValue).tag(item)
@@ -176,16 +174,10 @@ struct RemoteApplicationPicker: View {
     private var categoryButtons: some View {
         HStack(spacing: 5) {
             ForEach(RemoteApplicationCategory.allCases) { item in
-                if #available(macOS 26.0, *) {
-                    if category == item {
-                        categoryButton(item).buttonStyle(.glassProminent)
-                    } else { categoryButton(item).buttonStyle(.glass) }
-                } else {
-                    if category == item { categoryButton(item).buttonStyle(.borderedProminent) }
-                    else { categoryButton(item).buttonStyle(.bordered) }
-                }
+                categoryButton(item)
+                    .buttonStyle(WorkspaceButtonStyle(prominent: category == item, compact: true))
             }
-        }.controlSize(.small).font(.system(size: 11))
+        }
     }
     private func categoryButton(_ item: RemoteApplicationCategory) -> some View {
         Button(item.rawValue) { category = item }.buttonBorderShape(.capsule)
@@ -194,7 +186,7 @@ struct RemoteApplicationPicker: View {
     }
     @ViewBuilder private var panelBackground: some View {
         if embedded {
-            Color(nsColor: .textBackgroundColor)
+            QuietWorkspacePalette.canvas(scheme)
         } else if reduceTransparency {
             Color(nsColor: .windowBackgroundColor)
         } else if #available(macOS 26.0, *) {
@@ -258,8 +250,8 @@ private struct RemoteApplicationTile: View {
             .padding(.horizontal, 4).padding(.vertical, 8)
             .frame(maxWidth: .infinity)
             .background((isSelected ? DeskFuseBrand.selectionFill : Color.primary.opacity(hovering ? 0.06 : 0)),
-                        in: RoundedRectangle(cornerRadius: 16))
-            .contentShape(RoundedRectangle(cornerRadius: 16))
+                        in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain).focusable(false)
         .onHover { hovering = $0 }

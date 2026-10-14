@@ -12,7 +12,7 @@ private struct WorkflowSyncCard: View {
                 Image(systemName: "square.stack.3d.up")
                     .font(.system(size: 14, weight: .semibold))
                     .frame(width: SystemSettingsMetrics.iconSize, height: SystemSettingsMetrics.iconSize)
-                    .foregroundStyle(DeskFuseBrand.fusionGradient)
+                    .foregroundStyle(.secondary)
                 Text("工作流")
                     .font(.system(size: 13))
                 Spacer(minLength: 0)
@@ -25,15 +25,10 @@ private struct WorkflowSyncCard: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 36)
-            .contentShape(RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .systemSettingsBlock()
-        .overlay {
-            RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous)
-                .strokeBorder(DeskFuseBrand.fusionGradient, lineWidth: 1)
-        }
         .help("在设置中管理工作流")
     }
 }
@@ -46,23 +41,15 @@ struct ClipboardWorkspaceSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("剪贴板")
-                    .font(.system(size: 21, weight: .bold))
-                Text("在所有设备间，自由流转")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 24)
-            .padding(.bottom, 18)
+            Text("分组与列表")
+                .font(WorkspaceTypography.heading)
+                .padding(.horizontal, 20)
+                .frame(height: 56)
 
-            ClipboardLibraryTabs(
-                selectedListID: $selectedListID,
-                vertical: true
-            )
-            .padding(.horizontal, 10)
+            ScrollView {
+                ClipboardLibraryTabs(selectedListID: $selectedListID, vertical: true)
+                    .padding(.horizontal, 10)
+            }
 
             Spacer(minLength: 0)
 
@@ -72,6 +59,6 @@ struct ClipboardWorkspaceSidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // 这一栏和它右侧的历史列表同属内容区，用同一个亮底，靠 ClipboardView
         // 的 Divider 分栏；只有最外层的主侧栏用材质灰底。
-        .systemSettingsContentBackground()
+        .quietWorkspaceStyle()
     }
 }

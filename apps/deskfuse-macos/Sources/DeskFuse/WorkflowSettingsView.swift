@@ -103,7 +103,7 @@ struct WorkflowSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Button("新建流程") { newDraft() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(WorkspaceButtonStyle(prominent: true))
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -187,7 +187,7 @@ struct WorkflowSettingsView: View {
                 Button("保存流程") {
                     guard let draft else { return }
                     store.saveWorkflow(draft) { load(draft.id) }
-                }.buttonStyle(.borderedProminent).disabled(!dirty || !(draft?.incompatibilities.isEmpty ?? true) || draft?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
+                }.buttonStyle(WorkspaceButtonStyle(prominent: true)).disabled(!dirty || !(draft?.incompatibilities.isEmpty ?? true) || draft?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
             }.padding(12)
             if let error = store.error { Text(error).foregroundStyle(.red).font(.caption).padding([.horizontal, .bottom], 12) }
         }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)

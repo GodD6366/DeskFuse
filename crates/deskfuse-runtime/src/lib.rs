@@ -3252,6 +3252,11 @@ impl Actor {
             return;
         }
 
+        if let Err(error) = self.remember_forgotten_network_peer(peer_id).await {
+            self.emit_error(error);
+            return;
+        }
+
         // Forgetting removes trust; only explicit revocation blocks pairing.
         self.trusted.remove(&peer_id);
         self.blocked.remove(&peer_id);

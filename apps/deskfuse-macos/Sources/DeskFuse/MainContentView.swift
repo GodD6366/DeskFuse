@@ -4,12 +4,22 @@ import DeskFuseEngine
 /// Engine snapshots invalidate content without reconstructing the window chrome.
 struct MainContentView: View {
     let store: AppStore
+    let page: Page
     let historySearchRequest: Int
     let deviceSearchRequest: Int
     let localDeviceRequest: Int
 
     var body: some View {
-        pageContent
+        VStack(spacing: 0) {
+            if page != .settings {
+                QuietPageHeader(section: page == .devices ? "配置" : "功能", title: page.rawValue,
+                    badge: page == .remoteApplications ? "Beta" : nil)
+                Divider()
+            }
+            pageContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+            .quietWorkspaceStyle()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .bottomLeading) {
                 ErrorNoticeView(notice: store.errorNotice)
@@ -27,7 +37,7 @@ struct MainContentView: View {
             // RootView owns the window-wide loading presentation.
             Color.clear
         } else if let snapshot = store.snapshot {
-            switch store.selectedPage {
+            switch page {
             case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
             case .input: InputView(store: store, snapshot: snapshot)
             case .devices:
@@ -47,6 +57,7 @@ struct MainContentView: View {
                 )
             case .transfers: TransfersView(store: store, transfers: snapshot.transfers)
             case .lanTransfer: ShareAndTransferView(store: store, snapshot: snapshot)
+            case .settings: EmptyView() // Owned by the retained settings host in RootView.
             }
         } else {
             ContentUnavailableView("无法启动", systemImage: "exclamationmark.triangle", description: Text(store.error ?? "引擎未就绪"))

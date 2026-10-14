@@ -210,6 +210,10 @@ import DeskFuseEngine
 
     private func present(atPointer: Bool) {
         guard !suspended else { return }
+        // A status-item popover otherwise inherits the menu bar anchor's
+        // appearance rather than an app-wide appearance override.
+        popover.appearance = NSApp.appearance
+        pointerPanel?.appearance = NSApp.appearance
         if isPresenting { close(); return }
         // A popover that still reports itself as shown ignores a later `show`;
         // reset that stale state before this presentation.

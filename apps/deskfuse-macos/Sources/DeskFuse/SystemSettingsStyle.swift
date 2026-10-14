@@ -128,8 +128,10 @@ extension View {
 
 /// 内容区底色：比侧栏亮一档，让浅灰 block 有可辨识的底。
 struct SystemSettingsContentBackground: ViewModifier {
+    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.colorScheme) private var scheme
     func body(content: Content) -> some View {
-        content.background(Color(nsColor: .textBackgroundColor))
+        content.background(quiet ? QuietWorkspacePalette.canvas(scheme) : Color(nsColor: .textBackgroundColor))
     }
 }
 
@@ -147,13 +149,19 @@ extension View {
 struct SystemSettingsBlockSurface: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.quietWorkspace) private var quiet
     var cornerRadius: CGFloat = SystemSettingsMetrics.blockCorner
 
     func body(content: Content) -> some View {
-        content.background(
-            Color.primary.opacity(fillOpacity),
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
+        content
+            .background(quiet ? QuietWorkspacePalette.surface(colorScheme) : Color.primary.opacity(fillOpacity),
+                        in: RoundedRectangle(cornerRadius: quiet ? 12 : cornerRadius, style: .continuous))
+            .overlay {
+                if quiet {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(QuietWorkspacePalette.line(colorScheme), lineWidth: 0.5)
+                }
+            }
     }
 
     /// 减弱透明度时侧栏回退成实心底色，对比变弱，block 需要加深一档才看得出分组。
@@ -205,6 +213,7 @@ struct SystemSettingsSectionLabel: View {
 /// 「亮底 + 灰卡」明暗相反，且卡片填充没有公开 API 可改，所以设置页统一
 /// 用这个容器手写分组，行内容（Toggle / LabeledContent / Picker…）原样保留。
 struct SystemSettingsFormBlock<Content: View>: View {
+    @Environment(\.quietWorkspace) private var quiet
     var title: String? = nil
     var titleSymbol: String? = nil
     /// 分组下方的说明文字，对应原生 Section 的 footer。
@@ -224,7 +233,8 @@ struct SystemSettingsFormBlock<Content: View>: View {
             if let title {
                 SystemSettingsSectionLabel(title: title, symbol: titleSymbol)
             }
-            VStack(alignment: .leading, spacing: 10, content: content)
+            VStack(alignment: .leading, spacing: quiet ? 6 : 10, content: content)
+                .font(quiet ? .system(size: 13) : nil)
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .systemSettingsBlock()
@@ -242,14 +252,15 @@ struct SystemSettingsFormBlock<Content: View>: View {
 
 /// 设置页正文的滚动容器：统一最大宽度与留白，页面只负责列分组。
 struct SystemSettingsFormPage<Content: View>: View {
+    @Environment(\.quietWorkspace) private var quiet
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18, content: content)
-                .frame(maxWidth: SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
+                .frame(maxWidth: quiet ? .infinity : SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, SystemSettingsMetrics.formPageHorizontalInset)
+                .padding(.horizontal, quiet ? 20 : SystemSettingsMetrics.formPageHorizontalInset)
                 .padding(.bottom, SystemSettingsMetrics.formPageBottomInset)
         }
     }
@@ -259,6 +270,7 @@ struct SystemSettingsFormPage<Content: View>: View {
 
 /// 页面标题行：大标题 + 副标题，右侧可放页面级操作。
 struct SystemSettingsPageHeader<Trailing: View>: View {
+    @Environment(\.quietWorkspace) private var quiet
     let title: String
     let subtitle: String?
     @ViewBuilder let trailing: () -> Trailing
@@ -272,11 +284,12 @@ struct SystemSettingsPageHeader<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 26, weight: .bold))
+                if !quiet {
+                    Text(title).font(WorkspaceTypography.section)
+                }
                 if let subtitle {
                     Text(subtitle)
-                        .font(.callout)
+                        .font(WorkspaceTypography.detail)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::{io::Write, os::unix::net::UnixStream};
+
+/// Bounded metadata from the process that owns the native input connection.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InputServiceQuality {
+    pub records: Vec<deskfuse_transport::motion_diag::QualityRecord>,
+    pub report: deskfuse_input::quality::InputQualityReport,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NativeStatus {
     pub running: bool,
@@ -32,6 +40,7 @@ pub struct ServiceControl {
     pub(crate) urgent: Arc<Mutex<Option<UnixStream>>>,
     pub status: Arc<Mutex<NativeStatus>>,
     pub diagnostics: Arc<Mutex<String>>,
+    pub quality: Arc<Mutex<InputServiceQuality>>,
     pub(crate) sequence: Arc<Mutex<u64>>,
 }
 impl ServiceControl {

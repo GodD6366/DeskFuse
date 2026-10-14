@@ -22,10 +22,23 @@ import DeskFuseEngine
         .commands {
             CommandGroup(replacing: .newItem) { }
             ClipboardCommands()
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") { store.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             #if DEBUG
             CommandGroup(after: .windowSize) {
                 Button("标准设计窗口（1200 × 780）") { resizeForDesign(width: 1200, height: 780) }
                 Button("紧凑设计窗口（960 × 620）") { resizeForDesign(width: 960, height: 620) }
+                Divider()
+                Button("设计外观：浅色") { NSApp.appearance = NSAppearance(named: .aqua) }
+                Button("设计外观：深色") { NSApp.appearance = NSAppearance(named: .darkAqua) }
+                Button("设计外观：跟随系统") { NSApp.appearance = nil }
+                Divider()
+                Button("检查剪贴板面板") {
+                    NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" })?.orderOut(nil)
+                    ClipboardPanelController.shared.toggle()
+                }
             }
             #endif
             CommandMenu("共享") {
@@ -37,15 +50,7 @@ import DeskFuseEngine
             }
         }
 
-        Settings {
-            SettingsWindowView(store: store)
-                .frame(minWidth: 860, idealWidth: 960, maxWidth: .infinity,
-                       minHeight: 580, idealHeight: 720, maxHeight: .infinity)
-                .background(SettingsWindowChrome())
-        }
-        .defaultSize(width: 960, height: 720)
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentMinSize)
+
     }
 
     #if DEBUG
@@ -208,10 +213,5 @@ struct WindowIdentity: NSViewRepresentable {
         marker.minimumSize = NSSize(width: 960, height: 620)
         return marker
     }
-    func updateNSView(_ view: WindowChromeMarker, context: Context) { }
-}
-
-struct SettingsWindowChrome: NSViewRepresentable {
-    func makeNSView(context: Context) -> WindowChromeMarker { WindowChromeMarker() }
     func updateNSView(_ view: WindowChromeMarker, context: Context) { }
 }

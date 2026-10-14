@@ -1,17 +1,16 @@
 import SwiftUI
 
-/// A single window background supports navigation and an inset content card.
+/// Settings and the last workspace share one window and retain their view state.
 struct RootView: View {
     @Bindable var store: AppStore
     @State private var historySearchRequest = 0
     @State private var deviceSearchRequest = 0
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         HStack(spacing: 0) {
             MainSidebar(store: store)
-                .frame(width: 250)
+                .frame(width: 212)
             workspace
         }
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
@@ -22,17 +21,16 @@ struct RootView: View {
         .focusedSceneValue(\.searchDevices, (store.selectedPage == .devices || store.selectedPage == .remoteApplications) ? { deviceSearchRequest += 1 } : nil)
         .onAppear {
             store.showMainWindow = { openWindow(id: "main") }
-            store.showSettingsWindow = { openSettings() }
         }
         .sheet(isPresented: permissionPromptBinding) {
             if store.previousInstallation.isPresented {
-                PreviousInstallationPrompt(controller: store.previousInstallation)
+                PreviousInstallationPrompt(controller: store.previousInstallation).floatingWorkspaceStyle()
             } else {
-                PermissionPromptView(controller: store.permissionPrompt)
+                PermissionPromptView(controller: store.permissionPrompt).floatingWorkspaceStyle()
             }
         }
         .sheet(isPresented: onboardingBinding) {
-            OnboardingPrompt(store: store)
+            OnboardingPrompt(store: store).floatingWorkspaceStyle()
         }
     }
 
@@ -51,13 +49,23 @@ struct RootView: View {
     }
 
     private var workspace: some View {
-        VStack(spacing: 0) {
-            MainContentView(
-                store: store,
+        SettingsPageContainer(selection: store.selectedPage == .settings ? "settings" : "workspace", pages: [
+            .init(id: "workspace", content: AnyView(MainContentView(
+                store: store, page: store.workspacePage,
                 historySearchRequest: historySearchRequest,
                 deviceSearchRequest: deviceSearchRequest,
                 localDeviceRequest: store.deviceSelectionRequest
-            )
+            ))),
+            .init(id: "settings", content: AnyView(SettingsView(
+                store: store, presentation: SettingsPresentation(store.snapshot),
+                destination: store.settingsDestination
+            ).equatable()))
+        ])
+        .overlay(alignment: .bottomLeading) {
+            if store.selectedPage == .settings {
+                ErrorNoticeView(notice: store.errorNotice)
+                    .frame(width: 320).padding(14)
+            }
         }
         .systemSettingsContentBackground()
         .ignoresSafeArea(.container, edges: .top)

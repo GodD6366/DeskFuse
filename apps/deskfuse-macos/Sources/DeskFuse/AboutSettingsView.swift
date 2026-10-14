@@ -36,9 +36,9 @@ struct AboutSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: SystemSettingsMetrics.formPageMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, SystemSettingsMetrics.formPageHorizontalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
             .padding(.bottom, SystemSettingsMetrics.formPageBottomInset)
         }
     }

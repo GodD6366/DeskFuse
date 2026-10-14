@@ -31,7 +31,7 @@ enum DeskFuseBrand {
     )
 
     /// 卡片圆角。
-    static let cardRadius: CGFloat = 14
+    static let cardRadius: CGFloat = 12
     /// 卡片描边：浅色模式黑、深色模式白，都是低透明度细线。
     static let cardBorder = Color(nsColor: NSColor(name: nil) { appearance in
         switch appearance.bestMatch(from: [.darkAqua, .aqua]) {

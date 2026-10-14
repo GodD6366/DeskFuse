@@ -14,7 +14,7 @@ struct RemoteApplicationCatalog: View {
             HStack(spacing: 12) {
                 DeviceProductIconView(displayName: device.name, size: 42)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(device.name).font(.title2.bold())
+                    Text(device.name).font(WorkspaceTypography.section)
                     Text("应用列表").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -30,7 +30,7 @@ struct RemoteApplicationCatalog: View {
                 .help("刷新应用列表")
                 .accessibilityLabel("刷新应用列表")
             }
-            .padding(24)
+            .padding(20)
             Divider()
             if let rdpSession {
                 RemoteRdpPicker(session: rdpSession, embedded: true) { application, username, password in

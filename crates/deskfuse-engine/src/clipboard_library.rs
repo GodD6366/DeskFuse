@@ -451,7 +451,7 @@ pub fn global() -> Result<Arc<Library>> {
 }
 impl Library {
     #[cfg(test)]
-    fn open() -> Result<Self> {
+    pub(crate) fn open() -> Result<Self> {
         Self::open_database(tempfile::tempdir().map_err(err)?)
     }
     #[cfg(not(test))]

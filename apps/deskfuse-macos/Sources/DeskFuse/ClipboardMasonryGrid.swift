@@ -11,6 +11,8 @@ enum ClipboardDisplayMode: String, CaseIterable, Identifiable {
 
 /// Two-icon list/grid switch shared by the main history pane and the menu bar panel.
 struct ClipboardDisplayModePicker: View {
+    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.colorScheme) private var scheme
     @Binding var mode: ClipboardDisplayMode
 
     var body: some View {
@@ -23,8 +25,9 @@ struct ClipboardDisplayModePicker: View {
                         .font(.system(size: 12, weight: .medium))
                         .frame(width: 34, height: 30)
                         .contentShape(Rectangle())
-                        .foregroundStyle(mode == option ? Color.accentColor : Color.secondary)
-                        .background(mode == option ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .foregroundStyle(mode == option ? (quiet ? Color.primary : Color.accentColor) : Color.secondary)
+                        .background(mode == option ? (quiet ? QuietWorkspacePalette.surface(scheme) : Color.accentColor.opacity(0.16)) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(ClipboardHeaderButtonStyle())
                 .help(option.label)
@@ -78,7 +81,7 @@ enum ClipboardMasonryLayout {
     static func estimatedHeight(_ item: HistoryItem) -> CGFloat {
         if item.hasImage { return 128 }
         if item.fileCount > 0 { return 96 }
-        let lines = min(8, max(1, item.preview.count / 36))
+        let lines = min(4, max(1, item.preview.count / 36))
         return 70 + CGFloat(lines) * 18
     }
 }
@@ -284,6 +287,8 @@ struct ClipboardHistoryCard: View {
     @State private var editingTitle = false
     @State private var hovering = false
     @State private var hoveringActions = false
+    @State private var showingImagePreview = false
+    @State private var hoverImage: NSImage?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -295,12 +300,13 @@ struct ClipboardHistoryCard: View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
                 .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .controlBackgroundColor))
-                .overlay(alignment: .bottomTrailing) { watermark }
+
             VStack(spacing: 0) {
                 if hasTitle {
                     ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
                 }
                 VStack(alignment: .leading, spacing: 6) {
+                    sourceAppBadge
                     cardContent(kind)
                     footer
                 }
@@ -336,6 +342,25 @@ struct ClipboardHistoryCard: View {
             ClipboardTitleEditor(title: title, onSave: onRename)
         }
         .help(item.preview)
+        .popover(isPresented: $showingImagePreview, arrowEdge: .trailing) {
+            if let image = hoverImage ?? thumbnail ?? selectedImage {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: 600, maxHeight: 440).padding(12)
+                    .accessibilityLabel("图片放大预览")
+            }
+        }
+        .task(id: hovering) {
+            guard hovering, item.hasImage else {
+                showingImagePreview = false; hoverImage = nil; return
+            }
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            guard !Task.isCancelled else { return }
+            if let client {
+                hoverImage = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 1400)
+            }
+            guard !Task.isCancelled else { return }
+            showingImagePreview = hoverImage != nil || thumbnail != nil || selectedImage != nil
+        }
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
             guard item.hasImage, let client else { return }
             if let cached = ClipboardThumbnailCache.shared.cached(item.id, maxPixelSize: 480) { thumbnail = cached; return }
@@ -348,16 +373,19 @@ struct ClipboardHistoryCard: View {
         .onDisappear { thumbnail = nil; loading = false }
     }
 
-    /// Bottom-right app icon, tilted 45° left, with roughly a quarter clipped off.
-    @ViewBuilder private var watermark: some View {
-        if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
-            Image(nsImage: icon).resizable().scaledToFit()
-                .frame(width: 96, height: 96)
-                .rotationEffect(.degrees(-45))
-                .offset(x: 24, y: 24)
-                .opacity(DeskFuseBrand.watermarkOpacity)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+    @ViewBuilder private var sourceAppBadge: some View {
+        if let appID, !appID.isEmpty {
+            HStack(spacing: 6) {
+                if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
+                    Image(nsImage: icon).resizable().scaledToFit().frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: "app").frame(width: 18, height: 18)
+                }
+                Text(ClipboardAppInfoCache.shared.name(for: appID) ?? appID)
+                    .font(.caption).lineLimit(1).workspaceSecondaryText()
+            }
+            .help("来源应用：\(ClipboardAppInfoCache.shared.name(for: appID) ?? appID)")
+            .padding(.bottom, 2)
         }
     }
 
@@ -414,7 +442,7 @@ struct ClipboardHistoryCard: View {
         HStack(spacing: 8) {
             Image(systemName: "link")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
+                .workspaceSecondaryText()
                 .frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(linkParts?.host ?? item.clipboardTitle)
@@ -423,7 +451,7 @@ struct ClipboardHistoryCard: View {
                 if let path = linkParts?.path, !path.isEmpty {
                     Text(path)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                         .lineLimit(1)
                 }
             }
@@ -435,7 +463,7 @@ struct ClipboardHistoryCard: View {
         Text(item.clipboardTitle)
             .font(.system(size: 12.5, design: .monospaced))
             .lineSpacing(2)
-            .lineLimit(8)
+            .lineLimit(4).truncationMode(.tail)
             .multilineTextAlignment(.leading)
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -460,39 +488,20 @@ struct ClipboardHistoryCard: View {
                     .lineLimit(1)
                 Text(item.fileCount > 1 ? "\(item.fileCount) 项 · \(byteCount(item.length))" : byteCount(item.length))
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
             }
         }
     }
 
-    /// 纯文本卡片：最多 8 行，可能被截断时底部 20pt 渐隐。
+    /// Four readable lines with a consistent trailing ellipsis.
     private var textContent: some View {
         Text(item.clipboardTitle)
             .font(.system(size: 13))
-            .lineSpacing(4)
-            .lineLimit(8)
+            .lineSpacing(3)
+            .lineLimit(4).truncationMode(.tail)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .mask {
-                if textClamped { Self.bottomFade } else { Color.black }
-            }
     }
-
-    /// 预览明显超过 8 行时才启用渐隐，短文本不被 mask 误伤。
-    private var textClamped: Bool {
-        item.preview.trimmingCharacters(in: .whitespacesAndNewlines).count >= 240
-    }
-
-    /// 底部约 20pt 的线性渐隐。
-    private static let bottomFade = LinearGradient(
-        stops: [
-            .init(color: .black, location: 0),
-            .init(color: .black, location: 0.92),
-            .init(color: .clear, location: 1),
-        ],
-        startPoint: .top,
-        endPoint: .bottom
-    )
 
     /// 卡片底部固定 footer：时间 + 来源设备，右侧保留状态图标。
     private var footer: some View {
@@ -514,7 +523,7 @@ struct ClipboardHistoryCard: View {
             }
         }
         .font(.system(size: 10.5))
-        .foregroundStyle(.secondary)
+        .workspaceSecondaryText()
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -587,7 +596,7 @@ struct ClipboardCardImage: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(unavailable, systemImage: "photo.badge.exclamationmark")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).workspaceSecondaryText()
                     }
                 }
                 .aspectRatio(Self.placeholderAspect, contentMode: .fit)
@@ -606,21 +615,12 @@ struct ClipboardCardText: View {
     let maxHeight: CGFloat
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            Text(text)
-                .font(.system(size: 13))
-                .fixedSize(horizontal: true, vertical: true)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: text.contains("\n") ? .leading : .center)
-            Text(text)
-                .font(.system(size: 13))
-                .lineLimit(lineLimit)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .foregroundStyle(Color(nsColor: .labelColor))
-        .frame(maxWidth: .infinity)
-        .frame(maxHeight: maxHeight, alignment: .top)
-        .clipped()
+        Text(text)
+            .font(.system(size: 13))
+            .lineLimit(min(4, lineLimit)).truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+            .foregroundStyle(Color(nsColor: .labelColor))
+            .frame(maxWidth: .infinity, alignment: .leading)
+
     }
 }

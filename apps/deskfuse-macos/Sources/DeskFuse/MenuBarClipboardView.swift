@@ -123,6 +123,7 @@ struct MenuBarClipboardView: View {
         }
         .scrollIndicators(.hidden)
         .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
+        .floatingWorkspaceStyle()
         .background(.clear)
         .modifier(ClipboardPopupSurface())
         .background(MenuBarPanelBridge(handle: panel, opened: beginSession, closed: endSession, modifiersChanged: { commandHeld = $0.contains(.command) }, keyDown: handleKey))
@@ -174,7 +175,7 @@ struct MenuBarClipboardView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "rectangle.on.rectangle").font(.system(size: 19))
                         .modifier(BrandGlow())
-                    Text("最近剪贴板").font(.system(size: 16, weight: .semibold))
+                    Text("最近剪贴板").font(WorkspaceTypography.section)
                     Spacer(minLength: 4)
                     ClipboardDisplayModePicker(mode: $displayMode)
                     sourceMenu
@@ -201,7 +202,7 @@ struct MenuBarClipboardView: View {
                             .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("清除搜索")
                     }
                 }
-                .font(.system(size: 13)).padding(.horizontal, 11).frame(height: 34)
+                .font(.system(size: 13)).padding(.horizontal, 11).frame(height: WorkspaceControlMetrics.height)
                 .modifier(NativeGlassBackdrop(cornerRadius: 9))
                 ClipboardLibraryTabs(selectedListID: $listID)
             }
@@ -405,7 +406,7 @@ struct MenuBarClipboardView: View {
                 }
                 HStack(spacing: 8) {
                     Button { showAll() } label: { Label("查看全部", systemImage: "arrow.up.right") }
-                        .buttonStyle(.borderless).fixedSize()
+                        .buttonStyle(WorkspaceButtonStyle(compact: true)).fixedSize()
                     Spacer(minLength: 0)
                     if showCopyProgress { ProgressView().controlSize(.mini).help("正在准备剪贴板内容") }
                     if let item = selectedItem {
@@ -415,7 +416,7 @@ struct MenuBarClipboardView: View {
                                           contentType: item.fileCount > 0 ? .files : (item.hasImage ? .image : .text))
                     }
                 }
-                .font(.system(size: 11)).controlSize(.small)
+                .font(WorkspaceTypography.body).controlSize(.small)
                 .disabled(copying || store.client == nil)
                 WorkflowRunStatusView(compact: true)
                 if let error = store.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(3) }

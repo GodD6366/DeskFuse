@@ -2,12 +2,15 @@ import SwiftUI
 import AppKit
 
 /// Nearby floating controls share one native sampling container. Reading surfaces
-/// remain opaque; NavigationSplitView keeps its system sidebar appearance.
+/// remain opaque in the main window; floating panels keep native glass.
 struct NativeGlassGroup<Content: View>: View {
+    @Environment(\.quietWorkspace) private var quiet
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        if #available(macOS 26.0, *) {
+        if quiet {
+            content()
+        } else if #available(macOS 26.0, *) {
             GlassEffectContainer(spacing: 12) { content() }
         } else {
             content()
@@ -17,11 +20,14 @@ struct NativeGlassGroup<Content: View>: View {
 
 /// Use inside a NativeGlassGroup when several controls overlay the same content.
 struct NativeGlassBackdrop: ViewModifier {
+    @Environment(\.quietWorkspace) private var quiet
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let cornerRadius: CGFloat
 
     @ViewBuilder func body(content: Content) -> some View {
-        if reduceTransparency {
+        if quiet {
+            content.modifier(QuietControlSurface(cornerRadius: cornerRadius))
+        } else if reduceTransparency {
             content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: cornerRadius))
         } else if #available(macOS 26.0, *) {
             content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: cornerRadius))
@@ -41,13 +47,7 @@ struct NativeGlassSurface: ViewModifier {
 }
 
 struct NativeGlassAction: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if #available(macOS 26.0, *), !reduceTransparency {
-            content.buttonStyle(.glassProminent)
-        } else {
-            content.buttonStyle(.borderedProminent)
-        }
+    func body(content: Content) -> some View {
+        content.buttonStyle(WorkspaceButtonStyle(prominent: true))
     }
 }

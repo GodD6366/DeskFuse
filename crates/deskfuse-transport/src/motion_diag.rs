@@ -5,8 +5,8 @@
 //! queue backpressure, coalescing, loss, health flaps) rather than by the
 //! coordinator or the native injection worker?
 //!
-//! Deliberately plain data with no serialization dependency: `deskfuse-engine`
-//! owns the diagnostics file format and renders these records. No coordinates,
+//! `deskfuse-engine` owns the detailed diagnostics file format. Quality samples
+//! also cross the input-service IPC boundary. No coordinates,
 //! display identifiers, tokens, clipboard content or credentials are recorded.
 use std::{collections::VecDeque, sync::Mutex, time::SystemTime, time::UNIX_EPOCH};
 
@@ -50,7 +50,7 @@ pub struct MotionDiagRecord {
 }
 
 /// Always-on, metadata-only samples used by the in-app quality chart.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QualityRecord {
     pub timestamp_ms: u128,
     pub rtt_micros: u64,

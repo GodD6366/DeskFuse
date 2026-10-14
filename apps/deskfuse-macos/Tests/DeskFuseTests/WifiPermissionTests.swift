@@ -12,7 +12,9 @@ import Testing
 
     @Test func wifiAuthorizationIsNotInferredFromAnSSID() {
         #expect(WifiPermissionState(authorization: .authorizedAlways, servicesEnabled: true) == .granted)
+        #if !os(macOS)
         #expect(WifiPermissionState(authorization: .authorizedWhenInUse, servicesEnabled: true) == .granted)
+        #endif
         #expect(WifiPermissionState(authorization: .notDetermined, servicesEnabled: true) == .notDetermined)
         #expect(WifiPermissionState(authorization: .denied, servicesEnabled: true) == .denied)
         #expect(WifiPermissionState(authorization: .restricted, servicesEnabled: true) == .restricted)

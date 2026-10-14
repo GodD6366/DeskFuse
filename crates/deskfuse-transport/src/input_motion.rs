@@ -96,6 +96,7 @@ pub(super) struct MotionLink {
     ready: AtomicBool,
     // Setting started protects against accidentally installing competing readers.
     started: AtomicBool,
+    sampling_started: AtomicBool,
     probe: Mutex<ProbeState>,
     pending: Mutex<BTreeMap<InputSessionId, MotionDatagram>>,
     pending_relative: Mutex<BTreeMap<InputSessionId, RelativeMotionDatagram>>,
@@ -624,24 +625,21 @@ impl InputHub {
     }
 
     pub(super) fn start_motion(&self, session: Session) {
-        if !datagram_supported(&session) {
+        let Some(executor) = &self.executor else {
             return;
-        }
+        };
         let Ok(sessions) = self.sessions.lock() else {
             return;
         };
         if sessions.values().any(|other| {
             other.context.session_id != session.context.session_id
                 && other.connection.stable_id() == session.connection.stable_id()
-                && other.motion.started.load(Ordering::Acquire)
-        }) || session.motion.started.swap(true, Ordering::AcqRel)
+                && other.motion.sampling_started.load(Ordering::Acquire)
+        }) || session.motion.sampling_started.swap(true, Ordering::AcqRel)
         {
             return;
         }
         drop(sessions);
-        let Some(executor) = &self.executor else {
-            return;
-        };
         let hub = self.clone();
         // 独立采样器：质量曲线只描述链路本身，不能挂在 `ready` 或探针发送成功上。
         // ready 掉了之后运动改走可靠通道、drain 队列也随之空掉，原先那条
@@ -656,6 +654,11 @@ impl InputHub {
                 sampling.motion.sample_diagnostics(&sampling, "sample", false);
             }
         });
+        // Reliable-only connections still have a live QUIC path and RTT.
+        if !datagram_supported(&session) {
+            return;
+        }
+        session.motion.started.store(true, Ordering::Release);
         let reader = session.clone();
         executor.spawn(async move {
             let mut last_ping_response: Option<tokio::time::Instant> = None;
@@ -1122,6 +1125,13 @@ mod tests {
                 .await
                 .is_err()
         );
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            a.motion.diag_at.lock().unwrap().is_some(),
+            "reliable-only links must still sample quality"
+        );
+        assert!(!a.motion.ready.load(Ordering::Acquire));
+        hub.invalidate_peer(a.peer);
         assert!(super::super::requires_motion_capability(
             &InputShareMessage::RequestHybrid {
                 session_id: InputSessionId::new(),

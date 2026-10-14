@@ -25,7 +25,12 @@ import DeskFuseEngine
     var isEngineLoading: Bool {
         !selfTest && error == nil && (starting || (client != nil && snapshot == nil))
     }
-    var selectedPage: Page = .clipboard
+    var selectedPage: Page = .clipboard {
+        didSet { if selectedPage != .settings { workspacePage = selectedPage } }
+    }
+    /// Keep the workspace mounted while settings occupies the detail area.
+    private(set) var workspacePage: Page = .clipboard
+    var settingsDestination = SettingsDestination()
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
     static let hideDockIconDefaultsKey = "deskfuse.hideDockIcon"
@@ -78,10 +83,6 @@ import DeskFuseEngine
     let onboarding = OnboardingController()
     let previousInstallation = PreviousInstallationController()
     var showMainWindow: (() -> Void)?
-    @ObservationIgnored var showSettingsWindow: (() -> Void)?
-    var pendingSettingsTab: String?
-    /// 设置页剪贴板分类内的分段深链（「历史 / 工作流」）。
-    var pendingClipboardSegment: String?
     var pairingWindow: PairingWindowController?
     private var transferWindow: TransferProgressWindowController?
     private var eventsTask: Task<Void, Never>?
@@ -290,14 +291,23 @@ import DeskFuseEngine
         applyDockIconPolicy()
     }
     func openSettings(tab: String? = nil, clipboardSegment: String? = nil) {
-        pendingSettingsTab = tab
-        pendingClipboardSegment = clipboardSegment
-        NSApp.activate(ignoringOtherApps: true)
-        showSettingsWindow?()
+        // The former input settings only duplicated the main keyboard/mouse page.
+        if tab == "input" {
+            selectedPage = .input
+            openMain()
+            return
+        }
+        settingsDestination = SettingsDestination(tab: tab, clipboardSegment: clipboardSegment,
+                                                  previous: settingsDestination)
+        selectedPage = .settings
+        openMain()
     }
     func openMain() {
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) { window.makeKeyAndOrderFront(nil) }
+        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
         else { showMainWindow?() }
     }
     func showLocalDevice() {
@@ -330,15 +340,15 @@ import DeskFuseEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "键鼠共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输"
+    case clipboard = "剪贴板", input = "键鼠共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输", settings = "设置"
     /// The transfer queue is presented together with LAN sharing. Keep the
     /// legacy case for deep links and existing command code, but do not expose
     /// a second top-level destination in the redesigned sidebar.
-    static var allCases: [Page] { [.clipboard, .input, .remoteApplications, .devices, .lanTransfer] }
+    static var allCases: [Page] { [.clipboard, .input, .remoteApplications, .devices, .lanTransfer, .settings] }
     var id: Self { self }
-    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane" } }
+    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane"; case .settings: "gearshape" } }
     /// 侧栏彩色方块图标的识别色，与设置页同名功能保持同色。
-    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange } }
+    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange; case .settings: .gray } }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

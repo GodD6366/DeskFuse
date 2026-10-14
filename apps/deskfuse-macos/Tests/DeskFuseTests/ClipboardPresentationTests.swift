@@ -2,6 +2,20 @@ import XCTest
 @testable import DeskFuse
 
 @MainActor final class ClipboardPresentationTests: XCTestCase {
+    func testTypeGroupIdentitySurvivesRenameAndDoesNotMatchCustomNames() {
+        let renamed = ClipboardLibraryList(id: "67f10b9a-9f3c-508d-8090-4192e3ea297f", name: "截图")
+        XCTAssertTrue(renamed.isDefaultTypeGroup)
+        XCTAssertFalse(ClipboardLibraryList(name: "图片").isDefaultTypeGroup)
+    }
+
+    func testImageViewDefaultOnlyAppliesToAnExclusiveImageFilter() {
+        let image = ClipboardLibraryRule(field: "kind", op: "is", value: "image")
+        XCTAssertTrue(ClipboardLibraryList(kind: "smart", rules: [image]).filtersOnlyImages)
+        XCTAssertFalse(ClipboardLibraryList(kind: "manual", rules: [image]).filtersOnlyImages)
+        XCTAssertFalse(ClipboardLibraryList(kind: "smart", match_mode: "any", rules: [image,
+            ClipboardLibraryRule(field: "kind", op: "is", value: "text")]).filtersOnlyImages)
+    }
+
     private func item(_ id: UInt64, members: [String] = []) throws -> ClipboardLibraryItem {
         let data = try JSONSerialization.data(withJSONObject: ["id":id,"mime":"text/plain","length":4,"preview":"text","source":"local","has_image":false,"file_count":0,"memberships":members])
         return try JSONDecoder().decode(ClipboardLibraryItem.self, from: data)

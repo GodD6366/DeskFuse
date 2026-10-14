@@ -85,6 +85,7 @@ impl InputCoordinator {
                 .spawn(move || {
                     let mut previous: Option<deskfuse_runtime::input_service::NativeStatus> = None;
                     let mut previous_input: Option<deskfuse_core::InputSharingSnapshot> = None;
+                    let mut previous_quality = None;
                     let mut previous_recording = None;
                     let mut previous_pid = 0;
                     while !stop.load(Ordering::Acquire) {
@@ -129,6 +130,15 @@ impl InputCoordinator {
                             previous = Some(native);
                         }
                         let input = runtime.input_snapshot();
+                        let quality = channel
+                            .quality
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone();
+                        if previous_quality.as_ref() != Some(&quality) {
+                            previous_quality = Some(quality.clone());
+                            let _ = ui.unbounded_send(UiEvent::InputQualitySnapshot(quality));
+                        }
                         if previous_input.as_ref() != Some(&input) {
                             previous_input = Some(input.clone());
                             let _ =

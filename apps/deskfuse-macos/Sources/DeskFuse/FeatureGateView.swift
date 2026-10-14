@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// 可选功能未启用时的页内引导空状态：说明价值、列出缺失权限、一键启用。
-/// 视觉对齐被控空态（44pt 细线图标 + 26pt 粗标题 + 主按钮），
+/// 视觉对齐被控空态，标题与动作沿用工作区的公共规格，
 /// 用玻璃圆形徽标区分"功能未启用"与"等待对端"两种语义。
 struct FeatureGateView: View {
     let symbol: String
@@ -34,7 +34,7 @@ struct FeatureGateView: View {
                 .modifier(NativeGlassSurface(cornerRadius: 28))
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 26, weight: .bold))
+                .font(WorkspaceTypography.section)
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -96,7 +96,7 @@ struct FeatureGateView: View {
                 Label("前往授权", systemImage: "arrow.up.forward.app")
                     .font(.callout)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(WorkspaceButtonStyle())
             .controlSize(.small)
         }
         .padding(.horizontal, 14)

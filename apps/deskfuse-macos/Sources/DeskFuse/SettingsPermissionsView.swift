@@ -94,7 +94,7 @@ struct SettingsPermissionsView: View {
                 }
                 refreshScreenRecordingPermission()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(WorkspaceButtonStyle())
             .frame(width: 88)
         }
         .padding(.vertical, 8)
@@ -116,7 +116,7 @@ struct SettingsPermissionsView: View {
                 .font(.caption).foregroundStyle(granted ? Color.green : Color.secondary)
                 .frame(width: 120, alignment: .leading)
             Button(granted ? "查看设置" : "前往授权") { store.permissionPrompt.authorize(.wifi) }
-                .buttonStyle(.bordered).frame(width: 88)
+                .buttonStyle(WorkspaceButtonStyle()).frame(width: 88)
         }.padding(.vertical, 8)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(LaunchPermission.wifi.title)，\(state.label)")
@@ -162,7 +162,7 @@ struct SettingsPermissionsView: View {
                 }
                 store.send(.refreshPermissions)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(WorkspaceButtonStyle())
             .frame(width: 88)
         }
         .padding(.vertical, 8)

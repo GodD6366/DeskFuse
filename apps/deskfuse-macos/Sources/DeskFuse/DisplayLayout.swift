@@ -12,7 +12,6 @@ struct DisplayLayout: View {
     var onReconnectDevice: ((String) -> Void)? = nil
     var reconnecting: Set<String> = []
     var editingDisabled = false
-    var layoutTipVisible = false
     var onLayoutInteraction: (() -> Void)? = nil
     @State private var dragging: String?
     @State private var delta: CGSize = .zero
@@ -21,6 +20,8 @@ struct DisplayLayout: View {
     @State private var dragViewport: DisplayLayoutViewport?
     @State private var pendingMove: UUID?
     @State private var snapped = false
+    @State private var snapGuideX: CGFloat?
+    @State private var snapGuideY: CGFloat?
     // The coordinate space belongs to the stationary canvas, never a moving tile.
     static let canvasSpace = "DeskFuse.DisplayLayout.canvas"
     static var moveGesture: DragGesture { DragGesture(minimumDistance: 4, coordinateSpace: .named(canvasSpace)) }
@@ -197,35 +198,24 @@ struct DisplayLayout: View {
                 if dragging != nil { transaction.animation = nil; transaction.disablesAnimations = true }
             }
             .overlay(alignment: .topLeading) {
+                if let snapGuideX, dragging != nil {
+                    Rectangle()
+                        .fill(DeskFuseBrand.accent.opacity(0.78))
+                        .frame(width: 1, height: geometry.size.height)
+                        .offset(x: snapGuideX)
+                        .allowsHitTesting(false)
+                }
+                if let snapGuideY, dragging != nil {
+                    Rectangle()
+                        .fill(DeskFuseBrand.accent.opacity(0.78))
+                        .frame(width: geometry.size.width, height: 1)
+                        .offset(y: snapGuideY)
+                        .allowsHitTesting(false)
+                }
                 if dragging != nil {
                     Label(pendingMove != nil ? "正在保存布局…" : snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
                         .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                         .allowsHitTesting(false)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if layoutTipVisible && dragging == nil {
-                    HStack(spacing: 7) {
-                        Image(systemName: "hand.draw")
-                            .foregroundStyle(DeskFuseBrand.accent)
-                        Text("拖动屏幕调整位置，松手自动吸附")
-                            .font(.caption)
-                        Button {
-                            onLayoutInteraction?()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .frame(width: 18, height: 18)
-                        }
-                        .buttonStyle(.plain)
-                        .help("关闭提示")
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .foregroundStyle(.primary)
-                    .background(.thinMaterial, in: Capsule())
-                    .overlay { Capsule().strokeBorder(.separator.opacity(0.45)) }
-                    .padding(.bottom, 14)
-                    .allowsHitTesting(true)
                 }
             }
             // 只用来裁掉拖动溢出，圆角与外层分组对齐；不再单独铺底或描边。
@@ -244,7 +234,7 @@ struct DisplayLayout: View {
 
     private func resetDrag() {
         dragging = nil; dragDisplays = []; dragViewport = nil
-        delta = .zero; snapped = false; pendingMove = nil
+        delta = .zero; snapped = false; snapGuideX = nil; snapGuideY = nil; pendingMove = nil
     }
 
     private func confirmMove(using displays: [Display]) {
@@ -304,10 +294,48 @@ struct DisplayLayout: View {
                 snapDistance: 14 / dragViewport.scale, attach: attach)
             delta = CGSize(width: offset.x * dragViewport.scale, height: offset.y * dragViewport.scale)
             snapped = abs(delta.width - translation.width) > 0.1 || abs(delta.height - translation.height) > 0.1
+            updateSnapGuides(device: device, offset: CGSize(width: offset.x, height: offset.y))
             return true
         } catch {
             store.error = error.userFacingMessage
             return false
+        }
+    }
+
+    private func updateSnapGuides(device: String, offset: CGSize) {
+        guard snapped, let dragViewport else {
+            snapGuideX = nil
+            snapGuideY = nil
+            return
+        }
+        let moving = dragDisplays.filter { $0.deviceId == device }
+        let stationary = dragDisplays.filter { $0.deviceId != device }
+        let tolerance = 0.5
+
+        let verticalSeam = moving.lazy.compactMap { moved -> Double? in
+            let left = moved.x + offset.width
+            let right = left + moved.width
+            return stationary.lazy.compactMap { fixed -> Double? in
+                if abs(left - (fixed.x + fixed.width)) < tolerance { return left }
+                if abs(right - fixed.x) < tolerance { return right }
+                return nil
+            }.first
+        }.first
+        let horizontalSeam = moving.lazy.compactMap { moved -> Double? in
+            let top = moved.y + offset.height
+            let bottom = top + moved.height
+            return stationary.lazy.compactMap { fixed -> Double? in
+                if abs(top - (fixed.y + fixed.height)) < tolerance { return top }
+                if abs(bottom - fixed.y) < tolerance { return bottom }
+                return nil
+            }.first
+        }.first
+
+        snapGuideX = verticalSeam.map {
+            dragViewport.origin.x + ($0 - dragViewport.layoutOrigin.x) * dragViewport.scale
+        }
+        snapGuideY = horizontalSeam.map {
+            dragViewport.origin.y + ($0 - dragViewport.layoutOrigin.y) * dragViewport.scale
         }
     }
 

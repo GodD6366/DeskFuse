@@ -11,9 +11,7 @@ struct LoginItemSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 16) {
-                Text("开机自启")
-                Spacer(minLength: 16)
+            QuietSettingsRow(title: "开机自启", detail: statusDescription) {
                 Toggle("开机自启", isOn: Binding(
                     get: { status == .enabled || status == .requiresApproval },
                     set: { setEnabled($0) }
@@ -21,11 +19,6 @@ struct LoginItemSettingsView: View {
                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 .disabled(updating)
             }
-            .frame(minHeight: WorkspaceControlMetrics.height)
-
-            Text(statusDescription)
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             if status == .requiresApproval {
                 WorkspaceChromeButton("打开登录项设置", systemImage: "gearshape") {

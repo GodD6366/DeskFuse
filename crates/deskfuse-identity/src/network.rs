@@ -326,6 +326,18 @@ pub fn network_offer_hash(offer: &NetworkOffer) -> Result<[u8; 32], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgotten_network_trust_origins_preserve_legacy_storage_compatibility() {
+        let mut origins: NetworkTrustOrigins =
+            serde_json::from_str(r#"{"introduced":[],"network_revoked":[]}"#).unwrap();
+        assert!(origins.forgotten.is_empty());
+        let peer = LocalIdentity::from_bytes(&[152; 32]).unwrap().device_id();
+        origins.forgotten.insert(peer);
+        let restored: NetworkTrustOrigins =
+            serde_json::from_slice(&serde_json::to_vec(&origins).unwrap()).unwrap();
+        assert_eq!(restored, origins);
+    }
     fn member(identity: &LocalIdentity) -> NetworkMember {
         NetworkMember {
             device_id: identity.device_id(),
@@ -468,4 +480,7 @@ mod tests {
 pub struct NetworkTrustOrigins {
     pub introduced: std::collections::BTreeSet<DeviceId>,
     pub network_revoked: std::collections::BTreeSet<DeviceId>,
+    /// Local consent was withdrawn; roster synchronization cannot restore it.
+    #[serde(default)]
+    pub forgotten: std::collections::BTreeSet<DeviceId>,
 }

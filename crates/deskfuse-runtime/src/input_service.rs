@@ -176,6 +176,7 @@ mod build_identity_tests {
             native: NativeStatus::default(),
             input: InputSharingSnapshot::default(),
             diagnostics: String::new(),
+            quality: Default::default(),
             last_command: 1,
         };
         snapshot
@@ -188,6 +189,43 @@ mod build_identity_tests {
         let returned: ServiceSnapshot = read_frame(&mut host).unwrap();
         writer.join().unwrap();
         assert_eq!(returned.input.remote_wallpapers[&peer][&display_id], jpeg);
+    }
+
+    #[test]
+    fn quality_crosses_status_ipc_without_debug_text() {
+        use super::*;
+        let record = deskfuse_transport::motion_diag::QualityRecord {
+            timestamp_ms: 123_000,
+            rtt_micros: 4_000,
+            hitches: 2,
+            slow_injections: 1,
+            capture_queue_micros: 9_000,
+            capture_count: 1,
+            ready: false,
+        };
+        let quality = InputServiceQuality {
+            records: vec![record],
+            report: deskfuse_input::quality::build_report(&[], "reliable-only", None),
+        };
+        let snapshot = ServiceSnapshot {
+            generation: 1,
+            native: NativeStatus::default(),
+            input: Default::default(),
+            diagnostics: String::new(),
+            quality: quality.clone(),
+            last_command: 0,
+        };
+        let (mut host, mut child) = UnixStream::pair().unwrap();
+        write_frame(&mut child, &snapshot).unwrap();
+        let returned: ServiceSnapshot = read_frame(&mut host).unwrap();
+        assert!(returned.diagnostics.is_empty());
+        assert_eq!(returned.quality, quality);
+
+        // Older service status frames still decode during a rolling upgrade.
+        let mut old = serde_json::to_value(&snapshot).unwrap();
+        old.as_object_mut().unwrap().remove("quality");
+        let decoded: ServiceSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(decoded.quality, InputServiceQuality::default());
     }
 
     #[test]
@@ -352,7 +390,7 @@ pub struct ServiceOptions {
     pub executable: PathBuf,
     pub identity_path: PathBuf,
 }
-pub use super::input_service_types::{NativeStatus, ServiceControl};
+pub use super::input_service_types::{InputServiceQuality, NativeStatus, ServiceControl};
 // The authority cache contains no clipboard, transfer or other business snapshot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Authority {
@@ -460,6 +498,8 @@ pub struct ServiceSnapshot {
     pub native: NativeStatus,
     pub input: InputSharingSnapshot,
     pub diagnostics: String,
+    #[serde(default)]
+    pub quality: InputServiceQuality,
     pub last_command: u64,
 }
 fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
@@ -561,6 +601,7 @@ pub(super) async fn run_host(
         *control.sequence.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         *control.urgent.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *control.remote.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *control.quality.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
         let mut error = result.err();
         // Count consecutive failures, not every incident over the app's lifetime.
         if launched_at.elapsed() >= Duration::from_secs(60) {
@@ -729,6 +770,10 @@ async fn run_process(
                     .diagnostics
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = update.diagnostics;
+                *output_control
+                    .quality
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = update.quality;
                 output.send_replace(update.input);
             }
             let _ = closed_tx.blocking_send(());

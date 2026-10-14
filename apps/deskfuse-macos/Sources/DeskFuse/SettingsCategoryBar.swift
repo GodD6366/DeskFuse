@@ -1,12 +1,11 @@
 import SwiftUI
 
 enum SettingsCategory: String, CaseIterable {
-    case general, input, permissions, storage, clipboard, shortcuts, updates, about
+    case general, permissions, storage, clipboard, shortcuts, updates, about
 
     var title: String {
         switch self {
         case .general: "通用"
-        case .input: "键鼠共享"
         case .permissions: "权限"
         case .storage: "传输与存储"
         case .clipboard: "剪贴板"
@@ -19,7 +18,6 @@ enum SettingsCategory: String, CaseIterable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
-        case .input: "rectangle.on.rectangle"
         case .permissions: "shield"
         case .storage: "tray"
         case .clipboard: "clipboard"
@@ -33,7 +31,6 @@ enum SettingsCategory: String, CaseIterable {
     var color: Color {
         switch self {
         case .general: .gray
-        case .input: .purple
         case .permissions: .red
         case .storage: .teal
         case .clipboard: .blue
@@ -41,31 +38,5 @@ enum SettingsCategory: String, CaseIterable {
         case .updates: .green
         case .about: .gray
         }
-    }
-}
-
-struct SettingsCategoryBar: View {
-    @Binding var selection: String
-    var body: some View {
-        List(selection: $selection) {
-            ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
-                SystemSettingsSidebarRow(
-                    title: category.title,
-                    symbol: category.symbol,
-                    color: category.color,
-                    selected: selection == category.rawValue
-                )
-                .tag(category.rawValue)
-                .listRowInsets(SystemSettingsMetrics.rowInsets)
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, SystemSettingsMetrics.rowHeight)
-        .padding(.top, 12)
-        .systemSettingsSidebarBackground()
-        .accessibilityLabel("设置分类")
     }
 }

@@ -3,6 +3,7 @@ import AppKit
 import DeskFuseEngine
 
 struct ClipboardHistoryPane: View {
+    @Environment(\.colorScheme) private var scheme
     let items: [HistoryItem]
     let sources: [ClipboardLibraryChoice]
     @Binding var selected: UInt64?
@@ -30,6 +31,8 @@ struct ClipboardHistoryPane: View {
     @State private var dragBase: Set<UInt64>?
     @State private var pendingDeletion: [UInt64] = []
     @State private var confirmingDeletion = false
+    @State private var paneWidth: CGFloat = 360
+    private var gridColumnCount: Int { paneWidth < 300 ? 1 : 2 }
     @Binding var listID: String?
     let total: Int?
     let memberships: [UInt64: [String]]
@@ -55,18 +58,10 @@ struct ClipboardHistoryPane: View {
                 .animation(Motion.settle, value: displayMode)
             }
 
-            Divider().padding(.horizontal, 20)
-            HStack(spacing: 8) {
-                Text("自动同步剪贴板").font(.callout)
-                Spacer(minLength: 4)
-                Toggle("自动同步", isOn: $syncEnabled)
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                    .help(syncEnabled ? "自动同步已开启" : "自动同步已关闭")
-            }
-            .padding(.horizontal, 20).padding(.vertical, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.clear)
+        .background(QuietWorkspacePalette.surface(scheme))
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
         .onChange(of: searchRequest) { _, _ in historyFocused = false; searchFocused = true }
         .onAppear { if let selected { selection = [selected] } }
         .onChange(of: selected) { _, id in
@@ -98,8 +93,13 @@ struct ClipboardHistoryPane: View {
         NativeGlassGroup {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("历史记录").font(.system(size: 19, weight: .semibold))
+                    Text("历史记录").font(.system(size: 14, weight: .semibold))
                     Spacer(minLength: 8)
+                    if let total {
+                        Text("\(total) 条").font(.caption).monospacedDigit().workspaceSecondaryText()
+                            .fixedSize()
+                            .accessibilityLabel("共 \(total) 条历史")
+                    }
                     Menu {
                         Button("全选已加载") { setSelection(Set(items.map(\.id))) }
                             .disabled(items.isEmpty)
@@ -111,6 +111,13 @@ struct ClipboardHistoryPane: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .modifier(NativeGlassBackdrop(cornerRadius: 14))
                     .accessibilityLabel("历史记录操作")
+                }
+                HStack(spacing: 8) {
+                    Text("自动同步剪贴板").font(.callout)
+                    Spacer(minLength: 4)
+                    Toggle("自动同步剪贴板", isOn: $syncEnabled)
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        .help(syncEnabled ? "自动同步已开启" : "自动同步已关闭")
                 }
                 searchField
                 HStack(spacing: 10) {
@@ -125,19 +132,15 @@ struct ClipboardHistoryPane: View {
                             .font(.system(size: 12)).lineLimit(1)
                     }
                     .menuStyle(.borderlessButton)
-                    .fixedSize()
                     .accessibilityLabel("来源设备")
                     .help("按来源设备筛选历史")
                     Spacer(minLength: 8)
-                    if let total {
-                        Text("\(total) 条").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
-                            .accessibilityLabel("共 \(total) 条历史")
-                    }
                     ClipboardDisplayModePicker(mode: $displayMode)
+                        .fixedSize()
                 }
                 if selection.count > 1 {
                     HStack {
-                        Text("已选 \(selection.count) 条").foregroundStyle(.secondary)
+                        Text("已选 \(selection.count) 条").workspaceSecondaryText()
                         Spacer()
                         Button("删除所选", role: .destructive) { requestDelete(selection) }
                             .buttonStyle(.borderless)
@@ -145,7 +148,7 @@ struct ClipboardHistoryPane: View {
                 }
             }
         }
-        .padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 8)
+        .padding(.horizontal, 14).padding(.top, 20).padding(.bottom, 12)
     }
 
     private func listContent(proxy: ScrollViewProxy) -> some View {
@@ -155,7 +158,7 @@ struct ClipboardHistoryPane: View {
                     if startsDayGroup(at: index) {
                         Text(dayTitle(item))
                             .font(.headline)
-                            .foregroundStyle(.secondary)
+                            .workspaceSecondaryText()
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, index == 0 ? 4 : 14)
                             .padding(.bottom, 2)
@@ -180,7 +183,8 @@ struct ClipboardHistoryPane: View {
                             withMotion(.snappy) { hoveredItem = over ? item.id : nil }
                         }
                         .tag(item.id)
-                        .listRowSeparator(.hidden)
+                        .listRowSeparator(.visible)
+                        .listRowSeparatorTint(QuietWorkspacePalette.line(scheme))
                         .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -221,7 +225,7 @@ struct ClipboardHistoryPane: View {
 
     private func gridContent(proxy: ScrollViewProxy) -> some View {
         interact(
-            ClipboardMasonryGrid(items: items, selected: selected, columnCount: 2,
+            ClipboardMasonryGrid(items: items, selected: selected, columnCount: gridColumnCount,
                                  hasMore: hasMore, paginationOffset: paginationOffset, paginationGeneration: paginationGeneration, searching: searching, loadMore: loadMore) { item, _ in
                 ClipboardHistoryCard(
                     item: item,
@@ -387,7 +391,7 @@ struct ClipboardHistoryPane: View {
             case .down: navigationDirection = .down
             default: return
             }
-            if let id = ClipboardMasonryNavigation.target(items: items, selected: selected, columnCount: 2, direction: navigationDirection) {
+            if let id = ClipboardMasonryNavigation.target(items: items, selected: selected, columnCount: gridColumnCount, direction: navigationDirection) {
                 selectItem(id)
             }
             return
@@ -405,7 +409,7 @@ struct ClipboardHistoryPane: View {
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").workspaceSecondaryText()
             TextField("搜索剪贴板", text: $search)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
@@ -414,7 +418,7 @@ struct ClipboardHistoryPane: View {
                 Text("⌘ F").font(.caption).foregroundStyle(.tertiary)
             } else {
                 Button { search = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    Image(systemName: "xmark.circle.fill").workspaceSecondaryText()
                 }
                 .buttonStyle(.plain).help("清除搜索")
                 .accessibilityLabel("清除搜索")
@@ -434,14 +438,14 @@ struct ClipboardHistoryPane: View {
         VStack(spacing: 10) {
             if searching {
                 ProgressView().controlSize(.small)
-                Text("正在搜索…").font(.callout).foregroundStyle(.secondary)
+                Text("正在搜索…").font(.callout).workspaceSecondaryText()
             } else {
                 Image(systemName: historyIsEmpty ? "clipboard" : "magnifyingglass")
                     .font(.system(size: 28)).foregroundStyle(DeskFuseBrand.fusionGradient)
                 Text(historyIsEmpty ? "还没有剪贴板历史" : "没有匹配的内容")
                     .font(.callout.weight(.medium))
                 Text(historyIsEmpty ? "复制文字、图片或文件后\n会显示在这里。" : "试试其他关键词或筛选条件。")
-                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .font(.caption).workspaceSecondaryText().multilineTextAlignment(.center)
             }
         }
         .padding(20)
@@ -471,17 +475,17 @@ private struct ClipboardHistoryRow: View {
             VStack(alignment: .trailing, spacing: 4) {
                 if let date = item.copiedDate {
                     Text(Self.timeFormatter.string(from: date))
-                        .font(.system(size: 10)).monospacedDigit().foregroundStyle(.tertiary)
+                        .font(.system(size: 12)).monospacedDigit().workspaceSecondaryText()
                 }
                 HStack(spacing: 4) {
                     if ocrHit {
                         Image(systemName: "text.viewfinder")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .font(.system(size: 11)).workspaceSecondaryText()
                             .help("由图片识别文字匹配")
                     }
                     if meta?.remote == true && meta?.available == false {
                         Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .font(.system(size: 11)).workspaceSecondaryText()
                             .help("使用时从来源设备获取")
                     }
                 }
@@ -496,7 +500,7 @@ private struct ClipboardHistoryRow: View {
             copyEnabled: client != nil,
             onEditTitle: { editingTitle = true }, onDelete: onDelete))
         .sheet(isPresented: $editingTitle) {
-            ClipboardTitleEditor(title: title, onSave: onRename)
+            ClipboardTitleEditor(title: title, onSave: onRename).floatingWorkspaceStyle()
         }
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
             guard item.hasImage || item.fileCount > 0, let client else { return }

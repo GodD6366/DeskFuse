@@ -26,7 +26,7 @@ struct ClipboardRecordLabel: View {
                     .multilineTextAlignment(.leading)
                 Text("来自 \(meta?.originDevice ?? item.source)")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .workspaceSecondaryText()
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -50,7 +50,7 @@ struct ClipboardRecordLabel: View {
                 } else {
                     Image(systemName: item.clipboardSymbol)
                         .font(.system(size: 20, weight: .regular))
-                        .foregroundStyle(.secondary)
+                        .workspaceSecondaryText()
                 }
             }
         }

@@ -24,61 +24,11 @@ struct DeviceRoutesPanel: View {
                 Text("暂未发现连接地址。请确认对方应用正在运行后刷新，或通过 IP 添加设备。")
                     .font(.callout).foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 0) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("").frame(width: 24)
-                        Text("地址").frame(maxWidth: .infinity, alignment: .leading)
-                        Text("发现来源").frame(width: 128, alignment: .leading)
-                        Text("状态").frame(width: 94, alignment: .leading)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    Divider()
-                    ForEach(routes, id: \.id) { route in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Image(systemName: route.active ? "circle.inset.filled" : "circle")
-                                .font(.system(size: 18))
-                                .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(route.endpoint)
-                                    .font(.system(.callout, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .lineLimit(1)
-                                if route.probeError != nil {
-                                    Text("探测失败")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .lineLimit(2)
-                                } else if let timestamp = route.lastProbeUnixMs {
-                                    Text("最近探测 \(Date(timeIntervalSince1970: Double(timestamp) / 1_000), style: .time)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(route.source)
-                                if !route.path.isEmpty { Text(route.path) }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 128, alignment: .leading)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(route.status)
-                                    .foregroundStyle(route.active ? Color.green : Color.secondary)
-                                if let rtt = route.rttMs { Text(rtt == 0 ? "<1 ms" : "\(rtt) ms").monospacedDigit() }
-                            }
-                            .font(.caption)
-                            .frame(width: 94, alignment: .leading)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        if route.id != routes.last?.id { Divider().padding(.horizontal, 14) }
-                    }
+                ViewThatFits(in: .horizontal) {
+                    routeTable
+                    compactRoutes
                 }
+
                 if routes.count == 1 {
                     Text("目前仅发现这一条候选地址，不代表设备只有一个网络接口。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -91,4 +41,101 @@ struct DeviceRoutesPanel: View {
         }
         .padding(16)
     }
+
+    private var routeTable: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("").frame(width: 24)
+                Text("地址").frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                Text("发现来源").frame(width: 128, alignment: .leading)
+                Text("状态").frame(width: 94, alignment: .leading)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Divider()
+            ForEach(routes, id: \.id) { route in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: route.active ? "circle.inset.filled" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(route.endpoint)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                        if route.probeError != nil {
+                            Text("探测失败")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .lineLimit(2)
+                        } else if let timestamp = route.lastProbeUnixMs {
+                            Text("最近探测 \(Date(timeIntervalSince1970: Double(timestamp) / 1_000), style: .time)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(route.source)
+                        if !route.path.isEmpty { Text(route.path) }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 128, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(route.status)
+                            .foregroundStyle(route.active ? Color.green : Color.secondary)
+                        if let rtt = route.rttMs { Text(rtt == 0 ? "<1 ms" : "\(rtt) ms").monospacedDigit() }
+                    }
+                    .font(.caption)
+                    .frame(width: 94, alignment: .leading)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                if route.id != routes.last?.id { Divider().padding(.horizontal, 14) }
+            }
+        }
+    }
+
+    /// Keep complete endpoints readable when the inspector is narrow.
+    private var compactRoutes: some View {
+        VStack(spacing: 0) {
+            ForEach(routes, id: \.id) { route in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: route.active ? "circle.inset.filled" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(route.endpoint)
+                            .font(.system(size: 13, design: .monospaced))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            Text(route.source).foregroundStyle(.secondary)
+                            Text(route.status).foregroundStyle(route.active ? Color.green : Color.secondary)
+                            if let rtt = route.rttMs {
+                                Text(rtt == 0 ? "<1 ms" : "\(rtt) ms").monospacedDigit()
+                            }
+                        }
+                        if !route.path.isEmpty { Text(route.path).foregroundStyle(.secondary) }
+                        if route.probeError != nil {
+                            Text("探测失败").foregroundStyle(.orange)
+                        } else if let timestamp = route.lastProbeUnixMs {
+                            Text("最近探测 \(Date(timeIntervalSince1970: Double(timestamp) / 1_000), style: .time)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(WorkspaceTypography.detail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 12)
+                if route.id != routes.last?.id { Divider() }
+            }
+        }
+    }
+
 }
