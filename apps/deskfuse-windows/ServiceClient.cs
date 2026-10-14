@@ -33,6 +33,21 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
     /// command shapes used by older desktop clients.</summary>
     public Task<JsonElement> SendPlatformAsync(long sessionEpoch, long sequence, object command, CancellationToken token = default) =>
         SendAsync(Command("Platform", new { session_epoch = sessionEpoch, sequence, command }), token);
+    /// <summary>Remove the peer from every list (macOS "forget").</summary>
+    public Task ForgetAsync(string peerId, CancellationToken token = default) =>
+        SendAsync(Command("Forget", new { peer_id = peerId }), token);
+    /// <summary>Unblock a blocked peer so it can request pairing again.</summary>
+    public Task AllowPairingAsync(string peerId, CancellationToken token = default) =>
+        SendAsync(Command("AllowPairing", new { peer_id = peerId }), token);
+    /// <summary>Bind (or refresh) the current layout on the current Wi-Fi network.</summary>
+    public Task SaveEnvironmentLayoutAsync(string? name, CancellationToken token = default) =>
+        SendAsync(Command("SaveEnvironmentLayout", new { name }), token);
+    public Task SaveSceneAsync(string name, CancellationToken token = default) =>
+        SendAsync(Command("SaveScene", new { name }), token);
+    public Task ApplySceneAsync(string sceneId, CancellationToken token = default) =>
+        SendAsync(Command("ApplyScene", new { scene_id = sceneId }), token);
+    public Task DeleteSceneAsync(string sceneId, CancellationToken token = default) =>
+        SendAsync(Command("DeleteScene", new { scene_id = sceneId }), token);
     public void Start() => poll ??= Task.Run(PollAsync);
     private async Task PollAsync()
     {

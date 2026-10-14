@@ -77,6 +77,26 @@ fn controller_commands_round_trip() {
             x: 100.0,
             y: 50.0,
         },
+        ipc::Command::Forget {
+            peer_id: DeviceId::from_bytes([9; 32]).to_hex(),
+        },
+        ipc::Command::AllowPairing {
+            peer_id: DeviceId::from_bytes([9; 32]).to_hex(),
+        },
+        ipc::Command::SaveScene {
+            name: "书桌".into(),
+        },
+        ipc::Command::ApplyScene {
+            scene_id: "scene-1".into(),
+        },
+        ipc::Command::RenameScene {
+            scene_id: "scene-1".into(),
+            name: "客厅".into(),
+        },
+        ipc::Command::DeleteScene {
+            scene_id: "scene-1".into(),
+        },
+        ipc::Command::SaveEnvironmentLayout { name: None },
     ];
     for command in commands {
         let request = ipc::Request {
@@ -182,6 +202,16 @@ fn input_state_carries_layout_and_control_views() {
             lease_revision: 3,
             motion_mode: Some("hybrid".into()),
             motion_fallback_reason: None,
+        }],
+        environment: ipc::EnvironmentView {
+            ssid: Some("DeskFuse-Test".into()),
+            message: String::new(),
+            conflict: false,
+        },
+        scenes: vec![ipc::SceneView {
+            id: "scene-1".into(),
+            name: "DeskFuse-Test".into(),
+            ssid: Some("DeskFuse-Test".into()),
         }],
         quality: ipc::idle_quality(),
     };

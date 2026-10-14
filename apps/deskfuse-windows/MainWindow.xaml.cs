@@ -334,6 +334,7 @@ public sealed partial class MainWindow : Window
             InputAvailability.Text = "普通桌面输入 helper 正在等待服务重连；不会接受新的远端输入。";
             InputReceiverReady.IsChecked = false;
             ReclaimInputButton.IsEnabled = false;
+            ClearInputQuality();
             lastDeviceSnapshot = "";
             RebuildDevices();
             Notify(message);
@@ -345,6 +346,98 @@ public sealed partial class MainWindow : Window
         }
         wasConnected = connected;
     }
+    private void ClearInputQuality()
+    {
+        if (InputQualitySummary is null) return;
+        InputQualitySummary.Text = "等待输入";
+        InputQualityMetrics.Text = "P50 — · P95 — · 卡顿 —";
+        InputQualityMode.Text = "等待会话";
+        InputQualityAdvice.Text = "";
+        InputQualityCanvas.Children.Clear();
+    }
+
+    private void RefreshInputQuality(JsonElement input)
+    {
+        if (InputQualitySummary is null) return;
+        if (!input.TryGetProperty("quality", out var quality) || quality.ValueKind != JsonValueKind.Object)
+        {
+            ClearInputQuality();
+            return;
+        }
+        InputQualitySummary.Text = quality.String("grade", "idle") switch
+        {
+            "smooth" => "流畅",
+            "fair" => "一般",
+            "poor" => "较差",
+            _ => "等待输入",
+        };
+        long p50 = quality.Number("rtt_p50_micros");
+        long p95 = quality.Number("rtt_p95_micros");
+        long hitches = quality.Number("hitches");
+        InputQualityMetrics.Text = $"P50 {p50 / 1000.0:0.0} ms · P95 {p95 / 1000.0:0.0} ms · 卡顿 {hitches}";
+        string mode = quality.String("mode");
+        string fallback = quality.String("fallback");
+        foreach (var link in input.Array("links"))
+        {
+            if (link.String("control_session").Length == 0) continue;
+            string linkMode = link.String("motion_mode");
+            if (linkMode.Length > 0) mode = linkMode;
+            string linkFallback = link.String("motion_fallback_reason");
+            if (linkFallback.Length > 0) fallback = linkFallback;
+            break;
+        }
+        string modeLabel = mode switch
+        {
+            "relative" => "相对移动",
+            "hybrid" => "绝对坐标",
+            _ => mode.Length == 0 ? "等待会话" : "可靠路径",
+        };
+        InputQualityMode.Text = fallback.Length > 0 ? $"{modeLabel} · {fallback}" : modeLabel;
+        var advice = new List<string>();
+        if (quality.TryGetProperty("suggestions", out var suggestions) && suggestions.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in suggestions.EnumerateArray())
+            {
+                string action = item.String("action");
+                if (action.Length == 0) continue;
+                // Same priority classes as the macOS panel: act needs handling,
+                // info is explanatory, ok needs no action.
+                advice.Add(item.String("priority") == "act" ? $"● {action}" : $"○ {action}");
+            }
+        }
+        InputQualityAdvice.Text = string.Join(Environment.NewLine, advice);
+        DrawQualityCurve(quality);
+    }
+
+    private void DrawQualityCurve(JsonElement quality)
+    {
+        InputQualityCanvas.Children.Clear();
+        double width = InputQualityCanvas.ActualWidth > 8 ? InputQualityCanvas.ActualWidth : 240;
+        var samples = quality.Array("samples").ToList();
+        if (samples.Count == 0) return;
+        var values = new List<double>();
+        double max = 1;
+        foreach (var sample in samples)
+        {
+            double rtt = sample.Double("rtt_ms");
+            values.Add(rtt);
+            if (rtt > max) max = rtt;
+        }
+        const double height = 72;
+        var points = new PointCollection();
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = values.Count == 1 ? 0 : width * i / (values.Count - 1);
+            double y = height - (values[i] / max) * (height - 4) - 2;
+            points.Add(new global::Windows.Foundation.Point(x, y));
+        }
+        InputQualityCanvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline
+        {
+            Points = points,
+            Stroke = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 70, 130, 180)),
+            StrokeThickness = 1.5,
+        });
+    }
 
     private void RefreshInputState(JsonElement snapshot)
     {
@@ -354,6 +447,7 @@ public sealed partial class MainWindow : Window
             InputAvailability.Text = "当前服务未提供 Windows 输入 helper 状态。";
             InputReceiverReady.IsChecked = false;
             ReclaimInputButton.IsEnabled = false;
+            ClearInputQuality();
             DrawInputLayout(default);
             return;
         }
@@ -381,7 +475,84 @@ public sealed partial class MainWindow : Window
             InputAvailability.Text += $"\n本机已开启主控{(peer.Length > 0 && controllingId.Length > 0 ? $"：正在控制 {peer}{(target.Length > 0 ? $"（{target}）" : "")}" : "；把指针移到屏幕边缘即可控制对端")}";
         }
         RenderShortcutBindings(input);
+        RefreshInputQuality(input);
+        RenderWifiEnvironment(input);
         DrawInputLayout(input);
+    }
+
+    private void RenderWifiEnvironment(JsonElement input)
+    {
+        if (WifiEnvironmentText is null) return;
+        string ssid = input.TryGetProperty("environment", out var environment) && environment.ValueKind == JsonValueKind.Object
+            ? environment.String("ssid") : "";
+        bool conflict = environment.ValueKind == JsonValueKind.Object && environment.Bool("conflict");
+        string message = environment.ValueKind == JsonValueKind.Object ? environment.String("message") : "";
+        WifiEnvironmentText.Text = ssid.Length > 0
+            ? $"当前 Wi-Fi：{ssid}{(conflict ? " · 存在多个候选环境，未自动恢复" : "")}{(message.Length > 0 ? $"\n{message}" : "")}"
+            : $"未检测到已连接的 Wi-Fi，布局绑定不可用。{(message.Length > 0 ? $"\n{message}" : "")}";
+        if (SaveEnvironmentLayoutButton is not null)
+            SaveEnvironmentLayoutButton.IsEnabled = service.IsConnected && ssid.Length > 0 && !busy;
+        if (LayoutScenesPanel is null) return;
+        LayoutScenesPanel.Children.Clear();
+        var scenes = input.TryGetProperty("scenes", out var list) && list.ValueKind == JsonValueKind.Array ? list : default;
+        if (scenes.ValueKind != JsonValueKind.Array || scenes.GetArrayLength() == 0)
+        {
+            LayoutScenesPanel.Children.Add(new TextBlock
+            {
+                Text = "还没有保存的布局；拖动显示器排布后保存到当前 Wi-Fi，回到该网络会自动恢复。",
+                TextWrapping = TextWrapping.Wrap,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+            });
+            return;
+        }
+        foreach (var scene in scenes.EnumerateArray())
+        {
+            string sceneId = scene.String("id");
+            string sceneSsid = scene.String("ssid");
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{scene.String("name", "未命名布局")}{(sceneSsid.Length > 0 ? " · Wi-Fi" : "")}{(sceneSsid.Length > 0 && sceneSsid == ssid ? "（当前网络）" : "")}",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 8, 0),
+            });
+            string captured = sceneId;
+            var apply = new Button { Content = "应用", Margin = new Thickness(0, 0, 6, 0), IsEnabled = service.IsConnected && !busy };
+            apply.Click += async (_, _) =>
+            {
+                if (busy) return;
+                busy = true;
+                try { await service.ApplySceneAsync(captured); Notify("已请求应用布局；以屏幕上的实际排布为准。"); }
+                catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（应用布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
+                finally { busy = false; }
+            };
+            var delete = new Button { Content = "删除", IsEnabled = service.IsConnected && !busy };
+            delete.Click += async (_, _) =>
+            {
+                if (busy) return;
+                if (!Dialogs.Confirm(Handle, "删除该已保存的布局？删除后回到对应 Wi-Fi 不再自动恢复。", "删除布局")) return;
+                busy = true;
+                try { await service.DeleteSceneAsync(captured); Notify("已请求删除布局。"); }
+                catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（删除布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
+                finally { busy = false; }
+            };
+            row.Children.Add(apply);
+            row.Children.Add(delete);
+            LayoutScenesPanel.Children.Add(row);
+        }
+    }
+
+    private async void SaveEnvironmentLayoutClick(object sender, RoutedEventArgs args)
+    {
+        if (busy) return;
+        busy = true;
+        try
+        {
+            await service.SaveEnvironmentLayoutAsync(null);
+            Notify("已请求把当前布局绑定到当前 Wi-Fi；回到该网络会自动恢复排布。");
+        }
+        catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（绑定布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
+        finally { busy = false; }
     }
 
     private void RenderShortcutBindings(JsonElement input)
@@ -798,7 +969,15 @@ public sealed partial class MainWindow : Window
         devices = [new("local", latest?.String("local_name", "这台 Windows") ?? "这台 Windows", "本机", latest is null ? "服务未连接" : "Windows · 后台已连接", true, default)];
         if (latest is JsonElement snapshot)
         {
-            devices.AddRange(snapshot.Array("peers").Select(peer => new DeviceRow(peer.String("peer_id"), peer.String("display_name", "未命名设备"), peer.String("trust") == "trusted" ? "已配对" : "附近设备", $"{ConnectionLabel(peer.String("connection"))} · {TrustLabel(peer.String("trust"))}", false, peer)));
+            devices.AddRange(snapshot.Array("peers").Select(peer =>
+            {
+                string trust = peer.String("trust");
+                // Keep the macOS section order: paired, nearby, blocked.
+                string group = trust == "trusted" ? "已配对" : trust == "blocked" ? "已阻止" : "附近设备";
+                return new DeviceRow(peer.String("peer_id"), peer.String("display_name", "未命名设备"), group,
+                    $"{ConnectionLabel(peer.String("connection"))} · {TrustLabel(trust)}", false, peer);
+            }).OrderBy(row => row.Group == "已配对" ? 0 : row.Group == "附近设备" ? 1 : 2)
+                .ThenBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase));
         }
         string search = DeviceSearch.Text.Trim();
         var visible = devices.Where(d => search.Length == 0 || $"{d.Name} {d.Id}".Contains(search, StringComparison.CurrentCultureIgnoreCase)).ToArray();
@@ -875,16 +1054,27 @@ public sealed partial class MainWindow : Window
         ToolTipService.SetToolTip(routePreference, "当前桌面 IPC 尚未开放路径偏好命令。");
         DeviceDetails.Children.Add(routePreference);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal };
-        if (peer.String("trust") == "trusted" && latest.Value.TryGetProperty("capabilities", out var localCaps)
+        string trust = peer.String("trust");
+        if (trust == "trusted" && latest.Value.TryGetProperty("capabilities", out var localCaps)
             && localCaps.Bool("remote_app"))
         {
             var remoteAppButton = new Button { Content = "管理 Windows RemoteApp", IsEnabled = service.IsConnected && !busy, Margin = new Thickness(0, 0, 8, 0) };
             remoteAppButton.Click += (_, _) => ShowRemoteApps();
             buttons.Children.Add(remoteAppButton);
         }
-        if (peer.String("trust") != "trusted") buttons.Children.Add(ActionButton("邀请配对", "RequestPairing", new { peer_id = device.Id }));
+        if (trust is not ("trusted" or "blocked")) buttons.Children.Add(ActionButton("邀请配对", "RequestPairing", new { peer_id = device.Id }));
         if (connected) buttons.Children.Add(ActionButton("断开连接", "Disconnect", new { peer_id = device.Id }));
-        if (peer.String("trust") == "trusted") buttons.Children.Add(ActionButton("撤销信任", "Revoke", new { peer_id = device.Id }));
+        if (trust == "blocked")
+        {
+            DeviceDetails.Children.Add(Label("已阻止的设备不会收到配对邀请，也无法向你发起配对；解除阻止后可重新配对。", 13, false, true));
+            buttons.Children.Add(UnblockButton(device));
+            buttons.Children.Add(ForgetButton(device));
+        }
+        else
+        {
+            buttons.Children.Add(BlockButton(device));
+            if (trust == "trusted") buttons.Children.Add(ForgetButton(device));
+        }
         DeviceDetails.Children.Add(buttons);
 
         // 键鼠主控：仅对已信任设备开放，服务会持久化角色与参与者。
@@ -932,6 +1122,55 @@ public sealed partial class MainWindow : Window
     {
         var button = new Button { Content = label, IsEnabled = service.IsConnected && !busy };
         button.Click += async (_, _) => await RunCommand(command, args);
+        return button;
+    }
+
+    private Button UnblockButton(DeviceRow device)
+    {
+        var button = new Button { Content = "解除阻止", IsEnabled = service.IsConnected && !busy, Margin = new Thickness(0, 0, 8, 0) };
+        button.Click += async (_, _) =>
+        {
+            if (busy) return;
+            busy = true;
+            try
+            {
+                await service.AllowPairingAsync(device.Id);
+                Notify("已请求解除阻止；以设备列表中的实际状态为准。");
+            }
+            catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（解除阻止需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
+            finally { busy = false; }
+        };
+        return button;
+    }
+
+    private Button BlockButton(DeviceRow device)
+    {
+        var button = new Button { Content = "阻止", IsEnabled = service.IsConnected && !busy, Margin = new Thickness(0, 0, 8, 0) };
+        button.Click += async (_, _) =>
+        {
+            if (busy) return;
+            if (!Dialogs.Confirm(Handle, $"阻止「{device.Name}」？\n\n该设备会保留在“已阻止”分组中，不会收到配对邀请，也无法向你发起配对。", "阻止设备")) return;
+            await RunCommand("Revoke", new { peer_id = device.Id });
+        };
+        return button;
+    }
+
+    private Button ForgetButton(DeviceRow device)
+    {
+        var button = new Button { Content = "忘记", IsEnabled = service.IsConnected && !busy, Margin = new Thickness(0, 0, 8, 0) };
+        button.Click += async (_, _) =>
+        {
+            if (busy) return;
+            if (!Dialogs.Confirm(Handle, $"忘记「{device.Name}」？\n\n该设备会从列表中移除；重新发现后可再次配对。", "忘记设备")) return;
+            busy = true;
+            try
+            {
+                await service.ForgetAsync(device.Id);
+                Notify("已请求忘记设备；以设备列表中的实际状态为准。");
+            }
+            catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（忘记设备需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
+            finally { busy = false; }
+        };
         return button;
     }
 

@@ -10,6 +10,7 @@ mod network;
 mod remote_app;
 mod security;
 mod session_agent;
+mod wifi;
 mod workflow;
 use crate::{
     policy::same_session,

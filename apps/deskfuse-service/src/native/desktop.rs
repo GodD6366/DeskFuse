@@ -183,6 +183,20 @@ impl State {
             activations,
             remote_topologies,
             links,
+            environment: ipc::EnvironmentView {
+                ssid: input.environment.ssid.clone(),
+                message: input.environment.message.clone(),
+                conflict: input.environment.conflict,
+            },
+            scenes: input
+                .scenes
+                .iter()
+                .map(|scene| ipc::SceneView {
+                    id: scene.id.clone(),
+                    name: scene.name.clone(),
+                    ssid: scene.ssid.clone(),
+                })
+                .collect(),
             quality,
         }
     }
@@ -1432,6 +1446,25 @@ fn runtime_command(command: ipc::Command) -> Option<RuntimeCommand> {
         ipc::Command::Revoke { peer_id } => RuntimeCommand::RevokePeer {
             peer_id: peer_id.parse().ok()?,
         },
+        ipc::Command::Forget { peer_id } => RuntimeCommand::ForgetPeer {
+            peer_id: peer_id.parse().ok()?,
+        },
+        ipc::Command::AllowPairing { peer_id } => RuntimeCommand::AllowPairing {
+            peer_id: peer_id.parse().ok()?,
+        },
+        ipc::Command::SaveScene { name } => RuntimeCommand::SaveInputSharingScene { name },
+        ipc::Command::ApplyScene { scene_id } => {
+            RuntimeCommand::ApplyInputSharingScene { scene_id }
+        }
+        ipc::Command::RenameScene { scene_id, name } => {
+            RuntimeCommand::RenameInputSharingScene { scene_id, name }
+        }
+        ipc::Command::DeleteScene { scene_id } => {
+            RuntimeCommand::DeleteInputSharingScene { scene_id }
+        }
+        ipc::Command::SaveEnvironmentLayout { name } => {
+            RuntimeCommand::SaveEnvironmentLayout { name }
+        }
         ipc::Command::MoveControlDevice {
             device_id,
             display_id,

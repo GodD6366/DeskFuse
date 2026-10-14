@@ -1,5 +1,5 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
-use super::{file_transfer, remote_app};
+use super::{file_transfer, remote_app, wifi};
 use deskfuse_core::{Capabilities, ConnectionState, RequestId, RouteHealth, TrustState};
 use deskfuse_discovery::{DiscoveryHandle, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
 use deskfuse_identity::{TrustStore, WindowsServiceDataDirectory, WindowsServiceIdentityProvider};
@@ -151,6 +151,7 @@ impl Network {
             _directory: directory,
         };
         network.sync_input_authority().await?;
+        wifi::spawn_observer(network.input_runtime.handle.clone());
         Ok(network)
     }
 

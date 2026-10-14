@@ -194,6 +194,18 @@
                   <TextBox x:Name="ShortcutBindings" AcceptsReturn="True" Height="120" FontFamily="Cascadia Mono" />
                   <Button Content="保存快捷键" Click="SaveShortcutBindingsClick" HorizontalAlignment="Left" />
                   <Border Style="{StaticResource DividerBorder}" />
+                  <TextBlock Text="流畅度" FontWeight="SemiBold" />
+                  <TextBlock x:Name="InputQualitySummary" Text="等待输入" TextWrapping="Wrap" />
+                  <TextBlock x:Name="InputQualityMetrics" Text="P50 — · P95 — · 卡顿 —" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  <TextBlock x:Name="InputQualityMode" Text="等待会话" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  <TextBlock x:Name="InputQualityAdvice" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  <Canvas x:Name="InputQualityCanvas" Height="72" Margin="0,8,0,0" />
+                  <Border Style="{StaticResource DividerBorder}" />
+                  <TextBlock Text="布局与 Wi-Fi" FontWeight="SemiBold" />
+                  <TextBlock x:Name="WifiEnvironmentText" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                  <Button x:Name="SaveEnvironmentLayoutButton" Content="保存布局到当前 Wi-Fi" Click="SaveEnvironmentLayoutClick" HorizontalAlignment="Left" Margin="0,8,0,4" />
+                  <StackPanel x:Name="LayoutScenesPanel" Margin="0,4,0,0" />
+                  <Border Style="{StaticResource DividerBorder}" />
                   <TextBlock Text="当前阶段支持已解锁普通桌面；管理员窗口、登录与 UAC 安全桌面仍保持不可用。紧急收回：Ctrl + Alt + Win + Esc。" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                 </StackPanel>
               </ScrollViewer>
@@ -337,7 +349,6 @@
         </Grid>
       </Grid>
     </Grid>
-
     <!-- Status bar -->
     <Border Grid.Row="2" Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="24,10">
       <TextBlock x:Name="Notice" Text="正在连接 DeskFuseService…" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />

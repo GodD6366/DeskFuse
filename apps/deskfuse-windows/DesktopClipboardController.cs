@@ -38,6 +38,8 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     }
 
     public int HistoryRetentionDays => historyRetentionDays;
+    /// <summary>History persistence failure, if any; diagnostics-safe.</summary>
+    public string? StorageError => history.StorageError;
     private string? preferencesError;
     private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop", "settings-v1.json");
     /// <summary>Shelf window factory. Wired by the app so the controller keeps no UI type.</summary>

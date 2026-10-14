@@ -78,6 +78,15 @@ pub enum Command {
     Revoke {
         peer_id: String,
     },
+    /// Remove the peer from every list, as opposed to `Revoke`, which keeps
+    /// it visible as blocked. Mirrors the macOS Forget/Block split.
+    Forget {
+        peer_id: String,
+    },
+    /// Unblock a blocked peer so it can request pairing again.
+    AllowPairing {
+        peer_id: String,
+    },
     Rename {
         name: String,
     },
@@ -173,6 +182,24 @@ pub enum Command {
     },
     SetInputSharingSettings {
         settings: deskfuse_core::InputSharingSettings,
+    },
+    /// Persist the current layout as a named scene.
+    SaveScene {
+        name: String,
+    },
+    ApplyScene {
+        scene_id: String,
+    },
+    RenameScene {
+        scene_id: String,
+        name: String,
+    },
+    DeleteScene {
+        scene_id: String,
+    },
+    /// Create or refresh the layout scene bound to the current Wi-Fi network.
+    SaveEnvironmentLayout {
+        name: Option<String>,
     },
     GetWorkflows,
     SaveWorkflow {
@@ -424,12 +451,31 @@ pub struct InputState {
     pub remote_topologies: Vec<RemoteTopologyView>,
     /// Input session links with granted control sessions.
     pub links: Vec<LinkView>,
+    /// Wi-Fi environment observed by the service (SSID is a switch key for
+    /// layout restore, never an authorization).
+    #[serde(default)]
+    pub environment: EnvironmentView,
+    /// Saved input layout scenes, including Wi-Fi-bound ones.
+    #[serde(default)]
+    pub scenes: Vec<SceneView>,
     /// 服务进程里的质量报告。helper 进程的采集和注入不在这里。
     #[serde(
         default = "idle_quality",
         skip_serializing_if = "InputQualityReport::is_idle"
     )]
     pub quality: InputQualityReport,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct EnvironmentView {
+    pub ssid: Option<String>,
+    pub message: String,
+    pub conflict: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SceneView {
+    pub id: String,
+    pub name: String,
+    pub ssid: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ControlView {

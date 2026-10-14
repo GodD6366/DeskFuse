@@ -155,13 +155,13 @@ Windows 完整对齐当前 macOS 的功能、导航、操作路径、默认值�
 - 资源：`Assets/DeskFuse.ico` 与 `icons-manifest.json` 已随合并更新。
 - 剪贴板回环抑制：Windows 控制器以 ownership/generation/nativeRevision 令牌抑制本地回环，机制存在；与 macOS 0.4.2「仅抑制远端指纹组」的精确语义差异需在双设备验收中核对。
 
-仍不对齐（已知缺口，维持原工作包归属）：
+仍不对齐（已知缺口；标注「已补全」的条目见第三批）：
 
-- 键鼠共享 Wi-Fi 绑定布局恢复（0.4.5 能力）：Windows 客户端与 MonitorLayout 均无 SSID 绑定，归 C1。
-- 设备阻止（block）与忘记分离（0.5.0 能力）：设备详情仅有「撤销信任」，无阻止操作，归 C1。
-- 主动触发单个/批量配对设备检查更新（0.5.0 能力）：设置页仅有手动说明文案，归 E。
-- 建议展示细粒度：macOS 按 priority（act/info/ok）分级图标 + trigger/expected/retest 展开；Windows 仅平铺 action 文本，属展示层差距，随 C1 UI 验收一并处理。
-- 内存诊断与诊断文件（0.5.2，engine/FFI 侧）：Windows 客户端暂无导出入口，归 E（日志和诊断导出）。
+- 键鼠共享 Wi-Fi 绑定布局恢复（0.4.5 能力）：Windows 客户端与 MonitorLayout 均无 SSID 绑定，归 C1。（已补全）
+- 设备阻止（block）与忘记分离（0.5.0 能力）：设备详情仅有「撤销信任」，无阻止操作，归 C1。（已补全）
+- 主动触发单个/批量配对设备检查更新（0.5.0 能力）：设置页仅有手动说明文案，归 E。客户端自身更新状态检查已补全；「触发对端设备更新」需要 engine github_update 级别的服务侧更新模块，仍归 E。
+- 建议展示细粒度：macOS 按 priority（act/info/ok）分级图标 + trigger/expected/retest 展开；Windows 已补全优先级标记（act ● / info ○），trigger/expected/retest 展开随 C1 UI 验收一并处理。
+- 内存诊断与诊断文件（0.5.2，engine/FFI 侧）：Windows 客户端暂无导出入口，归 E（日志和诊断导出）。（客户端侧诊断导出已补全；服务进程内存采集仍归 E）
 - 直接文件下载（ca0b975 的 Mac 网页列表分享/手机上传）：Windows 暂无，归 C2。
 - HEIC/HEIF 编解码（0.5.0 工作流）：Windows 无解码路径，归 D1。
 
@@ -172,6 +172,24 @@ Windows 完整对齐当前 macOS 的功能、导航、操作路径、默认值�
 - `cargo check --locked -p deskfuse-platform-windows`：通过。
 - workspace 全量 `cargo check --locked` 在 Windows 不可行：`deskfuse-engine` 对 `deskfuse-platform-macos` 的依赖未按 target 门控（main 既有结构，非本次合并引入），engine/FFI 只能在 macOS 侧 `./scripts/check.sh` 全量验证。
 - 未启动桌面应用，未做双设备、视觉与安装验收。
+
+## 第三批：缺口补全（设备信任、Wi-Fi 布局绑定、更新检查、诊断导出）
+
+已实现的缺口补全（编译与协议测试通过，实机待验收）：
+
+- 设备阻止/忘记分离（C1，对齐 0.5.0）：桌面协议新增 `Forget`（→ `ForgetPeer`，从列表移除）与 `AllowPairing`（→ `AllowPairing`，解除阻止）；`Revoke` 保持 macOS `Block` 语义（阻止并保留在列表）。客户端设备页按 已配对/附近设备/已阻止 分组排序，阻止与忘记均先确认；已阻止设备提供「解除阻止」。旧版本服务会拒绝新命令，客户端在失败文案中注明需要匹配版本的服务。
+- 布局绑定 Wi-Fi（C1，对齐 0.4.5）：服务新增 `native/wifi.rs`，通过 wlanapi 每 5 秒采样当前 WLAN SSID（与 engine CoreWLAN 轮询同周期）并发送 `ObserveWifiEnvironment`；桌面协议新增 `SaveEnvironmentLayout`（绑定/刷新当前网络布局）、`SaveScene`/`ApplyScene`/`RenameScene`/`DeleteScene`（命名布局）；`InputState` 新增 `environment`（ssid/conflict/message）与 `scenes` 视图。键鼠共享页新增「布局与 Wi-Fi」区块：显示当前 Wi-Fi 与绑定状态、保存布局到当前 Wi-Fi、场景列表的应用/删除。
+- 更新状态检查（E）：设置 → 更新新增「检查更新」，与 engine 同源同优先级——GitHub Releases API 为 canonical，失败或空列表才回退 `deskfuse.godd.cc` 镜像；只认完整元数据资产（release.json/build-info.json/SHA256SUMS）的 `vX.Y.Z` 标签。只报告状态不下载安装（Windows 安装器尚未发行）。
+- 诊断导出（E，对齐 0.5.2 概念）：设置 → 通用新增「导出诊断文件」，输出带时间戳的 JSON（服务状态快照、客户端内存计数、历史统计），明确排除剪贴板正文与信任材料，导出后在资源管理器中定位。
+- 流畅度建议分级展示：按 priority（act ● / info ○）标记，与 macOS 面板同级。
+
+本批验证：
+
+- `dotnet build apps/deskfuse-windows/DeskFuse.Windows.csproj`：通过，0 警告 0 错误。
+- `cargo check --locked -p deskfuse-service`：通过；`cargo clippy` 警告数与基线一致，无新增。
+- `cargo test --locked -p deskfuse-service --lib`：28 通过；`windows_store_rejects_reserved_and_oversize_paths` 在本机失败为既有环境问题（改动前的 HEAD 同样失败，与本次无关）。
+- 新增命令往返序列化测试（含 C# 侧命令名一致性约束）通过。
+- 未进行实机验收：Wi-Fi 绑定恢复、阻止/解除阻止对端行为、更新检查真实网络、双设备场景均待实机。
 
 ## 全量交付门槛
 

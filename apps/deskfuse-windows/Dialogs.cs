@@ -11,13 +11,19 @@ namespace DeskFuse.Windows;
 internal static class Dialogs
 {
     private const uint MbOk = 0x00000000;
+    private const uint MbYesNo = 0x00000004;
     private const uint MbIconWarning = 0x00000030;
+    private const uint MbIconQuestion = 0x00000020;
+    private const int IdYes = 6;
     private const uint FosPickFolders = 0x00000020;
     private const uint FosForceFileSystem = 0x00000040;
     private const uint FosPathMustExist = 0x00000800;
 
     public static void Warning(IntPtr owner, string message, string caption = "DeskFuse") =>
         MessageBoxW(owner, message, caption, MbOk | MbIconWarning);
+
+    public static bool Confirm(IntPtr owner, string message, string caption = "DeskFuse") =>
+        MessageBoxW(owner, message, caption, MbYesNo | MbIconQuestion) == IdYes;
 
     public static string? PickFolder(IntPtr owner, string title, string initialDirectory)
     {

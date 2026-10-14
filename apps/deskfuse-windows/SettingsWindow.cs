@@ -57,9 +57,29 @@ public sealed class SettingsWindow
         var awake = new CheckBox { Content = "保持电脑唤醒", IsChecked = clipboard.KeepAwake };
         awake.Checked += (_, _) => { if (!updatingAwake) SetKeepAwake(awake, true); };
         awake.Unchecked += (_, _) => { if (!updatingAwake) SetKeepAwake(awake, false); };
+        var export = new Button { Content = "导出诊断文件…", HorizontalAlignment = HorizontalAlignment.Left };
+        export.Click += async (_, _) =>
+        {
+            export.IsEnabled = false;
+            try
+            {
+                await System.Threading.Tasks.Task.Run(() =>
+                {
+                    string path = DiagnosticsExport.Export(service.LatestSnapshot, clipboard.Entries.Count, clipboard.HistoryRetentionDays, clipboard.StorageError);
+                    var start = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+                    start.ArgumentList.Add("/select,");
+                    start.ArgumentList.Add(path);
+                    System.Diagnostics.Process.Start(start);
+                });
+                generalStatus.Text = "诊断文件已写入本地诊断目录；其中不含剪贴板正文、设备信任材料或文件内容。";
+            }
+            catch (Exception) { generalStatus.Text = "诊断导出失败，请检查用户存储目录权限。"; }
+            finally { export.IsEnabled = true; }
+        };
         AddPage("general", "通用", Form(
             Section("剪贴板同步", new StackPanel { Spacing = 12, Children = { sync, Description("同步之后的新复制内容。开启时不会重新发送历史。") } }),
             Section("后台运行", new StackPanel { Spacing = 12, Children = { awake, Description("阻止系统自动休眠和显示器休眠；退出 DeskFuse 时自动恢复系统默认行为。"), generalStatus } }),
+            Section("诊断", new StackPanel { Spacing = 12, Children = { export, Description("收集服务状态、客户端内存与历史统计到一个 JSON 文件，便于上报问题。") } }),
             Section("本机状态", serviceStatus)));
 
         var capture = new CheckBox { Content = "记录新的剪贴板历史", IsChecked = clipboard.CaptureEnabled };
@@ -84,6 +104,7 @@ public sealed class SettingsWindow
             try { clipboard.Clear(); historyStatus.Text = "本机历史已清空。"; }
             catch (Exception) { historyStatus.Text = "历史清理未完成，请检查用户存储目录权限。"; }
         };
+        generalStatus.Text = "";
         AddPage("storage", "存储", Form(
             Section("文件传输", Description("默认在目标设备使用文件时传输。在“分享与传输”查看任务、接收文件和打开暂存区。")),
             Section("本地存储", new StackPanel { Spacing = 12, Children = { clear, historyStatus } })));
@@ -95,6 +116,33 @@ public sealed class SettingsWindow
         known.Click += (_, _) => SupportLinks.Open(SupportLinks.IssuesUrl);
         feedback.Children.Add(report);
         feedback.Children.Add(known);
+        var updateStatus = Description("检查更新会先读取 GitHub Releases（canonical），仅在其失败或为空时回退到独立域名镜像。");
+        var openRelease = new HyperlinkButton { Content = "打开发布页", Visibility = Visibility.Collapsed, HorizontalAlignment = HorizontalAlignment.Left };
+        var checkUpdate = new Button { Content = "检查更新", HorizontalAlignment = HorizontalAlignment.Left };
+        checkUpdate.Click += async (_, _) =>
+        {
+            checkUpdate.IsEnabled = false;
+            updateStatus.Text = "正在检查更新…";
+            openRelease.Visibility = Visibility.Collapsed;
+            try
+            {
+                Version? current = Version.TryParse(AppVersion.Display.Split(' ')[0], out var parsed) ? parsed : null;
+                if (current is null)
+                {
+                    updateStatus.Text = "无法读取当前版本号。";
+                    return;
+                }
+                var result = await UpdateChecker.CheckAsync(current);
+                updateStatus.Text = result.Summary;
+                if (result.ReleaseUrl is string url && url.Length > 0)
+                {
+                    openRelease.NavigateUri = new Uri(url);
+                    openRelease.Visibility = Visibility.Visible;
+                }
+            }
+            catch (Exception) { updateStatus.Text = "更新检查未完成，请检查网络后重试。"; }
+            finally { checkUpdate.IsEnabled = true; }
+        };
         AddPage("updates", "更新", Form(
             Section("版本与更新", new StackPanel
             {
@@ -102,7 +150,10 @@ public sealed class SettingsWindow
                 Children =
                 {
                     new TextBlock { Text = $"DeskFuse {AppVersion.Display}" },
-                    Description("此版本尚不支持自动安装更新。请使用匹配版本的 Windows 安装包更新客户端与服务。"),
+                    checkUpdate,
+                    updateStatus,
+                    openRelease,
+                    Description("Windows 安装包与自动安装更新尚未随发行提供；检查更新只报告状态，不会下载或安装任何内容。"),
                 },
             }),
             Section("帮助与反馈", new StackPanel
