@@ -142,6 +142,37 @@ Windows 完整对齐当前 macOS 的功能、导航、操作路径、默认值�
 - `./scripts/check.sh`：首个失败阶段为 `cargo fmt`，已有 `crates/deskfuse-engine/src/library_sync.rs` 存在格式差异；脚本后续检查未执行。
 - 未进行真实应用剪贴板写入、富文本粘贴、UI 视觉、双设备、安装或更新验收。
 
+## 第二批核查：合并 origin/main（0.5.x 最新能力）后的 Windows 对齐审查
+
+合并 `ed4f92b..a1711c9`（10 个提交）后逐项核查，结论如下。
+
+已对齐（本次合并落实）：
+
+- 流畅度诊断（相对运动质量上报）：main 的 Windows 侧改动基于已废弃的 WPF 客户端，已移植到 WinUI 3 客户端——XAML 在键鼠共享页补入 `InputQualitySummary/Metrics/Mode/Advice/Canvas`，曲线绘制改用 `Microsoft.UI.Xaml.Shapes.Polyline` + `SolidColorBrush`。客户端解析字段与 `deskfuse-input/src/quality.rs` 的 `InputQualityReport`（grade/mode/fallback/rtt_p50/p95_micros/hitches/samples[].rtt_ms/suggestions[].action）及 `desktop_protocol.rs` 的 links（control_session/motion_mode/motion_fallback_reason）逐一对齐；`quality` 缺省时清空面板的行为与 `skip_serializing_if = is_idle` 语义一致。状态：已实现待实机验证。
+- 流畅度诊断服务端通路：`deskfuse-service` 状态 payload 携带 `quality` 字段，随既有 status 轮询到达客户端，无需额外 IPC。
+- 剪贴板文字去重：`ClipboardHistory.Add` 按同来源指纹去重并保留自定义标题，语义与 macOS 0.5.1/0.5.2 去重一致（Windows 历史在客户端侧，不经过 engine `clipboard_library`，去重逻辑需各自维护，本次核对一致）。pasteboard 占位符丢弃属 Apple 私有机制，Windows 无对应物。
+- 剪贴板筛选（文字/图片/文件 + 来源 + 搜索）：WinUI 客户端已具备，与 ca0b975 的 Mac 筛选能力对应。
+- 资源：`Assets/DeskFuse.ico` 与 `icons-manifest.json` 已随合并更新。
+- 剪贴板回环抑制：Windows 控制器以 ownership/generation/nativeRevision 令牌抑制本地回环，机制存在；与 macOS 0.4.2「仅抑制远端指纹组」的精确语义差异需在双设备验收中核对。
+
+仍不对齐（已知缺口，维持原工作包归属）：
+
+- 键鼠共享 Wi-Fi 绑定布局恢复（0.4.5 能力）：Windows 客户端与 MonitorLayout 均无 SSID 绑定，归 C1。
+- 设备阻止（block）与忘记分离（0.5.0 能力）：设备详情仅有「撤销信任」，无阻止操作，归 C1。
+- 主动触发单个/批量配对设备检查更新（0.5.0 能力）：设置页仅有手动说明文案，归 E。
+- 建议展示细粒度：macOS 按 priority（act/info/ok）分级图标 + trigger/expected/retest 展开；Windows 仅平铺 action 文本，属展示层差距，随 C1 UI 验收一并处理。
+- 内存诊断与诊断文件（0.5.2，engine/FFI 侧）：Windows 客户端暂无导出入口，归 E（日志和诊断导出）。
+- 直接文件下载（ca0b975 的 Mac 网页列表分享/手机上传）：Windows 暂无，归 C2。
+- HEIC/HEIF 编解码（0.5.0 工作流）：Windows 无解码路径，归 D1。
+
+合并完整性验证：
+
+- `dotnet build apps/deskfuse-windows/DeskFuse.Windows.csproj`：通过，0 警告 0 错误（冲突解决后；解决前 19 个错误全部消除）。
+- `cargo check --locked -p deskfuse-service`：通过。
+- `cargo check --locked -p deskfuse-platform-windows`：通过。
+- workspace 全量 `cargo check --locked` 在 Windows 不可行：`deskfuse-engine` 对 `deskfuse-platform-macos` 的依赖未按 target 门控（main 既有结构，非本次合并引入），engine/FFI 只能在 macOS 侧 `./scripts/check.sh` 全量验证。
+- 未启动桌面应用，未做双设备、视觉与安装验收。
+
 ## 全量交付门槛
 
 - [ ] 所有 Mac 可见功能具备逐项对应记录或明确平台例外。
