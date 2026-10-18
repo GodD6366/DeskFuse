@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/resources/microphone/compatibility.sh" "$ROOT_DIR/config/previous-installation.json"
 source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -298,9 +299,10 @@ ROC_OUTPUT="$ROOT_DIR/target/roc-microphone/$MACOS_ARCH"
 mkdir -p "$CONTENTS_DIR/Frameworks" "$CONTENTS_DIR/Resources/Microphone"
 cp "$ROC_OUTPUT/libroc-microphone.dylib" "$CONTENTS_DIR/Frameworks/"
 deskfuse_codesign "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
-ditto "$ROC_OUTPUT/uniDeskMicrophone.driver" "$CONTENTS_DIR/Resources/Microphone/uniDeskMicrophone.driver"
-deskfuse_codesign --deep "$CONTENTS_DIR/Resources/Microphone/uniDeskMicrophone.driver"
+ditto "$ROC_OUTPUT/${MICROPHONE_BUNDLE_NAME}.driver" "$CONTENTS_DIR/Resources/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
+deskfuse_codesign --deep "$CONTENTS_DIR/Resources/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
 cp "$ROOT_DIR/resources/microphone/"* "$CONTENTS_DIR/Resources/Microphone/"
+cp "$ROOT_DIR/config/previous-installation.json" "$CONTENTS_DIR/Resources/Microphone/previous-installation.json"
 cp "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$CONTENTS_DIR/Resources/Microphone/"
 # Preserve exact corresponding sources per build without adding them to the
 # installer or app/update payload. The app keeps attribution and a hash reference.
@@ -318,7 +320,7 @@ assert archive.stat().st_size == manifest['size']
 with archive.open('rb') as stream:
     assert hashlib.file_digest(stream, 'sha256').hexdigest() == manifest['sha256']
 with tarfile.open(archive) as source:
-    assert source.getmember('uniDeskMicrophone-Sources/vendor/roc-vad/LICENSE').isfile()
+    assert source.getmember('DeskFuseMicrophone-Sources/vendor/roc-vad/LICENSE').isfile()
 print('Corresponding microphone sources: cached per build, hash and license verified')
 PYSOURCES
 # Preserve the existing standalone driver entry as well as in-app management.

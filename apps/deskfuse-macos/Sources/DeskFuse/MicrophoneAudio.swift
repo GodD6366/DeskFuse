@@ -3,10 +3,11 @@ import AVFoundation
 import CoreAudio
 import AudioToolbox
 import Darwin
+import MicrophoneNative
 
 struct MicrophoneInput: Identifiable, Sendable { let id: String; let name: String }
 enum MicrophoneAudioDevices {
-    static let virtualUID = "com.unidesk.microphone.input"
+    static let virtualUID = String(cString: ud_mic_device_uid())
     static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var value: Unmanaged<CFString>?; var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
@@ -29,7 +30,7 @@ enum MicrophoneAudioDevices {
         }
     }
     static func isPhysical(_ id: AudioDeviceID, uid: String) -> Bool {
-        if uid.hasPrefix("com.unidesk.microphone") { return false }
+        if uid == virtualUID { return false }
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var transport: UInt32 = 0; var size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr else { return false }

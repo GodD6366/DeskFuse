@@ -142,11 +142,11 @@ Device::Device(std::shared_ptr<aspl::Plugin> hal_plugin,
 {
     assert(hal_plugin_);
 
-    // uniDesk's private HAL plugin only exposes its single receiver. Never bind LAN.
+    // DeskFuse's private HAL plugin only exposes its single receiver. Never bind LAN.
     if (device_info.type != DeviceType::Receiver ||
-        device_info.uid != "com.unidesk.microphone.input" ||
+        device_info.uid != DESKFUSE_MICROPHONE_UID ||
         !device_info.remote_endpoints.empty()) {
-        throw std::invalid_argument("uniDesk supports only its private microphone receiver");
+        throw std::invalid_argument("DeskFuse supports only its private microphone receiver");
     }
     // populate device info defaults
     info_ = device_info;
@@ -307,7 +307,7 @@ void Device::bind_endpoint_(DeviceEndpointInfo& endpoint_info)
         !((endpoint_info.interface == ROC_INTERFACE_AUDIO_SOURCE && uri == "rtp+rs8m://127.0.0.1:19721") ||
           (endpoint_info.interface == ROC_INTERFACE_AUDIO_REPAIR && uri == "rs8m://127.0.0.1:19722") ||
           (endpoint_info.interface == ROC_INTERFACE_AUDIO_CONTROL && uri == "rtcp://127.0.0.1:19723"))) {
-        throw std::invalid_argument("uniDesk receiver accepts only its fixed loopback endpoints");
+        throw std::invalid_argument("DeskFuse receiver accepts only its fixed loopback endpoints");
     }
     spdlog::info("binding device {} slot {} to endpoint {}",
         info_.uid,

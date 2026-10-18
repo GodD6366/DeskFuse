@@ -29,3 +29,4 @@ printf '== cargo clippy ==\n'
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 "$ROOT_DIR/scripts/build-native-macos.sh" debug
+"$ROOT_DIR/scripts/test-microphone-native.sh" --built

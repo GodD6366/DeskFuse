@@ -52,6 +52,9 @@ impl ShortcutHub {
             rx: Arc::new(Mutex::new(rx)),
         }
     }
+    pub(crate) fn take(&self) -> Option<ShortcutSession> {
+        self.rx.lock().ok()?.try_recv().ok()
+    }
     pub(crate) async fn accept(
         &self,
         peer: DeviceId,
@@ -75,7 +78,7 @@ impl ShortcutHub {
 }
 impl QuinnTransport {
     pub fn take_microphone_shortcut(&self) -> Option<ShortcutSession> {
-        self.microphone_shortcut.rx.lock().ok()?.try_recv().ok()
+        self.microphone_shortcut.take()
     }
     pub async fn open_microphone_shortcut(
         &self,
@@ -87,14 +90,28 @@ impl QuinnTransport {
         if self.is_revoked(peer).unwrap_or(true) {
             return Err("设备信任已撤销".into());
         }
-        let connection = self
-            .sessions
-            .lock()
-            .map_err(|_| "输入连接不可用")?
-            .get(&peer)
-            .and_then(|sessions| sessions.iter().rev().find(|s| s.close_reason().is_none()))
-            .cloned()
-            .ok_or("键鼠控制设备尚未连接")?;
+        let connection = if self.config.input_service {
+            self.input
+                .microphone_shortcut_connection(peer)
+                .ok_or("键鼠物理连接尚未就绪或不支持麦克风快捷键")?
+        } else {
+            let connection = self
+                .sessions
+                .lock()
+                .map_err(|_| "输入连接不可用")?
+                .get(&peer)
+                .and_then(|sessions| sessions.iter().rev().find(|s| s.close_reason().is_none()))
+                .cloned()
+                .ok_or("键鼠控制设备尚未连接")?;
+            if self
+                .microphone
+                .supports(&connection, Capabilities::MICROPHONE_SHORTCUT)
+                != Some(true)
+            {
+                return Err("当前输入连接未协商麦克风快捷键能力".into());
+            }
+            connection
+        };
         let request = protocol::MicrophoneShortcutOpen {
             version: 1,
             key_code: u32::from(key_code),
@@ -112,7 +129,7 @@ impl QuinnTransport {
             let ack = read_frame(&mut recv, Duration::from_millis(500))
                 .await
                 .map_err(|e| e.to_string())?;
-            if !matches!(ack.message, Some(Message::MicrophoneShortcutOpen(_))) {
+            if !matches!(ack.message, Some(Message::MicrophoneShortcutOpen(ref accepted)) if accepted == &request) {
                 return Err("对端不支持麦克风快捷键".into());
             }
             Ok(ShortcutSession {

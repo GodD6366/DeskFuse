@@ -1,4 +1,5 @@
 import Foundation
+import MicrophoneNative
 
 /// Privileged changes are invoked only by a confirmed action in Settings.
 /// Arguments go through AppleScript's `quoted form`, never source interpolation.
@@ -8,7 +9,8 @@ enum MicrophoneDriverManager {
         var id: String { rawValue }
         var title: String { self == .install ? "安装麦克风驱动" : "卸载麦克风驱动" }
     }
-    static let installedPath = "/Library/Audio/Plug-Ins/HAL/uniDeskMicrophone.driver"
+    static let driverBundleName = String(cString: ud_mic_driver_bundle_name())
+    static let installedPath = "/Library/Audio/Plug-Ins/HAL/" + driverBundleName
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: installedPath) }
 
     static func run(_ action: Action, resources: URL, restartAudio: Bool) throws -> Bool {
@@ -30,7 +32,7 @@ enum MicrophoneDriverManager {
             end try
         end run
         """, script.path, action.rawValue,
-        resources.appendingPathComponent("Microphone/uniDeskMicrophone.driver").path,
+        resources.appendingPathComponent("Microphone").appendingPathComponent(driverBundleName).path,
         restartAudio ? "restart-audio" : "no-restart"]
         let output = Pipe()
         process.standardOutput = output

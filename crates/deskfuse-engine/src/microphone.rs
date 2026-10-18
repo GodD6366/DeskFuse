@@ -76,6 +76,38 @@ struct State {
     shortcut_applied: Option<(bool, u16, u64)>,
     shortcut_at: Instant,
 }
+impl State {
+    fn ready(&self) -> bool {
+        self.settings.enabled
+            && !self.native.locked
+            && self.native_at.elapsed() < Duration::from_secs(2)
+            && self.native.error.is_empty()
+    }
+
+    fn source_status(&self, peer: DeviceId, authorized: bool) -> u32 {
+        if !self.settings.enabled || !self.settings.source.is_empty() {
+            2
+        } else if !authorized || !self.settings.allowed.contains(&peer.to_string()) {
+            3
+        } else if !self.ready() {
+            5
+        } else if self.active.is_some() {
+            4
+        } else {
+            1
+        }
+    }
+
+    fn can_receive(&self, peer: DeviceId, authorized: bool) -> bool {
+        self.ready()
+            && self.native.driver
+            && self.native.readers
+            && self.settings.source == peer.to_string()
+            && self.active.is_none()
+            && authorized
+    }
+}
+
 pub struct Service {
     transport: QuinnTransport,
     runtime: RuntimeHandle,
@@ -84,7 +116,7 @@ pub struct Service {
 }
 pub fn install(transport: QuinnTransport, runtime: RuntimeHandle, diagnostics: Diagnostics) {
     let path = SQLiteStore::default_path()
-        .unwrap_or_else(|_| PathBuf::from("/nonexistent/uniDesk"))
+        .unwrap_or_else(|_| PathBuf::from("/nonexistent/DeskFuse"))
         .with_file_name("microphone.json");
     let settings = std::fs::read(&path)
         .ok()
@@ -154,6 +186,47 @@ fn validate_settings(s: &Settings) -> Result<(), String> {
     Ok(())
 }
 impl Service {
+    fn activate(&self, state: &mut State, sender: bool, channel: Arc<MicrophoneSession>) {
+        state.generation += 1;
+        let active = Active {
+            id: state.generation,
+            sender,
+            channel,
+        };
+        self.diagnostics.record(
+            DiagnosticLevel::Info,
+            "microphone",
+            "session_active",
+            Some(format!(
+                "session_id={} role={} peer={}",
+                active.id,
+                if active.sender { "sender" } else { "receiver" },
+                active.channel.peer
+            )),
+            None,
+        );
+        state.active = Some(active);
+        state.detail.clear();
+    }
+
+    fn deactivate(&self, state: &mut State, reason: &'static str) {
+        if let Some(active) = state.active.take() {
+            active.channel.close();
+            self.diagnostics.record(
+                DiagnosticLevel::Info,
+                "microphone",
+                "session_ended",
+                Some(format!(
+                    "session_id={} role={} peer={} reason={reason}",
+                    active.id,
+                    if active.sender { "sender" } else { "receiver" },
+                    active.channel.peer
+                )),
+                None,
+            );
+        }
+    }
+
     fn authorized(&self, peer: DeviceId) -> bool {
         let view = self.runtime.snapshot_view();
         view.device_network
@@ -177,9 +250,14 @@ impl Service {
         std::fs::write(&tmp, bytes)
             .and_then(|_| std::fs::rename(&tmp, &state.path))
             .map_err(|e| format!("麦克风设置保存失败：{e}"))?;
-        if let Some(active) = state.active.take() {
-            active.channel.close();
-        }
+        self.deactivate(
+            &mut state,
+            if settings.enabled {
+                "settings_changed"
+            } else {
+                "disabled"
+            },
+        );
         state.settings = settings;
         state.generation += 1;
         state.opening = false;
@@ -222,7 +300,7 @@ impl Service {
         } else if !state.native.error.is_empty() {
             ("failed", state.native.error.clone())
         } else if !settings.source.is_empty() && !state.native.driver {
-            ("not_installed", "请先安装 uniDesk 麦克风驱动".into())
+            ("not_installed", "请先安装 DeskFuse 麦克风驱动".into())
         } else if settings.source.is_empty()
             && state.active.is_some()
             && state.native.permission != "authorized"
@@ -272,9 +350,7 @@ impl Service {
     }
     pub fn stop(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(a) = s.active.take() {
-            a.channel.close();
-        }
+        self.deactivate(&mut s, "stopped");
         s.generation += 1;
         s.opening = false;
         s.native.locked = true;
@@ -289,9 +365,7 @@ impl Service {
                 Some(format!("session={id} reason={detail}")),
                 Some("microphone_session_failed".into()),
             );
-            if let Some(a) = s.active.take() {
-                a.channel.close();
-            }
+            self.deactivate(&mut s, "native_session_failed");
             s.detail = detail.chars().take(256).collect();
             s.retry_at = Instant::now() + Duration::from_secs(2);
         }
@@ -300,27 +374,44 @@ impl Service {
         // A native heartbeat is required even while permission UI is shown.
         let opening = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let ready = s.settings.enabled
-                && !s.native.locked
-                && s.native_at.elapsed() < Duration::from_secs(2)
-                && s.native.error.is_empty();
-            let valid = s.active.as_ref().is_none_or(|a| {
-                ready
-                    && self.authorized(a.channel.peer)
-                    && !a.channel.is_closed()
-                    && if a.sender {
-                        s.settings.source.is_empty()
-                            && s.settings.allowed.contains(&a.channel.peer.to_string())
+            let ready = s.ready();
+            let ended = s.active.as_ref().and_then(|active| {
+                if !s.settings.enabled {
+                    Some("disabled")
+                } else if s.native.locked {
+                    Some("locked")
+                } else if s.native_at.elapsed() >= Duration::from_secs(2) {
+                    Some("native_heartbeat_expired")
+                } else if !s.native.error.is_empty() {
+                    Some("native_error")
+                } else if !self.authorized(active.channel.peer) {
+                    Some("authorization_revoked")
+                } else if active.channel.is_closed() {
+                    Some("transport_closed_or_timed_out")
+                } else if active.sender {
+                    if !s.settings.source.is_empty() {
+                        Some("source_changed")
+                    } else if !s
+                        .settings
+                        .allowed
+                        .contains(&active.channel.peer.to_string())
+                    {
+                        Some("permission_revoked")
                     } else {
-                        s.native.driver
-                            && s.native.readers
-                            && s.settings.source == a.channel.peer.to_string()
+                        None
                     }
-            });
-            if !valid {
-                if let Some(a) = s.active.take() {
-                    a.channel.close();
+                } else if !s.native.driver {
+                    Some("driver_unavailable")
+                } else if !s.native.readers {
+                    Some("readers_stopped")
+                } else if s.settings.source != active.channel.peer.to_string() {
+                    Some("source_changed")
+                } else {
+                    None
                 }
+            });
+            if let Some(reason) = ended {
+                self.deactivate(&mut s, reason);
                 s.generation += 1;
                 s.retry_at = Instant::now() + Duration::from_millis(500);
             }
@@ -384,20 +475,8 @@ impl Service {
                 s.opening = false;
                 s.retry_at = Instant::now() + Duration::from_secs(2);
                 match result {
-                    Ok(c)
-                        if s.settings.enabled
-                            && s.native.readers
-                            && !s.native.locked
-                            && service.authorized(peer) =>
-                    {
-                        s.generation += 1;
-                        let id = s.generation;
-                        s.active = Some(Active {
-                            id,
-                            sender: false,
-                            channel: c,
-                        });
-                        s.detail.clear();
+                    Ok(c) if s.can_receive(peer, service.authorized(peer)) => {
+                        service.activate(&mut s, false, c);
                     }
                     Ok(c) => c.close(),
                     Err(e) => {
@@ -419,40 +498,99 @@ impl Service {
             let (status, generation) = {
                 let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 (
-                    if !s.settings.enabled || !s.settings.source.is_empty() {
-                        2
-                    } else if !self.authorized(pending.peer)
-                        || !s.settings.allowed.contains(&pending.peer.to_string())
-                    {
-                        3
-                    } else if s.native.locked
-                        || s.native_at.elapsed() >= Duration::from_secs(2)
-                        || !s.native.error.is_empty()
-                    {
-                        5
-                    } else if s.active.is_some() {
-                        4
-                    } else {
-                        1
-                    },
+                    s.source_status(pending.peer, self.authorized(pending.peer)),
                     s.generation,
                 )
             };
             if let Some(c) = pending.respond(status).await {
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if s.generation == generation && s.active.is_none() {
-                    s.generation += 1;
-                    let id = s.generation;
-                    s.active = Some(Active {
-                        id,
-                        sender: true,
-                        channel: c,
-                    });
-                    s.detail.clear();
+                if s.generation == generation
+                    && s.source_status(c.peer, self.authorized(c.peer)) == 1
+                {
+                    self.activate(&mut s, true, c);
                 } else {
                     c.close();
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ready_state(peer: DeviceId, receiving: bool) -> State {
+        State {
+            settings: Settings {
+                enabled: true,
+                source: if receiving {
+                    peer.to_string()
+                } else {
+                    String::new()
+                },
+                allowed: vec![peer.to_string()],
+                ..Default::default()
+            },
+            native: NativeState {
+                driver: true,
+                readers: true,
+                ..Default::default()
+            },
+            native_at: Instant::now(),
+            active: None,
+            opening: true,
+            generation: 1,
+            retry_at: Instant::now(),
+            detail: String::new(),
+            path: PathBuf::new(),
+            shortcut_applied: None,
+            shortcut_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn microphone_source_rechecks_authorization_and_native_liveness_after_admission_wait() {
+        let peer = DeviceId::from_bytes([9; 32]);
+        let mut state = ready_state(peer, false);
+        // Permission may still be prompting; admission authorizes a channel,
+        // while native capture remains responsible for acquiring permission.
+        assert_eq!(state.source_status(peer, true), 1);
+        state.native.locked = true;
+        assert_eq!(state.source_status(peer, true), 5);
+        state.native.locked = false;
+        state.native_at = Instant::now() - Duration::from_secs(3);
+        assert_eq!(state.source_status(peer, true), 5);
+        state.native_at = Instant::now();
+        state.native.error = "capture stopped".into();
+        assert_eq!(state.source_status(peer, true), 5);
+        state.native.error.clear();
+        assert_eq!(state.source_status(peer, false), 3);
+        state.settings.allowed.clear();
+        assert_eq!(state.source_status(peer, true), 3);
+        state.settings.enabled = false;
+        assert_eq!(state.source_status(peer, true), 2);
+    }
+
+    #[test]
+    fn microphone_receiver_rejects_late_handshake_after_reader_driver_or_heartbeat_loss() {
+        let peer = DeviceId::from_bytes([9; 32]);
+        let mut state = ready_state(peer, true);
+        assert!(state.can_receive(peer, true));
+        state.native.readers = false;
+        assert!(!state.can_receive(peer, true));
+        state.native.readers = true;
+        state.native.driver = false;
+        assert!(!state.can_receive(peer, true));
+        state.native.driver = true;
+        state.native_at = Instant::now() - Duration::from_secs(3);
+        assert!(!state.can_receive(peer, true));
+        state.native_at = Instant::now();
+        state.native.error = "driver disconnected".into();
+        assert!(!state.can_receive(peer, true));
+        state.native.error.clear();
+        assert!(!state.can_receive(peer, false));
+        state.settings.source = DeviceId::from_bytes([8; 32]).to_string();
+        assert!(!state.can_receive(peer, true));
     }
 }

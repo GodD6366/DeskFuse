@@ -1,4 +1,4 @@
 module MicrophoneNative {
-  header "unidesk_microphone.h"
+  header "deskfuse_microphone.h"
   export *
 }

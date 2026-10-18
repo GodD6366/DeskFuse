@@ -18,9 +18,11 @@ set(COMMON_LIB "rocvad_common")
 set(RPC_LIB "rocvad_rpc")
 set(DRIVER_LIB "rocvad_driver")
 
-set(TOOL_EXE "uniDesk-roc")
+set(TOOL_EXE "DeskFuse-roc")
 set(TOOL_LIB "rocvad_tool")
 set(TEST_EXE "rocvad_test")
+
+set(DESKFUSE_MICROPHONE_UID "com.deskfuse.microphone.input" CACHE STRING "Private microphone device UID")
 
 set(DRIVER_BUNDLE_NAME "roc_vad" CACHE STRING "")
 set(DRIVER_BUNDLE_ID "org.rocstreaming.rocvad" CACHE STRING "")
@@ -28,6 +30,8 @@ set(DRIVER_UUID "FE352D6E-B65E-4496-BD3D-ECBBB6750E8B" CACHE STRING "")
 set(DRIVER_SOCKET "127.0.0.1:9712" CACHE STRING "")
 set(DRIVER_MANUFACTURER "Roc Streaming" CACHE STRING "")
 set(DRIVER_COPYRIGHT "Copyright (c) Roc Streaming authors" CACHE STRING "")
+add_compile_definitions(DESKFUSE_MICROPHONE_UID="${DESKFUSE_MICROPHONE_UID}" DESKFUSE_MICROPHONE_BUNDLE_NAME="${DRIVER_BUNDLE_NAME}")
+
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")

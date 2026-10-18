@@ -313,7 +313,7 @@ impl Engine {
             .map_err(|error| {
                 self.bridge.record_startup_stage("subscription_timeout");
                 failure(format!(
-                    "界面状态订阅未完成，请退出后重新打开 uniDesk，并导出诊断日志：{error}"
+                    "界面状态订阅未完成，请退出后重新打开 DeskFuse，并导出诊断日志：{error}"
                 ))
             })
     }

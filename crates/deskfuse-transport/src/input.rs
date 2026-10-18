@@ -1,4 +1,6 @@
 //! Session-pinned bounded input: reliable transitions and latest-position datagrams.
+#[path = "input_microphone_shortcut.rs"]
+mod microphone_shortcut;
 #[path = "input_motion.rs"]
 mod motion;
 #[path = "input_update.rs"]
@@ -245,6 +247,7 @@ type InputWriters = BTreeMap<(TransportSessionId, StreamKey), Arc<InputMailbox>>
 #[derive(Clone)]
 pub(crate) struct InputHub {
     updates_enabled: bool,
+    microphone_shortcuts: Option<crate::microphone_shortcut::ShortcutHub>,
     executor: Option<tokio::runtime::Handle>,
     background: Option<tokio::runtime::Handle>,
     update_tx: mpsc::Sender<UpdateTransportRequest>,
@@ -276,6 +279,7 @@ impl InputHub {
             writers: Arc::default(),
             tx,
             updates_enabled: true,
+            microphone_shortcuts: None,
             motion_inbox: Arc::default(),
             rx: Arc::new(Mutex::new(Some(rx))),
             lan_port,
@@ -412,6 +416,8 @@ impl InputHub {
         self.start_motion(session.clone());
         if self.updates_enabled {
             self.start_updates(session.clone());
+        } else {
+            self.start_microphone_shortcuts(session.clone());
         }
         let hub = self.clone();
         let watched = session.clone();

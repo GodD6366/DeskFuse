@@ -47,4 +47,4 @@ macOS 客户端静态链接 FreeRDP/WinPR 3.14.1（Apache-2.0）、OpenSSL 3.6.5
 
 跨设备麦克风使用 Roc VAD v0.0.4（MPL-2.0），以及固定提交的 Roc Toolkit（MPL-2.0）、libASPL（MIT）和 gRPC 等依赖。固定提交、源归档 SHA-256 和传递依赖记录位于 `vendor/roc-vad/sources.lock.json`。私有驱动标识、回环端点限制、读取状态、会话清理与构建适配保留在 vendored 源码及修改说明中，不改变上游文件的 MPL-2.0 许可。
 
-完整覆盖源码、uniDesk 修改、重建脚本及实际使用的依赖源码/许可证保存在维护者按构建号归档的构建缓存中，不放入 DMG 或应用/更新包。应用的 `Contents/Resources/Microphone/THIRD_PARTY_MICROPHONE.txt` 保留许可证及署名，`source-archive.json` 标识对应源码归档的文件名、大小、SHA-256 和获取方式。需要源码时，向提供测试版的维护者索取，并提供应用版本、构建号及该 SHA-256。驱动不自动安装，安装/卸载入口仅操作 `com.unidesk.microphone.driver`。Apple Core Audio 和系统 zlib 通过系统链接，不重新分发系统框架。
+完整覆盖源码、DeskFuse 修改、重建脚本及实际使用的依赖源码/许可证保存在维护者按构建号归档的构建缓存中，不放入 DMG 或应用/更新包。应用的 `Contents/Resources/Microphone/THIRD_PARTY_MICROPHONE.txt` 保留许可证及署名，`source-archive.json` 标识对应源码归档的文件名、大小、SHA-256 和获取方式。需要源码时，向提供测试版的维护者索取，并提供应用版本、构建号及该 SHA-256。驱动不自动安装，安装/卸载入口仅操作 兼容配置中的驱动 Bundle ID。Apple Core Audio 和系统 zlib 通过系统链接，不重新分发系统框架。

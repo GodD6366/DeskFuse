@@ -1,5 +1,5 @@
-#ifndef UNIDESK_MICROPHONE_H
-#define UNIDESK_MICROPHONE_H
+#ifndef DESKFUSE_MICROPHONE_H
+#define DESKFUSE_MICROPHONE_H
 #include <stddef.h>
 #include <stdint.h>
 #pragma GCC visibility push(default)
@@ -25,6 +25,9 @@ int ud_mic_driver_reset(void);
 /* 1=at least one actual HAL reader, 0=no readers, -1=not present. */
 int ud_mic_driver_has_readers(void);
 const char *ud_mic_last_error(void);
+/* Stable compatibility identities; no RPC or audio access. */
+const char *ud_mic_device_uid(void);
+const char *ud_mic_driver_bundle_name(void);
 #ifdef __cplusplus
 }
 #endif

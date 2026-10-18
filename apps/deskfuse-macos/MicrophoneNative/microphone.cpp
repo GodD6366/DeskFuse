@@ -1,4 +1,4 @@
-#include "unidesk_microphone.h"
+#include "deskfuse_microphone.h"
 #include "driver_protocol.grpc.pb.h"
 #include <roc/context.h>
 #include <roc/sender_encoder.h>
@@ -13,7 +13,7 @@
 
 namespace {
 thread_local std::string last_error;
-constexpr const char *uid = "com.unidesk.microphone.input";
+constexpr const char *uid = DESKFUSE_MICROPHONE_UID;
 int fail(const char *text) { last_error = text; return -1; }
 std::shared_ptr<rvpb::RvDriver::Stub> driver() {
     static std::shared_ptr<rvpb::RvDriver::Stub> stub = rvpb::RvDriver::NewStub(
@@ -37,6 +37,8 @@ struct ud_mic_sender {
     }
 };
 extern "C" {
+const char *ud_mic_device_uid() { return uid; }
+const char *ud_mic_driver_bundle_name() { return DESKFUSE_MICROPHONE_BUNDLE_NAME; }
 const char *ud_mic_last_error() { return last_error.c_str(); }
 ud_mic_sender *ud_mic_sender_create() {
     auto s = std::make_unique<ud_mic_sender>();

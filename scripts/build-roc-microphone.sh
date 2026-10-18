@@ -2,6 +2,12 @@
 # Build only. Never installs a HAL plugin or restarts coreaudiod.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${DEVELOPER_DIR:-}" && "$(xcode-select -p)" == */CommandLineTools ]]; then
+  for candidate in /Applications/Xcode.app/Contents/Developer /Applications/Xcode-beta.app/Contents/Developer; do
+    if [[ -d "$candidate" ]]; then export DEVELOPER_DIR="$candidate"; break; fi
+  done
+fi
+source "$ROOT/resources/microphone/compatibility.sh" "$ROOT/config/previous-installation.json"
 ARCH="${1:-${DESKFUSE_MACOS_ARCH:-arm64}}"
 case "$ARCH" in arm64|x86_64) ;; *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; esac
 BUILD="$ROOT/target/roc-microphone/build-$ARCH"
@@ -24,7 +30,7 @@ cache=root/'target/roc-microphone/source-archives'; cache.mkdir(parents=True,exi
 def verify(source):
  p=cache/(source['commit']+'.tar.gz')
  if not p.exists():
-  request=urllib.request.Request(source['archive'],headers={'User-Agent':'uniDesk-build'})
+  request=urllib.request.Request(source['archive'],headers={'User-Agent':'DeskFuse-build'})
   with urllib.request.urlopen(request,timeout=120) as response:p.write_bytes(response.read())
  digest=hashlib.sha256(p.read_bytes()).hexdigest()
  if digest!=source['sha256']: raise SystemExit('Source SHA256 mismatch: '+source['repository'])
@@ -35,20 +41,20 @@ cmake -S "$ROOT/vendor/roc-vad" -B "$BUILD" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_OSX_SYSROOT="$SDKROOT" \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
   -DGIT_RELEASE=0.0.4 -DGIT_COMMIT=19d621a8364b0d6f44969c340bdc59fe891981c8 \
-  -DDRIVER_BUNDLE_NAME=uniDeskMicrophone -DDRIVER_BUNDLE_ID=com.unidesk.microphone.driver \
+  -DDRIVER_BUNDLE_NAME="$MICROPHONE_BUNDLE_NAME" -DDRIVER_BUNDLE_ID="$MICROPHONE_BUNDLE_ID" -DDESKFUSE_MICROPHONE_UID="$MICROPHONE_DEVICE_UID" \
   -DDRIVER_UUID=E88452E3-1C2E-42C1-A1A4-7B496BC3D527 \
-  -DDRIVER_SOCKET=127.0.0.1:19712 -DDRIVER_MANUFACTURER=uniDesk
+  -DDRIVER_SOCKET=127.0.0.1:19712 -DDRIVER_MANUFACTURER=DeskFuse
 "$PYTHON" "$ROOT/vendor/roc-vad/verify-sources.py" "$BUILD" --if-present
 cmake --build "$BUILD" --parallel "${DESKFUSE_ROC_BUILD_JOBS:-8}"
 "$PYTHON" "$ROOT/vendor/roc-vad/verify-sources.py" "$BUILD"
 cmake -S "$ROOT/vendor/roc-vad" -B "$BUILD" -DBOOTSTRAP=OFF
-cmake --build "$BUILD" --target uniDeskMicrophone roc-microphone uniDesk-roc --parallel "${DESKFUSE_ROC_BUILD_JOBS:-8}"
-rm -rf "$OUTPUT/uniDeskMicrophone.driver"
-cp -R "$BUILD/driver/uniDeskMicrophone.driver" "$OUTPUT/"
+cmake --build "$BUILD" --target "$MICROPHONE_BUNDLE_NAME" roc-microphone DeskFuse-roc --parallel "${DESKFUSE_ROC_BUILD_JOBS:-8}"
+rm -rf "$OUTPUT/${MICROPHONE_BUNDLE_NAME}.driver"
+cp -R "$BUILD/driver/${MICROPHONE_BUNDLE_NAME}.driver" "$OUTPUT/"
 cp "$BUILD/microphone/libroc-microphone.dylib" "$OUTPUT/"
-cp "$BUILD/tool/uniDesk-roc" "$OUTPUT/uniDesk-roc"
-cp "$ROOT/apps/deskfuse-macos/MicrophoneNative/include/unidesk_microphone.h" "$OUTPUT/include/"
-lipo "$OUTPUT/uniDeskMicrophone.driver/Contents/MacOS/uniDeskMicrophone" -verify_arch "$ARCH"
+cp "$BUILD/tool/DeskFuse-roc" "$OUTPUT/DeskFuse-roc"
+cp "$ROOT/apps/deskfuse-macos/MicrophoneNative/include/deskfuse_microphone.h" "$OUTPUT/include/"
+lipo "$OUTPUT/${MICROPHONE_BUNDLE_NAME}.driver/Contents/MacOS/${MICROPHONE_BUNDLE_NAME}" -verify_arch "$ARCH"
 lipo "$OUTPUT/libroc-microphone.dylib" -verify_arch "$ARCH"
 # Complete corresponding covered source, local modifications, dependent source
 # and notices. No .git directories, audio recordings or compiled output.

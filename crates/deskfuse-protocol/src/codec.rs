@@ -151,7 +151,7 @@ fn reject_unknown_payload_tags(payload: &[u8]) -> Result<(), ProtocolError> {
         if field >= 10
             && !(10..=18).contains(&field)
             && !(20..=22).contains(&field)
-            && !(30..=34).contains(&field)
+            && !(30..=36).contains(&field)
             && !(40..=48).contains(&field)
         {
             return Err(ProtocolError::UnknownPayload);

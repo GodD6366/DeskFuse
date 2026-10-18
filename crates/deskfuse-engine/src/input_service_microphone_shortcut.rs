@@ -24,6 +24,7 @@ pub struct Owner {
     transport: QuinnTransport,
     holds: BTreeMap<u64, watch::Sender<bool>>,
     allowed: BTreeSet<DeviceId>,
+    authority: Option<(bool, InputShareRole, Option<DeviceId>)>,
     injection: Arc<AtomicBool>,
     tasks: tokio::task::JoinSet<()>,
 }
@@ -34,6 +35,7 @@ impl Owner {
             transport,
             holds: BTreeMap::new(),
             allowed: BTreeSet::new(),
+            authority: None,
             injection: Arc::new(AtomicBool::new(false)),
             tasks: tokio::task::JoinSet::new(),
         }
@@ -62,9 +64,17 @@ impl Owner {
                         .any(|p| p.id == *peer && p.trust == deskfuse_core::TrustState::Trusted)
             })
             .collect();
-        if allowed != self.allowed {
+        // Pointer crossings retain the pressed target. Authority changes do
+        // not: a hold must never outlive its input role or controller grant.
+        let authority = (
+            effective.enabled,
+            effective.role,
+            effective.authorized_controller,
+        );
+        if allowed != self.allowed || self.authority != Some(authority) {
             native::cancel();
             self.allowed = allowed;
+            self.authority = Some(authority);
         }
         for edge in native::take_edges() {
             if !edge.pressed {
@@ -320,14 +330,66 @@ async fn receive_hold(
         generation,
         rx,
     );
+    complete_hold_on_release(outgoing, tx, async {
+        tokio::select! {
+            _=async {while matches!(incoming.receive_held().await,Ok(true)) {}}=>{},
+            _=async {while valid(generation){tokio::time::sleep(Duration::from_millis(100)).await;}}=>{},
+        }
+    }).await;
+}
+
+async fn complete_hold_on_release(
+    outgoing: impl std::future::Future<Output = ()>,
+    held: watch::Sender<bool>,
+    released: impl std::future::Future<Output = ()>,
+) {
     tokio::pin!(outgoing);
-    // Keep consuming releases during downstream negotiation: a quick release
-    // must not become a late press when the target's stream finally opens.
+    // Drain a buffered release before local injection or a just-completed
+    // downstream negotiation. A finished hold must not briefly press a key.
     tokio::select! {
-        _=&mut outgoing=>return,
-        _=async {while matches!(incoming.receive_held().await,Ok(true)) {}}=>{},
-        _=async {while valid(generation){tokio::time::sleep(Duration::from_millis(100)).await;}}=>{},
+        biased;
+        _ = released => {},
+        _ = &mut outgoing => return,
     }
-    let _ = tx.send(false);
+    let _ = held.send(false);
     outgoing.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shortcut_buffered_release_prevents_late_local_press() {
+        let (held, observed) = watch::channel(true);
+        let pressed = AtomicBool::new(false);
+        let outgoing = async {
+            if *observed.borrow() {
+                pressed.store(true, Ordering::SeqCst);
+            }
+        };
+        complete_hold_on_release(outgoing, held, std::future::ready(())).await;
+        assert!(!pressed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shortcut_release_during_downstream_negotiation_prevents_late_press() {
+        let (held, observed) = watch::channel(true);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (connected, connection) = tokio::sync::oneshot::channel();
+        let pressed = AtomicBool::new(false);
+        let outgoing = async {
+            started.send(()).unwrap();
+            connection.await.unwrap();
+            if *observed.borrow() {
+                pressed.store(true, Ordering::SeqCst);
+            }
+        };
+        let released = async {
+            waiting.await.unwrap();
+            connected.send(()).unwrap();
+        };
+        complete_hold_on_release(outgoing, held, released).await;
+        assert!(!pressed.load(Ordering::SeqCst));
+    }
 }

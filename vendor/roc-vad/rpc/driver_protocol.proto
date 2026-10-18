@@ -16,7 +16,7 @@ import "google/protobuf/timestamp.proto";
 // RPC interface for Roc Virtual Audio Device driver.
 service RvDriver
 {
-    // uniDesk: clear network sessions without removing the HAL device.
+    // DeskFuse: clear network sessions without removing the HAL device.
     rpc reset_receiver(RvNone) returns (RvNone) {}
     rpc receiver_readers(RvNone) returns (RvReaderState) {}
 
@@ -512,5 +512,5 @@ enum RvResamplerProfile
     RV_RESAMPLER_PROFILE_LOW = 3;
 }
 
-// uniDesk: true exactly between first StartIO and last StopIO.
+// DeskFuse: true exactly between first StartIO and last StopIO.
 message RvReaderState { bool reading = 1; }

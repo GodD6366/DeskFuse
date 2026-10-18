@@ -19,7 +19,7 @@ aspl::PluginParameters make_plugin_params()
 {
     aspl::PluginParameters plugin_params;
 
-    plugin_params.Manufacturer = "uniDesk";
+    plugin_params.Manufacturer = "DeskFuse";
 
     return plugin_params;
 }

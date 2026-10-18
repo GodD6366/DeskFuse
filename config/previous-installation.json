@@ -3,5 +3,10 @@
   "bundleIdentifier": "com.unidesk.app",
   "dataDirectory": "uniDesk",
   "appBundle": "uniDesk.app",
-  "cacheDirectory": "com.unidesk.app/clipboard"
+  "cacheDirectory": "com.unidesk.app/clipboard",
+  "microphone": {
+    "bundleName": "uniDeskMicrophone",
+    "bundleIdentifier": "com.unidesk.microphone.driver",
+    "deviceUID": "com.unidesk.microphone.input"
+  }
 }

@@ -1817,6 +1817,9 @@ impl QuinnTransport {
         let remote_app = remote_application::RemoteHub::new();
         let microphone_shortcut = microphone_shortcut::ShortcutHub::new();
         let microphone = microphone::MicrophoneHub::new();
+        if config.input_service {
+            input.enable_microphone_shortcuts(microphone_shortcut.clone());
+        }
         let identity = Arc::default();
         let bound_addr = endpoint
             .local_addr()
@@ -3183,7 +3186,7 @@ async fn serve_connection(
                             pending.insert(ordinal, None);
                             if shared.is_revoked(peer).unwrap_or(true) {
                                 let _ = send.reset(1u32.into());
-                            } else if open.status == 0 && negotiated.contains(Capabilities::MICROPHONE) {
+                            } else if open.version == 1 && open.status == 0 && negotiated.contains(Capabilities::MICROPHONE) {
                                 shared.microphone.accept(peer, send, recv);
                             } else {
                                 // Never silently drop an audio request: an empty
@@ -3202,7 +3205,7 @@ async fn serve_connection(
                         }
                         Some(Message::MicrophoneShortcutOpen(open)) => {
                             pending.insert(ordinal, None);
-                            if negotiated.contains(Capabilities::MICROPHONE_SHORTCUT) && !shared.is_revoked(peer).unwrap_or(true) {
+                            if open.version == 1 && negotiated.contains(Capabilities::MICROPHONE_SHORTCUT) && !shared.is_revoked(peer).unwrap_or(true) {
                                 let hub = shared.microphone_shortcut.clone();
                                 tokio::spawn(async move { hub.accept(peer, open, send, recv).await; });
                             }
@@ -4025,3 +4028,6 @@ mod tests {
         b.shutdown().await.expect("shutdown b");
     }
 }
+
+#[cfg(test)]
+mod microphone_tests;

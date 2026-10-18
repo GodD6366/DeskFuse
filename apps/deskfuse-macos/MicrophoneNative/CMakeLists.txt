@@ -7,3 +7,8 @@ target_link_options(roc-microphone PRIVATE "-Wl,-exported_symbol,_ud_mic_*" "-Wl
 set_target_properties(roc-microphone PROPERTIES INSTALL_NAME_DIR "@rpath" BUILD_WITH_INSTALL_NAME_DIR ON)
 
 add_custom_command(TARGET roc-microphone POST_BUILD COMMAND strip -x $<TARGET_FILE:roc-microphone>)
+
+# Synthetic audio only: exercises the shipped sender ABI and matching receiver
+# without microphone permission, HAL installation, or touching system audio.
+add_executable(microphone-codec-test EXCLUDE_FROM_ALL tests/codec.cpp)
+target_link_libraries(microphone-codec-test PRIVATE roc-microphone roc)

@@ -28,12 +28,14 @@ def clean(info):
 
 with output.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as gz, tarfile.open(fileobj=gz, mode='w') as archive:
     def add(path, name):
-        if path.is_file(): archive.add(path, arcname=str(pathlib.Path('uniDeskMicrophone-Sources') / name), recursive=False, filter=clean)
+        if path.is_file(): archive.add(path, arcname=str(pathlib.Path('DeskFuseMicrophone-Sources') / name), recursive=False, filter=clean)
     for directory in ['vendor/roc-vad', 'apps/deskfuse-macos/MicrophoneNative']:
         for path in sorted((root / directory).rglob('*')):
             if 'bin' in path.parts or path.name.startswith('driver_protocol.') and path.suffix in {'.h', '.cc'} or path.name == 'compile_commands.json': continue
             add(path, path.relative_to(root))
     add(root / 'scripts/build-roc-microphone.sh', pathlib.Path('scripts/build-roc-microphone.sh'))
+    for name in ['config/previous-installation.json', 'resources/microphone/compatibility.sh', 'scripts/test-microphone-native.sh']:
+        add(root / name, pathlib.Path(name))
     lock = json.loads((root / 'vendor/roc-vad/sources.lock.json').read_text())
     allowed_distfiles = {entry['path'] for entry in lock['roc_distfiles']}
     for name in ['roc', 'aspl', 'boringssl', 'grpc', 'fmt', 'spdlog', 'cli11']:

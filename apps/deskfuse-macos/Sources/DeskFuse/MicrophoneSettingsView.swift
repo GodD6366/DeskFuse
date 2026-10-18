@@ -12,9 +12,9 @@ struct MicrophoneSettingsView: View {
         mutate(&settings); model.configure(settings)
     }
     var body: some View {
-        Form {
+        SystemSettingsFormPage {
             if let state = model.snapshot {
-                Section {
+                SystemSettingsFormBlock(title: "麦克风共享", titleSymbol: "mic") {
                     Toggle("跨设备麦克风共享", isOn: Binding(get: { state.settings.enabled }, set: { value in update { $0.enabled = value } }))
                     Picker("麦克风来源", selection: Binding(get: { state.settings.source }, set: { value in update { $0.source = value } })) {
                         Text("此 Mac 的实体麦克风").tag("")
@@ -24,9 +24,11 @@ struct MicrophoneSettingsView: View {
                         }
                     }
                     Text("在有麦克风的 A 上选择“此 Mac”，在 B 上选择 A。两端均须启用，并在 A 允许 B 使用麦克风。").font(.caption).foregroundStyle(.secondary)
-                } header: { Label("麦克风共享", systemImage: "mic") }
+                    Text("Beta · 默认关闭，仅支持两台 Mac。设置修改后自动保存。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if state.settings.source.isEmpty {
-                    Section("实体麦克风") {
+                    SystemSettingsFormBlock(title: "实体麦克风") {
                         Picker("输入设备", selection: Binding(get: { state.settings.input_uid }, set: { value in update { $0.input_uid = value } })) {
                             Text("系统默认实体麦克风").tag("")
                             ForEach(model.inputs) { input in Text(input.name).tag(input.id) }
@@ -38,7 +40,7 @@ struct MicrophoneSettingsView: View {
                         if state.native.permission != "authorized" { Button("授权麦克风访问…", action: model.requestPermission) }
                         Text("只在目标应用读取虚拟麦克风时采集；锁屏、断线或关闭功能后停止。音频不保存到磁盘。").font(.caption).foregroundStyle(.secondary)
                     }
-                    Section("允许使用此麦克风的设备") {
+                    SystemSettingsFormBlock(title: "允许使用此麦克风的设备") {
                         ForEach(peers, id: \.id) { peer in
                             Toggle(peer.name, isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
                                 update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
@@ -48,7 +50,7 @@ struct MicrophoneSettingsView: View {
                         Text("同一时间仅允许一个目标设备使用。").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Section("虚拟麦克风驱动") {
+                SystemSettingsFormBlock(title: "虚拟麦克风驱动") {
                     LabeledContent("安装状态", value: model.driverInstalled ? "已安装" : "未安装")
                     if model.driverInstalled {
                         LabeledContent("运行状态", value: state.native.driver ? "可连接" : "等待音频服务加载，请重启 Mac")
@@ -62,7 +64,7 @@ struct MicrophoneSettingsView: View {
                     if !state.settings.source.isEmpty {
                         Button("设为系统默认输入", action: model.setDefaultInput)
                             .disabled(!state.settings.enabled || !state.native.driver || !model.driverInstalled)
-                        Text("在 B 的语音软件中选择“uniDesk 麦克风（来自 \(state.source_name)）”。仅使用系统默认输入的软件，可点击上方按钮。")
+                        Text("在 B 的语音软件中选择“DeskFuse 麦克风（来自 \(state.source_name)）”。仅使用系统默认输入的软件，可点击上方按钮。")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("仅接收其它 Mac 麦克风的设备需要安装驱动。")
@@ -71,7 +73,7 @@ struct MicrophoneSettingsView: View {
                     if model.managingDriver { ProgressView("正在处理驱动，请完成系统管理员授权…") }
                     if let message = model.driverMessage { Text(message).font(.callout).foregroundStyle(.secondary) }
                 }
-                Section("语音快捷键") {
+                SystemSettingsFormBlock(title: "语音快捷键") {
                     HStack {
                         Text("按住说话")
                         Spacer()
@@ -80,7 +82,7 @@ struct MicrophoneSettingsView: View {
                     }
                     Text("两端配置需与目标语音软件一致。按住与松开都交给按下时的目标；快捷键不裁切音频，避免丢失尾音。共享按键需要现有键鼠共享及辅助功能权限。").font(.caption).foregroundStyle(.secondary)
                 }
-                Section("连接状态") {
+                SystemSettingsFormBlock(title: "连接状态") {
                     LabeledContent("状态", value: state.detail)
                     if !state.peer.isEmpty { LabeledContent("连接设备", value: peers.first(where: { $0.id == state.peer })?.name ?? "已配对设备") }
                     if !state.role.isEmpty {
@@ -89,7 +91,7 @@ struct MicrophoneSettingsView: View {
                     if state.native.readers { Text("目标应用正在读取虚拟麦克风").font(.caption).foregroundStyle(.secondary) }
                 }
             } else if let connectionError = model.connectionError {
-                Section {
+                SystemSettingsFormBlock {
                     Label("无法连接麦克风服务", systemImage: "exclamationmark.triangle")
                     Text(connectionError).font(.callout).foregroundStyle(.secondary)
                     Button("重试") { model.retryConnection(engine: store.engine) }
@@ -97,19 +99,21 @@ struct MicrophoneSettingsView: View {
             } else {
                 ProgressView("正在连接麦克风服务…（最多 5 秒）")
             }
+            if model.snapshot != nil, let connectionError = model.connectionError {
+                Text(connectionError).foregroundStyle(.red)
+            }
             if let error = model.error { Text(error).foregroundStyle(.red) }
         }
-        .formStyle(.grouped)
         .disabled(model.saving || model.managingDriver)
         .onAppear { model.ensureStarted(engine: store.engine); model.refreshInputs() }
         .sheet(item: $driverAction) { action in
             MicrophoneDriverSheet(action: action) { restartAudio in
                 driverAction = nil
                 model.manageDriver(action, restartAudio: restartAudio)
-            }
+            }.floatingWorkspaceStyle()
         }
         .sheet(isPresented: $editingShortcut) {
-            if let settings = model.snapshot?.settings { MicrophoneShortcutSheet(store: store, settings: settings) { editingShortcut = false } }
+            if let settings = model.snapshot?.settings { MicrophoneShortcutSheet(store: store, settings: settings) { editingShortcut = false }.floatingWorkspaceStyle() }
         }
     }
 }

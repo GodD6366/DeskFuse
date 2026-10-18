@@ -1,14 +1,14 @@
-# uniDesk microphone driver
+# DeskFuse microphone driver
 
 This directory is derived from Roc VAD v0.0.4, commit
 `19d621a8364b0d6f44969c340bdc59fe891981c8`. Covered files remain MPL-2.0;
 see LICENSE and AUTHORS.md. Original repository: https://github.com/roc-streaming/roc-vad.
 
-uniDesk modifications:
+DeskFuse modifications:
 
-- Independent bundle `com.unidesk.microphone.driver`, UUID
-  `E88452E3-1C2E-42C1-A1A4-7B496BC3D527`, and device UID
-  `com.unidesk.microphone.input` coexist with upstream Roc VAD.
+- Private bundle and device identities are loaded from the microphone section of
+  `config/previous-installation.json` to preserve compatibility with installed drivers.
+  UUID `E88452E3-1C2E-42C1-A1A4-7B496BC3D527` remains independent of upstream Roc VAD.
 - Control endpoint is fixed to loopback `127.0.0.1:19712`. Only the private
   receiver is accepted, with loopback RTP/RS8M/RTCP endpoints 19721–19723.
   External endpoints and virtual speaker creation are rejected.

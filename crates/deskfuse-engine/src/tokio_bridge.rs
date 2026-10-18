@@ -1403,7 +1403,7 @@ impl TokioBridge {
             stage,
             Some(format!(
                 "build={}",
-                option_env!("UNIDESK_INPUT_BUILD_ID").unwrap_or("unknown")
+                option_env!("DESKFUSE_INPUT_BUILD_ID").unwrap_or("unknown")
             )),
             None,
         );

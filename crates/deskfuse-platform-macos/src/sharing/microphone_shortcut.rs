@@ -219,8 +219,16 @@ pub enum CaptureDisposition {
 /// Called after the normal tap's synthetic marker/PID exclusion. Passthrough
 /// bypasses ordinary routing while delivering the original hardware event.
 pub fn capture(event: &mut SharedInputEvent, changed_modifier: Option<u16>) -> CaptureDisposition {
-    use CaptureDisposition::*;
     let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+    capture_with_state(&mut s, event, changed_modifier)
+}
+
+fn capture_with_state(
+    s: &mut State,
+    event: &mut SharedInputEvent,
+    changed_modifier: Option<u16>,
+) -> CaptureDisposition {
+    use CaptureDisposition::*;
     let config = s.held.map_or(s.config, |e| e.config);
     let (pressed, matching, repeated) = match *event {
         SharedInputEvent::Modifiers { modifiers }
@@ -310,7 +318,7 @@ pub fn capture(event: &mut SharedInputEvent, changed_modifier: Option<u16>) -> C
     };
     if !passthrough && s.edges.len() >= 32 {
         s.edges.clear();
-        invalidate(&mut s);
+        invalidate(s);
         return Ordinary;
     }
     s.held = Some(edge);
@@ -400,4 +408,86 @@ fn post(config: ShortcutConfig, pressed: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(pressed: bool) -> SharedInputEvent {
+        SharedInputEvent::Key {
+            code: 49,
+            pressed,
+            modifiers: 0,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn shortcut_hold_keeps_original_target_across_crossings_and_releases_it() {
+        let local = DeviceId::from_bytes([1; 32]);
+        let first = DeviceId::from_bytes([2; 32]);
+        let second = DeviceId::from_bytes([3; 32]);
+        let mut state = State {
+            config: ShortcutConfig {
+                enabled: true,
+                key_code: 49,
+                modifiers: 0,
+            },
+            local: Some(local),
+            target: Some(first),
+            permitted: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            capture_with_state(&mut state, &mut key(true), None),
+            CaptureDisposition::Suppress
+        );
+        let press = state.edges.pop_front().unwrap();
+        state.target = Some(second);
+        // Repeated downs on a new screen cannot inject a second hold there.
+        assert_eq!(
+            capture_with_state(&mut state, &mut key(true), None),
+            CaptureDisposition::Suppress
+        );
+        assert!(state.edges.is_empty());
+        assert_eq!(
+            capture_with_state(&mut state, &mut key(false), None),
+            CaptureDisposition::Suppress
+        );
+        let release = state.edges.pop_front().unwrap();
+        assert_eq!(release.target, first);
+        assert_eq!(release.serial, press.serial);
+        assert!(!release.pressed);
+        assert!(state.held.is_none());
+        capture_with_state(&mut state, &mut key(true), None);
+        assert_eq!(state.edges.pop_front().unwrap().target, second);
+    }
+
+    #[test]
+    fn shortcut_revocation_releases_forwarded_hold_once_and_invalidates_pending_press() {
+        let mut state = State {
+            config: ShortcutConfig {
+                enabled: true,
+                key_code: 49,
+                modifiers: 0,
+            },
+            local: Some(DeviceId::from_bytes([1; 32])),
+            target: Some(DeviceId::from_bytes([2; 32])),
+            permitted: true,
+            ..Default::default()
+        };
+        capture_with_state(&mut state, &mut key(true), None);
+        let press = state.edges.pop_front().unwrap();
+        invalidate(&mut state);
+        state.permitted = false;
+        let release = state.edges.pop_front().unwrap();
+        assert_eq!(release.target, press.target);
+        assert_eq!(release.serial, press.serial);
+        assert!(!release.pressed);
+        assert_ne!(press.generation, state.generation);
+        invalidate(&mut state);
+        capture_with_state(&mut state, &mut key(false), None);
+        assert!(state.edges.is_empty());
+    }
 }

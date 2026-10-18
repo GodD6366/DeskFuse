@@ -226,12 +226,16 @@ impl MicrophoneHub {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&connection.stable_id());
     }
-    fn supports(&self, connection: &quinn::Connection) -> Option<bool> {
+    pub(super) fn supports(
+        &self,
+        connection: &quinn::Connection,
+        capability: Capabilities,
+    ) -> Option<bool> {
         self.capabilities
             .lock()
             .ok()?
             .get(&connection.stable_id())
-            .map(|caps| caps.contains(Capabilities::MICROPHONE))
+            .map(|caps| caps.contains(capability))
     }
     pub fn accept(&self, peer: DeviceId, send: quinn::SendStream, recv: quinn::RecvStream) {
         let pending = PendingMicrophone {
@@ -265,11 +269,14 @@ impl QuinnTransport {
             .and_then(|sessions| sessions.iter().rev().find(|s| s.close_reason().is_none()))
             .cloned()
             .ok_or("等待来源设备上线")?;
-        match self.microphone.supports(&connection) {
+        match self
+            .microphone
+            .supports(&connection, Capabilities::MICROPHONE)
+        {
             Some(true) => {}
             Some(false) => {
                 return Err(
-                    "来源端运行的 uniDesk 不支持麦克风共享，请更新并重新打开两端应用".into(),
+                    "来源端运行的 DeskFuse 不支持麦克风共享，请更新并重新打开两端应用".into(),
                 );
             }
             None => return Err("等待来源端完成连接能力协商，请稍候".into()),
@@ -290,7 +297,7 @@ impl QuinnTransport {
                 .await
                 .map_err(|e| format!("来源端未完成麦克风协商，请确认两端已更新并开启共享：{e}"))?;
             match ack.message {
-                Some(Message::MicrophoneOpen(open)) if open.status == 1 => {
+                Some(Message::MicrophoneOpen(open)) if open.version == 1 && open.status == 1 => {
                     // Start after admission, like the source. Queueing and
                     // authorization time are not audio latency and must not
                     // make every packet fail the 250ms freshness check.
@@ -309,9 +316,9 @@ impl QuinnTransport {
                 }
                 .into()),
                 Some(Message::Error(error)) if error.code == 426 => {
-                    Err("当前连接未协商麦克风能力，请更新并重新打开两端 uniDesk".into())
+                    Err("当前连接未协商麦克风能力，请更新并重新打开两端 DeskFuse".into())
                 }
-                _ => Err("请更新两端 uniDesk 以使用麦克风共享".into()),
+                _ => Err("请更新两端 DeskFuse 以使用麦克风共享".into()),
             }
         };
         time::timeout(Duration::from_secs(3), future)

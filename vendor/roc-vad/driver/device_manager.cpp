@@ -249,13 +249,13 @@ void DeviceManager::save_devices_()
 bool DeviceManager::receiver_readers()
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    return find_device_(std::string("com.unidesk.microphone.input"))->receiver_readers();
+    return find_device_(std::string(DESKFUSE_MICROPHONE_UID))->receiver_readers();
 }
 
 void DeviceManager::reset_receiver()
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    find_device_(std::string("com.unidesk.microphone.input"))->reset_receiver();
+    find_device_(std::string(DESKFUSE_MICROPHONE_UID))->reset_receiver();
 }
 
 } // namespace rocvad

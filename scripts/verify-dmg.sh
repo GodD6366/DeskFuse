@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/resources/microphone/compatibility.sh" "$ROOT_DIR/config/previous-installation.json"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "error: DMG verification must run on Darwin" >&2
@@ -52,17 +53,17 @@ done
 
 # Verify native microphone payload without loading/installing the HAL plugin.
 MICROPHONE="$CONTENTS_DIR/Resources/Microphone"
-for payload in '安装麦克风驱动.command' '卸载麦克风驱动.command' manage-driver.sh '双机测试说明.txt' THIRD_PARTY_MICROPHONE.txt source-archive.json; do
+for payload in '安装麦克风驱动.command' '卸载麦克风驱动.command' manage-driver.sh '双机测试说明.txt' compatibility.sh previous-installation.json THIRD_PARTY_MICROPHONE.txt source-archive.json; do
   [[ -s "$MICROPHONE/$payload" ]] || { echo "error: missing microphone payload: $payload" >&2; exit 1; }
   cmp "$MICROPHONE/$payload" "$MOUNT_POINT/麦克风驱动/$payload"
 done
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MICROPHONE/uniDeskMicrophone.driver/Contents/Info.plist")" == com.unidesk.microphone.driver ]]
-codesign --verify --deep --strict "$MICROPHONE/uniDeskMicrophone.driver"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MICROPHONE/${MICROPHONE_BUNDLE_NAME}.driver/Contents/Info.plist")" == "$MICROPHONE_BUNDLE_ID" ]]
+codesign --verify --deep --strict "$MICROPHONE/${MICROPHONE_BUNDLE_NAME}.driver"
 [[ -L "$MOUNT_POINT/麦克风驱动" && "$(readlink "$MOUNT_POINT/麦克风驱动")" == 'DeskFuse.app/Contents/Resources/Microphone' ]]
 codesign --verify --strict "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
 [[ "$(lipo -archs "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib")" == "$EXPECTED_ARCH" ]]
-[[ "$(lipo -archs "$MICROPHONE/uniDeskMicrophone.driver/Contents/MacOS/uniDeskMicrophone")" == "$EXPECTED_ARCH" ]]
-python3 - "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib" "$MICROPHONE/uniDeskMicrophone.driver/Contents/MacOS/uniDeskMicrophone" <<'PYMIC'
+[[ "$(lipo -archs "$MICROPHONE/${MICROPHONE_BUNDLE_NAME}.driver/Contents/MacOS/${MICROPHONE_BUNDLE_NAME}")" == "$EXPECTED_ARCH" ]]
+python3 - "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib" "$MICROPHONE/${MICROPHONE_BUNDLE_NAME}.driver/Contents/MacOS/${MICROPHONE_BUNDLE_NAME}" <<'PYMIC'
 import re,subprocess,sys
 for binary in sys.argv[1:]:
     load=subprocess.check_output(['otool','-l',binary],text=True)

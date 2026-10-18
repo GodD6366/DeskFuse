@@ -67,7 +67,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                 let status = worker.status()
                 if let snapshot = status.snapshot {
                     self.snapshot = snapshot
-                    self.connectionError = nil
+                    self.connectionError = status.error
                     self.connectionDeadline = nil
                 } else if let deadline = self.connectionDeadline, ContinuousClock.now >= deadline {
                     worker.expireInitialization()
@@ -106,7 +106,9 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     func stop() {
         connectionDeadline = nil
         polling?.cancel(); polling = nil
+        inputRefresh?.cancel(); inputRefresh = nil
         worker?.stop(); worker = nil
+        snapshot = nil; engine = nil; askedPermission = false
         for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); DistributedNotificationCenter.default().removeObserver(token) }
         observers.removeAll()
     }
@@ -133,7 +135,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                 engine?.recordStartupStage(stage: "microphone_devices_loaded")
                 return values
             }.value
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
             self.inputs = values
             self.inputRefresh = nil
         }
@@ -230,7 +232,8 @@ private final class MicrophoneWorker: @unchecked Sendable {
     }
     private func recordInitializationError(_ message: String, generation: UInt64) {
         lock.withLock {
-            guard projection == nil, initializationPending, generation == initializationGeneration else { return }
+            guard !stopped, generation == initializationGeneration,
+                  projection != nil || initializationPending else { return }
             initializationError = message
         }
     }
@@ -270,7 +273,21 @@ private final class MicrophoneWorker: @unchecked Sendable {
             if loopback != nil { _ = ud_mic_driver_reset() }
             loopback = nil; currentID = 0; lastAudio = .distantPast; remoteLevel = 0
         }
-        defer { resetSession(); if driverEnabled { _ = ud_mic_driver_set_enabled(0) } }
+        func restoreDefaultInput() {
+            // Respect a newer choice made by the user or another audio app.
+            if let id = MicrophoneAudioDevices.defaultInput(),
+               MicrophoneAudioDevices.string(id, kAudioDevicePropertyDeviceUID) == MicrophoneAudioDevices.virtualUID,
+               let uid = UserDefaults.standard.string(forKey: "microphone.previousDefaultInput") {
+                try? MicrophoneAudioDevices.setDefault(uid: uid)
+            }
+        }
+        defer {
+            resetSession()
+            if driverEnabled {
+                restoreDefaultInput()
+                _ = ud_mic_driver_set_enabled(0)
+            }
+        }
         while !flags().1 {
             autoreleasepool {
                 guard let generation = cycleGeneration() else { return }
@@ -286,7 +303,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         }
                         if driver {
                             if wantsReceiver {
-                                let name = "uniDesk 麦克风（来自 \(state.source_name)）"
+                                let name = "DeskFuse 麦克风（来自 \(state.source_name)）"
                                 if configuredName != name {
                                     resetSession()
                                     guard name.withCString({ ud_mic_driver_configure($0) }) == 0 else { throw MicrophoneAudioError.message(nativeError()) }
@@ -304,8 +321,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                 if driverEnabled || !configuredName.isEmpty || needsDriverCleanup {
                                     resetSession()
                                     // Restore only if our explicit default selection is still active.
-                                    if let id = MicrophoneAudioDevices.defaultInput(), MicrophoneAudioDevices.string(id, kAudioDevicePropertyDeviceUID) == MicrophoneAudioDevices.virtualUID,
-                                       let uid = UserDefaults.standard.string(forKey: "microphone.previousDefaultInput") { try? MicrophoneAudioDevices.setDefault(uid: uid) }
+                                    restoreDefaultInput()
                                     _ = ud_mic_driver_set_enabled(0); driverEnabled = false; configuredName = ""; needsDriverCleanup = false
                                 }
                             }
@@ -334,7 +350,15 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         let latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
                         // A completion from an expired attempt cannot clear the
                         // timeout or open a session for a later retry.
-                        guard publish(latest, generation: generation) else { return }
+                        guard publish(latest, generation: generation) else {
+                            resetSession()
+                            if driverEnabled {
+                                restoreDefaultInput()
+                                _ = ud_mic_driver_set_enabled(0)
+                                driverEnabled = false
+                            }
+                            return
+                        }
                         if currentID != latest.session_id || flags().0 { resetSession() }
                         if latest.session_id != 0 && currentID == 0 && !flags().0 {
                             channel = try engine.microphoneChannel()
