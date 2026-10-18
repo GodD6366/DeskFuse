@@ -32,6 +32,20 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+// Keep legacy identifiers in the shared installation compatibility contract.
+fn previous_bundle_identifier() -> &'static str {
+    static IDENTIFIER: OnceLock<String> = OnceLock::new();
+    IDENTIFIER.get_or_init(|| {
+        let config: Value =
+            serde_json::from_str(include_str!("../../../config/previous-installation.json"))
+                .expect("valid previous installation contract");
+        config["bundleIdentifier"]
+            .as_str()
+            .expect("previous installation bundle identifier")
+            .to_owned()
+    })
+}
+
 /// blob 文件路径：<blob_dir>/<hash[0..2]>/<hash>.bin
 fn blob_file_path(blob_dir: &std::path::Path, hash: &str) -> std::path::PathBuf {
     blob_dir.join(&hash[..2]).join(format!("{hash}.bin"))
@@ -134,7 +148,7 @@ pub(crate) fn temporary_clipboard_file(path: &std::path::Path) -> bool {
             Component::Normal(s) => s.to_str(),
             _ => None,
         });
-        return !matches!(first, Some("com.deskfuse.app") | Some("com.unidesk.app"));
+        return first != Some("com.deskfuse.app") && first != Some(previous_bundle_identifier());
     }
     // 其他应用 Application Support 下的隐藏暂存文件（如 .uuremote_ 前缀）。
     if path
@@ -4090,7 +4104,7 @@ mod temp_file_tests {
         for path in [
             "/tmp/uu.tmp",
             "/private/tmp/uu.tmp",
-            "/var/folders/m5/abc/T/unidesk-file-paste-1234/a.bin",
+            "/var/folders/m5/abc/T/deskfuse-file-paste-1234/a.bin",
             "/private/var/folders/m5/abc/T/uu.tmp",
             "/Users/godd/Library/Containers/com.microsoft.rdc.macos/Data/tmp/ABC/1.png",
         ] {
@@ -4116,7 +4130,9 @@ mod temp_file_tests {
             &cache.join("com.deskfuse.app/clipboard/t-1/a.jpg")
         ));
         assert!(!temporary_clipboard_file(
-            &cache.join("com.unidesk.app/clipboard/t-1/a.jpg")
+            &cache
+                .join(previous_bundle_identifier())
+                .join("clipboard/t-1/a.jpg")
         ));
         // 正常位置不算临时文件
         for path in [
