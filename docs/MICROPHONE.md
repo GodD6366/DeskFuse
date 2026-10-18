@@ -4,6 +4,8 @@
 
 `codex/voice` 已迁移到 DeskFuse 目录和新版内嵌设置页。音频与快捷键能力位分别为 17、18，避开主线 RDP 与工作流能力；两端必须使用迁移后的版本。已有 HAL Bundle ID、设备 UID 和 `uniDeskMicrophone.driver` 文件名保留，避免遗留驱动无法管理。
 
+本轮 `cargo check --locked --workspace --all-targets` 和 `cargo test --workspace --all-targets --locked` 通过（778 项测试）。`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` 通过。Swift Package manifest 与麦克风 Swift 源码语法解析通过。原生音频冷构建在 gRPC 编译阶段主动停止，缓存保留；不能据此认定原生应用、驱动或 DMG 构建通过。
+
 当前范围是实体麦克风采集、认证音频传输、虚拟麦克风和第三方语音软件快捷键。转写由第三方软件负责；早期讨论的浮动转写输入框、最终文本投递和剪贴板回退不属于当前实现。
 
 继续完成时需验证：新 FFI/Swift/原生驱动完整构建、双架构打包与签名、双机麦克风权限及 HAL 加载、按需启停和延迟、断线/锁屏/撤权释放，以及 Fn/单键/组合键在目标语音软件中的实际行为。当前源码没有针对麦克风会话与快捷键完整状态机的专项自动化测试，建议补充授权拒绝、超时停止和目标锁定回归。

@@ -331,16 +331,15 @@ impl Service {
                 s.settings.shortcut_key,
                 s.settings.shortcut_modifiers,
             );
-            if s.shortcut_applied != Some(shortcut)
-                || s.shortcut_at.elapsed() >= Duration::from_secs(1)
-            {
-                if self.runtime.input_service_control().is_some_and(|c| {
+            if (s.shortcut_applied != Some(shortcut)
+                || s.shortcut_at.elapsed() >= Duration::from_secs(1))
+                && self.runtime.input_service_control().is_some_and(|c| {
                     c.set_microphone_shortcut(shortcut.0, shortcut.1, shortcut.2)
                         .is_ok()
-                }) {
-                    s.shortcut_applied = Some(shortcut);
-                    s.shortcut_at = Instant::now();
-                }
+                })
+            {
+                s.shortcut_applied = Some(shortcut);
+                s.shortcut_at = Instant::now();
             }
             if ready
                 && s.native.driver

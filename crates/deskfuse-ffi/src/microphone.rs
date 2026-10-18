@@ -1,6 +1,18 @@
 use super::{Engine, EngineError, failure};
 use deskfuse_engine::microphone::{NativeState, service};
 use std::sync::Arc;
+
+#[derive(uniffi::Record)]
+pub struct MicrophoneNativeState {
+    pub driver: bool,
+    pub readers: bool,
+    pub streaming: bool,
+    pub locked: bool,
+    pub permission: String,
+    pub level: f32,
+    pub error: String,
+}
+
 #[derive(uniffi::Object)]
 pub struct MicrophoneChannel {
     id: u64,
@@ -37,23 +49,17 @@ impl Engine {
     }
     pub fn report_microphone_native(
         &self,
-        driver: bool,
-        readers: bool,
-        streaming: bool,
-        locked: bool,
-        permission: String,
-        level: f32,
-        error: String,
+        state: MicrophoneNativeState,
     ) -> Result<(), EngineError> {
         self.active()?;
         service().map_err(failure)?.report(NativeState {
-            driver,
-            readers,
-            streaming,
-            locked,
-            permission,
-            level,
-            error,
+            driver: state.driver,
+            readers: state.readers,
+            streaming: state.streaming,
+            locked: state.locked,
+            permission: state.permission,
+            level: state.level,
+            error: state.error,
         });
         Ok(())
     }

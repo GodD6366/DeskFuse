@@ -85,14 +85,16 @@ impl Owner {
             let injection = self.injection.clone();
             self.tasks.spawn(async move {
                 send_hold(
-                    transport,
-                    local,
+                    HoldContext {
+                        transport,
+                        local,
+                        occupied: injection,
+                    },
                     edge.target,
                     edge.config,
                     edge.routed,
                     edge.generation,
                     rx,
-                    injection,
                 )
                 .await;
             });
@@ -211,16 +213,25 @@ impl Drop for Held {
 fn valid(generation: u64) -> bool {
     native::generation() == generation && native::current_target().is_some()
 }
-async fn send_hold(
+struct HoldContext {
     transport: QuinnTransport,
     local: DeviceId,
+    occupied: Arc<AtomicBool>,
+}
+
+async fn send_hold(
+    context: HoldContext,
     target: DeviceId,
     config: ShortcutConfig,
     routed: bool,
     generation: u64,
     mut held: watch::Receiver<bool>,
-    occupied: Arc<AtomicBool>,
 ) {
+    let HoldContext {
+        transport,
+        local,
+        occupied,
+    } = context;
     if !*held.borrow() || !valid(generation) {
         return;
     }
@@ -264,16 +275,23 @@ async fn send_hold(
         }
         tokio::select! {
             result=held.changed()=>{if result.is_err(){break;}}
-            _=tick.tick()=>{if let Some(session)=&mut remote {if let Err(error) = session.send_held(true).await {diagnostic("microphone_shortcut_send_failed", format!("target={target} error={error}"));break;}}}
+            _ = tick.tick() => {
+                if let Some(session) = &mut remote
+                    && let Err(error) = session.send_held(true).await
+                {
+                    diagnostic("microphone_shortcut_send_failed", format!("target={target} error={error}"));
+                    break;
+                }
+            }
         }
     }
-    if let Some(session) = &mut remote {
-        if let Err(error) = session.send_held(false).await {
-            diagnostic(
-                "microphone_shortcut_release_failed",
-                format!("target={target} error={error}"),
-            );
-        }
+    if let Some(session) = &mut remote
+        && let Err(error) = session.send_held(false).await
+    {
+        diagnostic(
+            "microphone_shortcut_release_failed",
+            format!("target={target} error={error}"),
+        );
     }
     diagnostic("microphone_shortcut_ended", format!("target={target}"));
 }
@@ -291,7 +309,16 @@ async fn receive_hold(
     }
     let (tx, rx) = watch::channel(true);
     let outgoing = send_hold(
-        transport, local, target, config, true, generation, rx, occupied,
+        HoldContext {
+            transport,
+            local,
+            occupied,
+        },
+        target,
+        config,
+        true,
+        generation,
+        rx,
     );
     tokio::pin!(outgoing);
     // Keep consuming releases during downstream negotiation: a quick release

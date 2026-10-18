@@ -321,7 +321,15 @@ private final class MicrophoneWorker: @unchecked Sendable {
                             let meter = withUnsafeBytes(of: &bits) { Data([4]) + Data($0) }
                             try channel.send(bytes: meter)
                         }
-                        try engine.reportMicrophoneNative(driver: driver, readers: readers, streaming: Date().timeIntervalSince(lastAudio) < 1, locked: flags().0, permission: permission, level: capture?.level ?? (Date().timeIntervalSince(lastAudio) < 1 ? remoteLevel : 0), error: failure)
+                        try engine.reportMicrophoneNative(state: MicrophoneNativeState(
+                            driver: driver,
+                            readers: readers,
+                            streaming: Date().timeIntervalSince(lastAudio) < 1,
+                            locked: flags().0,
+                            permission: permission,
+                            level: capture?.level ?? (Date().timeIntervalSince(lastAudio) < 1 ? remoteLevel : 0),
+                            error: failure
+                        ))
                         failure = ""
                         let latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
                         // A completion from an expired attempt cannot clear the
