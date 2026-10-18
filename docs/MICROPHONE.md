@@ -1,5 +1,9 @@
 # 跨设备麦克风（测试版）
 
+## 当前双机测试方向（2026-10-18）
+
+用户确认：`10.10.10.1`（godd-MBP-339，保存的设备名为 godd-MBP-108）提供实体麦克风，本机 macmini-m4-wanzhao 接收。此前反向测试不代表这一正确方向的音频验收；两端来源与允许列表已纠正。本机虚拟麦克风已通过设置页管理员授权重新安装并成功加载，实体麦克风权限应在 `.1` 授予。正确方向已建立 sender / receiver 会话，读取探测仍为静音，接收端提示等待来源音频或授权；在 `.1` 完成权限并得到有效音频前不视为验收通过。驱动管理路径漏掉 `.driver` 后缀的问题已修复于 `1585c57`；build 168 不包含此修复，应使用已通过双架构打包校验的 build 169（Apple Development 签名，未公证）。
+
 ## DeskFuse 主线迁移（2026-10-18）
 
 `codex/voice` 已迁移到 DeskFuse 目录和新版内嵌设置页。音频与快捷键能力位分别为 17、18，避开主线 RDP 与工作流能力；两端必须使用迁移后的版本。已有 HAL Bundle ID、设备 UID 和驱动文件名保留在 `config/previous-installation.json`，避免遗留驱动无法管理。
@@ -8,7 +12,7 @@
 
 `./scripts/check.sh` 已通过：794 项 Rust 测试、Clippy、FFI/Swift/arm64 原生驱动构建及三组合成音频回归（包含 RS8M 丢包恢复、重新创建会话）。脚本单元测试 72 项通过。回归覆盖真实 QUIC 音频/快捷键连接、授权拒绝与撤销、超时和目标锁定。
 
-实机进度：本机与 10.10.10.1 已运行签名测试版；远端 HAL 加载、RPC 连通及 48kHz 单声道虚拟设备枚举已验证。首次 8 秒 Core Audio 读取为静音且控制通道 QUIC/Hello 超时。用户允许本地网络后，控制连接恢复；复测两端均记录 `session_active`（sender / receiver），说明授权音频会话已经建立。12 秒读取仍为静音，来源端 UI 明确显示“等待麦克风授权”；当前等待本机麦克风权限，尚未取得有效音频。实际语音转写、端到端延迟、Fn/单键/组合键和物理断线/锁屏验收仍需实测。`scripts/package-macos.sh --release` 已成功生成 0.5.2 build 168 的 arm64 / x86_64 DMG 与更新 ZIP；两架构的签名、原生依赖、DMG 内容和最终 SHA-256 校验均通过。使用 Apple Development 签名，未公证；Intel 构建通过不代表 Intel 实机运行通过。产物位于主 checkout 的 `dist/0.5.2-build168/`。
+此前反向测试记录（方向已由上节纠正）：本机与 10.10.10.1 已运行签名测试版；远端 HAL 加载、RPC 连通及 48kHz 单声道虚拟设备枚举已验证。首次 8 秒 Core Audio 读取为静音且控制通道 QUIC/Hello 超时。用户允许本地网络后，控制连接恢复；复测两端均记录 `session_active`（sender / receiver），说明授权音频会话已经建立。12 秒读取仍为静音，来源端 UI 明确显示“等待麦克风授权”；当时等待本机麦克风权限，尚未取得有效音频。实际语音转写、端到端延迟、Fn/单键/组合键和物理断线/锁屏验收仍需实测。`scripts/package-macos.sh --release` 已成功生成 0.5.2 build 168 的 arm64 / x86_64 DMG 与更新 ZIP；两架构的签名、原生依赖、DMG 内容和最终 SHA-256 校验均通过。使用 Apple Development 签名，未公证；Intel 构建通过不代表 Intel 实机运行通过。产物位于主 checkout 的 `dist/0.5.2-build168/`。
 
 
 默认关闭，macOS 双端。A 选实体输入并显式允许 B；B 选 A，由第三方语音应用直接读取 `DeskFuse 麦克风（来自 A）`。DeskFuse 不转写、不保存音频、不操作转写文本或剪贴板。设置、允许列表、来源、快捷键持久化在 DeskFuse 自有 `microphone.json`；Swift 只保留 Rust 快照的 UI 投影及 Core Audio 资源。
