@@ -195,6 +195,9 @@ impl Library {
         if self.reconcile_index_step()? || self.publish_backfill_step()? {
             return Ok(true);
         }
+        if self.migrate_blob_to_fs_step()? {
+            return Ok(true);
+        }
         self.index_short_step()
     }
 
@@ -383,6 +386,7 @@ impl Library {
         let hash = if let Some(hash) = &old_hash {
             hash.clone()
         } else {
+            // 流式计算 hash，不把整个 payload 载入内存
             let db = self.reader()?;
             let body = db
                 .blob_open(
@@ -408,11 +412,58 @@ impl Library {
             }
             hex::encode(digest.finalize())
         };
+        // 写文件：流式读 payload → 写临时文件 → rename 原子落盘
+        let path = blob_file_path(&self.blob_dir, &hash);
+        if !path.exists() {
+            let db = self.reader()?;
+            // 先检查 payload 是否存在
+            let payload_len: Option<i64> = db
+                .query_row(
+                    "SELECT length(payload) FROM cl_items WHERE id=?1 AND payload IS NOT NULL",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(err)?;
+            if let Some(_) = payload_len {
+                let body = db
+                    .blob_open(
+                        rusqlite::DatabaseName::Main,
+                        "cl_items",
+                        "payload",
+                        id as i64,
+                        true,
+                    )
+                    .map_err(err)?;
+                let dir = path.parent().unwrap();
+                std::fs::create_dir_all(dir).map_err(err)?;
+                let tmp = path.with_extension("tmp");
+                {
+                    use std::io::Write as _;
+                    let mut file = std::fs::File::create(&tmp).map_err(err)?;
+                    let mut buf = vec![0u8; 65_536];
+                    let mut offset = 0;
+                    while offset < body.len() {
+                        if self.foreground_writers.load(Ordering::Acquire) != 0 {
+                            let _ = std::fs::remove_file(&tmp);
+                            return Ok(false);
+                        }
+                        let count = buf.len().min(body.len() - offset);
+                        body.read_at_exact(&mut buf[..count], offset).map_err(err)?;
+                        file.write_all(&buf[..count]).map_err(err)?;
+                        offset += count;
+                    }
+                }
+                std::fs::rename(&tmp, &path).map_err(err)?;
+            }
+        }
         let Some(mut db) = self.background_writer()? else {
             return Ok(false);
         };
         let tx = db.transaction().map_err(err)?;
-        tx.execute("INSERT OR IGNORE INTO cl_blobs SELECT ?2,payload FROM cl_items WHERE id=?1 AND blob_hash IS ?3 AND payload IS NOT NULL", params![id,hash,old_hash]).map_err(err)?;
+        // 空占位行：hash 存在于 cl_blobs，bytes = x''（内容在文件系统）
+        tx.execute("INSERT OR IGNORE INTO cl_blobs VALUES(?1, x'')", [&hash])
+            .map_err(err)?;
         tx.execute("UPDATE cl_items SET payload=NULL,blob_hash=?2 WHERE id=?1 AND blob_hash IS ?3 AND EXISTS(SELECT 1 FROM cl_blobs WHERE hash=?2)", params![id,hash,old_hash]).map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(true)
@@ -432,8 +483,30 @@ impl Library {
         let Some(mut db) = self.background_writer()? else {
             return Ok(());
         };
+        // 先收集孤儿 hash，再删文件（幂等），最后 commit 删 db 行。
+        // 即使 tx commit 失败，文件已删也无妨：下次 gc 会重试删 db 行，
+        // 文件不存在时 delete_blob_file 静默忽略。
+        let cutoff = now_ms().saturating_sub(600_000);
+        let to_delete: Vec<String> = db
+            .prepare("SELECT b.hash FROM cl_blobs b WHERE NOT EXISTS(SELECT 1 FROM cl_items WHERE blob_hash=b.hash) AND NOT EXISTS(SELECT 1 FROM cl_blob_birth WHERE hash=b.hash AND created>?1) LIMIT 8")
+            .map_err(err)?
+            .query_map([cutoff], |r| r.get(0))
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(err)?;
+        if to_delete.is_empty() {
+            return Ok(());
+        }
+        // 先删文件（幂等）
+        for hash in &to_delete {
+            self.delete_blob_file(hash);
+        }
+        // 再删 SQLite 行
         let tx = db.transaction().map_err(err)?;
-        tx.execute("DELETE FROM cl_blobs WHERE hash IN (SELECT b.hash FROM cl_blobs b WHERE NOT EXISTS(SELECT 1 FROM cl_items WHERE blob_hash=b.hash) AND NOT EXISTS(SELECT 1 FROM cl_blob_birth WHERE hash=b.hash AND created>?1) LIMIT 8)", [now_ms().saturating_sub(600_000)]).map_err(err)?;
+        for hash in &to_delete {
+            tx.execute("DELETE FROM cl_blobs WHERE hash=?1", [hash])
+                .map_err(err)?;
+        }
         tx.commit().map_err(err)
     }
     /// 分批扫描本机文件类历史条目，删除任一源路径已不存在的死引用。
@@ -444,13 +517,13 @@ impl Library {
         let Some(db) = self.background_writer()? else {
             return Ok((cursor, false));
         };
-        let rows: Vec<(u64, Option<Vec<u8>>)> = db
+        let rows: Vec<(u64, Option<Vec<u8>>, String)> = db
             .prepare(
-                "SELECT id, COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE ordinary=1 AND remote=0 AND json_extract(summary,'$.kind')='files' AND id>?1 ORDER BY id LIMIT ?2",
+                "SELECT id, payload, COALESCE(blob_hash,'') FROM cl_items WHERE ordinary=1 AND remote=0 AND json_extract(summary,'$.kind')='files' AND id>?1 ORDER BY id LIMIT ?2",
             )
             .map_err(err)?
             .query_map(params![cursor, BATCH], |r| {
-                Ok((r.get::<_, u64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+                Ok((r.get::<_, u64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?, r.get::<_, String>(2)?))
             })
             .map_err(err)?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -458,11 +531,19 @@ impl Library {
         if rows.is_empty() {
             return Ok((0, false));
         }
-        let next_cursor = rows.last().map(|(id, _)| *id).unwrap_or(cursor);
+        let next_cursor = rows.last().map(|(id, _, _)| *id).unwrap_or(cursor);
         let exhausted = (rows.len() as u64) < BATCH;
         let mut missing = Vec::new();
-        for (id, bytes) in &rows {
-            let dead = bytes
+        for (id, payload, blob_hash) in &rows {
+            // 优先 payload，再从 blob store 读取
+            let bytes_opt = if let Some(b) = payload.clone() {
+                Some(b)
+            } else if !blob_hash.is_empty() {
+                load_blob_db(&db, &self.blob_dir, blob_hash)?
+            } else {
+                None
+            };
+            let dead = bytes_opt
                 .as_deref()
                 .and_then(|bytes| decode(bytes).ok())
                 .is_some_and(|snapshot| {
@@ -494,4 +575,84 @@ impl Library {
 
 pub(super) fn ready(value: bool) -> AtomicBool {
     AtomicBool::new(value)
+}
+
+/// 新增：将存量大 blob（bytes 仍在 SQLite）搬到文件系统的后台迁移步骤。
+/// 每次处理一个最大的 blob（>64KB），清空 SQLite bytes 为 x''。
+/// 迁移完成后 SQLite 只保留 hash 占位行，bytes 字段为空。
+impl Library {
+    pub(super) fn migrate_blob_to_fs_step(&self) -> Result<bool> {
+        // A partial index stays empty after migration, and new large blobs enter
+        // it automatically. Build it on the yielding background writer, not at startup.
+        {
+            let Some(db) = self.background_writer()? else {
+                return Ok(false);
+            };
+            db.execute_batch("CREATE INDEX IF NOT EXISTS cl_blob_migration_pending ON cl_blobs(length(bytes) DESC) WHERE length(bytes) > 65536;")
+                .map_err(err)?;
+        }
+        let row = {
+            let db = self.reader()?;
+            db.query_row(
+                "SELECT hash FROM cl_blobs WHERE length(bytes) > 65536 ORDER BY length(bytes) DESC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(err)?
+        };
+        let Some(hash) = row else {
+            return Ok(false);
+        };
+        // 流式读取 blob bytes → 写文件
+        let path = blob_file_path(&self.blob_dir, &hash);
+        if !path.exists() {
+            let db = self.reader()?;
+            let blob = db
+                .blob_open(
+                    rusqlite::DatabaseName::Main,
+                    "cl_blobs",
+                    "bytes",
+                    {
+                        // 通过 rowid 打开；cl_blobs 以 hash 为 PRIMARY KEY，
+                        // SQLite 中 TEXT PK 对应隐式 rowid。
+                        let rowid: i64 = db
+                            .query_row("SELECT rowid FROM cl_blobs WHERE hash=?1", [&hash], |r| {
+                                r.get(0)
+                            })
+                            .map_err(err)?;
+                        rowid
+                    },
+                    true,
+                )
+                .map_err(err)?;
+            let dir = path.parent().unwrap();
+            std::fs::create_dir_all(dir).map_err(err)?;
+            let tmp = path.with_extension("tmp");
+            {
+                use std::io::Write as _;
+                let mut file = std::fs::File::create(&tmp).map_err(err)?;
+                let mut buf = vec![0u8; 65_536];
+                let mut offset = 0;
+                while offset < blob.len() {
+                    if self.foreground_writers.load(Ordering::Acquire) != 0 {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Ok(false);
+                    }
+                    let count = buf.len().min(blob.len() - offset);
+                    blob.read_at_exact(&mut buf[..count], offset).map_err(err)?;
+                    file.write_all(&buf[..count]).map_err(err)?;
+                    offset += count;
+                }
+            }
+            std::fs::rename(&tmp, &path).map_err(err)?;
+        }
+        // 清空 SQLite bytes（保留占位行）
+        let Some(db) = self.background_writer()? else {
+            return Ok(false);
+        };
+        db.execute("UPDATE cl_blobs SET bytes=x'' WHERE hash=?1", [&hash])
+            .map_err(err)?;
+        Ok(true)
+    }
 }

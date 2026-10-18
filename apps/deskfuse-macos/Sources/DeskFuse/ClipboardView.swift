@@ -336,13 +336,24 @@ struct ClipboardView: View {
                 scheduleOCR(result.items)
             }
             if let target = navigationSelected, pageItems.contains(where: { $0.id == target }) { selected = target; navigationSelected = nil }
-            if !append {
-                total = nil
-                let list = listID, query = search, device = source
-                countTask = Task(priority: .utility) {
-                    guard let value = try? await library.queryTotal(listID: list, search: query, source: device),
-                          !Task.isCancelled, queryKey == key else { return }
-                    total = value
+            if !append, result.total_exact == false {
+                // The unfiltered list count is already maintained by the library.
+                // Do not run a second full-library count on every history refresh.
+                if search.isEmpty, source == nil, let cached = library.counts[listID ?? "all"] {
+                    total = cached
+                } else if result.next_offset == nil {
+                    total = result.items.count
+                } else {
+                    total = nil
+                    let list = listID, query = search, device = source
+                    countTask = Task(priority: .utility) {
+                        // Paging is immediate; optional counts wait for edits/refreshes to settle.
+                        do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                        guard !Task.isCancelled, queryKey == key,
+                              let value = try? await library.queryTotal(listID: list, search: query, source: device),
+                              !Task.isCancelled, queryKey == key else { return }
+                        total = value
+                    }
                 }
             }
         } catch { if !Task.isCancelled, pageRequest == request, key == queryKey { store.error = error.userFacingMessage } }
@@ -365,6 +376,7 @@ struct ClipboardView: View {
                                  content: content, media: media, image: previewImage,
                                  ocrText: pageItems.first(where: { $0.id == content.id })?.ocr_text,
                                  copying: copyToken != nil, copied: copiedID == item.id, copyContent: { prepareCopy(content.id) })
+                .equatable()
                 .id(content.id)
         } else {
             ContentUnavailableView {

@@ -4,6 +4,7 @@
 #![allow(clippy::needless_pass_by_value)]
 mod clipboard_paste;
 mod microphone;
+mod mouse_settings;
 #[cfg(target_os = "macos")]
 mod platform;
 mod remote_application;

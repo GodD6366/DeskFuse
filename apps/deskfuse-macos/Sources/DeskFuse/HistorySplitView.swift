@@ -22,10 +22,10 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
         private var expanded: Bool
         private var listWidth: CGFloat = 360
 
-        init(history: History, detail: Detail, expanded: Bool, environment: EnvironmentValues) {
+        init(history: History, detail: Detail, expanded: Bool, environment: HostingEnvironment) {
             self.expanded = expanded
-            historyHost = NSHostingController(rootView: AnyView(history.environment(\.self, environment)))
-            detailHost = NSHostingController(rootView: AnyView(detail.environment(\.self, environment)))
+            historyHost = NSHostingController(rootView: environment.wrap(history))
+            detailHost = NSHostingController(rootView: environment.wrap(detail))
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { nil }
@@ -73,11 +73,13 @@ struct HistorySplitView<History: View, Detail: View>: NSViewControllerRepresenta
     }
 
     func makeNSViewController(context: Context) -> Controller {
-        Controller(history: history(), detail: detail(), expanded: expandHistory, environment: context.environment)
+        Controller(history: history(), detail: detail(), expanded: expandHistory,
+                   environment: HostingEnvironment(context.environment))
     }
     func updateNSViewController(_ controller: Controller, context: Context) {
         controller.updateExpansion(expandHistory)
-        controller.historyHost.rootView = AnyView(history().environment(\.self, context.environment))
-        controller.detailHost.rootView = AnyView(detail().environment(\.self, context.environment))
+        let environment = HostingEnvironment(context.environment)
+        controller.historyHost.rootView = environment.wrap(history())
+        controller.detailHost.rootView = environment.wrap(detail())
     }
 }

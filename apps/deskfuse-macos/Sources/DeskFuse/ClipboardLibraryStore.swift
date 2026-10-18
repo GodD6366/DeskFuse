@@ -406,8 +406,18 @@ struct ClipboardLibraryState: Codable {
         rebuildCounts()
     }
     func refresh() async {
-        do { _ = try await loadSettings() }
-        catch { self.error = error.userFacingMessage }
+        await refresh { _ = try await self.loadSettings() }
+    }
+    func refresh(using load: () async throws -> Void) async {
+        do {
+            try Task.checkCancellation()
+            try await load()
+        } catch is CancellationError {
+            // A newer library revision or a closed view cancels this refresh.
+        } catch {
+            guard !Task.isCancelled else { return }
+            self.error = error.userFacingMessage
+        }
     }
     private func scheduleCounts() {
         countsTask?.cancel()
@@ -416,12 +426,16 @@ struct ClipboardLibraryState: Codable {
                 try await Task.sleep(for: .milliseconds(250))
                 try await refreshCounts()
             } catch is CancellationError { }
-            catch { self.error = error.userFacingMessage }
+            catch {
+                guard !Task.isCancelled else { return }
+                self.error = error.userFacingMessage
+            }
         }
     }
     func loadSettings() async throws -> ClipboardLibrarySettings {
         guard let client = AppStore.shared.client else { throw LibraryError(message: "引擎尚未就绪") }
         let response = try await client.libraryQuery("{\"op\":\"state\"}")
+        try Task.checkCancellation()
         let settings = try apply(response)
         scheduleCounts()
         return settings

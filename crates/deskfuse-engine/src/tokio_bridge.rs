@@ -1608,6 +1608,9 @@ async fn run_worker(
     if let Some(catalog) = &workflow_catalog {
         let _ = catalog.set_local_device(runtime.snapshot_view().snapshot.local_device_id.to_hex());
     }
+    let mouse_catalog = crate::mouse_settings::global().ok();
+    let mut mouse_next_sync = std::time::Instant::now();
+    let mut mouse_last_frame = Vec::new();
     let mut workflow_generation = 0;
     let mut workflow_next_sync = std::time::Instant::now();
     let mut workflow_sends: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -1886,6 +1889,46 @@ async fn run_worker(
                             }));
                         }
                     }
+                }
+            }
+        }
+        if cfg!(target_os = "macos")
+            && let Some(catalog) = &mouse_catalog
+            && let Ok(data) = catalog.frame()
+            && (data != mouse_last_frame || std::time::Instant::now() >= mouse_next_sync)
+            && workflow_sends.len() < 64
+        {
+            mouse_next_sync = std::time::Instant::now() + Duration::from_secs(5);
+            mouse_last_frame = data.clone();
+            let view = runtime.snapshot_view();
+            for peer in trusted_connected_peer_ids(&view) {
+                if workflow_sends.len() >= 64 {
+                    break;
+                }
+                if !view.snapshot.peers.iter().any(|p| {
+                    p.id == peer
+                        && p.routes
+                            .iter()
+                            .any(|r| r.capabilities.contains(Capabilities::MAC_MOUSE_SETTINGS))
+                }) {
+                    continue;
+                }
+                if let Some(session) = runtime.control_generation(peer) {
+                    let runtime = runtime.clone();
+                    let data = data.clone();
+                    workflow_sends.push(tokio::spawn(async move {
+                        let _ = runtime
+                            .send_clipboard_on_session(
+                                peer,
+                                session,
+                                ClipboardPayload {
+                                    mime: crate::mouse_settings::MIME.into(),
+                                    data,
+                                    sequence: 0,
+                                },
+                            )
+                            .await;
+                    }));
                 }
             }
         }
@@ -2494,6 +2537,14 @@ async fn run_worker(
                         let _ = ui_sender.unbounded_send(UiEvent::RuntimeView(runtime.snapshot_view()));
                     }
                     RuntimeEvent::ClipboardReceived { peer_id, payload } => {
+                        if payload.mime == crate::mouse_settings::MIME {
+                            if cfg!(target_os = "macos") && trusted_connected_peer_ids(&runtime.snapshot_view()).contains(&peer_id)
+                                && let Some(catalog) = &mouse_catalog
+                                && let Err(error) = catalog.receive(&payload.data) {
+                                let _ = ui_sender.unbounded_send(UiEvent::BridgeError(format!("鼠标配置同步失败：{error}")));
+                            }
+                            continue;
+                        }
                         if payload.mime == crate::library_files::MIME {
                             if trusted_connected_peer_ids(&runtime.snapshot_view()).contains(&peer_id) { crate::library_files::receive(peer_id, &payload.data, &runtime); }
                             continue;
@@ -2599,6 +2650,12 @@ async fn run_worker(
                                 let _=send_file_clipboard_frame(&runtime,&[peer_id],&clipboard_sequence,ClipboardFileFrame::Cancel {transfer_id:id,reason:"接收被取消，或未通过容量与完整性检查".into()}).await;
                             }
                         }
+                    }
+                    RuntimeEvent::BackgroundDiagnostic { stage, detail } => {
+                        crate::diagnostics::record!(diagnostics,
+                            DiagnosticLevel::Info, "background", stage,
+                            Some(format!("pid={} {detail}", platform.runtime().process_id())), None,
+                        );
                     }
                     RuntimeEvent::InputDiagnostic { stage, detail } => {
                         crate::diagnostics::record!(diagnostics,
@@ -4957,6 +5014,14 @@ fn motion_mode_capabilities(mode: Option<&str>) -> Capabilities {
     }
 }
 
+fn mouse_settings_capability() -> Capabilities {
+    if cfg!(target_os = "macos") {
+        Capabilities::MAC_MOUSE_SETTINGS
+    } else {
+        Capabilities::NONE
+    }
+}
+
 fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> RuntimeConfig {
     // Public bundles run the LAN package server alongside the canonical GitHub
     // checker. Manual bundles have no updater worker and stay opt-out.
@@ -4980,6 +5045,7 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
             | Capabilities::MICROPHONE
+            | mouse_settings_capability()
             | motion_mode_capabilities(
                 runtime.environment("DESKFUSE_INPUT_MOTION_MODE").as_deref(),
             ),
@@ -5115,6 +5181,11 @@ async fn build_runtime(
         .with_control_transport(transport.clone());
     #[cfg(test)]
     let builder = builder.with_transport(UnavailableControlTransport);
+    // 企业 Wi-Fi 常过滤 mDNS 组播；提供物理接口网段，供运行时做单播握手探测。
+    #[cfg(all(target_os = "macos", not(test)))]
+    let builder = builder.with_lan_networks(|| {
+        deskfuse_platform_macos::lan_web::lan_ipv4_networks().unwrap_or_default()
+    });
     #[cfg(all(target_os = "macos", not(test)))]
     let builder = builder.with_input_service(deskfuse_runtime::input_service::ServiceOptions {
         executable: platform
@@ -5466,6 +5537,7 @@ mod tests {
                 | Capabilities::CLIPBOARD_SYNC_V2
                 | Capabilities::REMOTE_APPLICATION
                 | Capabilities::MICROPHONE
+                | mouse_settings_capability()
                 | motion_mode_capabilities(
                     std::env::var("DESKFUSE_INPUT_MOTION_MODE").ok().as_deref()
                 )

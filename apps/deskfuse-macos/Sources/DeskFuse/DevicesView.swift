@@ -121,8 +121,9 @@ struct DevicesView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
                     .modifier(NativeGlassBackdrop(cornerRadius: 10))
                     .controlSize(.small)
                     .help("手动输入 IPv4 地址")
@@ -134,8 +135,9 @@ struct DevicesView: View {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
                     .modifier(NativeGlassBackdrop(cornerRadius: 10))
                     .controlSize(.small)
                     .help("刷新设备")
@@ -150,8 +152,9 @@ struct DevicesView: View {
                             Image(systemName: "arrow.down.app")
                                 .font(.system(size: 15, weight: .medium))
                                 .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.borderless)
                         .modifier(NativeGlassBackdrop(cornerRadius: 10))
                         .controlSize(.small)
                         .disabled(batchUpdateCandidates.isEmpty)

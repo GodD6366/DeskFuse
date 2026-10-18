@@ -259,10 +259,14 @@ struct SettingsView: View, Equatable {
                 defer { exportingDiagnostics = false }
                 do {
                     try await client.exportDiagnostics(url.path)
-                    let memory = await MemoryDiagnostics.capture(ocr: ClipboardOCRIndexer.shared.diagnostics())
+                    let memory = await MemoryDiagnostics.capture(
+                        ocr: ClipboardOCRIndexer.shared.diagnostics(),
+                        selectedPage: store.selectedPage.rawValue,
+                        visibleWindowCount: NSApp.windows.filter { $0.occlusionState.contains(.visible) }.count)
                     let handle = try FileHandle(forWritingTo: url)
                     handle.seekToEndOfFile()
                     handle.write(memory)
+                    handle.write(MouseButtonController.shared.diagnostics())
                     try handle.close()
                 }
                 catch { store.error = error.userFacingMessage }

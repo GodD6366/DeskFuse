@@ -21,11 +21,13 @@ struct MemoryDiagnosticsReport: Codable, Sendable {
     let app: MemoryProcessSample?
     let children: [MemoryProcessSample]
     let ocr: ClipboardOCRDiagnostics
+    let selectedPage: String?
+    let visibleWindowCount: Int?
     let note: String
 }
 
 enum MemoryDiagnostics {
-    static func capture(ocr: ClipboardOCRDiagnostics) async -> Data {
+    static func capture(ocr: ClipboardOCRDiagnostics, selectedPage: String? = nil, visibleWindowCount: Int? = nil) async -> Data {
         let appPID = ProcessInfo.processInfo.processIdentifier
         return await Task.detached(priority: .utility) {
             let rows = processRows()
@@ -40,6 +42,8 @@ enum MemoryDiagnostics {
                 app: app,
                 children: children,
                 ocr: ocr,
+                selectedPage: selectedPage,
+                visibleWindowCount: visibleWindowCount,
                 note: "RSS/VSZ come from ps; physical footprint and peak come from footprint when task inspection is permitted. footprintSummary is intentionally bounded to the first 40 lines."
             )
             let encoder = JSONEncoder()

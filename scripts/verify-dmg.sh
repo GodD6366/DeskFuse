@@ -219,7 +219,11 @@ for binary in sys.argv[1:]:
     print(f"Mach-O: {binary.rsplit('/', 1)[-1]} minimum macOS {versions[0]}, SDK {sdks[0] if sdks else 'unknown'}")
 PYNATIVE
 if [[ -f "$MOUNT_POINT/.updates/manifest.json" ]]; then
-  cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
+  if [[ -n "${DESKFUSE_RELEASE_TOOL:-}" && -x "${DESKFUSE_RELEASE_TOOL:-}" ]]; then
+    "$DESKFUSE_RELEASE_TOOL" verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
+  else
+    cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
+  fi
   EMBEDDED_UPDATE="$CONTENTS_DIR/Resources/LanUpdate"
   cmp "$MOUNT_POINT/.updates/manifest.json" "$EMBEDDED_UPDATE/manifest.json"
   cmp "$MOUNT_POINT/.updates/DeskFuse-$ARTIFACT_SUFFIX-update.zip" "$EMBEDDED_UPDATE/DeskFuse-$ARTIFACT_SUFFIX-update.zip"

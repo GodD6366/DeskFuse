@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
+source "$ROOT_DIR/scripts/build-cache.sh"
 # New SwiftUI SDKs require the platform macro plugins bundled with full Xcode.
 # Select a toolchain for this process only; never change xcode-select globally.
 if [[ -z "${DEVELOPER_DIR:-}" && "$(xcode-select -p)" == */CommandLineTools ]]; then
@@ -12,7 +13,7 @@ if [[ -z "${DEVELOPER_DIR:-}" && "$(xcode-select -p)" == */CommandLineTools ]]; 
 fi
 CONFIGURATION="${1:-debug}"
 [[ "$CONFIGURATION" == debug || "$CONFIGURATION" == release ]] || { echo "expected debug or release" >&2; exit 2; }
-export MACOSX_DEPLOYMENT_TARGET=14.0
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 [[ "${SDK_VERSION%%.*}" -ge 27 ]] || { echo "error: full Xcode 27+ with macOS 27+ SDK is required by the current native source (runtime minimum remains macOS 14)" >&2; exit 1; }
@@ -34,17 +35,44 @@ case "$MACOS_ARCH" in
     ;;
 esac
 "$ROOT_DIR/scripts/build-roc-microphone.sh" "$MACOS_ARCH"
+# --fast packaging keeps the release Rust profile but builds the Swift client
+# incrementally (no whole-module optimization). The Rust profile is deliberately
+# unchanged: the installed app links the same release static library and keeps
+# the same signing identity and update payload contract.
+SWIFT_CONFIGURATION="$CONFIGURATION"
+SWIFT_OPT_FLAGS_TEXT=""
+SWIFT_BUILD_DIR="$ROOT_DIR/apps/deskfuse-macos/.build"
+SWIFT_VARIANT=""
+if [[ "${DESKFUSE_FAST_SWIFT:-0}" == 1 ]]; then
+  SWIFT_CONFIGURATION=debug
+  SWIFT_OPT_FLAGS_TEXT="-Xswiftc -O"
+  # Keep fast iterations away from both the release build tree and the
+  # build_and_run.sh debug tree; switching optimization levels otherwise
+  # invalidates the whole module on every alternation.
+  SWIFT_BUILD_DIR="$ROOT_DIR/apps/deskfuse-macos/.build-fast"
+  SWIFT_VARIANT="-fast"
+fi
+case "$SWIFT_CONFIGURATION" in
+  debug|release) ;;
+  *) echo "error: unsupported Swift configuration: $SWIFT_CONFIGURATION" >&2; exit 2 ;;
+esac
 # Swift Build can incorrectly stamp the deployment target as the linked SDK.
 # Pass the *actual selected SDK* to both compilation and the real linker, so
 # AppKit opts into modern system chrome while the minimum OS remains 14.0.
-SWIFT_FLAGS=(--build-system swiftbuild --package-path "$ROOT_DIR/apps/deskfuse-macos" --configuration "$CONFIGURATION"
+SWIFT_FLAGS=(--build-system swiftbuild --package-path "$ROOT_DIR/apps/deskfuse-macos" --configuration "$SWIFT_CONFIGURATION"
+  --scratch-path "$SWIFT_BUILD_DIR"
   --triple "$SWIFT_TRIPLE" --sdk "$SDK_PATH"
   -Xlinker -platform_version -Xlinker macos -Xlinker "$MACOSX_DEPLOYMENT_TARGET" -Xlinker "$SDK_VERSION")
+if [[ -n "$SWIFT_OPT_FLAGS_TEXT" ]]; then
+  # Fixed, shell-safe words; intentional word splitting builds the argv tail.
+  # shellcheck disable=SC2206
+  SWIFT_FLAGS+=($SWIFT_OPT_FLAGS_TEXT)
+fi
 export DESKFUSE_INPUT_BUILD_ID="${DESKFUSE_INPUT_BUILD_ID:-dev-$(git rev-parse --short=12 HEAD)}"
 DESKFUSE_MACOS_ARCH="$MACOS_ARCH" "$ROOT_DIR/scripts/build-freerdp-macos.sh"
 # Rust builds and binding generation can also run independently of Swift.
 "$ROOT_DIR/scripts/build-rust-macos.sh" "$CONFIGURATION"
-TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+TARGET_DIR="${DESKFUSE_TARGET_DIR:-$(deskfuse_cache_target_dir)}"
 RUST_OUTPUT="$TARGET_DIR/$TARGET_TRIPLE/$CONFIGURATION"
 SDK_DIR="$ROOT_DIR/apps/deskfuse-macos/SDK"
 write_build_identity() {
@@ -54,7 +82,11 @@ write_build_identity() {
 # Swift 指纹覆盖源码、绑定和静态库内容。构建号变化不在其中。
 SWIFT_VERSION="$(swift --version | awk 'NR==1 { print; exit }')"
 XCODE_VERSION="$(xcodebuild -version | tr '\n' ' ')"
-export DESKFUSE_SWIFT_CONFIGURATION="$CONFIGURATION"
+XCODE_BUILD_VERSION="${XCODE_VERSION##*Build version }"
+XCODE_BUILD_VERSION="${XCODE_BUILD_VERSION% }"
+export DESKFUSE_SWIFT_CONFIGURATION="$SWIFT_CONFIGURATION"
+export DESKFUSE_SWIFT_OPT_FLAGS="$SWIFT_OPT_FLAGS_TEXT"
+export DESKFUSE_SWIFT_SCRATCH_PATH="$SWIFT_BUILD_DIR"
 export DESKFUSE_SWIFT_TRIPLE="$SWIFT_TRIPLE"
 export DESKFUSE_SWIFT_SDK_VERSION="$SDK_VERSION"
 export DESKFUSE_SWIFT_SDK_PATH="$SDK_PATH"
@@ -68,6 +100,8 @@ package = root / "apps/deskfuse-macos"
 hasher = hashlib.sha256()
 for key in (
     "DESKFUSE_SWIFT_CONFIGURATION",
+    "DESKFUSE_SWIFT_OPT_FLAGS",
+    "DESKFUSE_SWIFT_SCRATCH_PATH",
     "DESKFUSE_SWIFT_TRIPLE",
     "MACOSX_DEPLOYMENT_TARGET",
     "DESKFUSE_SWIFT_SDK_VERSION",
@@ -100,8 +134,8 @@ with library.open("rb") as handle:
 print(hasher.hexdigest())
 PY
 )"
-SWIFT_FINGERPRINT_FILE="$SDK_DIR/.swift-fingerprint-$TARGET_TRIPLE-$CONFIGURATION"
-SWIFT_BIN_PATH_FILE="$SDK_DIR/.swift-bin-path-$TARGET_TRIPLE-$CONFIGURATION"
+SWIFT_FINGERPRINT_FILE="$SDK_DIR/.swift-fingerprint-$TARGET_TRIPLE-$SWIFT_CONFIGURATION$SWIFT_VARIANT"
+SWIFT_BIN_PATH_FILE="$SDK_DIR/.swift-bin-path-$TARGET_TRIPLE-$SWIFT_CONFIGURATION$SWIFT_VARIANT"
 DESTINATION="$TARGET_DIR/native-macos/$CONFIGURATION"
 mkdir -p "$DESTINATION"
 METADATA_ACTIONS="$DESTINATION/Metadata.appintents/extract.actionsdata"
@@ -111,19 +145,46 @@ if [[ "${DESKFUSE_FORCE_SWIFT:-0}" != 1 \
   && "$(cat "$SWIFT_FINGERPRINT_FILE")" == "$SWIFT_FINGERPRINT" \
   && -f "$SWIFT_BIN_PATH_FILE" \
   && -x "$(cat "$SWIFT_BIN_PATH_FILE")/deskfuse-app" \
+  && -x "$(cat "$SWIFT_BIN_PATH_FILE")/deskfuse-ocr-helper" \
   && -s "$METADATA_ACTIONS" ]]; then
   SKIP_SWIFT=1
   SWIFT_OUTPUT="$(cat "$SWIFT_BIN_PATH_FILE")"
-  echo "Swift cache hit ($CONFIGURATION $TARGET_TRIPLE)"
+  echo "Swift cache hit ($SWIFT_CONFIGURATION $TARGET_TRIPLE)"
 fi
+# XCBuild cannot see the static archive content behind the Package.swift
+# unsafeFlags link argument. Drop the linked product whenever the fingerprint
+# changes so a Rust-only change can never ship an old static library.
+if [[ "$SKIP_SWIFT" -eq 0 && -f "$SWIFT_BIN_PATH_FILE" ]]; then
+  OLD_SWIFT_OUTPUT="$(cat "$SWIFT_BIN_PATH_FILE")"
+  rm -f "$OLD_SWIFT_OUTPUT/deskfuse-app"
+  rm -rf "$OLD_SWIFT_OUTPUT/deskfuse-app.dSYM"
+fi
+swift_build_app() {
+  DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}"
+}
 if [[ "$SKIP_SWIFT" -eq 0 ]]; then
-DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}"
-SWIFT_OUTPUT="$(DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --show-bin-path)"
+  if ! deskfuse_run_logged "swift-$SWIFT_CONFIGURATION" swift_build_app; then
+    rm -f "$SWIFT_FINGERPRINT_FILE" "$SWIFT_BIN_PATH_FILE"
+    if deskfuse_failure_is_cache_suspect "${DESKFUSE_LAST_LOG:-/dev/null}" swift; then
+      echo "swift cache: build database looks corrupt; cleaning the scratch tree and retrying" >&2
+      deskfuse_remove_path "$SWIFT_BUILD_DIR" "$ROOT_DIR/apps/deskfuse-macos"
+      if ! deskfuse_run_logged "swift-$SWIFT_CONFIGURATION-retry" swift_build_app; then
+        exit 1
+      fi
+    else
+      echo "swift build failed; cache left intact (log: ${DESKFUSE_LAST_LOG:-unknown})" >&2
+      exit 1
+    fi
+  fi
+  SWIFT_OUTPUT="$(DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --show-bin-path)"
 fi
 cp "$SWIFT_OUTPUT/deskfuse-app" "$DESTINATION/deskfuse-app"
-DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --product deskfuse-ocr-helper
-OCR_HELPER_OUTPUT="$(DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --product deskfuse-ocr-helper --show-bin-path)"
-cp "$OCR_HELPER_OUTPUT/deskfuse-ocr-helper" "$DESTINATION/deskfuse-ocr-helper"
+# The unqualified build above already produces every product, including the
+# OCR helper. Only pay for an explicit product build if it is genuinely absent.
+if [[ ! -x "$SWIFT_OUTPUT/deskfuse-ocr-helper" ]]; then
+  DESKFUSE_RUST_LIBRARY_DIR="$RUST_OUTPUT" swift build "${SWIFT_FLAGS[@]}" --product deskfuse-ocr-helper
+fi
+cp "$SWIFT_OUTPUT/deskfuse-ocr-helper" "$DESTINATION/deskfuse-ocr-helper"
 cp "$RUST_OUTPUT/deskfuse-input-service" "$DESTINATION/deskfuse-input-service"
 write_build_identity "$DESTINATION/build-id"
 LINKED_SDK="$(xcrun vtool -show-build "$DESTINATION/deskfuse-app" | awk '$1 == "sdk" { print $2; exit }')"
@@ -135,9 +196,9 @@ if [[ "$SKIP_SWIFT" -eq 0 ]]; then
 # .app bundle. Extract real metadata from the same compilation, without forcing
 # output or suppressing processor errors.
 PROCESSOR="$(xcrun --find appintentsmetadataprocessor)"
-CONFIGURATION_TITLE=Debug
-[[ "$CONFIGURATION" != release ]] || CONFIGURATION_TITLE=Release
-APP_OBJECTS="$ROOT_DIR/apps/deskfuse-macos/.build/out/Intermediates.noindex/DeskFuse.build/$CONFIGURATION_TITLE/deskfuse-app-p.build/Objects-normal/$APP_OBJECTS_ARCH"
+SWIFT_CONFIGURATION_TITLE=Debug
+[[ "$SWIFT_CONFIGURATION" != release ]] || SWIFT_CONFIGURATION_TITLE=Release
+APP_OBJECTS="$SWIFT_BUILD_DIR/out/Intermediates.noindex/DeskFuse.build/$SWIFT_CONFIGURATION_TITLE/deskfuse-app-p.build/Objects-normal/$APP_OBJECTS_ARCH"
 SOURCE_LIST="$APP_OBJECTS/deskfuse-app.SwiftFileList"
 OUTPUT_MAP="$APP_OBJECTS/deskfuse-app-OutputFileMap.json"
 CONST_LIST="$DESTINATION/app-intents-const-values.list"
@@ -156,7 +217,7 @@ rm -rf "$DESTINATION/Metadata.appintents"
 "$PROCESSOR" --output "$DESTINATION" \
   --toolchain-dir "$(dirname "$(dirname "$PROCESSOR")")" \
   --module-name DeskFuse --sdk-root "$SDK_PATH" \
-  --xcode-version "$(xcodebuild -version | awk '/Build version/ {print $3}')" \
+  --xcode-version "$XCODE_BUILD_VERSION" \
   --platform-family macOS --deployment-target "$MACOSX_DEPLOYMENT_TARGET" \
   --target-triple "$SWIFT_TRIPLE" \
   --source-file-list "$SOURCE_LIST" --swift-const-vals-list "$CONST_LIST" \

@@ -513,6 +513,27 @@ impl SQLiteStore {
         Ok(())
     }
 
+    /// Durable macOS mouse mappings, separate from clipboard and input topology.
+    pub fn mouse_settings_json(&self) -> Result<Option<String>> {
+        Ok(self
+            .lock_connection()?
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'mouse_settings_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Atomically replace the mouse settings document without modifying other preferences.
+    pub fn set_mouse_settings_json(&self, json: &str) -> Result<()> {
+        let _: serde_json::Value = serde_json::from_str(json)?;
+        self.lock_connection()?.execute(
+            "INSERT INTO settings (key,value) VALUES ('mouse_settings_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![json],
+        )?;
+        Ok(())
+    }
+
     /// Catalog is an atomic document: revisions, tombstones, conflicts and local bindings
     /// are committed together, without replacing any other settings.
     pub fn workflow_catalog_json(&self) -> Result<Option<String>> {

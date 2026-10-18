@@ -405,10 +405,12 @@ impl Capabilities {
     pub const REMOTE_APPLICATION_RDP: Self = Self(1 << 13);
 
     /// On-demand microphone audio on its own authenticated QUIC stream.
-    pub const MICROPHONE: Self = Self(1 << 17);
+    pub const MICROPHONE: Self = Self(1 << 19);
 
     /// Hold-to-talk shortcut control independent of audio readers.
     pub const MICROPHONE_SHORTCUT: Self = Self(1 << 18);
+    /// macOS mouse-button mapping synchronization (v1).
+    pub const MAC_MOUSE_SETTINGS: Self = Self(1 << 17);
 
     /// No capabilities.
     pub const NONE: Self = Self(0);

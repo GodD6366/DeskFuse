@@ -10,9 +10,11 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             MainSidebar(store: store)
+                .padding(.top, 28) // Keep navigation below the native window buttons.
                 .frame(width: 212)
             workspace
         }
+        .ignoresSafeArea(.container, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .tint(DeskFuseBrand.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -55,11 +57,11 @@ struct RootView: View {
                 historySearchRequest: historySearchRequest,
                 deviceSearchRequest: deviceSearchRequest,
                 localDeviceRequest: store.deviceSelectionRequest
-            ))),
+            ).ignoresSafeArea(.container, edges: .top))),
             .init(id: "settings", content: AnyView(SettingsView(
                 store: store, presentation: SettingsPresentation(store.snapshot),
                 destination: store.settingsDestination
-            ).equatable()))
+            ).equatable().ignoresSafeArea(.container, edges: .top)))
         ])
         .overlay(alignment: .bottomLeading) {
             if store.selectedPage == .settings {

@@ -3,8 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 import DeskFuseEngine
 
-struct ClipboardPreviewPane: View {
-    @Bindable var store: AppStore
+struct ClipboardPreviewPane: View, Equatable {
+    let store: AppStore
     let item: HistoryItem
     let title: String?
     var appID: String? = nil
@@ -19,6 +19,16 @@ struct ClipboardPreviewPane: View {
     @State private var exportingImage = false
     @State private var savedImageURL: URL?
 
+    // Engine snapshots recreate the parent's copy closure even when this record
+    // is unchanged. Keep selectable text out of those unrelated hosting updates.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.item == rhs.item
+            && lhs.title == rhs.title && lhs.appID == rhs.appID
+            && lhs.content == rhs.content && lhs.media == rhs.media
+            && lhs.image === rhs.image && lhs.ocrText == rhs.ocrText
+            && lhs.copying == rhs.copying && lhs.copied == rhs.copied
+    }
+
     var body: some View {
         paneContent
             .id(item.id)
@@ -28,35 +38,38 @@ struct ClipboardPreviewPane: View {
 
     private var paneContent: some View {
         GeometryReader { geometry in
-        ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            Group {
-                if let image {
-                    imagePreview(image)
-                        .frame(height: max(240, min(440, geometry.size.height * 0.55)))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    Group {
+                        if let image {
+                            imagePreview(image)
+                                .frame(height: max(240, min(440, geometry.size.height * 0.55)))
+                        }
+                        else { previewCanvas }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if let ocrText, !ocrText.isEmpty { ocrSection(ocrText) }
+                    WorkflowRunStatusView(compact: true)
+                    Divider()
+                    metadataCard
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let stagingHint {
+                            Text(stagingHint)
+                                .font(.caption).workspaceSecondaryText()
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        NativeGlassGroup {
+                            actions.frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                    }
                 }
-                else { previewCanvas }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(PreviewScrollIndicatorPolicy())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let ocrText, !ocrText.isEmpty { ocrSection(ocrText) }
-            WorkflowRunStatusView(compact: true)
-            Divider()
-            metadataCard
-            VStack(alignment: .leading, spacing: 12) {
-                if let stagingHint {
-                    Text(stagingHint)
-                        .font(.caption).workspaceSecondaryText()
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                NativeGlassGroup {
-                    actions.frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+            // macOS can override .hidden when a mouse is connected.
+            .scrollIndicators(.never)
         }
     }
 
@@ -438,4 +451,31 @@ struct ClipboardPreviewPane: View {
         }
         NSWorkspace.shared.activateFileViewerSelecting(content.filePaths.map { URL(fileURLWithPath: $0) })
     }
+}
+
+/// Scope the native policy to the preview's outer scroll view. The process-wide
+/// overlay policy must not recreate indicators removed by SwiftUI here.
+private struct PreviewScrollIndicatorPolicy: NSViewRepresentable {
+    final class Marker: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyPolicy()
+        }
+
+        override func layout() {
+            super.layout()
+            applyPolicy()
+        }
+
+        func applyPolicy() {
+            if let scroll = enclosingScrollView {
+                TransientScrollbars.shared.hideIndicators(in: scroll)
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> Marker { Marker() }
+    func updateNSView(_ view: Marker, context: Context) { view.applyPolicy() }
 }

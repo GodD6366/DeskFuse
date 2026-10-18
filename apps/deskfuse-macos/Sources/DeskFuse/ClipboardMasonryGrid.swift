@@ -300,13 +300,13 @@ struct ClipboardHistoryCard: View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
                 .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .controlBackgroundColor))
+                .overlay(alignment: .bottomTrailing) { sourceAppWatermark }
 
             VStack(spacing: 0) {
                 if hasTitle {
                     ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    sourceAppBadge
                     cardContent(kind)
                     footer
                 }
@@ -373,25 +373,21 @@ struct ClipboardHistoryCard: View {
         .onDisappear { thumbnail = nil; loading = false }
     }
 
-    @ViewBuilder private var sourceAppBadge: some View {
-        if let appID, !appID.isEmpty {
-            HStack(spacing: 6) {
-                if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
-                    Image(nsImage: icon).resizable().scaledToFit().frame(width: 18, height: 18)
-                } else {
-                    Image(systemName: "app").frame(width: 18, height: 18)
-                }
-                Text(ClipboardAppInfoCache.shared.name(for: appID) ?? appID)
-                    .font(.caption).lineLimit(1).workspaceSecondaryText()
-            }
-            .help("来源应用：\(ClipboardAppInfoCache.shared.name(for: appID) ?? appID)")
-            .padding(.bottom, 2)
+    @ViewBuilder private var sourceAppWatermark: some View {
+        if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
+            Image(nsImage: icon).resizable().scaledToFit()
+                .frame(width: 96, height: 96)
+                .rotationEffect(.degrees(-45))
+                .offset(x: 24, y: 24)
+                .opacity(DeskFuseBrand.watermarkOpacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 
     /// 悬停时右上角浮现的快捷操作。容器不施加任何 hit-test 修改：SwiftUI
     /// 布局容器只在其内容（按钮）处接收点击，padding 与间距留白自动穿透到
-    /// 卡片的点击选中与拖拽框选。hoveringActions 保证指针移到 glass 按钮上
+    /// 卡片的点击选中与拖拽框选。hoveringActions 保证指针移到按钮上
     /// 时浮层不闪失；浮层位于右键菜单 overlay 之上，按钮是全卡最顶层的命中目标。
     @ViewBuilder private var hoverActions: some View {
         if hovering || hoveringActions {
@@ -534,13 +530,13 @@ struct ClipboardHistoryCard: View {
     }()
 }
 
-/// 悬停浮层的圆钮：macOS 26 用 glass，旧版本与减弱透明度时用实色底。
+/// Opaque circular buttons keep card text from bleeding through.
 private struct ClipboardCardActionButton: View {
     let systemImage: String
     let help: String
     let action: () -> Void
     @State private var copied = false
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
@@ -552,7 +548,8 @@ private struct ClipboardCardActionButton: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(copied ? DeskFuseBrand.accent : (enabled ? Color.primary : Color.secondary))
-        .modifier(NativeGlassBackdrop(cornerRadius: 12))
+        .background(QuietWorkspacePalette.surface(colorScheme), in: Circle())
+        .overlay { Circle().strokeBorder(QuietWorkspacePalette.line(colorScheme), lineWidth: 0.5) }
         .help(help)
         .accessibilityLabel(help)
     }

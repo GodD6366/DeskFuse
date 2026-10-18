@@ -508,6 +508,72 @@ fn collect_interfaces(all: bool) -> Result<Vec<LanInterface>, String> {
     } else {
         thunderbolt_bridges()?
     };
+    let mut result = ipv4_entries(all, &thunderbolt_bridges)?
+        .into_iter()
+        .map(|entry| {
+            let address = entry.address.to_string();
+            LanInterface {
+                label: format!("{} · {address}", entry.name),
+                name: entry.name,
+                address,
+            }
+        })
+        .collect::<Vec<_>>();
+    // Preserve the existing automatic selection order; newly supported bridges
+    // remain explicitly selectable without displacing the default LAN address.
+    result.sort_by(|a, b| {
+        (thunderbolt_bridges.contains(&a.name), &a.name, &a.address).cmp(&(
+            thunderbolt_bridges.contains(&b.name),
+            &b.name,
+            &b.address,
+        ))
+    });
+    result.dedup_by(|a, b| a.name == b.name && a.address == b.address);
+    Ok(result)
+}
+
+/// 物理局域网接口（筛选规则同 [`interfaces`]）上的 IPv4 地址及前缀长度。
+/// 运行时在 mDNS 组播被 AP 过滤时据此推导单播探测网段；每次调用都实时读取，
+/// 切换 Wi-Fi 或插拔网线后无需重启。
+pub fn lan_ipv4_networks() -> Result<Vec<(Ipv4Addr, u8)>, String> {
+    let bridges = thunderbolt_bridges()?;
+    Ok(ipv4_entries(false, &bridges)?
+        .into_iter()
+        .map(|entry| (entry.address, entry.prefix))
+        .collect())
+}
+
+/// 已启用接口上的一个 IPv4 地址。
+struct Ipv4Entry {
+    name: String,
+    address: Ipv4Addr,
+    prefix: u8,
+}
+
+/// 掩码前缀长度。Darwin 的 netmask sockaddr 可能截掉末尾的零字节（`sa_len`
+/// 小于 `sockaddr_in`），所以只读取 `sa_len` 范围内的字节，缺失部分按 0 计。
+fn netmask_prefix(mask: *const Sockaddr) -> u8 {
+    if mask.is_null() {
+        return 0;
+    }
+    // SAFETY: 非空 netmask 属于存活的 getifaddrs 节点，`sa_len` 字节均有效。
+    let len = usize::from(unsafe { (*mask).len }).min(std::mem::size_of::<SockaddrIn>());
+    // SAFETY: 同上，只读取前 `len` 个字节。
+    let bytes = unsafe { std::slice::from_raw_parts(mask.cast::<u8>(), len) };
+    let mut octets = [0_u8; 4];
+    for (index, octet) in octets.iter_mut().enumerate() {
+        // sockaddr_in 布局：len、family、port(2)，地址从第 4 字节开始。
+        if let Some(byte) = bytes.get(4 + index) {
+            *octet = *byte;
+        }
+    }
+    u8::try_from(u32::from_be_bytes(octets).leading_ones()).unwrap_or(0)
+}
+
+fn ipv4_entries(
+    all: bool,
+    thunderbolt_bridges: &BTreeSet<String>,
+) -> Result<Vec<Ipv4Entry>, String> {
     let mut raw = ptr::null_mut();
     // SAFETY: valid writable out pointer; Darwin allocates the linked list.
     if unsafe { getifaddrs(&mut raw) } != 0 {
@@ -555,24 +621,12 @@ fn collect_interfaces(all: bool) -> Result<Vec<LanInterface>, String> {
         {
             continue;
         }
-        let name = name.into_owned();
-        let address = address.to_string();
-        result.push(LanInterface {
-            label: format!("{name} · {address}"),
-            name,
+        result.push(Ipv4Entry {
+            name: name.into_owned(),
             address,
+            prefix: netmask_prefix(item.netmask),
         });
     }
-    // Preserve the existing automatic selection order; newly supported bridges
-    // remain explicitly selectable without displacing the default LAN address.
-    result.sort_by(|a, b| {
-        (thunderbolt_bridges.contains(&a.name), &a.name, &a.address).cmp(&(
-            thunderbolt_bridges.contains(&b.name),
-            &b.name,
-            &b.address,
-        ))
-    });
-    result.dedup_by(|a, b| a.name == b.name && a.address == b.address);
     Ok(result)
 }
 
@@ -744,4 +798,31 @@ unsafe extern "C" {
     static kCGImageSourceCreateThumbnailFromImageAlways: CFStringRef;
     static kCGImageSourceCreateThumbnailWithTransform: CFStringRef;
     static kCGImageSourceThumbnailMaxPixelSize: CFStringRef;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造与 Darwin sockaddr 布局一致的缓冲区；`len` 模拟被截断的掩码。
+    fn mask(len: u8, octets: [u8; 4]) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[0] = len;
+        bytes[1] = 2;
+        bytes[4..8].copy_from_slice(&octets);
+        bytes
+    }
+
+    #[test]
+    fn netmask_prefix_reads_full_and_trimmed_masks() {
+        let full = mask(16, [255, 255, 252, 0]);
+        assert_eq!(netmask_prefix(full.as_ptr().cast()), 22);
+        // 截断到 7 字节：末尾的 0 被省略，仍应得到 /22。
+        let trimmed = mask(7, [255, 255, 252, 0]);
+        assert_eq!(netmask_prefix(trimmed.as_ptr().cast()), 22);
+        // 截断到 5 字节时第二段之后都按 0 处理。
+        let short = mask(5, [255, 255, 255, 0]);
+        assert_eq!(netmask_prefix(short.as_ptr().cast()), 8);
+        assert_eq!(netmask_prefix(ptr::null()), 0);
+    }
 }

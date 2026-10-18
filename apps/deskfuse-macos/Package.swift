@@ -41,6 +41,7 @@ let applicationLinkerSettings: [LinkerSetting] = [
     .linkedFramework("AudioToolbox"),
     .linkedFramework("CoreAudio"),
     .linkedFramework("AppKit"),
+    .linkedFramework("IOKit"),
     .linkedFramework("OSAKit"),
     .linkedFramework("CoreGraphics"),
     .linkedFramework("CoreFoundation"),

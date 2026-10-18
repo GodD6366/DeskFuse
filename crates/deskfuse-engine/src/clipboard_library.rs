@@ -31,6 +31,48 @@ type Result<T> = std::result::Result<T, String>;
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
+
+/// blob 文件路径：<blob_dir>/<hash[0..2]>/<hash>.bin
+fn blob_file_path(blob_dir: &std::path::Path, hash: &str) -> std::path::PathBuf {
+    blob_dir.join(&hash[..2]).join(format!("{hash}.bin"))
+}
+
+/// 读 blob：先查文件系统（新数据），再 fallback 到 SQLite（存量数据）。
+/// bytes = x''（空blob）表示内容在文件系统，length(bytes)>0 判断跳过已迁移行。
+fn load_blob_db(
+    db: &Connection,
+    blob_dir: &std::path::Path,
+    hash: &str,
+) -> Result<Option<Vec<u8>>> {
+    // 先查文件系统（新写入 + 已迁移）
+    let path = blob_file_path(blob_dir, hash);
+    if let Ok(bytes) = std::fs::read(&path) {
+        return Ok(Some(bytes));
+    }
+    // fallback 到 SQLite 存量（未迁移的大blob）
+    let bytes: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT bytes FROM cl_blobs WHERE hash=?1 AND length(bytes)>0",
+            [hash],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(err)?;
+    Ok(bytes)
+}
+fn install_query_progress_handler(
+    db: &Connection,
+    canceled: Arc<std::sync::atomic::AtomicBool>,
+    deadline: Option<std::time::Instant>,
+) {
+    db.progress_handler(
+        1000,
+        Some(move || {
+            canceled.load(Ordering::Acquire)
+                || deadline.is_some_and(|limit| std::time::Instant::now() >= limit)
+        }),
+    );
+}
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -425,6 +467,9 @@ pub struct Library {
     generation: AtomicU64,
     counts_generation: AtomicU64,
     state_cache: Mutex<Option<(u64, String)>>,
+    /// blob 文件目录：<AppSupport>/DeskFuse/blobs/
+    /// 新写入只存文件，cl_blobs 保留空占位行（bytes=x''）。
+    blob_dir: std::path::PathBuf,
     // Drop the connection before removing its test database directory.
     #[cfg(test)]
     _test_directory: tempfile::TempDir,
@@ -576,6 +621,15 @@ END;").map_err(err)?;
                 Ok(Mutex::new(reader))
             })
             .collect::<Result<Vec<_>>>()?;
+        // blob 文件目录与数据库同级：<AppSupport>/DeskFuse/blobs/
+        #[cfg(not(test))]
+        let blob_dir = database_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("blobs");
+        #[cfg(test)]
+        let blob_dir = test_directory.path().join("blobs");
+        std::fs::create_dir_all(&blob_dir).map_err(err)?;
         let this = Self {
             #[cfg(test)]
             _test_directory: test_directory,
@@ -591,6 +645,7 @@ END;").map_err(err)?;
             generation: AtomicU64::new(1),
             counts_generation: AtomicU64::new(1),
             state_cache: Mutex::new(None),
+            blob_dir,
         };
         this.import_legacy()?;
         this.migrate_image_digests()?;
@@ -615,13 +670,21 @@ END;").map_err(err)?;
         let ids = tx.prepare("SELECT id FROM cl_items WHERE ordinary=1 AND payload IS NOT NULL AND json_extract(summary,'$.kind')='image'")
             .map_err(err)?.query_map([], |r| r.get::<_, u64>(0)).map_err(err)?
             .collect::<std::result::Result<Vec<_>, _>>().map_err(err)?;
-        // Stream payloads one at a time; never load the image history into RAM.
+        // 一次只处理一行，避免把所有图片载入内存。
         for id in ids {
-            let bytes: Vec<u8> = tx
-                .query_row("SELECT COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE id=?1", [id], |r| {
-                    r.get(0)
-                })
+            let (payload, blob_hash): (Option<Vec<u8>>, String) = tx
+                .query_row(
+                    "SELECT payload,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .map_err(err)?;
+            let bytes_opt = if let Some(b) = payload {
+                Some(b)
+            } else {
+                load_blob_db(&tx, &self.blob_dir, &blob_hash)?
+            };
+            let Some(bytes) = bytes_opt else { continue };
             if let Ok(snapshot) = decode(&bytes)
                 && let Some(digest) = crate::clipboard_image::snapshot_digest(&snapshot)
             {
@@ -665,16 +728,24 @@ END;").map_err(err)?;
                 .map_err(err)?;
             let mut out = Vec::new();
             for (id, global_id) in rows {
-                let bytes: Option<Vec<u8>> = tx
+                let (payload, blob_hash): (Option<Vec<u8>>, String) = tx
                     .query_row(
-                        "SELECT COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE id=?1",
+                        "SELECT payload,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1",
                         [id],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()
-                    .map_err(err)?;
+                    .map_err(err)?
+                    .unwrap_or_default();
                 // 没有本地载荷的远端索引行无法核对内容，保持原样。
-                let Some(bytes) = bytes else { continue };
+                let bytes_opt = if let Some(b) = payload {
+                    Some(b)
+                } else if !blob_hash.is_empty() {
+                    load_blob_db(&tx, &self.blob_dir, &blob_hash)?
+                } else {
+                    None
+                };
+                let Some(bytes) = bytes_opt else { continue };
                 let Ok(snapshot) = decode(&bytes) else {
                     continue;
                 };
@@ -1186,9 +1257,18 @@ END;").map_err(err)?;
             .next()
             .map(|text| crate::clipboard_echo::normalize_clipboard_text(&text).to_lowercase())
             .unwrap_or_default();
+        // 写文件系统，SQLite 只存空占位行
+        let blob_path = blob_file_path(&self.blob_dir, &blob_hash);
+        if !blob_path.exists() {
+            let dir = blob_path.parent().unwrap();
+            std::fs::create_dir_all(dir).map_err(err)?;
+            let tmp = blob_path.with_extension("tmp");
+            std::fs::write(&tmp, &bytes).map_err(err)?;
+            std::fs::rename(&tmp, &blob_path).map_err(err)?;
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
-            params![blob_hash, bytes],
+            "INSERT OR IGNORE INTO cl_blobs VALUES(?1, x'')",
+            [&blob_hash],
         )
         .map_err(err)?;
         tx.execute("UPDATE cl_items SET payload=NULL,summary=?2,search_text=?3,copied=?4,imported=?5,origin_device=?6,blob_hash=?7,digest=?9,remote=0 WHERE id=?8",params![Option::<Vec<u8>>::None,serde_json::to_string(&s).map_err(err)?,search,origin.copied_at_ms,now_ms(),origin.device_id,blob_hash,id,fingerprint]).map_err(err)?;
@@ -1268,16 +1348,25 @@ END;").map_err(err)?;
     pub fn snapshot(&self, id: u64) -> Result<PasteboardSnapshot> {
         let db = self.reader()?;
         let cutoff = now_ms().saturating_sub(settings_db(&db)?.retention_days as u64 * 86400000);
+        // payload: cl_items.payload（旧格式），blob_hash 指向 blob store（文件系统或SQLite存量）
         let row: Option<(Option<Vec<u8>>, Option<String>, String)> = db
             .query_row(
-                "SELECT COALESCE(payload,(SELECT bytes FROM cl_blobs WHERE hash=cl_items.blob_hash)),summary,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1 AND (ordinary=0 OR (COALESCE(copied,imported)>=?2 AND id>?3))",
+                "SELECT payload,summary,COALESCE(blob_hash,'') FROM cl_items WHERE id=?1 AND (ordinary=0 OR (COALESCE(copied,imported)>=?2 AND id>?3))",
                 params![id, cutoff, cleared_history_id(&db)?],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(err)?;
+        let (payload, summary, blob_hash) = row.ok_or("内容不存在")?;
+        // 优先 cl_items.payload（未迁移的旧数据），再查 blob store
+        let bytes = if let Some(b) = payload {
+            Some(b)
+        } else if !blob_hash.is_empty() {
+            load_blob_db(&db, &self.blob_dir, &blob_hash)?
+        } else {
+            None
+        };
         drop(db);
-        let (bytes, summary, blob_hash) = row.ok_or("内容不存在")?;
         if let Some(bytes) = bytes {
             // Decode outside the connection lock: a large native image must not
             // block metadata queries while bincode expands its representations.
@@ -1302,18 +1391,31 @@ END;").map_err(err)?;
     /// Return only a display-sized derivative across FFI, not the 1600px
     /// detail preview or the original restorable clipboard representations.
     pub fn thumbnail(&self, id: u64, max_pixel_size: u32) -> Result<Vec<u8>> {
+        let max_pixel_size = max_pixel_size.clamp(64, 480);
         let mut snapshot = self.snapshot(id)?;
         let device = self.device.lock().map_err(err)?.clone();
         if let Some(paths) = crate::library_files::local_paths_for_preview(&snapshot, &device)? {
             snapshot.file_urls = paths;
         }
-        Ok(crate::tokio_bridge::clipboard_preview_png_at_size(
-            &snapshot,
-            max_pixel_size.clamp(64, 480),
-            None,
+        // 文件型图片（复制的是 .jpg/.png 文件）的缩略图必须按文件路径解码。
+        // 这一层拿不到平台端口，`clipboard_preview_png_at_size` 的文件分支会
+        // 直接短路返回空，所以在这里用与预览面板相同的策略直接读文件；解码
+        // 失败（文件已被移动或删除）时回退为空缩略图，由界面显示占位。
+        #[cfg(target_os = "macos")]
+        if let [path] = snapshot.file_urls.as_slice()
+            && image_file_mime(path).is_some()
+        {
+            return Ok(deskfuse_platform_macos::lan_web::image_png(
+                std::path::Path::new(path),
+                max_pixel_size,
+            )
+            .unwrap_or_default());
+        }
+        Ok(
+            crate::tokio_bridge::clipboard_preview_png_at_size(&snapshot, max_pixel_size, None)
+                .map(|bytes| Arc::try_unwrap(bytes).unwrap_or_else(|bytes| (*bytes).clone()))
+                .unwrap_or_default(),
         )
-        .map(|bytes| Arc::try_unwrap(bytes).unwrap_or_else(|bytes| (*bytes).clone()))
-        .unwrap_or_default())
     }
 
     pub fn content(&self, id: u64) -> Result<ClipboardHistoryItem> {
@@ -1447,6 +1549,9 @@ END;").map_err(err)?;
         if requests.len() != lists.len() + 1 {
             return Err("列表已变化，请刷新".into());
         }
+        // 计数只是界面装饰：任何一项算不出来（被更早的请求取消、超出预算）
+        // 都只丢这一项，让客户端沿用上一次的数值，而不是让整批计数失败并
+        // 把「超时」当成用户可见的错误报出来。
         let mut counts = std::collections::BTreeMap::new();
         for request in requests {
             let key = request["list_id"].as_str().unwrap_or("all").to_string();
@@ -1455,8 +1560,12 @@ END;").map_err(err)?;
             filter["source"] = Value::Null;
             filter["kind"] = json!("all");
             filter["count_only"] = json!(true);
-            let result: Value =
-                serde_json::from_str(&self.query_items_db(db, filter)?).map_err(err)?;
+            let Some(raw) = self.query_items_db(db, filter).ok() else {
+                continue;
+            };
+            let Ok(result) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
             counts.insert(key, result["total"].clone());
         }
         serde_json::to_string(&counts).map_err(err)
@@ -1515,8 +1624,11 @@ END;").map_err(err)?;
                 return Err(error);
             }
         };
-        let progress_cancel = cancel.clone();
-        db.progress_handler(1000, Some(move || progress_cancel.load(Ordering::Acquire)));
+        // Totals are optional UI decoration, never an unbounded background scan.
+        // Keep paging separate: only count-only requests get the elapsed-work budget.
+        let count_only = q["op"] == "counts" || q["count_only"].as_bool().unwrap_or(false);
+        let deadline = count_only.then(|| started + std::time::Duration::from_millis(750));
+        install_query_progress_handler(&db, cancel.clone(), deadline);
         let result = if cancel.load(Ordering::Acquire) {
             Err("查询已取消".into())
         } else if q["op"] == "counts" {
@@ -1538,7 +1650,20 @@ END;").map_err(err)?;
         } else {
             result
         };
-        self.record_duration("query", id, started, result.is_ok());
+        let result = if result.is_err()
+            && deadline.is_some_and(|limit| std::time::Instant::now() >= limit)
+            && !canceled
+        {
+            Err("统计查询超时，已停止后台统计".into())
+        } else {
+            result
+        };
+        self.record_duration(
+            if count_only { "query_count" } else { "query" },
+            id,
+            started,
+            result.is_ok(),
+        );
         result
     }
     fn record_duration(
@@ -2113,13 +2238,19 @@ END;").map_err(err)?;
                 if ordinary {
                     // 与 ingest 相同的 blob 化形态：payload 置空，内容经 blob_hash 引用。
                     let digest = content_digest(&edited)?;
+                    // 写文件系统，SQLite 只存空占位行
+                    let blob_path = blob_file_path(&self.blob_dir, &hash);
+                    if !blob_path.exists() {
+                        let dir = blob_path.parent().unwrap();
+                        std::fs::create_dir_all(dir).map_err(err)?;
+                        let tmp = blob_path.with_extension("tmp");
+                        std::fs::write(&tmp, &bytes).map_err(err)?;
+                        std::fs::rename(&tmp, &blob_path).map_err(err)?;
+                    }
                     let mut db = self.writer()?;
                     let tx = db.transaction().map_err(err)?;
-                    tx.execute(
-                        "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
-                        params![hash, bytes],
-                    )
-                    .map_err(err)?;
+                    tx.execute("INSERT OR IGNORE INTO cl_blobs VALUES(?1, x'')", [&hash])
+                        .map_err(err)?;
                     tx.execute(
                         "UPDATE cl_items SET digest=?1,summary=?2,payload=NULL,search_text=?3,blob_hash=?4 WHERE id=?5",
                         params![digest, serde_json::to_string(&s).map_err(err)?, search, hash, id],
@@ -2558,7 +2689,7 @@ END;").map_err(err)?;
                 tx.execute("INSERT INTO cl_clocks VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(&clock).map_err(err)?]).map_err(err)?;
                 tx.execute("INSERT INTO cl_records VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,author=excluded.author,deleted=excluded.deleted,value=excluded.value",params![key,revision,author,deleted,serde_json::to_string(value).map_err(err)?]).map_err(err)?;
                 if key.starts_with("item:") && !deleted {
-                    materialize(&tx, value)?;
+                    materialize(&tx, &self.blob_dir, value)?;
                 }
                 if key.starts_with("index:") && !deleted && sync_index {
                     let before = tx.total_changes();
@@ -2568,7 +2699,7 @@ END;").map_err(err)?;
             }
         }
         if !reconcile_items.is_empty() {
-            reconcile_archives(&tx, &reconcile_items)?;
+            reconcile_archives(&tx, &self.blob_dir, &reconcile_items)?;
         }
         for base in bases {
             changed |= tx
@@ -2588,12 +2719,8 @@ END;").map_err(err)?;
     }
     pub fn read_blob(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let db = self.reader()?;
-        let archived: Option<Vec<u8>> = db
-            .query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(err)?;
+        // 先查文件系统和 SQLite 存量（涵盖新写入和迁移前的大blob）
+        let archived = load_blob_db(&db, &self.blob_dir, id)?;
         if archived.is_some() {
             return Ok(archived);
         }
@@ -2613,20 +2740,37 @@ END;").map_err(err)?;
             return Err("归档内容校验失败".into());
         }
         let text = decode(bytes)?.text.unwrap_or_default().to_lowercase();
+        // 先写文件系统，再插 SQLite 空占位行
+        let path = blob_file_path(&self.blob_dir, id);
+        if !path.exists() {
+            let dir = path.parent().unwrap();
+            std::fs::create_dir_all(dir).map_err(err)?;
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, bytes).map_err(err)?;
+            std::fs::rename(&tmp, &path).map_err(err)?;
+        }
         let db = self.writer()?;
-        db.execute(
-            "INSERT OR IGNORE INTO cl_blobs VALUES(?1,?2)",
-            params![id, bytes],
-        )
-        .map_err(err)?;
+        // 空占位行触发 cl_blob_birth_ai trigger
+        db.execute("INSERT OR IGNORE INTO cl_blobs VALUES(?1, x'')", [id])
+            .map_err(err)?;
         db.execute(
             "UPDATE cl_items SET payload=NULL,search_text=?2 WHERE blob_hash=?1 AND (payload IS NOT NULL OR search_text IS NOT ?2)",
-            params![id,text],
+            params![id, text],
         )
         .map_err(err)?;
         drop(db);
         self.changed();
         Ok(())
+    }
+
+    /// 删除 blob 文件（忽略不存在错误），并尝试删除空父目录。
+    pub(super) fn delete_blob_file(&self, hash: &str) {
+        let path = blob_file_path(&self.blob_dir, hash);
+        let _ = std::fs::remove_file(&path);
+        // 尝试删除空的两级目录（失败时静默忽略）
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 
     /// Queue a content hash for on-demand fetch from a paired device. Ordinary
@@ -2827,7 +2971,7 @@ fn lists_db(db: &Connection) -> Result<Vec<List>> {
     lists.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
     Ok(lists)
 }
-fn materialize(db: &Connection, v: &Value) -> Result<()> {
+fn materialize(db: &Connection, blob_dir: &std::path::Path, v: &Value) -> Result<()> {
     let gid = v["id"].as_str().ok_or("归档ID无效")?;
     let hash = v["blob_hash"].as_str().ok_or("归档摘要无效")?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -2836,14 +2980,21 @@ fn materialize(db: &Connection, v: &Value) -> Result<()> {
     let mut s: Summary = serde_json::from_value(v["summary"].clone()).map_err(err)?;
     let existing: Option<(u64, Option<String>, bool)> = db
         .query_row(
-            "SELECT id,blob_hash,(payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=cl_items.blob_hash)) FROM cl_items WHERE global_id=?1",
+            "SELECT id,blob_hash,(payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=cl_items.blob_hash AND length(bytes)>0)) FROM cl_items WHERE global_id=?1",
             [gid],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(err)?;
-    if let Some((id, Some(existing_hash), true)) = existing
+    // 同时检查文件系统，EXISTS 只能检查SQLite存量
+    let payload_available = existing.as_ref().map_or(false, |(_, h, sql_has)| {
+        *sql_has
+            || h.as_deref()
+                .is_some_and(|h| blob_file_path(blob_dir, h).exists())
+    });
+    if let Some((id, Some(existing_hash), _)) = existing
         && existing_hash == hash
+        && payload_available
     {
         s.id = id;
         db.execute(
@@ -2864,13 +3015,7 @@ fn materialize(db: &Connection, v: &Value) -> Result<()> {
     let text = if let Some(text) = existing_text {
         text
     } else {
-        let bytes: Option<Vec<u8>> = db
-            .query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [hash], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(err)?;
-        bytes
+        load_blob_db(db, blob_dir, hash)?
             .as_deref()
             .map(decode)
             .transpose()?
@@ -3310,7 +3455,11 @@ fn summary(id: u64, s: &PasteboardSnapshot, o: &Origin) -> Summary {
 
 // Rebuild active member projections after out-of-order delivery; reclaim only archives
 // with observed membership operations, never items waiting for their first membership.
-fn reconcile_archives(db: &Connection, seen: &HashSet<String>) -> Result<()> {
+fn reconcile_archives(
+    db: &Connection,
+    blob_dir: &std::path::Path,
+    seen: &HashSet<String>,
+) -> Result<()> {
     for id in seen {
         let deleted: bool = db
             .query_row(
@@ -3330,7 +3479,7 @@ fn reconcile_archives(db: &Connection, seen: &HashSet<String>) -> Result<()> {
                 .optional()
                 .map_err(err)?;
             if let Some(raw) = raw {
-                materialize(db, &serde_json::from_str(&raw).map_err(err)?)?;
+                materialize(db, blob_dir, &serde_json::from_str(&raw).map_err(err)?)?;
             }
         } else {
             db.execute(

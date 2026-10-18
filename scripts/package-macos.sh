@@ -18,14 +18,23 @@ for command_name in cargo swift codesign hdiutil lipo security python3 ditto sha
   fi
 done
 
+source "$ROOT_DIR/scripts/build-cache.sh"
+export DESKFUSE_LOG_DIR="$ROOT_DIR/dist/.build-logs"
+mkdir -p "$DESKFUSE_LOG_DIR"
+export DESKFUSE_TARGET_DIR="$(deskfuse_cache_target_dir)"
+
 # Public packages never read the LAN signing key or seed the running updater.
 # --homebrew uses prepared metadata; --release allocates once for manual packages.
 PACKAGE_MODE=lan
 AUTO_INSTALL=0
 RELEASE_PAIR=0
+FAST_MODE=0
+WITH_DMG=0
+REBUILD_RUST=0
+REBUILD_SWIFT=0
 EXPLICIT_LAN=0
 EXPLICIT_HOMEBREW=0
-usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] (single target: DESKFUSE_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
+usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] [--fast [--with-dmg]] [--rebuild-rust] [--rebuild-swift] (single target: DESKFUSE_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --lan) EXPLICIT_LAN=1 ;;
@@ -33,6 +42,10 @@ while [[ "$#" -gt 0 ]]; do
     --manual) PACKAGE_MODE=manual ;;
     --release) RELEASE_PAIR=1 ;;
     --auto) AUTO_INSTALL=1 ;;
+    --fast) FAST_MODE=1 ;;
+    --with-dmg) WITH_DMG=1 ;;
+    --rebuild-rust) REBUILD_RUST=1 ;;
+    --rebuild-swift) REBUILD_SWIFT=1 ;;
     *) usage ;;
   esac
   shift
@@ -50,6 +63,36 @@ if [[ "$AUTO_INSTALL" == 1 && "$PACKAGE_MODE" != lan ]]; then
   echo "error: --auto is only valid with the local LAN package mode" >&2
   exit 2
 fi
+# --fast is a local-iteration mode only: incremental Swift, no DMG by default.
+# It must never produce or publish a distribution artifact.
+if [[ "$FAST_MODE" == 1 ]]; then
+  if [[ "$PACKAGE_MODE" != lan ]]; then
+    echo "error: --fast is only valid with the local LAN package mode" >&2
+    exit 2
+  fi
+  if [[ "${CI:-false}" == "true" ]]; then
+    echo "error: --fast is not allowed in CI" >&2
+    exit 2
+  fi
+  if [[ "${DESKFUSE_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
+    echo "error: --fast skips notarization; drop --fast and run the full mode for DESKFUSE_REQUIRE_NOTARIZE=1" >&2
+    exit 2
+  fi
+  export DESKFUSE_FAST_SWIFT=1
+  export DESKFUSE_DMG_FINDER_LAYOUT="${DESKFUSE_DMG_FINDER_LAYOUT:-0}"
+  SKIP_DMG=1
+  [[ "$WITH_DMG" == 0 ]] || SKIP_DMG=0
+  SKIP_NOTARIZE=1
+else
+  SKIP_DMG=0
+  SKIP_NOTARIZE=0
+fi
+if [[ "$WITH_DMG" == 1 && "$FAST_MODE" == 0 ]]; then
+  echo "error: --with-dmg is only meaningful with --fast; the full mode already builds a DMG" >&2
+  exit 2
+fi
+if [[ "$REBUILD_RUST" == 1 ]]; then export DESKFUSE_FORCE_RUST=1; fi
+if [[ "$REBUILD_SWIFT" == 1 ]]; then export DESKFUSE_FORCE_SWIFT=1; fi
 
 MACOS_ARCH="${DESKFUSE_MACOS_ARCH:-arm64}"
 case "$MACOS_ARCH" in
@@ -127,6 +170,17 @@ if [[ "${DESKFUSE_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
   fi
 fi
 
+# Fail before the multi-minute compile when the local flow cannot finish.
+RELEASE_KEY="${DESKFUSE_RELEASE_KEY:-$HOME/Library/Application Support/DeskFuse-release/signing-key.hex}"
+if [[ "$PACKAGE_MODE" == lan && ! -f "$RELEASE_KEY" ]]; then
+  echo "error: LAN release signing key unavailable: $RELEASE_KEY" >&2
+  exit 1
+fi
+if [[ "$AUTO_INSTALL" == 1 && ! -w /Applications ]]; then
+  echo "error: --auto requires a writable /Applications" >&2
+  exit 1
+fi
+
 if [[ "$RELEASE_PAIR" == 1 ]]; then
   # Separate output directories prevent the per-target checksum/signing files
   # from replacing one another. Build sequentially: native build paths are shared.
@@ -191,13 +245,50 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 RW_DMG="$STAGING_DIR/DeskFuse-rw.dmg"
 MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/deskfuse-dmg-layout.XXXXXX")"
 ATTACHED=0
+INSTALLED_EARLY=0
+DESKFUSE_RETRY_HINT=""
 detach_dmg() {
   if [[ "$ATTACHED" -eq 1 ]]; then
     hdiutil detach "$MOUNT_POINT" -quiet || true
   fi
   rmdir "$MOUNT_POINT" 2>/dev/null || true
 }
-trap 'detach_dmg; rm -rf "$STAGING_DIR"' EXIT
+install_auto_app() {
+  source "$ROOT_DIR/scripts/macos-app-lifecycle.sh"
+  echo "auto install: stopping running DeskFuse processes"
+  deskfuse_stop_for_install "$BINARY_NAME"
+  INSTALL_PATH="/Applications/DeskFuse.app"
+  rm -rf "$INSTALL_PATH"
+  ditto "$APP_BUNDLE" "$INSTALL_PATH"
+  codesign --verify --deep --strict "$INSTALL_PATH"
+  echo "auto install: $INSTALL_PATH"
+  deskfuse_open_installed_app "$INSTALL_PATH"
+  INSTALLED_EARLY=1
+}
+on_exit() {
+  local status=$?
+  trap - EXIT
+  detach_dmg
+  if [[ "${DESKFUSE_KEEP_STAGING:-0}" == "1" ]]; then
+    echo "staging kept: $STAGING_DIR" >&2
+  else
+    rm -rf "$STAGING_DIR"
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    printf '\nerror: packaging failed in stage %s after %ss (exit %s)\n' \
+      "${DESKFUSE_STAGE_NAME:-unknown}" \
+      "$(( $(date +%s) - ${DESKFUSE_STAGE_START:-$(date +%s)} ))" "$status" >&2
+    if [[ -n "${DESKFUSE_LAST_LOG:-}" ]]; then
+      printf 'log: %s\n' "$DESKFUSE_LAST_LOG" >&2
+    fi
+    if [[ -n "$DESKFUSE_RETRY_HINT" ]]; then
+      printf 'retry: %s\n' "$DESKFUSE_RETRY_HINT" >&2
+    fi
+    deskfuse_cache_note_failure "${DESKFUSE_STAGE_NAME:-unknown}" "${DESKFUSE_LAST_LOG:-}"
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
 
 # Allocate one build number before building either platform. Failed allocations
 # are not reused, and the coordinator ledger is never sent to a build peer.
@@ -245,10 +336,16 @@ if [[ "$PACKAGE_MODE" != homebrew ]]; then
   fi
   RELEASE_METADATA="$DIST_DIR/release.json"
   echo "release descriptor: $RELEASE_METADATA"
-  echo "retry: RELEASE_METADATA=\"$RELEASE_METADATA\" DESKFUSE_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
+  DESKFUSE_RETRY_HINT="RELEASE_METADATA=\"$RELEASE_METADATA\" DESKFUSE_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
+  if [[ "$FAST_MODE" == 1 ]]; then
+    DESKFUSE_RETRY_HINT="$DESKFUSE_RETRY_HINT --fast"
+  fi
+  echo "retry: $DESKFUSE_RETRY_HINT"
 fi
 
+deskfuse_stage assets
 "$ROOT_DIR/scripts/generate-assets.sh"
+deskfuse_stage_done
 
 # The package script intentionally does not install a target or toolchain. A
 # missing target should fail visibly rather than downloading toolchains during
@@ -256,17 +353,22 @@ fi
 echo "building $PACKAGE_NAME for $TARGET_TRIPLE"
 # 诊断构建号写在 release.json 和 target 旁的 build-id，不编译进 Rust。
 export DESKFUSE_INPUT_BUILD_ID="${APP_VERSION}-${BUILD_VERSION}"
-"$ROOT_DIR/scripts/build-native-macos.sh" release
-TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+deskfuse_stage build-native
+deskfuse_run_logged build-native "$ROOT_DIR/scripts/build-native-macos.sh" release || exit $?
+deskfuse_stage_done
+TARGET_DIR="$DESKFUSE_TARGET_DIR"
 CARGO_OUTPUT_DIR="$TARGET_DIR"
 UPDATE_HELPER="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper"
 HISTORY_FILES="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files"
 OCR_HELPER="$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-ocr-helper"
+RELEASE_TOOL="$CARGO_OUTPUT_DIR/debug/deskfuse-release"
 # Cargo owns incremental invalidation for the packaging helpers too; a helper
 # fingerprint here would only duplicate (and desynchronise) its bookkeeping.
-"$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --target "$TARGET_TRIPLE" \
+deskfuse_stage helpers
+deskfuse_run_logged helpers "$ROOT_DIR/scripts/cargo-macos.sh" build --release --locked --target "$TARGET_TRIPLE" \
   --package deskfuse-update --bin deskfuse-update-helper \
-  --package deskfuse-engine --bin deskfuse-history-files
+  --package deskfuse-engine --bin deskfuse-history-files || exit $?
+deskfuse_stage_done
 for helper in "$UPDATE_HELPER" "$HISTORY_FILES" "$OCR_HELPER"; do
   if [[ ! -x "$helper" ]]; then
     echo "error: expected helper not found or not executable: $helper" >&2
@@ -285,6 +387,7 @@ if [[ "$ARCHES" != "$EXPECTED_ARCH" ]]; then
   exit 1
 fi
 
+deskfuse_stage bundle
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$DMG_SOURCE_DIR/.background"
 # A portable app must never retain a build machine's Homebrew/cache dylib paths.
 if otool -L "$BINARY_PATH" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/System/Library/|/usr/lib/|@rpath/libroc-microphone\.dylib$)' ; then
@@ -357,6 +460,7 @@ cp "$ASSET_DIR/DeskFuse.icns" "$CONTENTS_DIR/Resources/DeskFuse.icns"
 cp "$ASSET_DIR/DeskFuse-icon-1024.png" "$CONTENTS_DIR/Resources/DeskFuse-icon-1024.png"
 cp "$ASSET_DIR/DeskFuse-icon-light-1024.png" "$CONTENTS_DIR/Resources/DeskFuse-icon-light-1024.png"
 cp "$ASSET_DIR/deskfuse-status-icon.png" "$CONTENTS_DIR/Resources/deskfuse-status-icon.png"
+ditto "$ROOT_DIR/resources/mice" "$CONTENTS_DIR/Resources/Mice"
 cp "$ASSET_DIR/dmg-background.png" "$DMG_SOURCE_DIR/.background/installer-background.png"
 ln -s /Applications "$DMG_SOURCE_DIR/Applications"
 
@@ -364,22 +468,35 @@ sed \
   -e "s/@VERSION@/$APP_VERSION/g" \
   -e "s/@BUILD_VERSION@/$BUILD_VERSION/g" \
   "$ROOT_DIR/resources/Info.plist.in" > "$CONTENTS_DIR/Info.plist"
+deskfuse_stage_done
+
+deskfuse_stage sign-app
 deskfuse_codesign \
   --deep \
   --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
   "$APP_BUNDLE"
+deskfuse_stage_done
 
-codesign --verify --deep --strict "$APP_BUNDLE"
+# The app is verified once, after the LAN payload (Resources/LanUpdate) has been
+# embedded and the outer bundle has been re-signed. An intermediate deep verify
+# here only repeats that work.
 
 # Preserve the exact signed bundle for later release signing and LAN forwarding.
+deskfuse_stage update-payload
 UPDATE_ZIP="$STAGING_DIR/$UPDATE_ASSET"
 ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 
 # Release authorization is independent of pairing and platform code signing.
 # CI can ship a homebrew DMG without the private LAN release key; it cannot
 # publish an automatically installable release until the coordinator signs it.
+release_tool() {
+  if [[ -x "$RELEASE_TOOL" ]]; then
+    "$RELEASE_TOOL" "$@"
+  else
+    cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- "$@"
+  fi
+}
 SIGNED_UPDATE=0
-RELEASE_KEY="${DESKFUSE_RELEASE_KEY:-$HOME/Library/Application Support/DeskFuse-release/signing-key.hex}"
 if [[ "$PACKAGE_MODE" == lan && -f "$RELEASE_KEY" ]]; then
   python3 - "$RELEASE_METADATA" "$UPDATE_ZIP" "$STAGING_DIR/unsigned-manifest.json" <<'PYMANIFEST'
 import hashlib,json,pathlib,sys
@@ -388,8 +505,9 @@ payload=pathlib.Path(sys.argv[2])
 manifest={"schema_version":1,"application_id":"com.deskfuse.app","release":release,"protocol_major":2,"minimum_update_protocol":1,"artifacts":[{"target":"macos_arm64","kind":"macos_app_zip","file_name":payload.name,"size":payload.stat().st_size,"sha256":hashlib.file_digest(payload.open("rb"),"sha256").hexdigest(),"minimum_os":"14.0.0"}]}
 pathlib.Path(sys.argv[3]).write_text(json.dumps(manifest))
 PYMANIFEST
-  cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
-  cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
+  release_tool sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
+  release_tool verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
+  export DESKFUSE_RELEASE_TOOL="$RELEASE_TOOL"
 mkdir -p "$DMG_SOURCE_DIR/.updates"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$DMG_SOURCE_DIR/.updates/"
   # Finder copies only the .app. Carry the exact signed payload with that copy
@@ -398,18 +516,37 @@ mkdir -p "$DMG_SOURCE_DIR/.updates"
   # embedding the wrapper in its own ZIP would create a recursive artifact.
   mkdir -p "$CONTENTS_DIR/Resources/LanUpdate"
   cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$CONTENTS_DIR/Resources/LanUpdate/"
+  # Only Resources changed. Nested code is already signed, so sign the outer
+  # bundle once more without a second deep traversal.
   deskfuse_codesign \
-    --deep \
     --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
     "$APP_BUNDLE"
-  codesign --verify --deep --strict "$APP_BUNDLE"
   SIGNED_UPDATE=1
 elif [[ "$PACKAGE_MODE" == lan ]]; then
   echo "error: LAN release signing key unavailable: $RELEASE_KEY" >&2
   exit 1
 fi
+deskfuse_stage_done
 
+deskfuse_stage verify-app
+if [[ "$FAST_MODE" == 1 ]]; then
+  "$ROOT_DIR/scripts/verify-app.sh" "$APP_BUNDLE"
+else
+  # Full packages are verified inside the DMG; this still guarantees that no
+  # install can happen from an unsigned or broken bundle.
+  codesign --verify --deep --strict "$APP_BUNDLE"
+fi
+deskfuse_stage_done
 
+# With --with-dmg the local install does not need to wait for the disk image.
+if [[ "$AUTO_INSTALL" == 1 && "$FAST_MODE" == 1 && "$SKIP_DMG" == 0 ]]; then
+  deskfuse_stage install
+  install_auto_app
+  deskfuse_stage_done
+fi
+
+if [[ "$SKIP_DMG" == 0 ]]; then
+deskfuse_stage dmg
 # Build a writable HFS+ image first: Finder persists icon positions and the
 # custom background in .DS_Store, which is then compressed for distribution.
 # Versioned volume names avoid Finder alias collisions with an older mounted installer.
@@ -428,7 +565,7 @@ ATTACHED=1
 # Headless/agent packaging can avoid controlling Finder. The app and
 # Applications link still work; only the custom Finder layout is omitted.
 if [[ "${DESKFUSE_DMG_FINDER_LAYOUT:-1}" != "0" ]]; then
-osascript - "$MOUNT_POINT" "$MOUNT_POINT/.background/installer-background.png" <<'APPLESCRIPT'
+if ! osascript - "$MOUNT_POINT" "$MOUNT_POINT/.background/installer-background.png" <<'APPLESCRIPT'
 on run argv
   set mounted_folder to POSIX file (item 1 of argv) as alias
   set background_file to POSIX file (item 2 of argv) as alias
@@ -438,7 +575,7 @@ on run argv
     set installer_window to make new Finder window
     set target of installer_window to mounted_folder
     activate
-    delay 1
+    delay 0.5
     set current view of installer_window to icon view
     set toolbar visible of installer_window to false
     set statusbar visible of installer_window to false
@@ -451,16 +588,20 @@ on run argv
     set position of item "DeskFuse.app" of installer_window to {250, 280}
     set position of item "Applications" of installer_window to {670, 280}
     update mounted_folder without registering applications
-    delay 3
+    delay 1.5
     close installer_window
   end tell
 end run
 APPLESCRIPT
+then
+  echo "error: Finder layout automation failed (AppleEvent timeout or Finder busy); retry with DESKFUSE_DMG_FINDER_LAYOUT=0 for an explicitly headless package" >&2
+  exit 1
+fi
 # Finder writes layout asynchronously. Do not unmount or publish an image
 # before its layout exists, and never replace a deliverable with a partial one.
-for ((layout_wait = 0; layout_wait < 20; layout_wait++)); do
+for ((layout_wait = 0; layout_wait < 40; layout_wait++)); do
   [[ -s "$MOUNT_POINT/.DS_Store" ]] && break
-  sleep 1
+  sleep 0.5
 done
 if [[ ! -s "$MOUNT_POINT/.DS_Store" ]]; then
   echo "error: Finder did not persist DMG layout; use DESKFUSE_DMG_FINDER_LAYOUT=0 for an explicitly headless package" >&2
@@ -468,13 +609,18 @@ if [[ ! -s "$MOUNT_POINT/.DS_Store" ]]; then
 fi
 fi
 
-sync
+# hdiutil detach flushes the writable image; a global sync only stalls the build.
 hdiutil detach "$MOUNT_POINT" -quiet
 ATTACHED=0
 
 # Validate before replacing an existing deliverable.
 FINAL_DMG="$STAGING_DIR/$DMG_ASSET"
-hdiutil convert "$RW_DMG" -ov -format UDZO -o "$FINAL_DMG" >/dev/null
+convert_args=(-ov -format UDZO)
+# LAN/local packages favour wall time; public packages keep the default ratio.
+if [[ "$FAST_MODE" == 1 ]]; then
+  convert_args+=(-imagekey zlib-level=1)
+fi
+hdiutil convert "$RW_DMG" "${convert_args[@]}" -o "$FINAL_DMG" >/dev/null
 if [[ "$SIGNING_KIND" == "developer-id" ]]; then
   codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$FINAL_DMG"
 fi
@@ -482,15 +628,23 @@ fi
 # the signed app. A required notarization re-runs the verifier afterwards.
 DESKFUSE_REQUIRE_NOTARIZE=0 "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
 NOTARIZED=false
-if [[ "$SIGNING_KIND" == "developer-id" ]] && deskfuse_notarize_credentials_ready; then
+if [[ "$SIGNING_KIND" == "developer-id" ]] && deskfuse_notarize_credentials_ready && [[ "$SKIP_NOTARIZE" != 1 ]]; then
   "$ROOT_DIR/scripts/notarize-macos.sh" "$FINAL_DMG"
   NOTARIZED=true
   "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
 else
   echo "notarization: not performed"
 fi
+deskfuse_stage_done
+else
+  echo "fast mode: DMG generation skipped (use --with-dmg to include it)"
+  NOTARIZED=false
+fi
 deskfuse_write_signing_status "$DIST_DIR" "$NOTARIZED"
-mv "$FINAL_DMG" "$DMG_PATH"
+deskfuse_stage publish
+if [[ "$SKIP_DMG" == 0 ]]; then
+  mv "$FINAL_DMG" "$DMG_PATH"
+fi
 mv "$UPDATE_ZIP" "$DIST_DIR/$UPDATE_ASSET"
 if [[ "$SIGNED_UPDATE" == "1" ]]; then
   cp "$STAGING_DIR/manifest.json" "$DIST_DIR/manifest.json"
@@ -501,20 +655,38 @@ fi
 if [[ ! "$RELEASE_METADATA" -ef "$DIST_DIR/release.json" ]]; then
   cp "$RELEASE_METADATA" "$DIST_DIR/release.json"
 fi
+if [[ "$FAST_MODE" == 1 ]]; then
+  printf 'local-fast\n' > "$DIST_DIR/build-mode"
+  echo "warning: local-fast package; do not publish $DIST_DIR"
+else
+  rm -f "$DIST_DIR/build-mode"
+fi
 # Refresh checksums with every successful package, including custom DMG paths.
 (
   cd "$DIST_DIR"
-  shasum -a 256 "${DMG_PATH#"$DIST_DIR/"}" "$UPDATE_ASSET" release.json
-  if [[ "$SIGNED_UPDATE" == "1" ]]; then shasum -a 256 manifest.json; fi
+  checksum_files=("$UPDATE_ASSET" release.json)
+  if [[ "$SKIP_DMG" == 0 ]]; then
+    checksum_files=("${DMG_PATH#"$DIST_DIR/"}" "${checksum_files[@]}")
+  fi
+  if [[ "$SIGNED_UPDATE" == "1" ]]; then
+    checksum_files+=(manifest.json)
+  fi
+  shasum -a 256 "${checksum_files[@]}"
 ) > "$STAGING_DIR/SHA256SUMS"
 mv "$STAGING_DIR/SHA256SUMS" "$DIST_DIR/SHA256SUMS"
 printf 'release: %s build %s\n' "$APP_VERSION" "$BUILD_VERSION"
 printf 'update payload: %s\n' "$DIST_DIR/$UPDATE_ASSET"
-printf 'created: %s\n' "$DMG_PATH"
-shasum -a 256 "$DMG_PATH"
+if [[ "$SKIP_DMG" == 0 ]]; then
+  printf 'created: %s\n' "$DMG_PATH"
+  shasum -a 256 "$DMG_PATH"
+else
+  printf 'created: (DMG skipped in fast mode)\n'
+fi
+deskfuse_stage_done
 
 # Seed the running coordinator only after the full package passes verification.
 # Move a complete sidecar directory; readers never observe a partial manifest.
+deskfuse_stage seed
 if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
   UPDATE_ROOT="$HOME/Library/Application Support/DeskFuse/updates"
   mkdir -p "$UPDATE_ROOT"
@@ -532,17 +704,13 @@ if previous.exists(): shutil.rmtree(previous)
 PYSEED
   echo "LAN update seed: $UPDATE_ROOT/inbox"
 fi
+deskfuse_stage_done
 
 # --auto: replace the running instance with the freshly packaged app. Only the
 # LAN local-delivery flow reaches this point; homebrew mode rejects --auto.
-if [[ "$AUTO_INSTALL" == 1 ]]; then
-  source "$ROOT_DIR/scripts/macos-app-lifecycle.sh"
-  echo "auto install: stopping running DeskFuse processes"
-  deskfuse_stop_for_install "$BINARY_NAME"
-  INSTALL_PATH="/Applications/DeskFuse.app"
-  rm -rf "$INSTALL_PATH"
-  ditto "$APP_BUNDLE" "$INSTALL_PATH"
-  codesign --verify --deep --strict "$INSTALL_PATH"
-  echo "auto install: $INSTALL_PATH"
-  deskfuse_open_installed_app "$INSTALL_PATH"
+# With --fast --with-dmg the install already happened before the disk image.
+if [[ "$AUTO_INSTALL" == 1 && "$INSTALLED_EARLY" == 0 ]]; then
+  deskfuse_stage install
+  install_auto_app
+  deskfuse_stage_done
 fi

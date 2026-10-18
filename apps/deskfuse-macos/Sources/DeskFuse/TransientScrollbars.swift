@@ -6,6 +6,13 @@ import AppKit
     static let shared = TransientScrollbars()
     private var installed = false
     private var pending: Set<ObjectIdentifier> = []
+    private let indicatorlessViews = NSHashTable<NSScrollView>.weakObjects()
+
+    func hideIndicators(in scroll: NSScrollView) {
+        indicatorlessViews.add(scroll)
+        if scroll.hasVerticalScroller { scroll.hasVerticalScroller = false }
+        if scroll.hasHorizontalScroller { scroll.hasHorizontalScroller = false }
+    }
 
     func install() {
         guard !installed else { return }
@@ -43,8 +50,12 @@ import AppKit
 
     private func configure(_ view: NSView) {
         if let scroll = view as? NSScrollView {
-            if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
-            if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
+            if indicatorlessViews.contains(scroll) {
+                hideIndicators(in: scroll)
+            } else {
+                if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
+                if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
+            }
         }
         for child in view.subviews { configure(child) }
     }

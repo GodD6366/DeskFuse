@@ -93,9 +93,10 @@ impl InputActor {
     }
     fn link_desired(&self, peer: DeviceId) -> bool {
         // A selected peer may exchange layout metadata without native input
-        // permission. Activation and leases enforce availability separately.
+        // permission or an active controller environment. A network change can
+        // suspend control while display metadata still needs to reconnect.
+        // Activation and leases enforce availability separately.
         self.network_allowed(peer)
-            && !self.snapshot.environment.local_suspended
             && (self.snapshot.settings.participants.contains(&peer)
                 || self.incoming.as_ref().is_some_and(|a| a.peer == peer))
     }
@@ -292,6 +293,36 @@ mod tests {
         actor.tick_links();
         assert!(actor.links.retries.contains_key(&peer));
         actor.snapshot.settings.participants.clear();
+        actor.tick_links();
+        assert!(!actor.links.retries.contains_key(&peer));
+    }
+
+    #[test]
+    fn suspended_controller_keeps_selected_peer_metadata_recovery() {
+        let (mut actor, peer, _, _, _) = super::super::tests::setup(true);
+        actor.snapshot.environment.local_suspended = true;
+        actor.snapshot.remote_topologies.clear();
+        assert!(actor.link_desired(peer));
+        assert!(!actor.role_allowed(peer, true));
+
+        // Pausing the network scene must not discard a pending metadata retry.
+        let generation = actor.transport.control_generation(peer).unwrap_or(0);
+        actor.links.retries.insert(
+            peer,
+            Retry {
+                generation,
+                failures: 1,
+                due: Instant::now() + Duration::from_secs(2),
+            },
+        );
+        actor.tick_links();
+        assert!(actor.links.retries.contains_key(&peer));
+
+        actor.snapshot.settings.enabled = false;
+        assert!(actor.link_desired(peer));
+        assert!(!actor.role_allowed(peer, true));
+        actor.snapshot.settings.participants.clear();
+        assert!(!actor.link_desired(peer));
         actor.tick_links();
         assert!(!actor.links.retries.contains_key(&peer));
     }
