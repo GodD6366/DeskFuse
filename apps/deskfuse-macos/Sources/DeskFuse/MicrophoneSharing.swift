@@ -21,6 +21,9 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     var phase: String; var detail: String; var session_id: UInt64
     var role: String; var peer: String; var source_name: String
     var native: MicrophoneNativeObservation
+    // Local UI observation only; never persisted or sent to the other Mac.
+    var readerApps: [MicrophoneReader]?
+    var isDefaultInput: Bool?
 }
 /// UI holds only a projection of Rust settings/session state.
 @MainActor @Observable final class MicrophoneSharing {
@@ -263,6 +266,9 @@ private final class MicrophoneWorker: @unchecked Sendable {
         var captureStarted = Date.distantPast
         var nextPoll = Date.distantPast
         var nextDriverCheck = Date.distantPast
+        var nextUsageCheck = Date.distantPast
+        var readerApps: [MicrophoneReader] = []
+        var isDefaultInput = false
         func nativeError() -> String { String(cString: ud_mic_last_error()) }
         func resetSession() {
             capture?.stop(); capture = nil
@@ -345,7 +351,16 @@ private final class MicrophoneWorker: @unchecked Sendable {
                             error: failure
                         ))
                         failure = ""
-                        let latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
+                        var latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
+                        if Date() >= nextUsageCheck {
+                            nextUsageCheck = Date().addingTimeInterval(1)
+                            readerApps = wantsReceiver && readers ? MicrophoneAudioDevices.activeReaders() : []
+                            isDefaultInput = MicrophoneAudioDevices.defaultInput().flatMap {
+                                MicrophoneAudioDevices.string($0, kAudioDevicePropertyDeviceUID)
+                            } == MicrophoneAudioDevices.virtualUID
+                        }
+                        latest.readerApps = readers ? readerApps : []
+                        latest.isDefaultInput = isDefaultInput
                         // A completion from an expired attempt cannot clear the
                         // timeout or open a session for a later retry.
                         guard publish(latest, generation: generation) else {

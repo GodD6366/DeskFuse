@@ -1,10 +1,16 @@
 import Foundation
+import AppKit
 import AVFoundation
 import CoreAudio
 import AudioToolbox
 import Darwin
 import MicrophoneNative
 
+struct MicrophoneReader: Decodable, Identifiable, Sendable {
+    let id: UInt32
+    let name: String
+    let isSoundSettings: Bool
+}
 struct MicrophoneInput: Identifiable, Sendable { let id: String; let name: String }
 enum MicrophoneAudioDevices {
     static let virtualUID = String(cString: ud_mic_device_uid())
@@ -28,6 +34,30 @@ enum MicrophoneAudioDevices {
                   let uid = string(id, kAudioDevicePropertyDeviceUID) else { return nil }
             return (id, uid, string(id, kAudioObjectPropertyName) ?? uid)
         }
+    }
+    /// Read-only attribution. This never opens an input stream and is not used
+    /// to gate audio: older macOS versions and unidentifiable clients still work.
+    static func activeReaders() -> [MicrophoneReader] {
+        guard #available(macOS 14.2, *),
+              let device = devices().first(where: { $0.1 == virtualUID })?.0 else { return [] }
+        return integers(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList).compactMap { process in
+            guard integers(process, kAudioProcessPropertyIsRunningInput).first == 1,
+                  integers(process, kAudioProcessPropertyDevices, scope: kAudioObjectPropertyScopeInput).contains(device),
+                  let pid = integers(process, kAudioProcessPropertyPID).first else { return nil }
+            let bundleID = string(process, kAudioProcessPropertyBundleID) ?? ""
+            let soundSettings = bundleID == "com.apple.Sound-Settings.extension"
+            let name = soundSettings ? "系统声音设置" : (NSRunningApplication(processIdentifier: pid_t(pid))?.localizedName ?? "音频应用")
+            return MicrophoneReader(id: pid, name: name, isSoundSettings: soundSettings)
+        }.sorted { $0.id < $1.id }
+    }
+    private static func integers(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                                 scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> [UInt32] {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var values = [UInt32](repeating: 0, count: Int(size) / MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &values) == noErr else { return [] }
+        return Array(values.prefix(Int(size) / MemoryLayout<UInt32>.size))
     }
     static func isPhysical(_ id: AudioDeviceID, uid: String) -> Bool {
         if uid == virtualUID { return false }
