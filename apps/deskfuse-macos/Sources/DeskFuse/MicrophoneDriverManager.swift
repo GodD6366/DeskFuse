@@ -9,7 +9,7 @@ enum MicrophoneDriverManager {
         var id: String { rawValue }
         var title: String { self == .install ? "安装麦克风驱动" : "卸载麦克风驱动" }
     }
-    static let driverBundleName = String(cString: ud_mic_driver_bundle_name())
+    static let driverBundleName = String(cString: ud_mic_driver_bundle_name()) + ".driver"
     static let installedPath = "/Library/Audio/Plug-Ins/HAL/" + driverBundleName
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: installedPath) }
 
