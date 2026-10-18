@@ -18,6 +18,7 @@ struct MicrophoneSettingsView: View {
                 if let state = model.snapshot {
                     routeSurface(state)
                     configuration(state)
+                    if state.settings.source.isEmpty { deviceAccess(state) }
                     if model.driverInstalled { maintenance(state) }
                     if model.managingDriver { ProgressView(model.driverOperation == .restartAudio ? "正在重启音频服务，请完成系统管理员授权…" : "正在处理驱动，请完成系统管理员授权…") }
                     if let message = model.driverMessage { Text(message).font(.callout).workspaceSecondaryText() }
@@ -72,7 +73,7 @@ struct MicrophoneSettingsView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 32)
+            .padding(.horizontal, 24).padding(.top, 4).padding(.bottom, 24)
             Divider().padding(.horizontal, 24)
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: state.phase == "streaming" ? "waveform" : (isReady(state) ? "moon.zzz" : "mic"))
@@ -97,16 +98,16 @@ struct MicrophoneSettingsView: View {
         .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
     }
     private func endpoint(symbol: String, title: String, subtitle: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 26, weight: .light))
-                .frame(width: 64, height: 64)
-                .background(QuietWorkspacePalette.control(scheme), in: RoundedRectangle(cornerRadius: 16))
-            VStack(spacing: 5) {
-                Text(title).font(WorkspaceTypography.heading).lineLimit(2).multilineTextAlignment(.center)
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 22, weight: .regular))
+                .frame(width: 48, height: 48)
+                .background(QuietWorkspacePalette.control(scheme), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 5) {
                 Text(subtitle).font(WorkspaceTypography.detail).workspaceSecondaryText()
+                Text(title).font(WorkspaceTypography.heading).lineLimit(2)
             }
         }
-        .frame(minWidth: 140, maxWidth: .infinity)
+        .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
     }
     private func routeConnection(_ state: MicrophoneSharingSnapshot) -> some View {
         VStack(spacing: 10) {
@@ -232,19 +233,43 @@ struct MicrophoneSettingsView: View {
             Button(state.native.permission == "denied" ? "打开麦克风权限设置…" : "允许麦克风访问…", action: model.requestPermission)
                 .padding(.horizontal, 20).padding(.bottom, 16)
         }
-        Divider().padding(.horizontal, 20)
-        VStack(alignment: .leading, spacing: 16) {
-            Text("允许使用的设备").font(WorkspaceTypography.body)
-            ForEach(peers, id: \.id) { peer in
-                Toggle(isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
-                    update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
-                })) {
-                    Label(peer.name, systemImage: "laptopcomputer")
-                }.toggleStyle(.switch)
+    }
+    private func deviceAccess(_ state: MicrophoneSharingSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("允许使用的设备").font(WorkspaceTypography.heading)
+                Spacer(minLength: 12)
+                Text("同一时间可供一台设备使用")
+                    .font(WorkspaceTypography.detail).workspaceSecondaryText()
             }
-            if peers.isEmpty { Text("先在“设备”中配对另一台 Mac。").workspaceSecondaryText() }
-            Text("同一时间可供一台设备使用。").font(WorkspaceTypography.detail).workspaceSecondaryText()
-        }.padding(20)
+            VStack(spacing: 0) {
+                if peers.isEmpty {
+                    Label("先在“设备”中配对另一台 Mac。", systemImage: "laptopcomputer")
+                        .font(WorkspaceTypography.body).workspaceSecondaryText()
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                }
+                ForEach(peers, id: \.id) { peer in
+                    HStack(spacing: 12) {
+                        Image(systemName: "laptopcomputer")
+                            .font(.system(size: 17)).foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32)
+                        Text(peer.name).font(WorkspaceTypography.body)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 12)
+                        Text(peer.connected ? "在线" : "离线")
+                            .font(WorkspaceTypography.detail).workspaceSecondaryText()
+                        Toggle(peer.name, isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
+                            update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
+                        }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.regular)
+                        .accessibilityLabel("允许 \(peer.name) 使用麦克风")
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+                    if peer.id != peers.last?.id { Divider().padding(.leading, 64).padding(.trailing, 20) }
+                }
+            }
+            .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
+        }
     }
     @ViewBuilder private func receiverSettings(_ state: MicrophoneSharingSnapshot) -> some View {
         if !model.driverInstalled {

@@ -9,7 +9,11 @@
 #include <dlfcn.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char** environ;
 
 namespace {
 std::atomic<bool> reset_next_accept{false};
@@ -36,18 +40,23 @@ class Service final : public rvpb::RvDriver::Service {
         return grpc::Status::OK;
     }
 };
-bool ping(const std::string& endpoint) {
+std::unique_ptr<rvpb::RvDriver::Stub> connect_stub(const std::string& endpoint) {
     grpc::ChannelArguments args;
     args.SetInt("grpc.use_local_subchannel_pool", 1);
     args.SetInt("grpc.enable_http_proxy", 0);
-    auto stub = rvpb::RvDriver::NewStub(grpc::CreateCustomChannel(
+    return rvpb::RvDriver::NewStub(grpc::CreateCustomChannel(
         endpoint, grpc::InsecureChannelCredentials(), args));
+}
+bool ping(rvpb::RvDriver::Stub& stub) {
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(700));
     rvpb::RvNone request, response;
-    auto status = stub->ping(&context, request, &response);
+    auto status = stub.ping(&context, request, &response);
     if (!status.ok()) std::fprintf(stderr, "ping: %s\n", status.error_message().c_str());
     return status.ok();
+}
+bool ping(const std::string& endpoint) {
+    return ping(*connect_stub(endpoint));
 }
 void require(bool value, const char* message) {
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); std::_Exit(1); }
@@ -58,7 +67,15 @@ void require(bool value, const char* message) {
 extern "C" int accept(int fd, sockaddr* address, socklen_t* length) {
     return accept_with_reset(fd, address, length);
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 3) {
+        // A separate process holds a channel across requests, like the app.
+        // _Exit deliberately skips gRPC teardown in the abrupt-exit variant.
+        auto stub = connect_stub(argv[2]);
+        for (int i = 0; i < 10; ++i) require(ping(*stub), "child RPC");
+        if (std::string(argv[1]) == "--abrupt-client") std::_Exit(0);
+        return 0;
+    }
     Service service;
     grpc::ServerBuilder builder;
     int port = 0;
@@ -90,6 +107,19 @@ int main() {
         close(fd);
         require(ping(endpoint), "RPC still works after abrupt client exit");
     }
+    for (int i = 0; i < 20; ++i) {
+        char* child_args[] = {argv[0], const_cast<char*>(i % 2 ? "--abrupt-client" : "--client"),
+                             const_cast<char*>(endpoint.c_str()), nullptr};
+        pid_t child = 0;
+        require(posix_spawn(&child, argv[0], nullptr, nullptr, child_args, environ) == 0,
+                "start independent client process");
+        int result = 0;
+        pid_t waited;
+        do { waited = waitpid(child, &result, 0); } while (waited < 0 && errno == EINTR);
+        require(waited == child && WIFEXITED(result) && WEXITSTATUS(result) == 0,
+                "independent client requests and exit");
+        require(ping(endpoint), "RPC still works after established client process exits");
+    }
     server->Shutdown();
-    std::puts("PASS: accept reset / empty address recovery and 40 abrupt client reconnects");
+    std::puts("PASS: accept reset / empty address recovery, 40 abrupt TCP reconnects, 20 client process exits");
 }
