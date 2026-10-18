@@ -1625,6 +1625,11 @@ mod tests {
 
     #[test]
     fn capabilities_support_independent_bits() {
+        assert!(
+            !Capabilities::MAC_MOUSE_SETTINGS
+                .intersects(Capabilities::MICROPHONE | Capabilities::MICROPHONE_SHORTCUT)
+        );
+        assert!(!Capabilities::MICROPHONE.intersects(Capabilities::MICROPHONE_SHORTCUT));
         let mut capabilities = Capabilities::NETWORK | Capabilities::CLIPBOARD;
         assert!(capabilities.contains(Capabilities::NETWORK));
         assert!(!capabilities.contains(Capabilities::TRANSFER));
