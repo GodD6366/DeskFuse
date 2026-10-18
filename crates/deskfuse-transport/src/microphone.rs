@@ -5,6 +5,10 @@ use std::sync::{atomic::Ordering, mpsc as sync};
 use tokio::sync::{mpsc, watch};
 
 const MAX_PACKET: usize = 4097;
+// macOS taps can deliver ~100 ms at once: 20 audio packets plus RS8M
+// repair/control packets. Keep room for a callback burst; age is bounded
+// independently by AUDIO_DEADLINE on both producer and consumer paths.
+pub(super) const AUDIO_QUEUE_PACKETS: usize = 64;
 const AUDIO_DEADLINE: Duration = Duration::from_millis(150);
 pub struct MicrophoneSession {
     pub peer: DeviceId,
@@ -20,8 +24,9 @@ impl MicrophoneSession {
         mut recv: quinn::RecvStream,
         origin: std::time::Instant,
     ) -> Arc<Self> {
-        let (outgoing, mut output) = mpsc::channel::<(std::time::Instant, Vec<u8>)>(12);
-        let (input, incoming) = sync::sync_channel(12);
+        let (outgoing, mut output) =
+            mpsc::channel::<(std::time::Instant, Vec<u8>)>(AUDIO_QUEUE_PACKETS);
+        let (input, incoming) = sync::sync_channel(AUDIO_QUEUE_PACKETS);
         let (cancel, mut writer_cancel) = watch::channel(false);
         let mut reader_cancel = cancel.subscribe();
         let closed = Arc::new(AtomicBool::new(false));

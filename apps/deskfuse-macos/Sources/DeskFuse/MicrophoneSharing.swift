@@ -384,7 +384,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                 lastAudio = Date()
                                 guard samples.withUnsafeBufferPointer({ ud_mic_sender_push(sender, $0.baseAddress, $0.count) }) == 0 else { throw MicrophoneAudioError.message(nativeError()) }
                             }
-                            if Date().timeIntervalSince(max(lastAudio, captureStarted)) > 2 { throw MicrophoneAudioError.message("实体麦克风已停止提供音频") }
+                            if Date().timeIntervalSince(max(lastAudio, captureStarted)) > 2 { throw MicrophoneAudioError.message(capture.timeoutReason) }
                             for kind in 1...3 {
                                 for _ in 0..<16 {
                                     var packet = [UInt8](repeating: 0, count: 4096)

@@ -196,7 +196,7 @@ async fn microphone_queue_overflow_closes_session_instead_of_buffering_speech() 
     let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
     let (reader, source) = pair.audio().await;
     // No await: bounded writer queue must reject before the producer can enqueue unbounded audio.
-    for _ in 0..12 {
+    for _ in 0..microphone::AUDIO_QUEUE_PACKETS {
         source.send(vec![1, 42]).unwrap();
     }
     assert!(source.send(vec![1, 42]).is_err());
@@ -319,5 +319,21 @@ async fn microphone_unknown_protocol_version_is_rejected_before_admission() {
     send.write_all(&payload).await.unwrap();
     assert!(read_frame(&mut recv, Duration::from_secs(2)).await.is_err());
     assert!(pair.b.take_microphone().is_none());
+    pair.close().await;
+}
+
+#[tokio::test]
+async fn microphone_capture_burst_survives_without_consumer_interleaving() {
+    let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
+    let (reader, source) = pair.audio().await;
+    // One 100 ms tap: 20 audio + 8 FEC packets, plus control/meter headroom.
+    for n in 0..32u8 {
+        source.send(vec![1, n]).unwrap();
+    }
+    time::sleep(Duration::from_millis(30)).await;
+    for n in 0..32u8 {
+        assert_eq!(received(&reader).await, vec![1, n]);
+    }
+    assert!(!source.is_closed());
     pair.close().await;
 }

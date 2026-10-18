@@ -64,6 +64,8 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var frames: [(UInt64, [Float])] = []
     private var overflow = false
+    private var captureError: String?
+    private var inputFrames: UInt64 = 0
     private var peak: Float = 0
     private var tapped = false
     private var device: AudioDeviceID = 0
@@ -78,21 +80,30 @@ final class MicrophoneCapture: @unchecked Sendable {
               AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else {
             throw MicrophoneAudioError.message("无法打开所选实体麦克风")
         }
-        let format = input.outputFormat(forBus: 0)
+        // The output bus may still cache the previous device format after
+        // CurrentDevice changes. A tap must match the physical input format.
+        let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0,
               let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: format, to: target) else { throw MicrophoneAudioError.message("麦克风格式不受支持") }
         converter.downmix = true
         input.installTap(onBus: 0, bufferSize: 480, format: format) { [weak self] buffer, _ in
             guard let self else { return }
+            self.lock.lock(); self.inputFrames += UInt64(buffer.frameLength); self.lock.unlock()
             let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 48_000 / format.sampleRate)) + 32
             guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
             var consumed = false; var error: NSError?
-            converter.convert(to: output, error: &error) { _, status in
+            let status = converter.convert(to: output, error: &error) { _, status in
                 if consumed { status.pointee = .noDataNow; return nil }
                 consumed = true; status.pointee = .haveData; return buffer
             }
-            guard error == nil, output.frameLength > 0, let samples = output.floatChannelData?[0] else { return }
+            if status == .error || error != nil {
+                self.lock.lock()
+                self.captureError = "麦克风格式转换失败：\(error?.localizedDescription ?? "未知转换错误")"
+                self.lock.unlock()
+                return
+            }
+            guard output.frameLength > 0, let samples = output.floatChannelData?[0] else { return }
             let values = Array(UnsafeBufferPointer(start: samples, count: Int(output.frameLength)))
             self.lock.lock()
             if self.frames.count < 8 { self.frames.append((DispatchTime.now().uptimeNanoseconds, values)) } else { self.overflow = true }
@@ -105,16 +116,21 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
     func take() throws -> [[Float]] {
         lock.lock(); defer { lock.unlock() }
+        if let captureError { throw MicrophoneAudioError.message(captureError) }
         guard !overflow, audio.isRunning else { throw MicrophoneAudioError.message("麦克风采集中断或音频队列积压") }
         let now = DispatchTime.now().uptimeNanoseconds
         guard frames.allSatisfy({ now >= $0.0 && now - $0.0 < 100_000_000 }) else { throw MicrophoneAudioError.message("已丢弃过期采集音频") }
         let values = frames.map { $0.1 }; frames.removeAll(keepingCapacity: true); return values
     }
+    var timeoutReason: String {
+        lock.lock(); defer { lock.unlock() }
+        return inputFrames == 0 ? "实体麦克风未返回采集帧" : "实体麦克风格式转换未产生音频（输入帧：\(inputFrames)）"
+    }
     var level: Float { lock.lock(); defer { lock.unlock() }; return peak }
     func stop() {
         audio.stop()
         if tapped { audio.inputNode.removeTap(onBus: 0); tapped = false }
-        lock.lock(); frames.removeAll(); overflow = false; peak = 0; lock.unlock()
+        lock.lock(); frames.removeAll(); overflow = false; peak = 0; captureError = nil; inputFrames = 0; lock.unlock()
     }
     deinit { stop() }
 }
