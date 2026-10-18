@@ -79,3 +79,5 @@ macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 in
 “驱动维护”使用与连接设置相同的实心卡片、左侧说明和右侧操作行；卸载入口采用普通按钮，破坏性强调保留在确认弹窗中。服务未响应时，主状态区直接提供“重启音频服务…”；维护卡片中也始终保留此入口。
 
 独立重启通过已有管理员授权流程调用 `manage-driver.sh restart-audio`，仅向 `coreaudiod` 发送终止信号，由系统重新启动服务；不安装、删除或替换任何驱动文件，也不更改共享开关。弹窗明确说明本机所有录音、播放会暂时中断。执行成功只表示已发出重启请求；音频 worker 清除会话和驱动缓存并重新查询服务，界面显示实际连接状态。取消与命令失败单独提示；语音应用可能需要重新开始录音。
+
+交付为本地测试版 0.5.2 build 177，两端已安装并通过深度签名校验，本机随包管理脚本与源码逐字节一致。通过 `git diff --check`、`bash -n resources/microphone/manage-driver.sh`、`python3 -m unittest discover -s scripts/tests -p 'test_microphone_driver_management.py'`（2 项隔离测试）、`cargo check --locked`、`python3 scripts/release.py validate`、`./scripts/build_and_run.sh --build`、`./scripts/package-macos.sh --auto --fast`。实际检查维护卡片展开布局、状态区快捷恢复入口、重启说明弹窗及取消后共享开关保持开启；未执行管理员重启，真实恢复结果仍需用户在应用内确认后验证。
