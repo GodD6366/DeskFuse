@@ -425,7 +425,7 @@ impl Library {
                 )
                 .optional()
                 .map_err(err)?;
-            if let Some(_) = payload_len {
+            if payload_len.is_some() {
                 let body = db
                     .blob_open(
                         rusqlite::DatabaseName::Main,

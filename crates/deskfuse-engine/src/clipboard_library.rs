@@ -2987,7 +2987,7 @@ fn materialize(db: &Connection, blob_dir: &std::path::Path, v: &Value) -> Result
         .optional()
         .map_err(err)?;
     // 同时检查文件系统，EXISTS 只能检查SQLite存量
-    let payload_available = existing.as_ref().map_or(false, |(_, h, sql_has)| {
+    let payload_available = existing.as_ref().is_some_and(|(_, h, sql_has)| {
         *sql_has
             || h.as_deref()
                 .is_some_and(|h| blob_file_path(blob_dir, h).exists())
