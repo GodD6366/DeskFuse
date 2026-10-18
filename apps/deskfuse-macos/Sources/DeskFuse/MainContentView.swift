@@ -13,7 +13,7 @@ struct MainContentView: View {
         VStack(spacing: 0) {
             if page != .settings {
                 QuietPageHeader(section: page == .devices ? "配置" : "功能", title: page.rawValue,
-                    badge: page == .remoteApplications ? "Beta" : nil)
+                    badge: page.isBeta ? "Beta" : nil)
                 Divider()
             }
             pageContent
@@ -41,6 +41,7 @@ struct MainContentView: View {
             case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
             case .input: InputView(store: store, snapshot: snapshot)
             case .mouse: MouseSettingsView(engine: store.engine)
+            case .microphone: MicrophoneSettingsView(store: store).padding(.top, 16)
             case .devices:
                 DevicesView(
                     store: store,

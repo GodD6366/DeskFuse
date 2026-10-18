@@ -297,9 +297,9 @@ import DeskFuseEngine
         applyDockIconPolicy()
     }
     func openSettings(tab: String? = nil, clipboardSegment: String? = nil) {
-        // The former input settings only duplicated the main keyboard/mouse page.
-        if tab == "input" {
-            selectedPage = .input
+        // Preserve older settings links for features now in the main sidebar.
+        if tab == "input" || tab == "microphone" {
+            selectedPage = tab == "microphone" ? .microphone : .input
             openMain()
             return
         }
@@ -348,15 +348,16 @@ import DeskFuseEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "键鼠共享", mouse = "鼠标", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输", settings = "设置"
+    case clipboard = "剪贴板", input = "键鼠共享", mouse = "鼠标", microphone = "麦克风共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输", settings = "设置"
     /// The transfer queue is presented together with LAN sharing. Keep the
     /// legacy case for deep links and existing command code, but do not expose
     /// a second top-level destination in the redesigned sidebar.
-    static var allCases: [Page] { [.clipboard, .input, .mouse, .remoteApplications, .devices, .lanTransfer, .settings] }
+    static var allCases: [Page] { [.clipboard, .input, .mouse, .microphone, .remoteApplications, .devices, .lanTransfer, .settings] }
     var id: Self { self }
-    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .mouse: "computermouse"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane"; case .settings: "gearshape" } }
+    var isBeta: Bool { self == .mouse || self == .microphone || self == .remoteApplications }
+    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .mouse: "computermouse"; case .microphone: "mic"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane"; case .settings: "gearshape" } }
     /// 侧栏彩色方块图标的识别色，与设置页同名功能保持同色。
-    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .mouse: .orange; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange; case .settings: .gray } }
+    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .mouse: .orange; case .microphone: .teal; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange; case .settings: .gray } }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

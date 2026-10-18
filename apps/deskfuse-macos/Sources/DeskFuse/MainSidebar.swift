@@ -28,7 +28,7 @@ struct MainSidebar: View {
                 ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
                     QuietSidebarRow(title: page.rawValue, symbol: page.symbol,
                         selected: store.selectedPage == page,
-                        badge: page == .remoteApplications ? "Beta" : nil)
+                        badge: page.isBeta ? "Beta" : nil)
                         .tag(page)
                         .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
                         .listRowSeparator(.hidden)

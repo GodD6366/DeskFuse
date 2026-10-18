@@ -28,8 +28,7 @@ struct SettingsView: View, Equatable {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            QuietPageHeader(section: "设置", title: destination.category.title,
-                badge: destination.category == .microphone ? "Beta" : nil)
+            QuietPageHeader(section: "设置", title: destination.category.title)
             SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
                 SettingsPageContainer.Page(id: category.rawValue,
                     content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))
@@ -166,8 +165,6 @@ struct SettingsView: View, Equatable {
                     store.settingsDestination.category = .clipboard
                 },
                 openInput: { store.selectedPage = .input })
-        case .microphone:
-            MicrophoneSettingsView(store: store)
         case .updates:
             SystemSettingsFormPage {
                 SystemSettingsFormBlock {
