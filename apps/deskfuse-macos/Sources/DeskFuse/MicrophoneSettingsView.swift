@@ -33,7 +33,7 @@ struct MicrophoneSettingsView: View {
                 if model.snapshot != nil, let connectionError = model.connectionError { Text(connectionError).foregroundStyle(.red) }
                 if let error = model.error { Text(error).foregroundStyle(.red) }
             }
-            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(model.saving || model.managingDriver)
         .onAppear { model.ensureStarted(engine: store.engine); model.refreshInputs() }

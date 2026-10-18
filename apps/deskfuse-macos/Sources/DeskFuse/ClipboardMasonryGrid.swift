@@ -221,7 +221,7 @@ struct ClipboardMasonryGrid<Card: View>: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.never)
         /// 新条目插入时淡入；不带动效的列重排（move）会让两列抖动，瀑布流只用 opacity。
         .animation(Motion.snappy, value: items.map(\.id))
     }

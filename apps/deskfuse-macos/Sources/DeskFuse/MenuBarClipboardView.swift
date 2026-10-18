@@ -121,7 +121,7 @@ struct MenuBarClipboardView: View {
             Divider()
             footer
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.never)
         .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
         .floatingWorkspaceStyle()
         .background(.clear)
@@ -365,7 +365,7 @@ struct MenuBarClipboardView: View {
                         .padding(.horizontal, 12).padding(.vertical, 10)
 
                     }
-                    .scrollIndicators(.hidden)
+                    .scrollIndicators(.never)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

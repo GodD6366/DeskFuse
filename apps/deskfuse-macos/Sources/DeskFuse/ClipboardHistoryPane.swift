@@ -194,7 +194,7 @@ struct ClipboardHistoryPane: View {
                 }
             }
             .listStyle(.inset)
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.never)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 56)
             /// 新条目插入时从顶部淡入滑入。

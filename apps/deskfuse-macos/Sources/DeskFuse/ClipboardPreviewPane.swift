@@ -453,8 +453,7 @@ struct ClipboardPreviewPane: View, Equatable {
     }
 }
 
-/// Scope the native policy to the preview's outer scroll view. The process-wide
-/// overlay policy must not recreate indicators removed by SwiftUI here.
+/// Scope the native fallback to the preview; never reconfigure unrelated scroll views.
 private struct PreviewScrollIndicatorPolicy: NSViewRepresentable {
     final class Marker: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -471,7 +470,8 @@ private struct PreviewScrollIndicatorPolicy: NSViewRepresentable {
 
         func applyPolicy() {
             if let scroll = enclosingScrollView {
-                TransientScrollbars.shared.hideIndicators(in: scroll)
+                if scroll.hasVerticalScroller { scroll.hasVerticalScroller = false }
+                if scroll.hasHorizontalScroller { scroll.hasHorizontalScroller = false }
             }
         }
     }
