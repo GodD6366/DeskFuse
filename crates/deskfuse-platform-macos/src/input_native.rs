@@ -384,7 +384,8 @@ fn capture_thread(
 
 fn convert_captured_event(event_type: CGEventType, event: &CGEvent) -> Option<InputEvent> {
     let marker = event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA);
-    if marker == SYNTHETIC_PASTE_EVENT_MARKER
+    if marker == 0x4446_4d42 // Local mouse-remapping output; not a fresh app shortcut.
+        || marker == SYNTHETIC_PASTE_EVENT_MARKER
         || marker == crate::sharing::SYNTHETIC_SHARING_EVENT_MARKER
     {
         return None;

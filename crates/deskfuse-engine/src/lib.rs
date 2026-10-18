@@ -2,7 +2,7 @@
 pub mod app_update;
 pub mod clipboard_bundle;
 pub mod diagnostics;
-#[cfg(not(test))]
+#[cfg_attr(test, allow(dead_code))]
 mod diagnostics_file;
 mod github_update;
 pub mod host;
@@ -15,6 +15,7 @@ pub mod state;
 
 pub mod history_search;
 
+pub mod mouse_settings;
 pub mod workflow;
 pub mod workflow_catalog;
 pub(crate) mod workflow_image;

@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import DeskFuseEngine
 
 /// Derived preview data only. Business state and original formats stay in Rust.
-struct ClipboardMedia: Sendable {
+struct ClipboardMedia: Sendable, Equatable {
     let thumbnail: Data?
     let localPaths: Set<String>
     let pixelWidth: Int?

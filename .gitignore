@@ -52,6 +52,7 @@ identity.key
 
 # Reproducible generated native bindings and Swift build artifacts.
 /apps/deskfuse-macos/.build/
+/apps/deskfuse-macos/.build-fast/
 /apps/deskfuse-macos/.swiftpm/
 /apps/deskfuse-macos/Generated/
 /apps/deskfuse-macos/Sources/DeskFuseEngine/*.swift

@@ -42,6 +42,9 @@ pub(super) enum NetworkResult {
         endpoint: Endpoint,
         result: Result<Hello, RuntimeError>,
     },
+    /// 局域网单播探测命中：mDNS 组播被 AP 过滤时，候选 IP 上的 QUIC 握手
+    /// 成功返回了签名 hello。无应答的候选不回传。
+    LanProbe { endpoint: Endpoint, hello: Hello },
     MemberInvitation {
         attempt: RequestId,
         owner: NetworkMember,
@@ -54,6 +57,8 @@ pub(super) enum NetworkResult {
     },
     Exchange {
         peer: DeviceId,
+        endpoint: Endpoint,
+        elapsed_ms: u128,
         result: Result<(PeerHello, Vec<u8>), RuntimeError>,
     },
 }
@@ -74,6 +79,7 @@ pub(super) struct DeviceNetworkState {
     inflight: BTreeSet<DeviceId>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     last_sync: u64,
+    exchange_failures: BTreeMap<DeviceId, (u32, tokio::time::Instant)>,
     manual_probe: Option<RequestId>,
 }
 fn is_solo_network(roster: &SignedNetworkRoster, device: DeviceId) -> bool {
@@ -83,6 +89,24 @@ fn is_solo_network(roster: &SignedNetworkRoster, device: DeviceId) -> bool {
 }
 
 impl DeviceNetworkState {
+    fn periodic_exchange_due(&self, peer: DeviceId, now: tokio::time::Instant) -> bool {
+        self.exchange_failures
+            .get(&peer)
+            .is_none_or(|(_, due)| now >= *due)
+    }
+
+    fn exchange_failed(&mut self, peer: DeviceId, now: tokio::time::Instant) -> (u32, u64) {
+        let failures = self
+            .exchange_failures
+            .get(&peer)
+            .map_or(1, |(n, _)| n.saturating_add(1));
+        // Only periodic roster sync backs off; explicit pairing and control recovery stay immediate.
+        let delay = (5u64 << failures.saturating_sub(1).min(3)).min(30);
+        self.exchange_failures
+            .insert(peer, (failures, now + Duration::from_secs(delay)));
+        (failures, delay)
+    }
+
     fn can_receive_repair_invitation(&self, peer: DeviceId) -> bool {
         self.pairing_recovery
             .get(&peer)
@@ -121,6 +145,8 @@ impl DeviceNetworkState {
     }
     pub fn stop(&mut self) {
         self.manual_probe = None;
+        self.exchange_failures.clear();
+        self.inflight.clear();
         for task in self.tasks.drain(..) {
             task.abort();
         }
@@ -1304,6 +1330,9 @@ impl Actor {
                 };
                 let _ = self.event_tx.send(RuntimeEvent::PairingStatus { message });
             }
+            NetworkResult::LanProbe { endpoint, hello } => {
+                self.handle_lan_probe(endpoint, hello).await;
+            }
             NetworkResult::MemberInvitation {
                 attempt,
                 owner,
@@ -1368,8 +1397,46 @@ impl Actor {
                 }
                 self.device_network.last_sync = 0;
             }
-            NetworkResult::Exchange { peer, result } => {
+            NetworkResult::Exchange {
+                peer,
+                endpoint,
+                elapsed_ms,
+                result,
+            } => {
                 self.device_network.inflight.remove(&peer);
+                if let Err(error) = &result {
+                    let reason = match error {
+                        RuntimeError::Protocol(message)
+                            if message == "network roster exchange timeout" =>
+                        {
+                            "timeout"
+                        }
+                        RuntimeError::PeerBlocked(_) => "peer_blocked",
+                        RuntimeError::UnknownPeer(_) => "unknown_peer",
+                        RuntimeError::Identity(_) | RuntimeError::Protocol(_) => {
+                            "identity_or_protocol"
+                        }
+                        RuntimeError::ChannelClosed | RuntimeError::ShuttingDown => {
+                            "runtime_stopped"
+                        }
+                        RuntimeError::Transport(_) => "transport_failure",
+                        _ => "runtime_failure",
+                    };
+                    let (failures, delay) = self
+                        .device_network
+                        .exchange_failed(peer, tokio::time::Instant::now());
+                    let _ = self.event_tx.send(RuntimeEvent::BackgroundDiagnostic {
+                        stage: "roster_exchange_failed",
+                        detail: format!("peer={peer} endpoint={}:{} elapsed_ms={elapsed_ms} failures={failures} retry_after_secs={delay} reason={reason}", endpoint.host, endpoint.port),
+                    });
+                } else if let Some((failures, _)) =
+                    self.device_network.exchange_failures.remove(&peer)
+                {
+                    let _ = self.event_tx.send(RuntimeEvent::BackgroundDiagnostic {
+                        stage: "roster_exchange_recovered",
+                        detail: format!("peer={peer} endpoint={}:{} elapsed_ms={elapsed_ms} previous_failures={failures}", endpoint.host, endpoint.port),
+                    });
+                }
                 if let Ok((hello, bytes)) = result {
                     if hello.device_id != peer {
                         return;
@@ -1533,13 +1600,21 @@ impl Actor {
         let transport = self.transport.clone();
         let tx = self.network_result_tx.clone();
         self.device_network.tasks.push(task::spawn(async move {
+            let started = std::time::Instant::now();
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                transport.network_exchange(peer, endpoint, payload),
+                transport.network_exchange(peer, endpoint.clone(), payload),
             )
             .await
             .unwrap_or_else(|_| Err(invalid("network roster exchange timeout")));
-            let _ = tx.send(NetworkResult::Exchange { peer, result }).await;
+            let _ = tx
+                .send(NetworkResult::Exchange {
+                    peer,
+                    endpoint,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    result,
+                })
+                .await;
         }));
     }
     pub(super) async fn network_tick(&mut self) {
@@ -1585,10 +1660,20 @@ impl Actor {
         let Some(roster) = self.device_network.roster.clone() else {
             return;
         };
+        self.device_network.exchange_failures.retain(|peer, _| {
+            roster
+                .roster
+                .members
+                .iter()
+                .any(|member| member.device_id == *peer)
+        });
         if roster.roster.owner.device_id == self.identity.device_id() {
             for member in &roster.roster.members {
                 if member.device_id != self.identity.device_id()
                     && !self.blocked.contains(&member.device_id)
+                    && self
+                        .device_network
+                        .periodic_exchange_due(member.device_id, tokio::time::Instant::now())
                 {
                     self.spawn_network_exchange(
                         member.device_id,
@@ -1597,7 +1682,11 @@ impl Actor {
                     );
                 }
             }
-        } else if !self.blocked.contains(&roster.roster.owner.device_id) {
+        } else if !self.blocked.contains(&roster.roster.owner.device_id)
+            && self
+                .device_network
+                .periodic_exchange_due(roster.roster.owner.device_id, tokio::time::Instant::now())
+        {
             self.spawn_network_exchange(
                 roster.roster.owner.device_id,
                 roster.roster.owner.endpoint.clone(),
@@ -1834,6 +1923,28 @@ impl Actor {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+
+    #[test]
+    fn periodic_roster_failures_back_off_and_recover() {
+        let peer = LocalIdentity::from_bytes(&[99; 32]).unwrap().device_id();
+        let mut state = DeviceNetworkState::default();
+        let now = tokio::time::Instant::now();
+        assert!(state.periodic_exchange_due(peer, now));
+        for (index, expected) in [5, 10, 20, 30, 30].into_iter().enumerate() {
+            assert_eq!(
+                state.exchange_failed(peer, now),
+                ((index + 1) as u32, expected)
+            );
+            assert!(!state.periodic_exchange_due(peer, now));
+            assert!(!state.periodic_exchange_due(peer, now + Duration::from_secs(expected - 1)));
+            assert!(state.periodic_exchange_due(peer, now + Duration::from_secs(expected)));
+        }
+        state.exchange_failures.remove(&peer);
+        assert!(state.periodic_exchange_due(peer, now));
+        assert_eq!(state.exchange_failed(peer, now), (1, 5));
+        state.stop();
+        assert!(state.periodic_exchange_due(peer, now));
+    }
 
     #[test]
     fn repair_permission_expires_without_waiting_for_cleanup_tick() {

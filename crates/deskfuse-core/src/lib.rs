@@ -405,6 +405,9 @@ impl Capabilities {
     /// JSON catalog plus native RDP/NLA, not the macOS media protocol.
     pub const REMOTE_APPLICATION_RDP: Self = Self(1 << 13);
 
+    /// macOS mouse-button mapping synchronization (v1).
+    pub const MAC_MOUSE_SETTINGS: Self = Self(1 << 17);
+
     /// No capabilities.
     pub const NONE: Self = Self(0);
 

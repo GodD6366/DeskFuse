@@ -94,13 +94,15 @@ extension DeskFuseBrand {
     static let listRowRadius: CGFloat = 10
     static let listRowHoverFill = DeskFuseBrand.accent.opacity(0.05)
     /// 右下角应用图标水印。
-    static let watermarkOpacity: Double = 0.04
+    static let watermarkOpacity: Double = 0.07
 }
 
 // MARK: - 动画
 
 /// 共享动画曲线。所有页面动效从这里取曲线，不要各自手写 spring。
 enum Motion {
+    /// Continuous telemetry follows its one-second sampling cadence without bounce.
+    static let telemetryDuration: Double = 0.9
     /// 交互反馈：按下、选中、开关。
     static let snappy = Animation.spring(response: 0.25, dampingFraction: 0.8)
     /// 状态落定：面板展开、内容替换。

@@ -95,7 +95,7 @@ struct QuietPageHeader: View {
         }
         .font(.system(size: 14))
         .padding(.horizontal, 20)
-        .frame(height: 56)
+        .frame(height: 44)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }
@@ -106,6 +106,7 @@ struct QuietSidebarRow: View {
     var symbol: String? = nil
     let selected: Bool
     var badge: String? = nil
+    var trailingText: String? = nil
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
@@ -121,6 +122,12 @@ struct QuietSidebarRow: View {
             Text(title).lineLimit(1)
             if let badge { FeatureBadge(text: badge) }
             Spacer(minLength: 0)
+            if let trailingText {
+                Text(trailingText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .font(.system(size: 13, weight: selected ? .medium : .regular))
         .foregroundStyle(selected ? Color.primary : Color.secondary)

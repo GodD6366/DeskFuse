@@ -15,6 +15,17 @@ struct InputView: View {
     @State private var retryingInput = false
     @State private var reconnectingDevices: Set<String> = []
     @State private var openSuggestionId: String?
+    @State private var latencyScale = InputLatencyChartScale()
+    @State private var windowVisible = false
+
+    private var chartVisible: Bool { windowVisible && store.selectedPage == .input }
+
+    private var latencyPeak: Double {
+        guard chartVisible else { return 0 }
+        let quality = snapshot.input.quality
+        return (quality.samples.compactMap(\.rttMs) + [quality.rttMaxMs].compactMap { $0 })
+            .filter { $0.isFinite && $0 >= 0 }.max() ?? 0
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -35,7 +46,9 @@ struct InputView: View {
                     if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
                     layout
                         .frame(height: layoutHeight(in: geometry.size))
-                    qualityChart
+                    if chartVisible && snapshot.input.settings.controller && snapshot.input.settings.enabled && !snapshot.input.managed {
+                        qualityChart
+                    }
                     }
                     .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
                     .padding(.vertical, SystemSettingsMetrics.pageTopInset)
@@ -65,6 +78,9 @@ struct InputView: View {
             }
         }
         .systemSettingsContentBackground()
+        .background(WindowVisibilityObserver { windowVisible = $0 })
+        .onAppear { latencyScale.include(peak: latencyPeak) }
+        .onChange(of: latencyPeak) { _, peak in latencyScale.include(peak: peak) }
         .sheet(isPresented: $showAddDevice) {
             InputDevicePicker(snapshot: snapshot, adding: updatingSettings, error: store.error, onAdd: { id in
                 setParticipant(id, included: true)
@@ -90,12 +106,7 @@ struct InputView: View {
 
     /// 最近 60 秒里某一秒的往返延迟。秒数从窗口起点算起，0 是 60 秒前。
     /// 相邻采样间隔超过 2 秒就断开，避免把空档连成一条斜线。
-    private struct LatencyPoint: Identifiable {
-        let second: Double
-        let rttMs: Double
-        let series: Int
-        var id: Double { second }
-    }
+    private typealias LatencyPoint = InputLatencyPoint
 
     /// 图表底部色条的一格：这一秒出现过卡顿，颜色区分来源。
     private struct HitchTick: Identifiable {
@@ -108,32 +119,32 @@ struct InputView: View {
 
     private var qualityChart: some View {
         let quality = snapshot.input.quality
+        let peak = latencyPeak
         let sampledPoints = latencyPoints(quality)
-        let points = sampledPoints.isEmpty ? [LatencyPoint(second: 60, rttMs: 0, series: 0)] : sampledPoints
+        let points = InputLatencyTrend.smooth(sampledPoints.isEmpty
+            ? [LatencyPoint(second: 60, rttMs: 0, series: 0)] : sampledPoints)
         let hitches = hitchTicks(quality)
         let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0
-        let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? points.last?.rttMs
-        var levels = points.map(\.rttMs)
-        if let peak = quality.rttMaxMs { levels.append(peak) }
-        let ceiling = latencyCeiling(levels)
+        let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? sampledPoints.last?.rttMs
+        let ceiling = max(latencyScale.ceiling, InputLatencyChartScale.requiredCeiling(for: peak))
         let series = latencySeriesColor(quality.rttP95Ms ?? typical)
         let status = qualityStatus(quality, hasSignal: hasSignal)
         let blocked = inputBlockedReason
-        let showsPeak = quality.rttMaxMs.map { peak in
-            guard let typical else { return true }
-            return peak > typical + 0.2 && peak > typical * 1.25
-        } ?? false
-        let calloutSecond = latencyCalloutSecond(points)
-        let runCount = Dictionary(grouping: points, by: \.series).mapValues(\.count)
+        let showsPeak = peak > 0 && (typical.map {
+            peak > $0 + 0.2 && peak > $0 * 1.25
+        } ?? true)
         return VStack(alignment: .leading, spacing: compactQuality ? 6 : 16) {
             qualityHeader(status: blocked != nil ? ("暂不可用", Color.orange) : status)
             VStack(alignment: .leading, spacing: 10) {
                 if !compactQuality, let typical {
-                    latencyHero(typical: typical, peak: showsPeak ? quality.rttMaxMs : nil)
+                    latencyHero(typical: typical, peak: showsPeak ? peak : nil)
                 }
-                latencyChart(points: points, runCount: runCount, series: series,
-                             ceiling: ceiling, calloutSecond: calloutSecond, typical: typical,
-                             hitchTicks: hitches)
+                InputLatencyTransitionView(points: points, active: chartVisible) { displayed in
+                    latencyChart(points: displayed,
+                        runCount: Dictionary(grouping: displayed, by: \.series).mapValues(\.count),
+                        series: series, ceiling: ceiling, calloutSecond: latencyCalloutSecond(displayed),
+                        typical: typical, hitchTicks: hitches)
+                }
             }
             Divider()
             HStack(spacing: 16) {
@@ -177,13 +188,16 @@ struct InputView: View {
             }
             .font(.caption.weight(.medium))
             if !compactQuality {
-                Text("最近 60 秒 · 每秒更新，空闲时显示连接延迟或 0")
+                Text("最近 60 秒 · 3 秒平滑趋势 · 指标与峰值为原始采样")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
         }
         .padding(compactQuality ? 10 : 18)
         .systemSettingsBlock()
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 
     @ViewBuilder
@@ -312,7 +326,7 @@ struct InputView: View {
                         y: .value("往返", point.rttMs),
                         series: .value("段", point.series)
                     )
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(
                         LinearGradient(
                             colors: [series.opacity(0.30), series.opacity(0.03)],
@@ -325,7 +339,7 @@ struct InputView: View {
                         y: .value("往返", point.rttMs),
                         series: .value("段", point.series)
                     )
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(series)
                 } else if points.count == 1 {
@@ -384,6 +398,7 @@ struct InputView: View {
                     Text(latencyAxisTick(value.as(Double.self) ?? 0, ceiling: ceiling))
                         .font(.caption2.monospacedDigit())
                         .workspaceSecondaryText()
+                        .frame(width: 64, alignment: .trailing)
                 }
             }
         }
@@ -403,7 +418,7 @@ struct InputView: View {
             .allowsHitTesting(false)
         }
         .frame(height: compactQuality ? 84 : 168)
-        .accessibilityLabel("最近 60 秒往返延迟")
+        .accessibilityLabel("最近 60 秒往返延迟，3 秒平滑趋势")
         .accessibilityValue(milliseconds(typical))
     }
 
@@ -497,13 +512,6 @@ struct InputView: View {
             previous = second
             return LatencyPoint(second: second, rttMs: rtt, series: series)
         }
-    }
-
-    /// 亚毫秒延迟如果贴着 0 刻度，整数毫秒轴会全部变成 0 ms。刻度至少留出约两成空白。
-    private func latencyCeiling(_ values: [Double]) -> Double {
-        let peak = values.max() ?? 0
-        let steps: [Double] = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-        return steps.first { peak <= $0 * 0.82 } ?? max(peak * 1.25, 1)
     }
 
     private func latencySeriesColor(_ p95: Double?) -> Color {
@@ -603,7 +611,6 @@ struct InputView: View {
                 .font(WorkspaceTypography.section)
             Text(snapshot.input.summary).font(.callout).workspaceSecondaryText()
                 .multilineTextAlignment(.center)
-            qualityChart
             if snapshot.input.managed {
                 Button("停止被控") { store.reclaim() }
                     .modifier(NativeGlassAction())
@@ -770,11 +777,11 @@ struct InputView: View {
         .systemSettingsBlock()
     }
 
-    /// Follow the combined desktop aspect ratio while reserving room for the
-    /// quality card in the standard window height.
+    /// The user requested twice the previous canvas height so vertically
+    /// arranged screens have enough space to remain large and readable.
     private func layoutHeight(in size: CGSize) -> CGFloat {
         let displays = snapshot.input.displays
-        guard !displays.isEmpty else { return min(300, max(220, size.height - 430)) }
+        guard !displays.isEmpty else { return min(300, max(220, size.height - 430)) * 2 }
         let minX = displays.map(\.x).min() ?? 0
         let minY = displays.map(\.y).min() ?? 0
         let maxX = displays.map { $0.x + $0.width }.max() ?? 1
@@ -783,7 +790,7 @@ struct InputView: View {
         let contentWidth = max(320, size.width - SystemSettingsMetrics.pageHorizontalInset * 2 - 64)
         let aspectHeight = contentWidth / aspect + 110
         let availableHeight = max(220, min(400, size.height - 430))
-        return min(max(220, aspectHeight), availableHeight)
+        return min(max(220, aspectHeight), availableHeight) * 2
     }
 
 }

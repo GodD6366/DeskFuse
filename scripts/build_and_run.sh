@@ -33,6 +33,7 @@ chmod 0755 "$APP_BINARY"
 cp "$ROOT_DIR/resources/generated/DeskFuse.icns" "$RESOURCES_DIR/DeskFuse.icns"
 cp "$ROOT_DIR/resources/generated/deskfuse-status-icon.png" "$RESOURCES_DIR/deskfuse-status-icon.png"
 cp "$ROOT_DIR/resources/generated/DeskFuse-icon-light-1024.png" "$RESOURCES_DIR/DeskFuse-icon-light-1024.png"
+ditto "$ROOT_DIR/resources/mice" "$RESOURCES_DIR/Mice"
 
 APP_VERSION="$(python3 "$ROOT_DIR/scripts/release.py" version)"
 cp "$ROOT_DIR/resources/generated/DeskFuse-icon-1024.png" "$RESOURCES_DIR/DeskFuse-icon-1024.png"

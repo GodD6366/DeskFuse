@@ -40,6 +40,7 @@ struct MainContentView: View {
             switch page {
             case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
             case .input: InputView(store: store, snapshot: snapshot)
+            case .mouse: MouseSettingsView(engine: store.engine)
             case .devices:
                 DevicesView(
                     store: store,

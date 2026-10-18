@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import DeskFuseEngine
 
-/// Navigation observes selection; runtime refreshes are confined to the footer.
+/// Navigation observes selection; runtime refreshes stay in the device row and footer.
 struct MainSidebar: View {
     @Bindable var store: AppStore
 
@@ -21,7 +21,7 @@ struct MainSidebar: View {
                 Text("DeskFuse").font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 16)
+            .padding(.horizontal, 18).padding(.top, 4).padding(.bottom, 12)
 
             List(selection: $store.selectedPage) {
                 sectionTitle("功能")
@@ -35,8 +35,7 @@ struct MainSidebar: View {
                         .listRowBackground(Color.clear)
                 }
                 sectionTitle("配置")
-                QuietSidebarRow(title: Page.devices.rawValue, symbol: Page.devices.symbol,
-                                selected: store.selectedPage == .devices)
+                SidebarDevicesRow(store: store)
                     .tag(Page.devices)
                     .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
                     .listRowSeparator(.hidden)
@@ -79,6 +78,7 @@ struct MainSidebar: View {
                     .accessibilityLabel("设置分类")
                 }
                 SidebarDeviceStatus(store: store)
+
             }
             .padding(.top, 8)
             .overlay(alignment: .top) {
@@ -134,6 +134,17 @@ private struct DeskFuseBrandMark: View {
     }
 }
 
+private struct SidebarDevicesRow: View {
+    let store: AppStore
+
+    var body: some View {
+        let count = store.snapshot?.devices.filter(\.connected).count ?? 0
+        QuietSidebarRow(title: Page.devices.rawValue, symbol: Page.devices.symbol,
+                        selected: store.selectedPage == .devices,
+                        trailingText: "\(count) 台已连接")
+    }
+}
+
 private struct SidebarDeviceStatus: View {
     let store: AppStore
 
@@ -147,7 +158,7 @@ private struct SidebarDeviceStatus: View {
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
                     }
-                    Text("\(store.snapshot?.devices.filter(\.connected).count ?? 0) 台设备已连接")
+                    Text(Self.versionLabel)
                         .font(.system(size: 12, weight: .regular))
                         .workspaceSecondaryText()
                         .lineLimit(1)
@@ -178,6 +189,18 @@ private struct SidebarDeviceStatus: View {
         .padding(.horizontal, 10)
         .padding(.bottom, 10)
     }
+
+    private static let versionLabel: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "—"
+        let channel = Bundle.main.url(forResource: "update-channel", withExtension: nil)
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if channel != "github", let build = info["CFBundleVersion"] as? String, !build.isEmpty {
+            return "v\(version) · build \(build)"
+        }
+        return "v\(version)"
+    }()
 
     private var runtimeColor: Color {
         if store.error != nil || store.snapshot?.error != nil { return .orange }

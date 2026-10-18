@@ -28,6 +28,65 @@ fn finish_metadata(library: &Library) {
 }
 
 #[test]
+fn blob_migration_uses_pending_index_and_picks_up_later_writes() {
+    let library = Library::open().unwrap();
+    assert!(!library.migrate_blob_to_fs_step().unwrap());
+    {
+        let db = library.writer().unwrap();
+        db.execute("INSERT INTO cl_blobs VALUES('small',zeroblob(65536))", [])
+            .unwrap();
+        let plan: Vec<String> = db.prepare("EXPLAIN QUERY PLAN SELECT hash FROM cl_blobs WHERE length(bytes) > 65536 ORDER BY length(bytes) DESC LIMIT 1")
+            .unwrap().query_map([], |row| row.get(3)).unwrap()
+            .collect::<std::result::Result<_, _>>().unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("cl_blob_migration_pending")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
+    assert!(!library.migrate_blob_to_fs_step().unwrap());
+    for hash in ["abcdef01", "abcdef02"] {
+        library
+            .writer()
+            .unwrap()
+            .execute("INSERT INTO cl_blobs VALUES(?1,zeroblob(70000))", [hash])
+            .unwrap();
+        assert!(library.migrate_blob_to_fs_step().unwrap());
+        assert_eq!(
+            std::fs::read(blob_file_path(&library.blob_dir, hash)).unwrap(),
+            vec![0; 70000]
+        );
+        assert_eq!(
+            library
+                .reader()
+                .unwrap()
+                .query_row(
+                    "SELECT length(bytes) FROM cl_blobs WHERE hash=?1",
+                    [hash],
+                    |row| row.get::<_, usize>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert!(!library.migrate_blob_to_fs_step().unwrap());
+    }
+    library
+        .writer()
+        .unwrap()
+        .execute(
+            "UPDATE cl_blobs SET bytes=zeroblob(70000) WHERE hash='small'",
+            [],
+        )
+        .unwrap();
+    assert!(library.migrate_blob_to_fs_step().unwrap());
+    assert!(!library.migrate_blob_to_fs_step().unwrap());
+}
+
+#[test]
 fn membership_archives_once_and_returns_both_action_ids() {
     let library = Library::open().unwrap();
     library.set_local_device("test".into()).unwrap();
@@ -101,11 +160,13 @@ fn normalized_payload_survives_legacy_backfill_and_metadata_edits() {
         )
         .unwrap()
     );
+    // migrate_payload_step 现在把 bytes 写到文件系统，cl_blobs.bytes = x''；
+    // 通过 load_blob_db 仍可读回完整内容。
     assert_eq!(
-        db.query_row("SELECT bytes FROM cl_blobs WHERE hash=?1", [hash], |r| r
-            .get::<_, Vec<u8>>(0))
-            .unwrap(),
-        bytes
+        load_blob_db(&db, &library.blob_dir, &hash)
+            .unwrap()
+            .as_deref(),
+        Some(bytes.as_slice())
     );
 }
 
@@ -955,4 +1016,24 @@ fn an_untitled_archive_does_not_absorb_repeated_text() {
     assert_eq!(text_rows(&library, "90731230"), before);
     let items = page(&library, "");
     assert_eq!(items["items"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn optional_count_deadline_interrupts_sqlite_and_reader_remains_usable() {
+    let db = Connection::open_in_memory().unwrap();
+    let canceled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    install_query_progress_handler(&db, canceled.clone(), Some(std::time::Instant::now()));
+    let scan = "WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000) SELECT sum(n) FROM numbers";
+    let error = db
+        .query_row(scan, [], |row| row.get::<_, i64>(0))
+        .unwrap_err();
+    assert!(
+        matches!(error, rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::OperationInterrupted)
+    );
+    install_query_progress_handler(&db, canceled, None);
+    assert_eq!(
+        db.query_row(scan, [], |row| row.get::<_, i64>(0)).unwrap(),
+        50_005_000
+    );
+    db.progress_handler(0, None::<fn() -> bool>);
 }

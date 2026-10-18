@@ -89,6 +89,8 @@ impl DiagnosticLevel {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct DiagnosticRecord {
+    pub pid: u32,
+    pub version: &'static str,
     pub sequence: u64,
     pub timestamp: String,
     pub level: DiagnosticLevel,
@@ -167,6 +169,8 @@ impl Diagnostics {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let record = DiagnosticRecord {
+            pid: std::process::id(),
+            version: env!("CARGO_PKG_VERSION"),
             sequence: store.next_sequence,
             timestamp: timestamp_now(),
             level,
@@ -265,6 +269,8 @@ mod tests {
         let snapshot = diagnostics.snapshot();
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].event, "two");
+        assert_eq!(snapshot[0].pid, std::process::id());
+        assert_eq!(snapshot[0].version, env!("CARGO_PKG_VERSION"));
         assert_eq!(snapshot[1].error_code.as_deref(), Some("E_TEST"));
         assert_eq!(diagnostics.to_json_lines().lines().count(), 2);
     }

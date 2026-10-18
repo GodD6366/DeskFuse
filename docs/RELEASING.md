@@ -81,6 +81,33 @@ RELEASE_METADATA="$PWD/dist/0.2.2-build218/release.json" \
 
 此命令仅适用于尚未生成 DMG 的失败构建。已有 DMG 时拒绝覆盖；需要新包就取消 `RELEASE_METADATA`，重新运行默认命令。失败编号不回收，因此构建号跳号本身不代表缺少流程。根 `release.json` 是公开发行输入，不代表最新本地构建；以打包输出目录中的 descriptor 和包内版本为准。`build_and_run.sh` 是开发运行入口，使用 build 0，不分配发行构建号。
 
+### 本地快速构建（仅本机迭代）
+
+```sh
+./scripts/package-macos.sh --auto --fast
+```
+
+`--fast` 只接受本地 LAN 包（`--lan`/`--auto`），且与 `--homebrew`、`--release`、`CI=true` 互斥。它保留 release Rust 库、签名身份、LAN 更新清单和 seed，但：
+
+- Swift 改用 `debug` 配置 + `-Xswiftc -O` 的增量编译，并使用独立的 `apps/deskfuse-macos/.build-fast/` 缓存，不影响 `build_and_run.sh` 的 debug 缓存或发布构建的 release 缓存；
+- 默认跳过 DMG（`hdiutil`、Finder 布局、压缩和 `verify-dmg.sh`），改由 `scripts/verify-app.sh` 校验 app bundle 后直接安装；
+- 需要 DMG 时追加 `--with-dmg`：跳过 Finder 布局并使用更快的压缩级别，安装会在压缩前完成。
+
+快速模式的输出目录会写入 `build-mode=local-fast`，并在终端打印警告；该目录不得发布。首次切换会全量编译一次 Swift 缓存，之后只重编改动文件。完整发布仍必须使用不带 `--fast` 的默认流程。
+
+### 构建缓存清理
+
+构建失败时脚本只在检测到缓存损坏特征（ICE/SIGSEGV、`invalid metadata`、找不到 crate、Swift 构建数据库损坏等）时自动清理并重试；普通源码错误、签名、公证、网络或 Finder 失败不会清理缓存。手动维护入口：
+
+```sh
+./scripts/clean-build-cache.sh --rust --target arm64 --dry-run
+./scripts/clean-build-cache.sh --swift --yes
+./scripts/clean-build-cache.sh --all --dry-run
+./scripts/clean-build-cache.sh --prune --yes   # 仅清 incremental 和旧 dist 目录
+```
+
+`--rebuild-rust` / `--rebuild-swift` 可在一次打包运行中强制重建对应产物。Rust 工具链、SDK、target 或部署目标变化时，脚本会依据缓存 key 自动丢弃旧产物，避免换 Xcode/Rust 后继续复用不兼容的缓存。
+
 无 Finder 模式仍包含应用与 Applications 链接，但不设置自定义 Finder 窗口位置。普通本机包默认写入 `dist/{version}-build{number}/`；显式 `DIST_DIR`、CI 产物目录和本地 Homebrew 的 `dist/homebrew/` 不变。普通本机包默认使用 Finder 布局；本地开发签名选择保持不变。公开预发行由 CI 导入 Developer ID 并公证，不要再对 tag 工作流设 `CODESIGN_IDENTITY=-`。
 
 打包会重新生成图标，并把自有／第三方许可证和依赖声明放进 bundle 的 Resources。`verify-dmg.sh` 检查实际挂载的 app、目标架构、元数据与签名；`DESKFUSE_REQUIRE_NOTARIZE=1` 时额外要求 Developer ID、hardened runtime 和已 staple 的票据。两机行为仍须实机验收。

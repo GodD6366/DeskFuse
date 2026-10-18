@@ -49,9 +49,12 @@ const QUEUE_SIZE: usize = 512;
 fn is_synthetic_input(marker: i64, source_pid: i64) -> bool {
     marker == SYNTHETIC_SHARING_EVENT_MARKER
         || marker == SYNTHETIC_PASTE_EVENT_MARKER
+        // DFMB is emitted by the GUI process, not this input-service process.
+        || marker == 0x4446_4d42
         // Scroll processors may replace our marker on derived events while
         // retaining their original source. Do not route our output back out.
-        || source_pid == i64::from(std::process::id())
+        // DFHI is the native adapter's physical HID++ keyboard action, not an echo.
+        || (source_pid == i64::from(std::process::id()) && marker != 0x4446_4849)
 }
 
 pub use deskfuse_platform::{CaptureEvent, CaptureMode, CaptureSample};
@@ -108,6 +111,7 @@ impl Shared {
             self.fail_open(2);
             return false;
         };
+        let was_empty = events.is_empty();
         if let Some(previous) = events.back_mut()
             && matches!(previous.event, SharedInputEvent::Motion { .. })
             && matches!(sample.event, SharedInputEvent::Motion { .. })
@@ -147,7 +151,10 @@ impl Shared {
             events.push_back(sample);
         }
         drop(events);
-        self.ready.notify_one();
+        // next_event re-arms nonempty queues; merged motion needs no new wakeup.
+        if was_empty {
+            self.ready.notify_one();
+        }
         true
     }
 }
@@ -547,6 +554,7 @@ fn refresh_local_motion(
     true
 }
 struct Context {
+    diagnostics: CaptureDiagnostics,
     local_position: Option<(f64, f64)>,
     first_motion_after_switch: Option<(Instant, &'static str)>,
     shared: Arc<Shared>,
@@ -557,6 +565,46 @@ struct Context {
     consumed: BTreeSet<u16>,
     last_modifiers: Option<u64>,
     tap: CFMachPortRef,
+}
+#[derive(Default)]
+struct CaptureDiagnostics {
+    callbacks: u64,
+    motion: u64,
+    synthetic: u64,
+    timeout: u64,
+    disabled: u64,
+    panics: u64,
+    timed: u64,
+    total_us: u128,
+    max_us: u128,
+}
+impl CaptureDiagnostics {
+    fn observe_duration(&mut self, elapsed: Duration) {
+        self.timed += 1;
+        self.total_us += elapsed.as_micros();
+        self.max_us = self.max_us.max(elapsed.as_micros());
+    }
+    fn report(&mut self, window: Duration, remote: bool) {
+        if self.callbacks != 0 {
+            super::timing::record!(
+                "capture_health",
+                window,
+                format!(
+                    "remote_at_report={remote} callbacks={} motion={} synthetic={} timeout={} disabled={} panics={} timed={} sample_stride=64 mean_us={} max_us={}",
+                    self.callbacks,
+                    self.motion,
+                    self.synthetic,
+                    self.timeout,
+                    self.disabled,
+                    self.panics,
+                    self.timed,
+                    self.total_us / u128::from(self.timed.max(1)),
+                    self.max_us,
+                ),
+            );
+        }
+        *self = Self::default();
+    }
 }
 impl Context {
     fn motion_boundary(&mut self, direction: &'static str) -> PlatformResult<()> {
@@ -643,6 +691,7 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         }
     };
     let mut context = Box::new(Context {
+        diagnostics: CaptureDiagnostics::default(),
         local_position: None,
         first_motion_after_switch: None,
         shared: shared.clone(),
@@ -654,6 +703,7 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         last_modifiers: None,
         tap: ptr::null_mut(),
     });
+    let mut health_window = Instant::now();
     let event_types = [
         CGEventType::MouseMoved,
         CGEventType::LeftMouseDragged,
@@ -867,6 +917,13 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         if !context.cursor.hold() {
             context.fail_open(1);
         }
+        if health_window.elapsed() >= Duration::from_secs(10) {
+            context.diagnostics.report(
+                health_window.elapsed(),
+                shared.exclusive.load(Ordering::Acquire),
+            );
+            health_window = Instant::now();
+        }
         // SAFETY: default mode is process-lifetime and callbacks cannot overlap
         // the mutable context access above because this run loop is single-threaded.
         CFRunLoop::run_in_mode(
@@ -875,6 +932,10 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
             true,
         );
     }
+    context.diagnostics.report(
+        health_window.elapsed(),
+        shared.exclusive.load(Ordering::Acquire),
+    );
     // SAFETY: invalidation synchronously removes the callback source before its
     // Box is dropped. No context or CF object crosses this thread boundary.
     unsafe {
@@ -894,10 +955,19 @@ unsafe extern "C" fn tap_callback(
     // SAFETY: owner keeps this stable Context alive through the single-threaded
     // callback and invalidates the source before destroying it.
     let context = unsafe { &mut *user_info.cast::<Context>() };
+    context.diagnostics.callbacks += 1;
+    // Sample callback work, not input: every event still follows the same path.
+    let started =
+        (context.diagnostics.callbacks % 64 == 1 && super::timing::enabled()).then(Instant::now);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if kind == CGEventType::TapDisabledByTimeout as u32
             || kind == CGEventType::TapDisabledByUserInput as u32
         {
+            if kind == CGEventType::TapDisabledByTimeout as u32 {
+                context.diagnostics.timeout += 1;
+            } else {
+                context.diagnostics.disabled += 1;
+            }
             context.fail_open(1);
             // SAFETY: context.tap is the retained tap on its owning thread.
             unsafe {
@@ -920,6 +990,7 @@ unsafe extern "C" fn tap_callback(
         let source_pid =
             unsafe { CGEventGetIntegerValueField(event, EventField::EVENT_SOURCE_UNIX_PROCESS_ID) };
         if is_synthetic_input(marker, source_pid) {
+            context.diagnostics.synthetic += 1;
             return event;
         }
         // SAFETY: live callback event, as established above.
@@ -927,6 +998,9 @@ unsafe extern "C" fn tap_callback(
         let Some(mut sample) = sample else {
             return event;
         };
+        if matches!(sample.event, SharedInputEvent::Motion { .. }) {
+            context.diagnostics.motion += 1;
+        }
         if matches!(sample.event, SharedInputEvent::Motion { .. })
             && context.shared.restore_pending.load(Ordering::Acquire)
         {
@@ -1053,9 +1127,13 @@ unsafe extern "C" fn tap_callback(
         }
         if hotkey { ptr::null_mut() } else { event }
     }));
+    if let Some(started) = started {
+        context.diagnostics.observe_duration(started.elapsed());
+    }
     match result {
         Ok(event) => event,
         Err(_) => {
+            context.diagnostics.panics += 1;
             context.fail_open(2);
             event
         }
@@ -1233,6 +1311,11 @@ mod tests {
         assert!(is_synthetic_input(SYNTHETIC_PASTE_EVENT_MARKER, 0));
         assert!(is_synthetic_input(0x1234_5678, own_pid));
         assert!(is_synthetic_input(0, own_pid));
+        // DFHI is a physical HID++ key mapped to a keyboard event by our native adapter.
+        assert!(!is_synthetic_input(0x4446_4849, own_pid));
+        assert!(is_synthetic_input(0x4446_4d42, own_pid));
+        assert!(is_synthetic_input(0x4446_4d42, own_pid + 1));
+        assert!(!is_synthetic_input(0x4446_4849, own_pid + 1));
         assert!(!is_synthetic_input(0, 0));
         assert!(!is_synthetic_input(0x1234_5678, own_pid + 1));
     }
@@ -1357,6 +1440,7 @@ mod tests {
         let shared = Arc::new(Shared::new());
         shared.restore_pending.store(true, Ordering::Release);
         let mut context = Context {
+            diagnostics: CaptureDiagnostics::default(),
             local_position: None,
             first_motion_after_switch: None,
             shared: shared.clone(),
@@ -1654,6 +1738,45 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn merged_motion_does_not_repeat_wakeup_until_queue_is_drained() {
+        let mut capture = MacOSSharingCapture::new();
+        let ready = capture.event_notification();
+        capture
+            .shared
+            .push(sample(SharedInputEvent::Motion { x: 1.0, y: 0.0 }));
+        ready.notified().await;
+        capture
+            .shared
+            .push(sample(SharedInputEvent::Motion { x: 2.0, y: 0.0 }));
+        let waiter = ready.notified();
+        tokio::pin!(waiter);
+        assert!(!waiter.as_mut().enable());
+        assert!(capture.next_event().unwrap().is_some());
+        capture
+            .shared
+            .push(sample(SharedInputEvent::Motion { x: 3.0, y: 0.0 }));
+        tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .unwrap();
+        assert!(capture.next_event().unwrap().is_some());
+    }
+    #[test]
+    fn capture_health_resets_bounded_window() {
+        let mut health = CaptureDiagnostics {
+            callbacks: 128,
+            ..Default::default()
+        };
+        health.observe_duration(Duration::from_micros(10));
+        health.observe_duration(Duration::from_micros(30));
+        assert_eq!(health.timed, 2);
+        assert_eq!(health.total_us, 40);
+        assert_eq!(health.max_us, 30);
+        health.report(Duration::from_secs(10), false);
+        assert_eq!(health.callbacks, 0);
+        assert_eq!(health.timed, 0);
+        assert_eq!(health.max_us, 0);
+    }
+    #[tokio::test]
     async fn partial_drain_retains_wakeup_for_ordered_events() {
         let mut capture = MacOSSharingCapture::new();
         for pressed in [true, false] {
@@ -1814,6 +1937,7 @@ mod tests {
         let keyboard_source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
         let shared = Arc::new(Shared::new());
         let mut context = Context {
+            diagnostics: CaptureDiagnostics::default(),
             local_position: None,
             first_motion_after_switch: None,
             shared: shared.clone(),
@@ -1883,6 +2007,7 @@ mod tests {
         let shared = Arc::new(Shared::new());
         shared.controller_hotkeys.store(true, Ordering::Release);
         let mut context = Context {
+            diagnostics: CaptureDiagnostics::default(),
             local_position: None,
             first_motion_after_switch: None,
             shared,

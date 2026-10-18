@@ -11,6 +11,7 @@ mod application_delivery;
 mod device_network;
 mod input_delivery;
 mod input_sharing;
+mod lan_probe;
 #[cfg(test)]
 mod network_tests;
 mod reconnect;
@@ -70,6 +71,7 @@ pub type ProviderFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'static>>;
 /// A stream of discovery events.
 pub type DiscoveryStream = BoxStream<'static, Result<DiscoveryEvent, RuntimeError>>;
+pub use lan_probe::LanNetworks;
 
 /// Authenticated application messages exchanged over connected control
 /// sessions. These are clipboard, remote-input, and display-metadata payloads;
@@ -1322,6 +1324,11 @@ impl DeviceNetworkSnapshot {
 /// Events emitted to all runtime subscribers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeEvent {
+    /// Bounded background-work summaries, without application payloads.
+    BackgroundDiagnostic {
+        stage: &'static str,
+        detail: String,
+    },
     /// Rate-limited input lifecycle metadata, without input payloads or lease tokens.
     InputDiagnostic {
         stage: &'static str,
@@ -1488,6 +1495,7 @@ pub struct RuntimeBuilder {
     identity_provider: Arc<dyn IdentityProvider>,
     trust_store: Arc<dyn TrustStore>,
     persistence: Arc<dyn RuntimeStore>,
+    lan_networks: LanNetworks,
 }
 
 impl fmt::Debug for RuntimeBuilder {
@@ -1510,6 +1518,7 @@ impl Default for RuntimeBuilder {
             identity_provider: Arc::new(MemoryIdentityProvider::new()),
             trust_store: Arc::new(MemoryTrustStore::new()),
             persistence: Arc::new(MemoryRuntimeStore::new()),
+            lan_networks: Arc::new(Vec::new),
         }
     }
 }
@@ -1599,6 +1608,17 @@ impl RuntimeBuilder {
         self
     }
 
+    /// 注入本机局域网网段查询。mDNS 组播被过滤时，运行时据此对同网段
+    /// 做单播握手探测；不注入（默认空列表）则不做单播回退。
+    #[must_use]
+    pub fn with_lan_networks<F>(mut self, networks: F) -> Self
+    where
+        F: Fn() -> Vec<(std::net::Ipv4Addr, u8)> + Send + Sync + 'static,
+    {
+        self.lan_networks = Arc::new(networks);
+        self
+    }
+
     /// Start the actor on a dedicated Tokio multi-thread runtime thread.
     pub fn build(self) -> Result<RuntimeHandle, RuntimeError> {
         if self.config.display_name.trim().is_empty() {
@@ -1647,6 +1667,7 @@ impl RuntimeBuilder {
         let update_transport = transport.clone();
         let trust_store = self.trust_store;
         let persistence = self.persistence;
+        let lan_networks = self.lan_networks;
         let worker_threads = config.worker_threads.max(1);
         let input_coordinator_executor = deskfuse_transport::input_executor::coordinator()
             .map_err(|error| RuntimeError::ThreadStart(error.to_string()))?;
@@ -1690,6 +1711,7 @@ impl RuntimeBuilder {
                             view_tx_for_thread,
                         );
                         actor.delivery.results = clipboard_results_thread;
+                        actor.lan_networks = lan_networks;
                         runtime.block_on(async move {
                             let input_delivery_work = input_delivery_thread.clone();
                             let input_work = async move {
@@ -2150,6 +2172,8 @@ struct Actor {
     pending_app_messages: BTreeMap<DeviceId, VecDeque<PeerMessage>>,
     sequence: u64,
     policy: RoutePolicy,
+    lan_networks: LanNetworks,
+    lan_probe: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Actor {
@@ -2202,6 +2226,8 @@ impl Actor {
             registered_identities: BTreeMap::new(),
             pending_app_messages: BTreeMap::new(),
             sequence: 0,
+            lan_networks: Arc::new(Vec::new),
+            lan_probe: None,
         }
     }
 
@@ -2226,6 +2252,7 @@ impl Actor {
         self.attach_provider(self.discovery.clone());
         self.refresh_provider(self.discovery.clone()).await;
         self.auto_connect_trusted_peers().await;
+        self.start_lan_probe();
 
         let mut transport_messages = self.transport.messages();
         let mut network_requests = self.transport.network_requests();
@@ -2268,6 +2295,7 @@ impl Actor {
         self.delivery.stop().await;
         self.cancel_all_reconnects().await;
         self.device_network.stop();
+        self.stop_lan_probe();
         let ids = self
             .peers
             .values()
@@ -2544,6 +2572,8 @@ impl Actor {
                     self.reselect(peer_id);
                 }
                 self.refresh_provider(self.discovery.clone()).await;
+                // 组播被 AP 过滤时 Bonjour 看不到对端，显式刷新同时做一轮单播探测。
+                self.start_lan_probe();
                 // Only trusted, non-blocked peers may reconnect automatically.
                 // Ordinary mDNS updates keep failed routes suppressed; explicit
                 // scans grant them one new attempt without discarding history.
@@ -5464,6 +5494,115 @@ mod tests {
         .await;
         assert_eq!(calls.calls(), vec!["register", "connect"]);
         handle.shutdown_and_wait().await.expect("shutdown");
+    }
+
+    fn bare_actor() -> (Actor, broadcast::Receiver<RuntimeEvent>) {
+        let config = RuntimeConfig::default();
+        let identity = Arc::new(MemoryIdentityProvider::new().load_or_create().unwrap());
+        let local_hello = make_local_hello(&identity, &config).unwrap();
+        let snapshot = NetworkSnapshot::new(0, identity.device_id(), vec![]).unwrap();
+        let (snapshot_tx, _) = watch::channel(snapshot.clone());
+        let (view_tx, _) = watch::channel(SnapshotView {
+            snapshot,
+            discovered_peers: vec![],
+            device_network: Default::default(),
+        });
+        let (_, command_rx) = mpsc::channel(16);
+        let (provider_tx, provider_rx) = mpsc::channel(16);
+        let (event_tx, events) = broadcast::channel(16);
+        let actor = Actor::new(
+            config,
+            identity,
+            local_hello,
+            Arc::new(MemoryDiscovery::new()),
+            Arc::new(MemoryTransport::new()),
+            Arc::new(MemoryTrustStore::new()),
+            Arc::new(MemoryRuntimeStore::new()),
+            command_rx,
+            provider_rx,
+            provider_tx,
+            event_tx,
+            snapshot_tx,
+            view_tx,
+        );
+        (actor, events)
+    }
+
+    #[tokio::test]
+    async fn lan_probe_hit_on_unknown_device_becomes_untrusted_hint() {
+        let (mut actor, mut events) = bare_actor();
+        let (peer_id, remote) = hello();
+        let endpoint = Endpoint::new("172.18.175.65", 42424).unwrap();
+        actor.handle_lan_probe(endpoint.clone(), remote).await;
+
+        assert!(
+            !actor.peers.contains_key(&peer_id),
+            "握手命中不创建可信设备"
+        );
+        let hint = actor.hints.get(&peer_id).expect("hint");
+        assert_eq!(hint.display_name, "peer");
+        assert!(
+            hint.routes
+                .values()
+                .any(|route| route.endpoint == endpoint && route.source == RouteSource::Manual)
+        );
+        let mut announced = false;
+        while let Ok(event) = events.try_recv() {
+            announced |= matches!(event, RuntimeEvent::DiscoveredPeerHint(ref hint) if hint.peer_id == peer_id);
+        }
+        assert!(announced);
+
+        // 重复命中同一地址不会产生重复路由。
+        let (_, remote) = hello();
+        actor.handle_lan_probe(endpoint, remote).await;
+        assert_eq!(actor.hints[&peer_id].routes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lan_probe_hit_adds_route_to_known_peer_only_with_matching_key() {
+        let (mut actor, _events) = bare_actor();
+        let (peer_id, remote) = hello();
+        actor.peers.insert(
+            peer_id,
+            PeerState {
+                id: peer_id,
+                display_name: remote.display_name.clone(),
+                public_key: remote.public_key.clone().try_into().unwrap(),
+                routes: BTreeMap::new(),
+                liveness: LivenessState::Unknown,
+                trust: TrustState::Unknown,
+                connection: ConnectionState::Disconnected,
+                preferred_route: None,
+                active_route: None,
+                active_capabilities: None,
+                pending_pairing: None,
+            },
+        );
+        let endpoint = Endpoint::new("172.18.175.65", 42424).unwrap();
+        actor.handle_lan_probe(endpoint.clone(), remote).await;
+        let peer = &actor.peers[&peer_id];
+        assert!(peer.routes.values().any(|route| route.endpoint == endpoint));
+        assert!(peer.preferred_route.is_some());
+        assert!(!actor.hints.contains_key(&peer_id));
+
+        // 同一设备 ID 但公钥不同：拒绝合并，不新增路由。
+        actor.peers.get_mut(&peer_id).unwrap().public_key = [9_u8; 32];
+        let (_, remote) = hello();
+        let other = Endpoint::new("172.18.175.66", 42424).unwrap();
+        actor.handle_lan_probe(other.clone(), remote).await;
+        assert!(
+            !actor.peers[&peer_id]
+                .routes
+                .values()
+                .any(|route| route.endpoint == other)
+        );
+    }
+
+    #[tokio::test]
+    async fn lan_probe_without_networks_does_not_spawn() {
+        let (mut actor, _events) = bare_actor();
+        actor.start_lan_probe();
+        assert!(actor.lan_probe.is_none());
     }
 
     #[tokio::test]

@@ -421,7 +421,18 @@ references. A successfully authenticated endpoint becomes `CachedDirect` when
 Bonjour disappears, preserving a live connection and subsequent retry path.
 Transport failure and trust revocation still control session lifetime.
 IncludeP2P does not imply AWDL transport support: the current QUIC socket and
-endpoint format remain IPv4-only. No subnet scan is performed.
+endpoint format remain IPv4-only.
+
+Enterprise Wi-Fi often suppresses mDNS multicast across access points while
+unicast on the same subnet still works. As a fallback the runtime probes the
+local physical networks (`en<digits>` and Thunderbolt bridges, read fresh on
+every round) at startup and on each explicit refresh: every host in the
+interface subnet, clamped to the local /22 for wider networks and skipping
+loopback, link-local and /31–/32, receives one bounded identity handshake on
+control port 42424 (2 s timeout, 64 concurrent, one round at a time). A
+verified hello is merged exactly like a discovery hint: unknown devices only
+become pairing candidates, known devices must present the same public key and
+gain a `Manual` route that is persisted and redialled. No trust is granted.
 
 A solo device can initiate joining an established network: its owner explicitly
 approves and returns an owner-signed roster bound to that exact request. An

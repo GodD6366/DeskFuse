@@ -129,9 +129,11 @@ impl InputQualityWindow {
 const CAPACITY: usize = 4096;
 static RECORDS: OnceLock<Mutex<VecDeque<InputTiming>>> = OnceLock::new();
 static DROPPED: AtomicU64 = AtomicU64::new(0);
+static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, serde::Serialize)]
 pub struct InputTiming {
+    pub sequence: u64,
     timestamp_ms: u128,
     subsystem: &'static str,
     stage: &'static str,
@@ -166,6 +168,7 @@ pub fn record(stage: &'static str, duration: Duration, detail: String) {
         DROPPED.fetch_add(1, Ordering::Relaxed);
     }
     records.push_back(InputTiming {
+        sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1,
         timestamp_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -184,6 +187,11 @@ pub struct InputTimingSnapshot {
 }
 
 pub fn snapshot() -> InputTimingSnapshot {
+    snapshot_since(0)
+}
+
+/// Incremental persistence without cloning the whole diagnostic ring each time.
+pub fn snapshot_since(sequence: u64) -> InputTimingSnapshot {
     let records = RECORDS
         .get()
         .map(|records| {
@@ -191,6 +199,7 @@ pub fn snapshot() -> InputTimingSnapshot {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
+                .filter(|record| record.sequence > sequence)
                 .cloned()
                 .collect()
         })
@@ -204,6 +213,32 @@ pub fn snapshot() -> InputTimingSnapshot {
 #[cfg(test)]
 mod quality_tests {
     use super::*;
+
+    #[test]
+    fn incremental_snapshot_excludes_already_persisted_records() {
+        let before = SEQUENCE.load(Ordering::Relaxed);
+        record("persistence_test", Duration::ZERO, String::new());
+        let snapshot = snapshot_since(before);
+        assert!(
+            snapshot
+                .records
+                .iter()
+                .all(|record| record.sequence > before)
+        );
+        assert!(
+            snapshot
+                .records
+                .iter()
+                .any(|record| record.stage == "persistence_test")
+        );
+        let last = snapshot.records.last().unwrap().sequence;
+        assert!(
+            snapshot_since(last)
+                .records
+                .iter()
+                .all(|record| record.sequence > last)
+        );
+    }
 
     #[test]
     fn steady_input_is_smooth_and_reports_percentiles() {

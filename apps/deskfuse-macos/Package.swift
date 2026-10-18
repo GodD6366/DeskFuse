@@ -36,6 +36,7 @@ let applicationDependencies: [Target.Dependency] = [
 
 let applicationLinkerSettings: [LinkerSetting] = [
     .linkedFramework("AppKit"),
+    .linkedFramework("IOKit"),
     .linkedFramework("OSAKit"),
     .linkedFramework("CoreGraphics"),
     .linkedFramework("CoreFoundation"),
