@@ -13,14 +13,16 @@ Set-Location $ProjectRoot
 $env:CARGO_NET_GIT_FETCH_WITH_CLI = 'true'
 & rustc -vV
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
-& cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-platform -p unidesk-platform-windows -p unidesk-identity --lib
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-platform -p deskfuse-platform-windows -p deskfuse-identity --lib
 if ($LASTEXITCODE -ne 0) { throw 'Windows native adapter tests failed' }
-& cargo test --locked --target x86_64-pc-windows-msvc -p unidesk-transfer windows_paths --lib
-if ($LASTEXITCODE -ne 0) { throw 'Windows filename validation tests failed' }
-& cargo clippy --locked --target x86_64-pc-windows-msvc -p unidesk-platform -p unidesk-platform-windows -p unidesk-identity --all-targets -- -D warnings
+foreach ($testGroup in @('windows_paths', 'desktop_bridge')) {
+    & cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-transfer --lib $testGroup
+    if ($LASTEXITCODE -ne 0) { throw "Windows $testGroup validation tests failed" }
+}
+& cargo clippy --locked --target x86_64-pc-windows-msvc -p deskfuse-platform -p deskfuse-platform-windows -p deskfuse-identity --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { throw 'Windows native adapter lint failed' }
-& cargo build --locked --release --target x86_64-pc-windows-msvc -p unidesk-platform-windows --bin unidesk-native-probe
+& cargo build --locked --release --target x86_64-pc-windows-msvc -p deskfuse-platform-windows --bin deskfuse-native-probe
 if ($LASTEXITCODE -ne 0) { throw 'Windows native probe build failed' }
-$exe = Join-Path $ProjectRoot 'target\x86_64-pc-windows-msvc\release\unidesk-native-probe.exe'
+$exe = Join-Path $ProjectRoot 'target\x86_64-pc-windows-msvc\release\deskfuse-native-probe.exe'
 Get-FileHash $exe -Algorithm SHA256
-Write-Output 'Native adapter checks passed. This executable is a read-only probe, not the uniDesk application or installer.'
+Write-Output 'Native adapter checks passed. This executable is a read-only probe, not the DeskFuse application or installer.'

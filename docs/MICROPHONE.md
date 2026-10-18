@@ -1,11 +1,20 @@
 # 跨设备麦克风（测试版）
 
+## DeskFuse 主线迁移（2026-10-18）
+
+`codex/voice` 已迁移到 DeskFuse 目录和新版内嵌设置页。音频与快捷键能力位分别为 17、18，避开主线 RDP 与工作流能力；两端必须使用迁移后的版本。已有 HAL Bundle ID、设备 UID 和 `uniDeskMicrophone.driver` 文件名保留，避免遗留驱动无法管理。
+
+当前范围是实体麦克风采集、认证音频传输、虚拟麦克风和第三方语音软件快捷键。转写由第三方软件负责；早期讨论的浮动转写输入框、最终文本投递和剪贴板回退不属于当前实现。
+
+继续完成时需验证：新 FFI/Swift/原生驱动完整构建、双架构打包与签名、双机麦克风权限及 HAL 加载、按需启停和延迟、断线/锁屏/撤权释放，以及 Fn/单键/组合键在目标语音软件中的实际行为。当前源码没有针对麦克风会话与快捷键完整状态机的专项自动化测试，建议补充授权拒绝、超时停止和目标锁定回归。
+
+
 默认关闭，macOS 双端。A 选实体输入并显式允许 B；B 选 A，由第三方语音应用直接读取 `uniDesk 麦克风（来自 A）`。uniDesk 不转写、不保存音频、不操作转写文本或剪贴板。设置、允许列表、来源、快捷键持久化在 uniDesk 自有 `microphone.json`；Swift 只保留 Rust 快照的 UI 投影及 Core Audio 资源。
 
 ## 边界
 
-- `crates/unidesk-engine/src/microphone.rs`：配置/信任与设备网络授权、独占来源会话、原生心跳、断线/锁屏/撤权/无读取者停止。Swift 每 200ms 报告原生状态，2s 没有新报告即关闭；来源端只接受允许列表内的可信成员。
-- `crates/unidesk-transport/src/microphone.rs`：现有配对 QUIC 连接上的独立双向音频流，协议 tag 35 / capability bit 13，显式接收授权与忙碌答复。每方向最多 12 包、每包 4096 字节 Roc 数据和 1 字节接口标识。接口 1–3 为 Roc 包，4 为 200ms 一次的电平元数据，两端均显示电平。采集队列限制 100ms、传输队列限制 150ms；相对会话时钟检查 QUIC 内部滞留，超过 250ms 丢弃会话。重连使用全新流和编码器，清空驱动 decoder/环形缓冲，短缺包由 Roc 补静音。
+- `crates/deskfuse-engine/src/microphone.rs`：配置/信任与设备网络授权、独占来源会话、原生心跳、断线/锁屏/撤权/无读取者停止。Swift 每 200ms 报告原生状态，2s 没有新报告即关闭；来源端只接受允许列表内的可信成员。
+- `crates/deskfuse-transport/src/microphone.rs`：现有配对 QUIC 连接上的独立双向音频流，协议 tag 35 / capability bit 17，显式接收授权与忙碌答复。每方向最多 12 包、每包 4096 字节 Roc 数据和 1 字节接口标识。接口 1–3 为 Roc 包，4 为 200ms 一次的电平元数据，两端均显示电平。采集队列限制 100ms、传输队列限制 150ms；相对会话时钟检查 QUIC 内部滞留，超过 250ms 丢弃会话。重连使用全新流和编码器，清空驱动 decoder/环形缓冲，短缺包由 Roc 补静音。
 - `MicrophoneAudio.swift`：Core Audio 选择实体输入，AVAudioEngine/AVAudioConverter 转 48kHz mono Float32。排除 uniDesk UID 及虚拟/聚合设备以防回环；不覆盖实体输入的系统默认选择。系统默认为虚拟输入时回退首个可用实体输入。
 - `MicrophoneSharing.swift`：专用后台线程编码/转发/回环反馈，实际 HAL StartIO/StopIO 通过私有驱动 RPC 查询；仅有读取者才请求音频会话。没有权限时由主应用申请 `NSMicrophoneUsageDescription`。操作系统睡眠、会话锁定分别追踪。
 - `MicrophoneNative`：Roc sender encoder pt96、48k mono、5ms packet、RS8M 10/4；接收端 target latency 100ms。驱动 gRPC 仅 `127.0.0.1:19712`；RTP/repair/RTCP 仅回环 `19721/19722/19723`。反馈经同一认证音频通道反向传回。

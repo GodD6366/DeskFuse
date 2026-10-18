@@ -21,20 +21,20 @@ def main() -> int:
     files = source_files(worktree=args.worktree)
     errors = []
     forbidden = ("artifacts/", "target/", "dist/", ".agents/", ".codex/", "docs/archive/", "docs/history/", "design/iterations/", "design/current/archive/", ".antigravitycli/", "design/atelier/", "design/proposals/", "resources/generated/")
-    generated = ("apps/unidesk-macos/Generated/", "apps/unidesk-macos/Sources/UniDeskEngine/", "apps/unidesk-macos/Sources/UniDeskEngineFFI/")
+    generated = ("apps/deskfuse-macos/Generated/", "apps/deskfuse-macos/Sources/DeskFuseEngine/", "apps/deskfuse-macos/Sources/DeskFuseEngineFFI/")
     for name in sorted(files):
         if name.startswith(generated):
             errors.append(f"generated native binding cannot be published: {name}")
     secret_patterns = [r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----", r"\bAKIA[0-9A-Z]{16}\b", r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"]
     # Exact public TLS bootstrap fixtures; never allow arbitrary DER keys/certificates.
     bootstrap_hashes = {
-        "resources/unidesk-transport-cert.der": "e1d72b0257f1ff0f91aedbc279cd3f779b971c1a03a14c2a53b3bf473a9b437f",
-        "resources/unidesk-transport-key.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac",
+        "resources/deskfuse-transport-cert.der": "bebea72839ae99749d8e3e4f5dde02e830a32968091251d7e64edaa7d5659708",
+        "resources/deskfuse-transport-key.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac",
     }
     for name in sorted(files):
         path = ROOT / name
         if (name.startswith(forbidden) or "/target/" in name or name.endswith((".p12", ".p8", ".pfx", ".keychain-db", ".DS_Store"))
-                or (name.endswith("Cargo.lock") and name != "Cargo.lock") or name in {"AGENTS.md", "CLAUDE.md", "docs/INPUT_DATAGRAM_PLAN.md", "docs/NATIVE_MIGRATION.md", "skills-lock.json", "node", ".codesign-identity", "identity.key", "signing-key.hex", "scripts/probe-finder-applescript.sh", "scripts/probe-finder-directory.py"}
+                or (name.endswith("Cargo.lock") and name != "Cargo.lock") or name in {"CLAUDE.md", "docs/INPUT_DATAGRAM_PLAN.md", "docs/NATIVE_MIGRATION.md", "skills-lock.json", "node", ".codesign-identity", "identity.key", "signing-key.hex", "scripts/probe-finder-applescript.sh", "scripts/probe-finder-directory.py"}
                 or any(part in {".build", ".swiftpm", "__pycache__"} for part in path.parts)
                 or path.name in {".env", "identity.key", "signing-key.hex"}
                 or (path.name.startswith(".env.") and path.name != ".env.example")):

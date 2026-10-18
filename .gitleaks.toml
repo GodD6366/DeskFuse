@@ -6,4 +6,4 @@ description = "Exact SHA-256 fingerprint of the intentionally public TLS bootstr
 condition = "AND"
 paths = ['''(?:^|/)scripts/check-repository\.py$''']
 regexTarget = "line"
-regexes = ['''"resources/unidesk-transport-key\.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac"''']
+regexes = ['''"resources/[a-z]+-transport-key\.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac"''']

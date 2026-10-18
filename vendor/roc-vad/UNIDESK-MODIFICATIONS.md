@@ -26,7 +26,7 @@ uniDesk modifications:
   architecture arguments and remove an obsolete gRPC template disambiguator
   using deterministic, checksummed build patches.
 - Order every protocol-header consumer after RPC generation for clean parallel builds.
-- Native C ABI sender/RPC shim lives in apps/unidesk-macos/MicrophoneNative.
+- Native C ABI sender/RPC shim lives in apps/deskfuse-macos/MicrophoneNative.
 
 Build from repository root using `scripts/build-roc-microphone.sh arm64`.
 The source bundle includes these modifications and all compiled dependencies,

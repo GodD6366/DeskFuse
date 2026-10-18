@@ -3,7 +3,7 @@
 # Developer ID builds use a secure timestamp and hardened runtime so notarytool
 # can accept the product. Ad-hoc and Apple Development keep the existing flags.
 
-unidesk_resolve_signing_kind() {
+deskfuse_resolve_signing_kind() {
   if [[ "${CODESIGN_IDENTITY}" == "-" ]]; then
     SIGNING_KIND=ad-hoc
     return 0
@@ -25,9 +25,9 @@ unidesk_resolve_signing_kind() {
   esac
 }
 
-unidesk_codesign() {
+deskfuse_codesign() {
   if [[ "$#" -lt 1 ]]; then
-    echo "error: unidesk_codesign requires a target" >&2
+    echo "error: deskfuse_codesign requires a target" >&2
     return 2
   fi
   # bash 3.2 + set -u treats an empty "${array[@]}" as unbound. Build one
@@ -50,20 +50,20 @@ unidesk_codesign() {
   "${cmd[@]}"
 }
 
-unidesk_write_signing_status() {
+deskfuse_write_signing_status() {
   local directory="$1"
   local notarized="${2:-false}"
   mkdir -p "$directory"
   printf '%s\n%s\n' "$SIGNING_KIND" "$notarized" > "$directory/.signing"
   if [[ -n "${GITHUB_ENV:-}" ]]; then
     {
-      printf 'UNIDESK_SIGNING=%s\n' "$SIGNING_KIND"
-      printf 'UNIDESK_NOTARIZED=%s\n' "$notarized"
+      printf 'DESKFUSE_SIGNING=%s\n' "$SIGNING_KIND"
+      printf 'DESKFUSE_NOTARIZED=%s\n' "$notarized"
     } >> "$GITHUB_ENV"
   fi
 }
 
-unidesk_notarize_credentials_ready() {
+deskfuse_notarize_credentials_ready() {
   if [[ -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER:-}" ]]; then
     return 0
   fi

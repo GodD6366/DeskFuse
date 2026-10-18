@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/rust-toolchain-env.sh"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: cargo is not installed; install Rust 1.97.1 before running checks" >&2
@@ -16,6 +17,8 @@ fi
 
 printf '== rustc ==\n'
 rustc --version
+printf '== cargo ==\n'
+cargo --version
 printf '== cargo fmt ==\n'
 cargo fmt --all -- --check
 printf '== cargo check ==\n'

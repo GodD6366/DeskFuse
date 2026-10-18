@@ -4,31 +4,69 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESOURCE_DIR="$ROOT_DIR/resources"
 GENERATED_DIR="$RESOURCE_DIR/generated"
-ICONSET_DIR="$GENERATED_DIR/uniDesk.iconset"
+ICONSET_DIR="$GENERATED_DIR/DeskFuse.iconset"
 
-for command_name in sips python3; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "error: required command not found: $command_name" >&2
-    exit 127
-  fi
-done
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: required command not found: python3" >&2
+  exit 127
+fi
+
+mkdir -p "$GENERATED_DIR"
+ASSET_FINGERPRINT_FILE="$GENERATED_DIR/.assets-fingerprint"
+ASSET_FINGERPRINT="$(python3 - "$ROOT_DIR" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+hasher = hashlib.sha256()
+for relative in (
+    "resources/DeskFuse-icon.svg",
+    "resources/DeskFuse-icon-light.svg",
+    "resources/deskfuse-status-icon.svg",
+    "resources/dmg-background.svg",
+    "scripts/export-center-icon.py",
+    "scripts/pack-icon.py",
+    "scripts/generate-assets.sh",
+):
+    hasher.update(relative.encode())
+    hasher.update((root / relative).read_bytes())
+print(hasher.hexdigest())
+PY
+)"
+if [[ "${DESKFUSE_FORCE_ASSETS:-0}" != 1 \
+  && -f "$ASSET_FINGERPRINT_FILE" \
+  && "$(cat "$ASSET_FINGERPRINT_FILE")" == "$ASSET_FINGERPRINT" \
+  && -s "$GENERATED_DIR/DeskFuse.icns" \
+  && -s "$GENERATED_DIR/DeskFuse-icon-1024.png" \
+  && -s "$GENERATED_DIR/DeskFuse-icon-light-1024.png" \
+  && -s "$GENERATED_DIR/deskfuse-status-icon.png" \
+  && -s "$GENERATED_DIR/dmg-background.png" \
+  && -s "$RESOURCE_DIR/macos_center_icon.svg" ]]; then
+  echo "asset cache hit"
+  exit 0
+fi
+
+if ! command -v sips >/dev/null 2>&1; then
+  echo "error: required command not found: sips" >&2
+  exit 127
+fi
 
 rm -rf "$ICONSET_DIR"
-mkdir -p "$GENERATED_DIR" "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
 
 python3 "$ROOT_DIR/scripts/export-center-icon.py"
-sips -s format png "$RESOURCE_DIR/uniDesk-icon.svg" --out "$GENERATED_DIR/uniDesk-icon-1024.png" >/dev/null
+sips -s format png "$RESOURCE_DIR/DeskFuse-icon.svg" --out "$GENERATED_DIR/DeskFuse-icon-1024.png" >/dev/null
+sips -s format png "$RESOURCE_DIR/DeskFuse-icon-light.svg" --out "$GENERATED_DIR/DeskFuse-icon-light-1024.png" >/dev/null
 # Render the dedicated monochrome template at native 2x (36px for 18pt).
 # Never derive the menu bar glyph from the colored application artwork.
-sips -s format png "$RESOURCE_DIR/unidesk-status-icon.svg" --out "$GENERATED_DIR/unidesk-status-icon.png" >/dev/null
+sips -s format png "$RESOURCE_DIR/deskfuse-status-icon.svg" --out "$GENERATED_DIR/deskfuse-status-icon.png" >/dev/null
 sips -s format png "$RESOURCE_DIR/dmg-background.svg" --out "$GENERATED_DIR/dmg-background.png" >/dev/null
 
 for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$GENERATED_DIR/uniDesk-icon-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+  sips -z "$size" "$size" "$GENERATED_DIR/DeskFuse-icon-light-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
   double_size=$((size * 2))
-  sips -z "$double_size" "$double_size" "$GENERATED_DIR/uniDesk-icon-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+  sips -z "$double_size" "$double_size" "$GENERATED_DIR/DeskFuse-icon-light-1024.png" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
 done
 
 # Keep PNG alpha intact even for 16/32 pt representations.
 python3 "$ROOT_DIR/scripts/pack-icon.py"
+printf '%s\n' "$ASSET_FINGERPRINT" > "$ASSET_FINGERPRINT_FILE"
 printf 'generated assets in %s\n' "$GENERATED_DIR"

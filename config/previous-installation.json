@@ -1,0 +1,7 @@
+{
+  "name": "uniDesk",
+  "bundleIdentifier": "com.unidesk.app",
+  "dataDirectory": "uniDesk",
+  "appBundle": "uniDesk.app",
+  "cacheDirectory": "com.unidesk.app/clipboard"
+}

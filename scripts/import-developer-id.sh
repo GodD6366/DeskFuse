@@ -21,11 +21,11 @@ if [[ -z "${APPLE_DEVELOPER_ID_P12_PASSWORD:-}" ]]; then
   exit 1
 fi
 
-STATE_DIR="${UNIDESK_SIGNING_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/unidesk-codesign}"
+STATE_DIR="${DESKFUSE_SIGNING_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/deskfuse-codesign}"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 STATE_FILE="$STATE_DIR/state"
-KEYCHAIN_PATH="$STATE_DIR/unidesk.keychain-db"
+KEYCHAIN_PATH="$STATE_DIR/deskfuse.keychain-db"
 P12_PATH="$STATE_DIR/developer-id.p12"
 KEYCHAIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 
@@ -73,7 +73,7 @@ chmod 600 "$STATE_FILE" "$STATE_DIR/keychain-password"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     printf 'CODESIGN_IDENTITY=%s\n' "$IDENTITY_HASH"
-    printf 'UNIDESK_SIGNING_STATE_DIR=%s\n' "$STATE_DIR"
+    printf 'DESKFUSE_SIGNING_STATE_DIR=%s\n' "$STATE_DIR"
   } >> "$GITHUB_ENV"
 fi
 

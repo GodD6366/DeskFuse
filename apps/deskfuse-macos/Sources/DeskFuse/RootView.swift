@@ -1,0 +1,110 @@
+import SwiftUI
+
+/// Settings and the last workspace share one window and retain their view state.
+struct RootView: View {
+    @Bindable var store: AppStore
+    @State private var historySearchRequest = 0
+    @State private var deviceSearchRequest = 0
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(spacing: 0) {
+            MainSidebar(store: store)
+                .frame(width: 212)
+            workspace
+        }
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .tint(DeskFuseBrand.accent)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
+        .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
+        .focusedSceneValue(\.searchDevices, (store.selectedPage == .devices || store.selectedPage == .remoteApplications) ? { deviceSearchRequest += 1 } : nil)
+        .onAppear {
+            store.showMainWindow = { openWindow(id: "main") }
+        }
+        .sheet(isPresented: permissionPromptBinding) {
+            if store.previousInstallation.isPresented {
+                PreviousInstallationPrompt(controller: store.previousInstallation).floatingWorkspaceStyle()
+            } else {
+                PermissionPromptView(controller: store.permissionPrompt).floatingWorkspaceStyle()
+            }
+        }
+        .sheet(isPresented: onboardingBinding) {
+            OnboardingPrompt(store: store).floatingWorkspaceStyle()
+        }
+    }
+
+    private var onboardingBinding: Binding<Bool> {
+        Binding(
+            get: { store.onboarding.isPresented },
+            set: { show in if !show { store.onboarding.complete() } }
+        )
+    }
+
+    private var permissionPromptBinding: Binding<Bool> {
+        Binding(
+            get: { store.previousInstallation.isPresented || store.permissionPrompt.presented != nil },
+            set: { show in if !show { store.permissionPrompt.presented = nil } }
+        )
+    }
+
+    private var workspace: some View {
+        SettingsPageContainer(selection: store.selectedPage == .settings ? "settings" : "workspace", pages: [
+            .init(id: "workspace", content: AnyView(MainContentView(
+                store: store, page: store.workspacePage,
+                historySearchRequest: historySearchRequest,
+                deviceSearchRequest: deviceSearchRequest,
+                localDeviceRequest: store.deviceSelectionRequest
+            ))),
+            .init(id: "settings", content: AnyView(SettingsView(
+                store: store, presentation: SettingsPresentation(store.snapshot),
+                destination: store.settingsDestination
+            ).equatable()))
+        ])
+        .overlay(alignment: .bottomLeading) {
+            if store.selectedPage == .settings {
+                ErrorNoticeView(notice: store.errorNotice)
+                    .frame(width: 320).padding(14)
+            }
+        }
+        .systemSettingsContentBackground()
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+}
+
+private struct SearchClipboardKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+private struct SearchDevicesKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+extension FocusedValues {
+    var searchClipboard: (() -> Void)? {
+        get { self[SearchClipboardKey.self] }
+        set { self[SearchClipboardKey.self] = newValue }
+    }
+
+    var searchDevices: (() -> Void)? {
+        get { self[SearchDevicesKey.self] }
+        set { self[SearchDevicesKey.self] = newValue }
+    }
+}
+
+struct ClipboardCommands: Commands {
+    @FocusedValue(\.searchClipboard) private var searchClipboard
+    @FocusedValue(\.searchDevices) private var searchDevices
+
+    var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("搜索剪贴板") { searchClipboard?() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(searchClipboard == nil)
+            Button("搜索设备") { searchDevices?() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(searchDevices == nil)
+        }
+    }
+}

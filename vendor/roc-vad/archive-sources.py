@@ -29,7 +29,7 @@ def clean(info):
 with output.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as gz, tarfile.open(fileobj=gz, mode='w') as archive:
     def add(path, name):
         if path.is_file(): archive.add(path, arcname=str(pathlib.Path('uniDeskMicrophone-Sources') / name), recursive=False, filter=clean)
-    for directory in ['vendor/roc-vad', 'apps/unidesk-macos/MicrophoneNative']:
+    for directory in ['vendor/roc-vad', 'apps/deskfuse-macos/MicrophoneNative']:
         for path in sorted((root / directory).rglob('*')):
             if 'bin' in path.parts or path.name.startswith('driver_protocol.') and path.suffix in {'.h', '.cc'} or path.name == 'compile_commands.json': continue
             add(path, path.relative_to(root))

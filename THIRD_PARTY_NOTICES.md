@@ -6,7 +6,7 @@
 
 - 版本和来源以根 `Cargo.lock` 为准；Rust 共享引擎通过 UniFFI 生成 Swift 绑定，原生客户端使用 Apple SwiftUI/AppKit。
 - `scripts/third-party-notices.py` 读取 locked Cargo metadata，导出目标平台依赖声明和可获得的许可证正文；它包含构建／开发依赖，因此不是“全部组件均链接入应用”的声明。
-- DMG 内 `uniDesk.app/Contents/Resources/THIRD_PARTY_DEPENDENCIES.txt` 包含导出的声明、来源和许可证，另附项目双许可证和 Lucide 许可。
+- DMG 内 `DeskFuse.app/Contents/Resources/THIRD_PARTY_DEPENDENCIES.txt` 包含导出的声明、来源和许可证，另附项目双许可证和 Lucide 许可。
 - 部分 crate 发布归档不附独立许可文件。已从相应 upstream revision 补取的文本及哈希见 `resources/licenses/manifest.json`；归档无 VCS revision 的记录明确标注来源限制，不伪称为精确发行时文本。
 - 少数锁定依赖只提供许可声明时，按已审阅记录保留 package 作者、声明与所选许可标准条款；声明原文哈希固定，不编造上游版权行。
 - 标准 MIT 文本来自 SPDX license-list-data commit `3ac5a9c241d97f95b22a5e366c9c841404a35639`。标准模板不是上游版权声明；已移除不再属于当前依赖图的历史许可副本。
@@ -30,14 +30,18 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 ## 图标与图形
 
 - `resources/icons/`：Lucide SVG，见该目录 README 与 LICENSE；保留 Lucide／Feather 的原始署名。原生客户端控件使用系统 SF Symbols。
-- `resources/uniDesk-icon.svg`、`unidesk-status-icon.svg`、`dmg-background.svg`：项目维护的品牌／安装图形源，按项目双许可证分发；派生 PNG、ICNS 和中心图由脚本生成。
+- `resources/DeskFuse-icon.svg`、`deskfuse-status-icon.svg`、`dmg-background.svg`：项目维护的品牌／安装图形源，按项目双许可证分发；派生 PNG、ICNS 和中心图由脚本生成。
 - 原生系统符号／设备表现由平台 API 提供，不从 macOS 系统资源提取二进制素材加入仓库。
 - `design/current/` 的 v5 与菜单栏原图来自 Atelier，来源标识与 SHA-256 见同目录清单；布局参考为用户提供的截图，图标预览来自项目 SVG。设计图不属于原生应用运行证据，不随应用打包。
 - 早期设计参考中的风景照来自 [Unsplash 图片源](https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1)；原始示例照片及旧 HTML 样稿已清理，此处保留来源署名。[Unsplash License](https://unsplash.com/license) 单独适用，不属于项目双许可证。
 
 ## 参考项目
 
-BlueSync 用于交互行为参考；uniDesk 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。
+BlueSync 用于交互行为参考；DeskFuse 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。
+
+## Windows RDP RemoteApp 客户端
+
+macOS 客户端静态链接 FreeRDP/WinPR 3.14.1（Apache-2.0）、OpenSSL 3.6.5（Apache-2.0）和 json-c 0.18（MIT）。固定源码提交及构建入口见 `scripts/build-freerdp-macos.sh`；打包时将上游许可证原文合并为 `DeskFuse.app/Contents/Resources/THIRD_PARTY_RDP.txt`。这些原生依赖不在 Cargo.lock 内，单独随产物附带声明。
 
 ## Roc 麦克风驱动与音频编码
 

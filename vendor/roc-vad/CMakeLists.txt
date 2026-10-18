@@ -67,7 +67,7 @@ if(NOT BOOTSTRAP)
   add_subdirectory(rpc)
   add_subdirectory(driver)
   add_subdirectory(tool)
-  add_subdirectory(${PROJECT_ROOT}/../../apps/unidesk-macos/MicrophoneNative ${CMAKE_CURRENT_BINARY_DIR}/microphone)
+  add_subdirectory(${PROJECT_ROOT}/../../apps/deskfuse-macos/MicrophoneNative ${CMAKE_CURRENT_BINARY_DIR}/microphone)
   # Generated protocol headers must precede every consuming compilation.
   add_dependencies(${COMMON_LIB} ${RPC_LIB})
   add_dependencies(${DRIVER_LIB} ${RPC_LIB})

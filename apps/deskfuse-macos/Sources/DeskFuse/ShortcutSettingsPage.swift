@@ -1,0 +1,66 @@
+import SwiftUI
+import DeskFuseEngine
+
+struct ShortcutSettingsPage: View {
+    @Bindable var store: AppStore
+    let manageWorkflows: () -> Void
+    let openInput: () -> Void
+    private let directions = ShortcutEditor.titles
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "keyboard").font(.system(size: 20)).foregroundStyle(.secondary)
+                Text("用一组按键，运行工作流或切换控制设备。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }.padding(.horizontal, 26).padding(.top, 2).padding(.bottom, 12)
+            SystemSettingsFormPage {
+                WorkflowShortcutSettings(store: store, manageWorkflows: manageWorkflows)
+                SystemSettingsFormBlock(
+                    title: "键鼠控制",
+                    titleSymbol: "computermouse",
+                    footer: "方向切换与锁定遵循键鼠共享状态；显示组合键不代表当前可用。"
+                ) {
+                    if let input = store.snapshot?.input {
+                        ForEach(Array(input.settings.shortcuts.prefix(6).enumerated()), id: \.offset) { index, shortcut in
+                            HStack {
+                                Text(directions[index])
+                                Spacer()
+                                ShortcutKeycaps(shortcut: shortcut)
+                            }.padding(.vertical, 3)
+                        }
+                        if !input.managed {
+                            Button("打开键鼠共享", action: openInput)
+                        } else {
+                            Text(input.summary).font(.caption).foregroundStyle(.secondary)
+                            if input.managed {
+                                Button("停止被控") { store.reclaim() }.disabled(input.managedPaused)
+                            }
+                        }
+                    } else {
+                        Text("正在读取键鼠设置…").foregroundStyle(.secondary)
+                    }
+                }
+                SystemSettingsFormBlock(
+                    title: "固定快捷键",
+                    titleSymbol: "lock",
+                    footer: "这些组合键由 DeskFuse 保留，不能分配给工作流。"
+                ) {
+                    fixedRow("紧急收回（保底）", detail: "自定义按键之外，此组合始终可用", key: 53, modifiers: 0x1c0000)
+                    fixedRow("文件暂存区", detail: "打开或收起暂存区", key: 2, modifiers: 0x120000)
+                }
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+    private func fixedRow(_ title: String, detail: String, key: UInt16, modifiers: UInt64) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            ShortcutKeycaps(shortcut: Shortcut(keyCode: key, modifiers: modifiers))
+            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.tertiary).padding(.leading, 6)
+        }.padding(.vertical, 3)
+    }
+}

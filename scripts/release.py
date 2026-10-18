@@ -17,19 +17,36 @@ import urllib.parse
 import urllib.request
 import uuid
 import shutil
+import runpy
 
 ROOT = Path(__file__).resolve().parent.parent
+DISTRIBUTION = runpy.run_path(str(ROOT / "scripts/distribution-config.py"))["load"]()
 ASSETS = (
-    "uniDesk-arm64.dmg",
-    "uniDesk-x86_64.dmg",
+    DISTRIBUTION["assets"]["arm64"],
+    DISTRIBUTION["assets"]["x86_64"],
+    DISTRIBUTION["assets"]["windows_x64"],
+    "release.json",
+    "build-info.json",
+    "SHA256SUMS",
+)
+MACOS_ASSETS = (
+    DISTRIBUTION["assets"]["arm64"],
+    DISTRIBUTION["assets"]["x86_64"],
     "release.json",
     "build-info.json",
     "SHA256SUMS",
 )
 TARGET_ASSETS = {
-    "uniDesk-arm64.dmg": "aarch64-apple-darwin",
-    "uniDesk-x86_64.dmg": "x86_64-apple-darwin",
+    DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
+    DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
+    DISTRIBUTION["assets"]["windows_x64"]: "win-x64",
 }
+MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
+                       if target.endswith("-apple-darwin")}
+# v0.4.5 was published before the Windows asset became part of the public
+# distribution contract. Keep it probeable so a retry does not try to replace
+# an already-published two-DMG release unless --macos-only is explicit.
+LEGACY_RELEASE_VERSIONS = {"0.4.5"}
 
 
 def version(root: Path = ROOT) -> str:
@@ -63,11 +80,11 @@ def write_json(path: Path, data: dict) -> None:
 def prepare(out: Path) -> None:
     if out.exists():
         raise ValueError("descriptor already exists; remove it explicitly only when preparing a NEW release")
-    ledger = Path(os.environ.get("UNIDESK_RELEASE_LEDGER", str(Path.home() / "Library/Application Support/uniDesk-release/build-ledger"))).resolve()
+    ledger = Path(os.environ.get("DESKFUSE_RELEASE_LEDGER", str(Path.home() / "Library/Application Support/DeskFuse-release/build-ledger"))).resolve()
     if ledger.is_relative_to(ROOT.resolve()):
         raise ValueError("release ledger must stay outside the checkout")
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cargo", "run", "--locked", "--quiet", "-p", "unidesk-update", "--bin", "unidesk-release", "--", "next", version(), str(ledger), str(out)], cwd=ROOT, check=True)
+    subprocess.run(["cargo", "run", "--locked", "--quiet", "-p", "deskfuse-update", "--bin", "deskfuse-release", "--", "next", version(), str(ledger), str(out)], cwd=ROOT, check=True)
     validate(out, version())
 
 
@@ -80,24 +97,26 @@ def signing_status(directory: Path, sidecar: Path | None = None) -> tuple[str, b
             raise ValueError("invalid packaging signing sidecar")
         kind, notarized = lines[0], lines[1] == "true"
     else:
-        kind = os.environ.get("UNIDESK_SIGNING", "ad-hoc")
+        kind = os.environ.get("DESKFUSE_SIGNING", "ad-hoc")
         if kind not in allowed:
-            raise ValueError("UNIDESK_SIGNING must be ad-hoc, apple-development, or developer-id")
-        notarized = os.environ.get("UNIDESK_NOTARIZED", "").lower() in {"1", "true", "yes"}
+            raise ValueError("DESKFUSE_SIGNING must be ad-hoc, apple-development, or developer-id")
+        notarized = os.environ.get("DESKFUSE_NOTARIZED", "").lower() in {"1", "true", "yes"}
     if notarized and kind != "developer-id":
         raise ValueError("only Developer ID Application builds can be notarized")
     return kind, notarized
 
 
-def inventory(directory: Path, commit: str) -> None:
+def inventory(directory: Path, commit: str, include_windows: bool = True) -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("expected full source commit SHA")
     release = validate(directory / "release.json", version())
-    missing = [name for name in ASSETS[:-2] if not (directory / name).is_file()]
+    asset_names = ASSETS if include_windows else MACOS_ASSETS
+    target_assets = TARGET_ASSETS if include_windows else MACOS_TARGET_ASSETS
+    missing = [name for name in asset_names[:-2] if not (directory / name).is_file()]
     if missing:
         raise ValueError(f"release assets missing: {', '.join(missing)}")
     targets = []
-    for name, target in TARGET_ASSETS.items():
+    for name, target in target_assets.items():
         sidecar = None
         if name.endswith("arm64.dmg"):
             sidecar = directory / ".signing-arm64"
@@ -115,12 +134,24 @@ def inventory(directory: Path, commit: str) -> None:
                 "notarized": notarized,
             }
         else:
+            manifest_path = directory / f"{name}.manifest.json"
+            authenticode = "unknown"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+                if (manifest.get("target") != target
+                        or manifest.get("installer_sha256") != checksum(directory / name)
+                        or any(manifest.get(key) != value for key, value in release.items())):
+                    raise ValueError("Windows installer manifest conflicts with asset")
+                authenticode = manifest.get("authenticode", "unknown")
+                if manifest.get("release_signed") is not True:
+                    raise ValueError("Windows installer payload is not release signed")
             target_info = {
                 "asset": name,
                 "target": target,
                 "sha256": checksum(directory / name),
-                "signing": "not-signed",
+                "signing": "authenticode" if authenticode == "Valid" else "not-signed",
                 "notarized": False,
+                "authenticode": authenticode,
             }
         targets.append(target_info)
     rustc = "unavailable"
@@ -129,48 +160,58 @@ def inventory(directory: Path, commit: str) -> None:
     write_json(directory / "build-info.json", {
         "commit": commit, "release": release, "targets": targets,
         "minimum_macos": "14.0", "rustc": rustc,
-        "dmg_sha256": checksum(directory / ASSETS[0]),
+        "dmg_sha256": checksum(directory / asset_names[0]),
     })
-    (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in ASSETS if name != "SHA256SUMS"))
-    verify_inventory(directory, release, commit)
+    (directory / "SHA256SUMS").write_text("".join(f"{checksum(directory / name)}  {name}\n" for name in asset_names if name != "SHA256SUMS"))
+    verify_inventory(directory, release, commit, include_windows=include_windows)
 
 
-def verify_inventory(directory: Path, release: dict, commit: str) -> None:
-    expected = {name for name in ASSETS if name != "SHA256SUMS"}
+def verify_inventory(directory: Path, release: dict, commit: str, include_windows: bool | None = None) -> None:
+    all_expected = {name for name in ASSETS if name != "SHA256SUMS"}
+    legacy_expected = all_expected - {DISTRIBUTION["assets"]["windows_x64"]}
     actual = {}
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9._-]+)", line)
-        if not match or match[2] not in expected or match[2] in actual:
+        if not match or match[2] not in all_expected or match[2] in actual:
             raise ValueError("invalid checksum manifest")
         actual[match[2]] = match[1]
+    if include_windows is None:
+        include_windows = DISTRIBUTION["assets"]["windows_x64"] in actual
+        if not include_windows and release["version"] not in LEGACY_RELEASE_VERSIONS:
+            raise ValueError("Windows installer required for this release")
+    expected = all_expected if include_windows else legacy_expected
+    target_map = TARGET_ASSETS if include_windows else MACOS_TARGET_ASSETS
     if set(actual) != expected or any(checksum(directory / name) != digest for name, digest in actual.items()):
         raise ValueError("release assets failed checksum verification")
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
     info = json.loads((directory / "build-info.json").read_text())
     targets = info.get("targets")
-    if not isinstance(targets, list) or len(targets) != len(TARGET_ASSETS):
+    if not isinstance(targets, list) or len(targets) != len(target_map):
         raise ValueError("existing build information conflicts with source")
     by_asset = {}
     for target_info in targets:
         if not isinstance(target_info, dict):
             raise ValueError("existing build information conflicts with source")
         asset = target_info.get("asset")
-        if asset in by_asset or asset not in TARGET_ASSETS:
+        if asset in by_asset or asset not in target_map:
             raise ValueError("existing build information conflicts with source")
-        if target_info.get("target") != TARGET_ASSETS[asset] or target_info.get("sha256") != actual[asset]:
+        if target_info.get("target") != target_map[asset] or target_info.get("sha256") != actual[asset]:
             raise ValueError("existing build information conflicts with source")
-        if target_info.get("signing") not in {"ad-hoc", "apple-development", "developer-id", "not-signed"}:
+        if target_info.get("signing") not in {"ad-hoc", "apple-development", "developer-id", "authenticode", "not-signed"}:
             raise ValueError("existing build information conflicts with source")
         if not isinstance(target_info.get("notarized"), bool):
             raise ValueError("existing build information conflicts with source")
         if target_info["notarized"] and target_info["signing"] != "developer-id":
             raise ValueError("existing build information conflicts with source")
+        if asset == DISTRIBUTION["assets"]["windows_x64"]:
+            if target_info.get("signing") != "authenticode" or target_info.get("authenticode") != "Valid":
+                raise ValueError("Windows installer signing metadata is invalid")
         by_asset[asset] = target_info
-    if set(by_asset) != set(TARGET_ASSETS):
+    if set(by_asset) != set(target_map):
         raise ValueError("existing build information conflicts with source")
     if (info.get("commit") != commit or info.get("release") != release
-            or info.get("dmg_sha256") != actual[ASSETS[0]]):
+            or info.get("dmg_sha256") != actual[MACOS_ASSETS[0]]):
         raise ValueError("existing build information conflicts with source")
 
 
@@ -180,7 +221,7 @@ def api(path: str, *, missing_ok: bool = False) -> dict | None:
         raise ValueError("GH_TOKEN required")
     request = urllib.request.Request("https://api.github.com/" + path, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "unidesk-release",
+        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "deskfuse-release",
     })
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -191,7 +232,7 @@ def api(path: str, *, missing_ok: bool = False) -> dict | None:
         raise ValueError(f"GitHub API request failed: HTTP {error.code}") from None
 
 
-def probe(repo: str, tag: str, commit: str) -> bool:
+def probe(repo: str, tag: str, commit: str, include_windows: bool = True) -> bool:
     # A repository lookup disambiguates a missing tag from missing repo access.
     api(f"repos/{repo}")
     release = validate(ROOT / "release.json", version(), tag)
@@ -202,22 +243,29 @@ def probe(repo: str, tag: str, commit: str) -> bool:
         return False
     if remote["draft"]:
         raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
-    if not remote["prerelease"] or {item["name"] for item in remote["assets"]} != set(ASSETS):
+    if not remote["prerelease"]:
+        raise ValueError("existing release is not a prerelease; refusing to overwrite")
+    remote_assets = {item["name"] for item in remote["assets"]}
+    expected_assets = set(ASSETS if include_windows else MACOS_ASSETS)
+    legacy_assets = expected_assets - {DISTRIBUTION["assets"]["windows_x64"]}
+    if remote_assets != expected_assets and not (include_windows and
+            remote_assets == legacy_assets and release["version"] in LEGACY_RELEASE_VERSIONS):
         raise ValueError("existing release type/assets conflict; refusing to overwrite")
-    with tempfile.TemporaryDirectory(prefix="unidesk-release-verify-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
-        verify_inventory(Path(temporary), release, commit)
+        verify_inventory(Path(temporary), release, commit,
+                         include_windows=DISTRIBUTION["assets"]["windows_x64"] in remote_assets)
     return True
 
 
-def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
+def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: bool = True) -> None:
     release = validate(ROOT / "release.json", version(), tag)
-    verify_inventory(directory, release, commit)
-    if probe(repo, tag, commit):
+    verify_inventory(directory, release, commit, include_windows=include_windows)
+    if probe(repo, tag, commit, include_windows=include_windows):
         print("Existing published release verified; unchanged.")
         return
     info = json.loads((directory / "build-info.json").read_text())
-    arm64_info = next(item for item in info["targets"] if item["asset"] == "uniDesk-arm64.dmg")
+    arm64_info = next(item for item in info["targets"] if item["asset"] == DISTRIBUTION["assets"]["arm64"])
     if arm64_info.get("signing") == "developer-id" and arm64_info.get("notarized") is True:
         signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
     else:
@@ -232,17 +280,18 @@ def publish(directory: Path, repo: str, tag: str, commit: str) -> None:
     if heading not in changelog:
         raise ValueError("CHANGELOG entry required for release version")
     notes += changelog.split(heading, 1)[1].split("\n## ", 1)[0].strip()
-    with tempfile.TemporaryDirectory(prefix="unidesk-release-notes-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="deskfuse-release-notes-") as temporary:
         path = Path(temporary) / "notes.md"
         path.write_text(notes)
-        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"uniDesk {tag} (prerelease)", "--notes-file", str(path)], check=True)
-        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in ASSETS]], check=True)
+        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
+        asset_names = ASSETS if include_windows else MACOS_ASSETS
+        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in asset_names]], check=True)
         # Verify uploaded bytes while still a draft. Failure leaves an unpublished draft.
         download = Path(temporary) / "download"
         subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", str(download)], check=True)
-        verify_inventory(download, release, commit)
+        verify_inventory(download, release, commit, include_windows=include_windows)
         subprocess.run(["gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease", "--latest=false"], check=True)
-    if not probe(repo, tag, commit):
+    if not probe(repo, tag, commit, include_windows=include_windows):
         raise ValueError("release publication was not confirmed")
 
 
@@ -252,8 +301,9 @@ def main() -> None:
     parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
     parser.add_argument("--directory", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag")
-    parser.add_argument("--repo", default=os.environ.get("UNIDESK_RELEASE_REPOSITORY", "GodD6366/unidesk-release"))
+    parser.add_argument("--repo", default=os.environ.get("DESKFUSE_RELEASE_REPOSITORY", DISTRIBUTION["release_repository"]))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
+    parser.add_argument("--macos-only", action="store_true", help="publish and verify only the two macOS DMGs")
     args = parser.parse_args()
     if args.command == "version":
         print(version())
@@ -263,14 +313,14 @@ def main() -> None:
         validate(args.descriptor, version(), args.tag)
         print("release descriptor verified")
     elif args.command == "inventory":
-        inventory(args.directory, args.commit or "")
+        inventory(args.directory, args.commit or "", include_windows=not args.macos_only)
     else:
         if not args.tag or not args.repo or not args.commit:
             parser.error("--repo, --tag and --commit required")
         if args.command == "publish":
-            publish(args.directory, args.repo, args.tag, args.commit)
+            publish(args.directory, args.repo, args.tag, args.commit, include_windows=not args.macos_only)
         else:
-            existing = probe(args.repo, args.tag, args.commit)
+            existing = probe(args.repo, args.tag, args.commit, include_windows=not args.macos_only)
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                     out.write(f"exists={str(existing).lower()}\n")

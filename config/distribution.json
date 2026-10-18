@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "phase": "deskfuse",
+  "source_repository": "GodD6366/DeskFuse",
+  "release_repository": "GodD6366/deskfuse-release",
+  "release_feed_url": "https://deskfuse.godd.cc/api/releases.json",
+  "product_name": "DeskFuse",
+  "application_id": "com.deskfuse.app",
+  "app_bundle": "DeskFuse.app",
+  "cask_token": "deskfuse",
+  "homebrew_tap": "godd6366/deskfuse",
+  "macos_runner": ["self-hosted", "macOS", "ARM64", "deskfuse-macos", "xcode-27"],
+  "assets": {
+    "arm64": "DeskFuse-arm64.dmg",
+    "x86_64": "DeskFuse-x86_64.dmg",
+    "windows_x64": "DeskFuse-windows-x64-setup.exe"
+  }
+}

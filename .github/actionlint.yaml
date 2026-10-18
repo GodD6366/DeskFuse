@@ -6,5 +6,5 @@ self-hosted-runner:
     - self-hosted
     - macOS
     - ARM64
-    - unidesk-macos
+    - deskfuse-macos
     - xcode-27

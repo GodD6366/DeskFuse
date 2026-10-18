@@ -1,9 +1,9 @@
-# uniDesk architecture
+# DeskFuse architecture
 
 ## Target shape (collaboration core)
 
 Native UI talks to a host assembly. The host injects Host Ports, starts
-`unidesk-collaboration`, and optionally loads product extensions. The core has
+`deskfuse-collaboration`, and optionally loads product extensions. The core has
 no axum, image, zip, workflow, content-library or concrete OS adapter
 dependency. macOS and Windows share clipboard, file and input policy.
 
@@ -14,9 +14,9 @@ Host assembly (ports + extension selection)
         |
         +-- extensions/ (content-library, workflow, lan-web, update)
         |
-unidesk-collaboration (K3 session, K5 clipboard, K6 files, K7 input)
+deskfuse-collaboration (K3 session, K5 clipboard, K6 files, K7 input)
         |
-Host Ports (unidesk-platform::ports)  <-- implemented by the host
+Host Ports (deskfuse-platform::ports)  <-- implemented by the host
         |
 protocol / identity / transport / core / store-core
 ```
@@ -25,7 +25,7 @@ Input subprocesses use `CollaborationCore::new_input_only`. They must not link
 content-library, workflow, lan-web or update. Architecture gates live in
 `scripts/check-architecture.sh`.
 
-The production macOS binary still links `unidesk-ffi` → `unidesk-engine` while
+The production macOS binary still links `deskfuse-ffi` → `deskfuse-engine` while
 those workers are cut over. See [MIGRATION.md](MIGRATION.md), [API.md](API.md)
 and [HOST_PORTS.md](HOST_PORTS.md).
 
@@ -41,9 +41,9 @@ SwiftUI views / AppKit interactions
              |
      UniFFI generated Swift bindings
              |
-     unidesk-ffi (typed client API)
+     deskfuse-ffi (typed client API)
              |
-     unidesk-engine (business state and workers)
+     deskfuse-engine (business state and workers)
        /         |          \
   runtime     platform     transfer/input/update
        |         |                |
@@ -54,13 +54,13 @@ This is a responsibility diagram, not a complete Cargo dependency graph.
 
 | Layer | Responsibility |
 | --- | --- |
-| `apps/unidesk-macos` | Native navigation, selection/focus, previews, menus, settings and shelf UI |
-| `unidesk-ffi` | Typed snapshots, commands, events, content reads and export handles; serialized callbacks |
-| `unidesk-engine` | Extracted application workers, business reducer, clipboard/history/file/cache/input/update coordination |
-| `unidesk-runtime` | Authenticated device network, pairing, connection lifecycle, input network state and update distribution |
-| `unidesk-platform` | Clipboard, permission, input capture/injection contracts and shared metadata-only timing |
-| `unidesk-platform-macos` | Actual macOS permission, pasteboard, CoreGraphics, display and Wi-Fi adapters |
-| `unidesk-platform-windows` / `unidesk-service` | Native WPF desktop + session-bound service IPC; clipboard/pairing checkpoint, not full parity |
+| `apps/deskfuse-macos` | Native navigation, selection/focus, previews, menus, settings and shelf UI |
+| `deskfuse-ffi` | Typed snapshots, commands, events, content reads and export handles; serialized callbacks |
+| `deskfuse-engine` | Extracted application workers, business reducer, clipboard/history/file/cache/input/update coordination |
+| `deskfuse-runtime` | Authenticated device network, pairing, connection lifecycle, input network state and update distribution |
+| `deskfuse-platform` | Clipboard, permission, input capture/injection contracts and shared metadata-only timing |
+| `deskfuse-platform-macos` | Actual macOS permission, pasteboard, CoreGraphics, display and Wi-Fi adapters |
+| `deskfuse-platform-windows` / `deskfuse-service` | Native WPF desktop + session-bound service IPC; clipboard/pairing checkpoint, not full parity |
 | `core`, `protocol`, `identity`, `store`, `discovery`, `transport`, `transfer`, `input`, `update` | Existing independent domain, I/O and persistence modules |
 
 Concrete macOS adapter selection lives in the engine composition module.
@@ -75,6 +75,39 @@ contract. UniFFI 0.32.1 generates matching Swift/C bindings during builds; clien
 never hand-code Rust layouts, share locks or obtain raw runtime/credential handles.
 The native binary statically links the engine. The additional Rust dylib is only
 used by the binding generator and is not shipped.
+
+### Platform-boundary closure audit
+
+The platform crate is a contract and memory-double crate: it has no AppKit,
+Win32, GPUI, or platform dependency. Concrete OS calls remain in
+`deskfuse-platform-macos`, `deskfuse-platform-windows`, `deskfuse-update-platform`,
+and the native service/UI adapters. The audit found three deliberate residuals
+that are not safe to delete in this pass: filesystem-backed memory ports in
+`deskfuse-platform`, engine-owned legacy update/LAN/file workers, and the
+Windows v2 string `Rejected.code` field. The latter now carries additive
+`Rejected.boundary_error` (`BoundaryErrorCode`) while old clients continue to
+read `code`.
+
+New boundary code must use `BoundaryErrorCode`, `PlatformCapability`, and typed
+`PlatformEvent`; string codes are compatibility projections only. `Reply::rejected_typed`
+is the constructor for new v2 rejection paths; `Reply::rejected` is retained
+only for pre-typed commands and is the sole legacy-string conversion point.
+Capability booleans in the Windows snapshot and the workflow-specific
+capability snapshot are observations of existing adapters, not a second
+authorization model.
+
+The typed-port closure audit is intentionally explicit:
+
+| Seam | Real wiring | Remaining unused path / deletion prerequisite |
+| --- | --- | --- |
+| `PlatformCommand` / `PlatformEvent` | Authenticated Windows service IPC validates host clipboard, file-object and workflow commands; WPF consumes typed receipts | Legacy command variants and the `Rejected.code` projection remain for v2 clients; remove only after all clients consume `boundary_error` |
+| `FileDataObjectPort` | Windows WPF `DesktopClipboardController` validates local paths and publishes the typed `FileDataObjectCreated` receipt | The Rust collaboration host has no file-object consumer; do not replace deferred transfer with a second path until a native host and protocol consumer are specified |
+| `WorkflowExecutionPort` | Engine workers use the injected macOS execution adapter; Windows uses the authenticated interactive host workflow adapter | Filesystem/process helpers remain host-owned and are not a license to reintroduce OS calls into common crates |
+| `WorkflowOutputPort` | macOS `host_ports` injects `MacOSWorkflowOutputPort`, whose guarded-paste capability is fail-closed | The extracted collaboration workflow service does not consume this port yet; keep the adapter and unavailable default until output ownership is cut over |
+
+These seams remain contracts rather than dead declarations: each unconsumed
+path has an owner and a concrete prerequisite, and no new call site may add a
+legacy string mapping.
 
 A single event dispatcher serializes initial snapshots, monotonically revised
 updates, command outcomes and host actions. Ordinary snapshots are coalesced at
@@ -125,7 +158,7 @@ layer or macOS background daemon is introduced by the UI replacement.
    and transfer receipts as defined by the store schema. Clipboard bodies and
    file contents are not written to diagnostics by default.
 5. **Secrets stay local.** macOS identity keys are persisted by the identity provider
-   in `~/Library/Application Support/uniDesk/identity.key` with mode `0600`, without Keychain access; logs and exported
+   in `~/Library/Application Support/DeskFuse/identity.key` with mode `0600`, without Keychain access; logs and exported
    diagnostics contain metadata and hashes only.
 6. **Cancellation is normal.** Shutdown, disconnect, permission denial, and
    peer disappearance are represented as explicit outcomes rather than
@@ -212,8 +245,14 @@ PausedByUser; the same activation cannot resume from a delayed Ready snapshot.
 The controller must explicitly disable/re-enable or remove/re-add that receiver.
 The local emergency button reaches the dedicated input worker independently of
 clipboard and file work. The receiver UI offers status, system permission links
-and emergency reclaim instead of a persistent receiver switch or authorization
-picker. Existing scenes and layouts remain editable and unchanged by activation.
+and emergency reclaim, not a persistent authorization switch. A trusted
+controller can activate a receiver that it explicitly added to its layout;
+Wi-Fi scene votes are advisory and cannot suppress that activation or revoke
+an active receiver session. A local controller managing selected devices still
+refuses incoming control to prevent mutual takeover; an idle controller with
+no selected devices may yield to an explicit incoming activation without
+persisting a role change. Existing scenes and layouts remain editable and
+unchanged by activation.
 
 An expired/retired activation replies with `Deactivate`, allowing the controller
 to retry with a fresh activation ID and the same enable intent. It must not send
@@ -234,7 +273,7 @@ it. Legacy input messages never reach the native injector.
 
 ### macOS input process boundary
 
-The macOS bundle ships `Contents/MacOS/unidesk-input-service` as a signed,
+The macOS bundle ships `Contents/MacOS/deskfuse-input-service` as a signed,
 ordinary child process. It is not a LaunchAgent, login service or root daemon.
 The main process owns UI, pairing/trust, SQLite persistence, clipboard, files and
 updates. The child owns native capture/injection, permission/session/topology
@@ -244,17 +283,23 @@ it does not start the ordinary application actor or open the state database.
 Its identity is read from the existing `identity.key`; a missing/invalid file
 fails startup and is never regenerated by the child.
 
-Input advertises `_unidesk-input._udp` on UDP 42425, bound to eligible physical
+Input advertises `_deskfuse-input._udp` on UDP 42425, bound to eligible physical
 LAN addresses. This is separate from the ordinary control port 42424. Main-side
-trusted peer keys and membership form an authorization snapshot, not a
-connection/readiness snapshot. Existing IP hints may locate port 42425, but the
-child independently proves peer identity and physical on-link eligibility.
-Ordinary control disconnects and Bonjour disappearance are not revocation.
-Actual membership/trust withdrawal closes input links. Input readiness still
+trusted peer keys, membership and the ordinary control connection form the
+authorization snapshot. Existing IP hints may locate port 42425, but the child
+independently proves peer identity and physical on-link eligibility only after
+the corresponding device control session is online. A control disconnect
+releases input leases and prevents new activation until the device reconnects.
+Actual membership/trust withdrawal also closes input links. Input readiness still
 requires the real input connection, native permissions, activation and lease.
 No clipboard/file/update stream handler is started on the input service channel.
 Disposable identity probes use probe endpoints; successful probes are closed and
 a fresh live connection is established on the input I/O runtime.
+
+The 42424 endpoint, accept loop and control-session handshake run on a dedicated
+control I/O runtime. They do not depend on the bridge thread that constructs the
+transport, so synchronous UI, clipboard or application work cannot make the
+device control listener stop answering while 42425 remains available.
 
 Input routes are ranked independently: the saved interface preference wins,
 then Thunderbolt, Ethernet and Wi-Fi. The controller checks for a better route
@@ -408,7 +453,7 @@ Screen layout configuration uses authenticated display metadata independently of
 input permissions. A configured controller contacts only selected participants;
 a peer may reply with its own topology on the same verified physical LAN
 connection while its input role is disabled. This does not authorize a lease or
-input injection. To verify this on two Macs, run `unidesk-input-probe --role
+input injection. To verify this on two Macs, run `deskfuse-input-probe --role
 receiver --run-id metadata-check --metadata-only` on the receiver, then run the
 same binary with `--role controller --run-id metadata-check --metadata-only
 --peer DEVICE_ID@IP:43424`, using the printed receiver identity and its LAN IP.
@@ -434,8 +479,8 @@ these native multi-Mac behaviors.
 
 ## Native macOS release gate
 
-The native Swift executable remains `unidesk-app`, packaged as `uniDesk.app`
-with `com.unidesk.app`. SwiftUI owns the main application event loop, Dock,
+The native Swift executable remains `deskfuse-app`, packaged as `DeskFuse.app`
+with `com.deskfuse.app`. SwiftUI owns the main application event loop, Dock,
 menu-bar extra, windows and Settings. Closing the main window keeps the engine
 running; application termination releases input and joins the engine before exit.
 The FFI layer prevents two engines in one process; the client activates an
@@ -485,11 +530,11 @@ from pending platform/build and user-owned physical-device validation.
 
 ### Windows native desktop checkpoint (2026-09-13)
 
-`apps/unidesk-windows` is an ordinary-user WPF desktop with tray, local history,
+`apps/deskfuse-windows` is an ordinary-user WPF desktop with tray, local history,
 clipboard previews, device pairing and a local file shelf. The service remains the
 only network/identity owner. Bounded desktop v2 IPC binds user SID/logon LUID,
 console session and generation; clipboard-sync-v2 receipts follow actual native
-clipboard writes. An isolated input-only runtime advertises `_unidesk-input._udp`
+clipboard writes. An isolated input-only runtime advertises `_deskfuse-input._udp`
 on UDP 42425, while a GUI-supervised ordinary-user helper performs only Default-
 desktop injection with native lease expiry and emergency reclaim. This checkpoint
 supports Mac controller to Windows receiver on the unlocked ordinary desktop;
@@ -500,9 +545,9 @@ Windows installation, Explorer or two-machine acceptance.
 
 ### Windows native adapter checkpoint
 
-`unidesk-platform` owns shared clipboard/geometry/permission-snapshot/session types;
-`unidesk-platform-windows` owns Win32 clipboard, display/session probes and ordinary
-desktop HID input adapters. `unidesk-identity::WindowsServiceIdentityProvider` is
+`deskfuse-platform` owns shared clipboard/geometry/permission-snapshot/session types;
+`deskfuse-platform-windows` owns Win32 clipboard, display/session probes and ordinary
+desktop HID input adapters. `deskfuse-identity::WindowsServiceIdentityProvider` is
 service-only (LocalSystem, session 0) and is deliberately not selected by the GUI.
 The app clipboard worker now uses `platform::create_worker_pasteboard`; Windows
 clipboard/pairing business IPC is connected. Windows capture/injection implement
@@ -515,7 +560,7 @@ read-only `scripts/check-windows-native.ps1` validation entry point.
 
 ### Windows service ownership checkpoint (2026-09-06)
 
-`apps/unidesk-service` owns SCM lifecycle, the machine DPAPI identity, protected
+`apps/deskfuse-service` owns SCM lifecycle, the machine DPAPI identity, protected
 SQLite state/trust, QUIC and mDNS. `WindowsServiceDataDirectory` retains directory
 handles and an exclusive runtime lease until network shutdown. The original service checkpoint only advertised `NETWORK`; the desktop extension adds acknowledged
 clipboard on the control runtime and ordinary-desktop receiver input on the isolated
@@ -534,10 +579,10 @@ package boundary; that development ZIP still excludes the WPF client and input h
 
 ### 按 Wi-Fi 场景选择键鼠主控
 
-当前 Wi-Fi 名称通过 macOS CoreWLAN 读取；用户点击后申请系统定位授权，仅为读取 SSID，不启动定位采集。读取任务独立于 UI 与输入处理，5 秒更新一次。可信物理局域网内支持 `INPUT_ENVIRONMENT` 的设备交换主控意图与 Wi-Fi 场景，供有线设备识别唯一场景；SSID 不是身份或授权依据。
+当前 Wi-Fi 名称通过 macOS CoreWLAN 读取；用户在启动授权步骤或「设置 → 权限」中申请系统定位授权，仅为读取 SSID，不启动定位采集。读取任务独立于 UI 与输入处理，5 秒更新一次。可信物理局域网内支持 `INPUT_ENVIRONMENT` 的设备交换主控意图与 Wi-Fi 场景，供有线设备识别唯一场景；SSID 不是身份或授权依据。
 
 `INPUT_ENVIRONMENT` 使用独立的 bit 10；鼠标 Datagram 的 `INPUT_MOTION_DATAGRAM_V1` 保持 bit 9。协商到鼠标 Datagram 不代表支持主控场景消息，只有双方明确支持场景能力时才能发送这类消息。
 
-首次双主控或规则冲突由用户选择，可选仅本次或记住当前 SSID。明确选择和删除规则同步到当前在线的兼容设备；离线设备不承诺已同步，其旧规则冲突时仍需选择。规则随激活策略持久化，原有主控设置、参与设备和显示器布局不被覆盖。SSID 变化稳定 10 秒且鼠标返回本机后应用；短暂连接中断保留主控意图 12 秒，原生输入控制租约仍独立及时失效并释放按键。保存的主控离线时不自动抢控，可临时选择其他主控。
+首次双主控或规则冲突在 Wi-Fi 场景页面提示用户选择，但场景投票不阻断主控对排布中明确加入的设备发起激活，也不撤销已经建立的被控会话。明确选择和删除规则同步到当前在线的兼容设备；离线设备不承诺已同步，其旧规则冲突时仍需选择。规则随激活策略持久化，原有主控设置、参与设备和显示器布局不被覆盖。本机已开启主控时，远端的选择与投票不会自动挂起本机主控角色。SSID 变化稳定 10 秒且鼠标返回本机后应用；短暂连接中断保留主控意图 12 秒，原生输入控制租约仍独立及时失效并释放按键。保存的主控离线时不自动抢控，可临时选择其他主控。绑定到当前 SSID 的布局场景会在该网络稳定后自动恢复排布，仅恢复屏幕排布，不改变共享开关、参与设备或授权。
 
 陌生网络、SSID 读取失败、多个不同 SSID 或矛盾规则提供本次选择入口；有线设备可依据可信 Wi-Fi 成员的唯一 SSID 匹配场景。相同名称网络上的规则仍只能选择已配对设备。旧客户端继续使用原激活协议，场景协商需相关设备安装支持此能力的版本。

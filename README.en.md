@@ -1,12 +1,12 @@
-# uniDesk
+# DeskFuse
 
-Source is now private. Public installers and the Homebrew tap live in [unidesk-release](https://github.com/GodD6366/unidesk-release). Older clients need a manual update from the new release page. Existing taps can update their origin with `git -C "$(brew --repository godd6366/unidesk)" remote set-url origin https://github.com/GodD6366/unidesk-release`.
+DeskFuse has its own application identity, protocol and data directory. First launch offers an optional clipboard history import, followed by a separate option to trash the previous app while preserving its data. Previous protocols are not supported. The target release repository is `GodD6366/deskfuse-release`. Until the first public release, the download and Homebrew instructions below are release preparation, not available installers.
 
 [中文](README.md) · [Contributing](CONTRIBUTING.md) · [Releasing](docs/RELEASING.md) · [TODO](TODO.md)
 
 A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipboards, transfer files, stage and drag out files, and optionally share one keyboard and mouse between trusted devices. See the current [interface and behavior conventions](design/current/README.md).
 
-> Early prerelease: GitHub ships macOS arm64 and Intel installers; Windows builds are temporarily skipped, and a passing build is not two-device acceptance.
+> Early prerelease: GitHub ships macOS arm64 and Intel installers; Windows support is Beta, and a passing build is not two-device acceptance.
 
 ## What it does
 
@@ -15,12 +15,13 @@ A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipb
 - Transfer files on demand, with optional early transfer for small files; names and folder structure are preserved, and the history cache has a size limit and cleanup receipts.
 - A file shelf: drag files in to stage them, drag them out in batches, or send them to another device.
 - A separate keyboard/mouse sharing workspace: real display layout, device activation, permission state and emergency reclaim.
+- Beta: remote applications (macOS windows and Windows RemoteApp).
 
 Behavior is defined by the [file transfer contract](docs/FILE_TRANSFER.md), [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md).
 
 ## Compared with macOS Continuity and Deskflow
 
-| Feature | macOS Continuity | Deskflow | uniDesk |
+| Feature | macOS Continuity | Deskflow | DeskFuse |
 | --- | --- | --- | --- |
 | Keyboard/mouse crossing | ✅ same Apple Account only | ⚠️ screen positions cannot be freely arranged | ✅ |
 | Clipboard sync | ✅ relies on iCloud, often unstable | ⚠️ basic text and small images only | ✅ |
@@ -39,48 +40,48 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 | macOS 14+, Apple Silicon | Main platform, arm64 DMG |
 | macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
 | Intel Mac | x86_64 DMG is released; behavior and device acceptance are tracked separately from arm64 |
-| Windows x64 | No installer in the 0.3.1 prerelease; full cross-platform collaboration and device acceptance still require separate validation |
+| Windows x64 | Beta; Authenticode-signed installer; installation, SCM, NLA, RemoteApp and device acceptance are tracked separately |
 | Linux | Not a first-release target |
 
 ## Download and install
 
-Downloads: [GitHub Releases](https://github.com/GodD6366/unidesk-release/releases).
+Downloads: [GitHub Releases](https://github.com/GodD6366/deskfuse-release/releases).
 
 ### Homebrew (macOS 14+, Apple Silicon)
 
 ```sh
-brew trust --cask godd6366/unidesk/unidesk
-brew tap godd6366/unidesk https://github.com/GodD6366/unidesk-release
-brew install --cask godd6366/unidesk/unidesk
+brew trust --cask godd6366/deskfuse/deskfuse
+brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release
+brew install --cask godd6366/deskfuse/deskfuse
 ```
 
-Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/unidesk/unidesk`, then `brew untap godd6366/unidesk` if unused.
+Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/deskfuse/deskfuse`, then `brew untap godd6366/deskfuse` if unused.
 
 ### Updates
 
 Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates, then automatically download and install new Developer ID signed versions; ad-hoc packages require manual DMG download from the release page. Homebrew installations can also run:
 
 ```sh
-brew update && brew upgrade --cask unidesk
+brew update && brew upgrade --cask deskfuse
 ```
 
 Internal signed packages continue using trusted LAN automatic updates; public packages do not use that installer. Older builds without GitHub auto-install need an initial update through Homebrew or a manually downloaded DMG.
 
 ### Manual DMG install
 
-1. Download the package for your device (`uniDesk-arm64.dmg` or `uniDesk-x86_64.dmg`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
-2. Open the DMG and drag `uniDesk.app` into Applications; run only one instance per device.
+1. Download the package for your device (`DeskFuse-arm64.dmg` or `DeskFuse-x86_64.dmg`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+2. Open the DMG and drag `DeskFuse.app` into Applications; run only one instance per device.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
 
-GitHub prereleases built with Apple credentials are Developer ID signed and notarized, and should open normally. Never disable Gatekeeper or SIP. Older ad-hoc builds may still be blocked: use the system's “Open Anyway” option, or `sudo xattr -rd com.apple.quarantine "/Applications/uniDesk.app"`. Maintainer credentials: [notarization secrets](docs/NOTARIZE.md).
+GitHub prereleases built with Apple credentials are Developer ID signed and notarized, and should open normally. Never disable Gatekeeper or SIP. Older ad-hoc builds may still be blocked: use the system's “Open Anyway” option, or `sudo xattr -rd com.apple.quarantine "/Applications/DeskFuse.app"`. Maintainer credentials: [notarization secrets](docs/NOTARIZE.md).
 
 ## Build from source
 
 Requires an Apple Silicon Mac, full **Xcode 27+ (macOS 27+ SDK)**, Rustup and Python 3.11+; Command Line Tools alone are not enough. The deployment target is macOS 14, with Rust and dependencies pinned in `rust-toolchain.toml` and `Cargo.lock`.
 
 ```sh
-git clone git@github.com:GodD6366/uniDesk.git
-cd uniDesk
+git clone git@github.com:GodD6366/DeskFuse.git
+cd DeskFuse
 rustup show active-toolchain
 rustup target add aarch64-apple-darwin
 rustup component add rust-src

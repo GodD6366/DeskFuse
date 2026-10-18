@@ -22,7 +22,7 @@ CODESIGN_IDENTITY=- ./scripts/build_and_run.sh --build
 
 Windows：分别运行 `scripts/check-windows-native.ps1` 和 `scripts/check-windows-service.ps1`。这些检查不安装服务、不创建机器身份、不向桌面发送输入。
 
-本地开发与 DMG 打包共同使用 `scripts/codesign-identity.sh`，证书指纹保存在 Git 忽略的 `.codesign-identity`。首次构建只有一张可用 Apple Development 证书时自动固定；多张证书时显式设置 `CODESIGN_IDENTITY=<SHA-1>`。已有配置的证书不可用时构建失败，不自动换证书或退回 ad-hoc。证书轮换时更新本地配置；显式环境变量覆盖只影响当前调用。`./scripts/build_and_run.sh --build` 只构建并验证签名，不启动或停止应用。公开 tag 预发行由 CI 使用 Developer ID 并公证，见 [公证凭据](docs/NOTARIZE.md)。没有证书的贡献者可显式 `CODESIGN_IDENTITY=-`；无需取得维护者证书、LAN 发行私钥或 NAS。独立 DMG 使用 `./scripts/package-macos.sh --bootstrap`，与默认维护者 LAN 交付流程隔离。
+本地开发与 DMG 打包共同使用 `scripts/codesign-identity.sh`，证书指纹保存在 Git 忽略的 `.codesign-identity`。首次构建只有一张可用 Apple Development 证书时自动固定；多张证书时显式设置 `CODESIGN_IDENTITY=<SHA-1>`。关联 worktree 在本目录没有指纹时沿用主检出的 `.codesign-identity`。已有配置的证书不可用时构建失败，不自动换证书或退回 ad-hoc。证书轮换时更新本地配置；显式环境变量覆盖只影响当前调用。`./scripts/build_and_run.sh --build` 只构建并验证签名，不启动或停止应用。公开 tag 预发行由 CI 使用 Developer ID 并公证，见 [公证凭据](docs/NOTARIZE.md)。没有证书的贡献者可显式 `CODESIGN_IDENTITY=-`；无需取得维护者证书、LAN 发行私钥或 NAS。独立 DMG 使用 `./scripts/package-macos.sh --bootstrap`，与默认维护者 LAN 交付流程隔离。
 
 ## 结构和变更边界
 
@@ -30,7 +30,7 @@ Windows：分别运行 `scripts/check-windows-native.ps1` 和 `scripts/check-win
 - core/protocol 不依赖 SwiftUI 或具体操作系统；平台层负责原生能力与权限，不虚构可用状态。
 - workspace 成员继承公共 package 元数据，不单独维护版本／锁文件；这是应用源码仓库，不向 crates.io 发布内部包。
 - UniFFI 版本由 `Cargo.lock` 固定，Swift 绑定由同版本生成器生成；不得手改生成文件。SwiftUI/AppKit 使用 Xcode 系统 SDK，macOS 26+ 使用原生 Liquid Glass，低版本与降低透明度必须回退。
-- `scripts/` 是唯一操作脚本入口；生成资源存入被忽略的 `resources/generated/`。`resources/uniDesk-icon.svg` 和 `unidesk-status-icon.svg` 是图标源，不编辑 PNG 或派生中心图。
+- `scripts/` 是唯一操作脚本入口；生成资源存入被忽略的 `resources/generated/`。`resources/DeskFuse-icon.svg` 和 `deskfuse-status-icon.svg` 是图标源，不编辑 PNG 或派生中心图。
 
 ## 代码与验证
 

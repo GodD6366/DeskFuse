@@ -2,13 +2,13 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-BINARY_NAME="unidesk-app"
+BINARY_NAME="deskfuse-app"
 # The development app shares the installed app's identity and paired devices.
-BUNDLE_ID="com.unidesk.app"
+BUNDLE_ID="com.deskfuse.app"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-APP_BUNDLE="$DIST_DIR/uniDesk-dev.app"
+APP_BUNDLE="$DIST_DIR/DeskFuse-dev.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -19,11 +19,12 @@ source "$ROOT_DIR/scripts/codesign-identity.sh"
 "$ROOT_DIR/scripts/generate-assets.sh"
 "$ROOT_DIR/scripts/build-native-macos.sh" debug
 
-BUILD_BINARY="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/native-macos/debug/$BINARY_NAME"
+TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+BUILD_BINARY="$TARGET_DIR/native-macos/debug/$BINARY_NAME"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_BINARY" "$APP_BINARY"
-ROC_OUTPUT="$ROOT_DIR/target/roc-microphone/${UNIDESK_MACOS_ARCH:-arm64}"
+ROC_OUTPUT="$ROOT_DIR/target/roc-microphone/${DESKFUSE_MACOS_ARCH:-arm64}"
 mkdir -p "$CONTENTS_DIR/Frameworks" "$RESOURCES_DIR/Microphone"
 cp "$ROC_OUTPUT/libroc-microphone.dylib" "$CONTENTS_DIR/Frameworks/"
 codesign --force --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
@@ -31,22 +32,24 @@ ditto "$ROC_OUTPUT/uniDeskMicrophone.driver" "$RESOURCES_DIR/Microphone/uniDeskM
 codesign --force --deep --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$RESOURCES_DIR/Microphone/uniDeskMicrophone.driver"
 cp "$ROOT_DIR/resources/microphone/"* "$RESOURCES_DIR/Microphone/"
 cp "$ROC_OUTPUT/roc-microphone-sources.tar.gz" "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$RESOURCES_DIR/Microphone/"
-cp "$(dirname "$BUILD_BINARY")/unidesk-input-service" "$MACOS_DIR/unidesk-input-service"
-codesign --force --strict --timestamp=none --identifier com.unidesk.app.input-service --sign "$CODESIGN_IDENTITY" "$MACOS_DIR/unidesk-input-service"
+cp "$(dirname "$BUILD_BINARY")/deskfuse-input-service" "$MACOS_DIR/deskfuse-input-service"
+cp "$(dirname "$BUILD_BINARY")/build-id" "$MACOS_DIR/build-id"
+codesign --force --strict --timestamp=none --identifier com.deskfuse.app.input-service --sign "$CODESIGN_IDENTITY" "$MACOS_DIR/deskfuse-input-service"
 ditto "$(dirname "$BUILD_BINARY")/Metadata.appintents" "$RESOURCES_DIR/Metadata.appintents"
 chmod 0755 "$APP_BINARY"
 
-cp "$ROOT_DIR/resources/generated/uniDesk.icns" "$RESOURCES_DIR/uniDesk.icns"
-cp "$ROOT_DIR/resources/generated/unidesk-status-icon.png" "$RESOURCES_DIR/unidesk-status-icon.png"
+cp "$ROOT_DIR/resources/generated/DeskFuse.icns" "$RESOURCES_DIR/DeskFuse.icns"
+cp "$ROOT_DIR/resources/generated/deskfuse-status-icon.png" "$RESOURCES_DIR/deskfuse-status-icon.png"
+cp "$ROOT_DIR/resources/generated/DeskFuse-icon-light-1024.png" "$RESOURCES_DIR/DeskFuse-icon-light-1024.png"
 
 APP_VERSION="$(python3 "$ROOT_DIR/scripts/release.py" version)"
-cp "$ROOT_DIR/resources/generated/uniDesk-icon-1024.png" "$RESOURCES_DIR/uniDesk-icon-1024.png"
+cp "$ROOT_DIR/resources/generated/DeskFuse-icon-1024.png" "$RESOURCES_DIR/DeskFuse-icon-1024.png"
 sed -e "s/@VERSION@/$APP_VERSION/g" -e 's/@BUILD_VERSION@/0/g' \
   "$ROOT_DIR/resources/Info.plist.in" > "$CONTENTS_DIR/Info.plist"
 
 echo "signing: $CODESIGN_IDENTITY"
 codesign --force --deep --strict --timestamp=none \
-  --entitlements "$ROOT_DIR/resources/uniDesk.entitlements" \
+  --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
   --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 
