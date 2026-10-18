@@ -102,3 +102,7 @@ build 179 现场：本机独立进程加载随包 `libroc-microphone.dylib` 连�
 `patch-grpc.py` 同时修复旧 POSIX 与 EventEngine 监听器：连接重置继续 accept；无效对端地址关闭当前连接后继续监听。补丁 SHA-256 纳入依赖锁定；CMake 将补丁内容哈希加入 patch 命令，确保普通和 disconnected 增量构建都重新编译依赖。没有增加常驻录音或自动重启系统音频。
 
 `./scripts/test-microphone-native.sh --built` 通过三组合成音频测试，以及两种监听实现各自的连接重置注入、空地址注入和 40 次真实突然断连/重新 RPC 连接。旧实现分别复现 `Failed accept4: Connection reset by peer` 和 `Invalid address: ... Empty address` 后持续超时。测试使用独立临时端口与模拟 RPC 服务，不加载 HAL、不采集实体麦克风。驱动修复必须重新安装 HAL 并重新加载才会对现有机器生效；仅替换应用不会更新正在运行的驱动。
+
+交付检查：`cargo check --locked`、`git diff --check`、`bash -n scripts/test-microphone-native.sh`、`python3 vendor/roc-vad/verify-sources.py target/roc-microphone/build-arm64`、`python3 scripts/release.py validate`、`./scripts/test-microphone-native.sh --built`、`./scripts/package-macos.sh --auto --fast` 通过。本机应用已替换为 0.5.2 build 180（release ID `60f9dfc9-4142-45d3-9aa5-0bce91d54f28`），深度签名校验通过；随包驱动与最终构建 UUID 均为 `D9DA9864-9CC2-3837-9C93-717A99802AD6`。这是 Apple Development 签名的本地 arm64 测试包，未公证、未发布。
+
+已从应用“重新安装…”启动驱动更新并选择立即重启音频服务，目前等待用户完成 macOS 管理员授权；系统安装目录仍为旧 UUID `2F74C271-DC8A-319F-991B-3F7D4A08CC47`。应用重启、实际 HAL 控制连接恢复、系统重启和双机语音验收尚未完成；不能将隔离回归通过视为这些验收已通过。
