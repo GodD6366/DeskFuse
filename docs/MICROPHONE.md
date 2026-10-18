@@ -88,8 +88,17 @@ macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 in
 
 `git diff --check`、`python3 scripts/release.py validate`、`cargo check --locked`、`./scripts/package-macos.sh --auto --fast` 通过。本机与 10.10.10.1 均安装 0.5.2 build 178，深度签名校验通过；本机随包双机测试说明与源码一致。实际界面已确认入口顺序、两个页面的 Beta 标记以及设置列表中移除麦克风分类。当前本机仍显示驱动服务未响应，本次未执行管理员重启或重新验收语音转写；本次只调整导航，未改变音频逻辑。
 
-## 应用重启后驱动控制服务无响应：待定位（2026-10-18）
+## 应用重启后驱动控制服务无响应（2026-10-18）
 
 build 179 现场：本机独立进程加载随包 `libroc-microphone.dylib` 连续三次调用 `ud_mic_driver_available()`，均在 150–160 ms 返回 `Deadline Exceeded`；10.10.10.1 的同类探针在 1–4 ms 成功，更新到 build 179 后仍成功。说明故障不只存在于 UI 投影或应用内缓存。
 
-本机驱动运行在系统独立进程 `Core Audio Driver (uniDeskMicrophone.driver)`，当时 PID 87049、启动于 22:05:21。日志显示 HAL 设备创建和多次 StartIO/StopIO 正常；19712 端口由该进程监听，TCP 连接已建立，服务端接收队列保留 82 字节，多条旧连接处于 CLOSE_WAIT。控制服务尚未处理客户端握手/请求；这还不能证明具体死锁点。普通用户 `sample` 被 macOS 权限拒绝，`sudo -n` 没有缓存授权；已请用户手动执行只读的 `sudo /usr/bin/sample 87049 2 -file /tmp/deskfuse-driver-stall.sample.txt`。尚未取得堆栈，未把无效重试或重启系统音频当作根因修复。本轮未改变音频代码或重启系统音频服务。
+本机驱动运行在系统独立进程 `Core Audio Driver (uniDeskMicrophone.driver)`，当时 PID 87049、启动于 22:05:21。日志显示 HAL 设备创建和多次 StartIO/StopIO 正常；19712 端口由该进程监听，TCP 连接已建立，服务端接收队列保留 82 字节，多条旧连接处于 CLOSE_WAIT。控制服务尚未处理客户端握手/请求；这还不能证明具体死锁点。普通用户 `sample` 被 macOS 权限拒绝，`sudo -n` 没有缓存授权；已请用户手动执行只读的 `sudo /usr/bin/sample 87049 2 -file /tmp/deskfuse-driver-stall.sample.txt`。用户随后提供了堆栈，下面记录定位与修复。
+
+
+用户提供的 `sample` 显示音频、Roc 和 RPC 工作线程仍在等待事件，没有发现设备锁死锁。利用与安装版 `__text` 完全一致的本地目标文件还原符号后，继续检查固定版本 gRPC 1.63 的监听错误分支。
+
+隔离回归复现了两条永久失联路径：`accept()` 返回 `ECONNRESET` 时，监听器停止接收；在本机真实 TCP 客户端设置 `SO_LINGER={1,0}` 后突然退出，macOS 还会返回已接受但对端地址为空的连接，地址转换失败同样终止整个监听器。两者均会留下仍在监听、但不处理新请求的端口，与现场表现一致。采样本身无法追溯当时发生的是哪条分支。
+
+`patch-grpc.py` 同时修复旧 POSIX 与 EventEngine 监听器：连接重置继续 accept；无效对端地址关闭当前连接后继续监听。补丁 SHA-256 纳入依赖锁定；CMake 将补丁内容哈希加入 patch 命令，确保普通和 disconnected 增量构建都重新编译依赖。没有增加常驻录音或自动重启系统音频。
+
+`./scripts/test-microphone-native.sh --built` 通过三组合成音频测试，以及两种监听实现各自的连接重置注入、空地址注入和 40 次真实突然断连/重新 RPC 连接。旧实现分别复现 `Failed accept4: Connection reset by peer` 和 `Invalid address: ... Empty address` 后持续超时。测试使用独立临时端口与模拟 RPC 服务，不加载 HAL、不采集实体麦克风。驱动修复必须重新安装 HAL 并重新加载才会对现有机器生效；仅替换应用不会更新正在运行的驱动。

@@ -144,6 +144,10 @@ set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include" CACHE PATH "" FORCE)
 # gRPC
 execute_process(COMMAND xcrun --sdk macosx --show-sdk-path
   OUTPUT_VARIABLE ROC_MACOS_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
+# Include patch contents in the command fingerprint. This invalidates both
+# normal and UPDATE_DISCONNECTED patch/build steps on an incremental build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${PROJECT_ROOT}/patch-grpc.py)
+file(SHA256 ${PROJECT_ROOT}/patch-grpc.py GRPC_PATCH_SHA256)
 ExternalProject_Add(grpc_lib
   GIT_REPOSITORY "https://github.com/grpc/grpc.git"
   GIT_TAG "ac1418547838ab067a02af4402046f7bc1cbc44c"
@@ -153,7 +157,7 @@ ExternalProject_Add(grpc_lib
   PREFIX ${CMAKE_CURRENT_BINARY_DIR}/3rdparty/grpc
   GIT_SUBMODULES third_party/abseil-cpp third_party/cares/cares third_party/protobuf third_party/re2 third_party/zlib
   GIT_SUBMODULES_RECURSE OFF
-  PATCH_COMMAND python3 ${PROJECT_ROOT}/patch-grpc.py <SOURCE_DIR>
+  PATCH_COMMAND python3 ${PROJECT_ROOT}/patch-grpc.py <SOURCE_DIR> ${GRPC_PATCH_SHA256}
   LIST_SEPARATOR ${LIST_SEPARATOR}
   CMAKE_ARGS
     -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}

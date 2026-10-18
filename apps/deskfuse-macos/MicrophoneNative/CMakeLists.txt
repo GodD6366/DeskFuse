@@ -12,3 +12,7 @@ add_custom_command(TARGET roc-microphone POST_BUILD COMMAND strip -x $<TARGET_FI
 # without microphone permission, HAL installation, or touching system audio.
 add_executable(microphone-codec-test EXCLUDE_FROM_ALL tests/codec.cpp)
 target_link_libraries(microphone-codec-test PRIVATE roc-microphone roc)
+
+add_executable(microphone-rpc-reconnect-test EXCLUDE_FROM_ALL tests/rpc_reconnect.cpp)
+target_include_directories(microphone-rpc-reconnect-test PRIVATE ${PROJECT_ROOT}/rpc)
+target_link_libraries(microphone-rpc-reconnect-test PRIVATE ${RPC_LIB} gRPC::grpc++_unsecure)

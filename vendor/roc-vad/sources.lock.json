@@ -127,6 +127,18 @@
       "path": "src/core/lib/promise/detail/basic_seq.h",
       "sha256": "850f14a4432e54b51d87c3816f13e2190bc1092f44870b9903b58723c3b34ee8",
       "reason": "Remove invalid template disambiguator rejected by Apple clang21"
+    },
+    {
+      "parent": "grpc",
+      "path": "src/core/lib/iomgr/tcp_server_posix.cc",
+      "sha256": "840b479671bae30bb6cfa137aa1dd340476ea89c03573ae4fedb9798c7829caa",
+      "reason": "Keep the macOS control listener accepting after a reset or empty peer address from an exiting client"
+    },
+    {
+      "parent": "grpc",
+      "path": "src/core/lib/event_engine/posix_engine/posix_engine_listener.cc",
+      "sha256": "0433e45734f18b08d1655f3100c89ac68dfe4480279489604edb044f44a58df5",
+      "reason": "Keep the macOS control listener accepting after a reset or empty peer address from an exiting client"
     }
   ]
 }
