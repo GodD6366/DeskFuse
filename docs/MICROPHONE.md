@@ -46,7 +46,7 @@ DeskFuse 已移除独立语音快捷键（录制、捕获、按键保护、IPC �
 
 基于 Roc VAD v0.0.4。驱动 Bundle ID、HAL 文件名和设备 UID 由 `config/previous-installation.json` 统一提供；插件 UUID 为 `E88452E3-1C2E-42C1-A1A4-7B496BC3D527`，与原版共存。固定来源及校验见 `vendor/roc-vad/sources.lock.json`，本地修改、源码/依赖许可证保存在按构建号归档的 `roc-microphone-sources.tar.gz` 中，可向提供测试版的维护者索取。
 
-`scripts/build-roc-microphone.sh` 只编译，不安装驱动。`scripts/package-macos.sh` 默认交付 arm64 本地 DMG，`--release` 构建 arm64 / x86_64 手动安装包，设置页直接提供安装/重装/卸载，使用系统管理员授权弹窗并展示进度、取消及失败结果，无需打开终端；接收端在缺少驱动时显示安装入口；已安装驱动的设备在折叠的“驱动维护”中提供重装和卸载，未加载时仍可卸载。操作前关闭共享，完成后由用户重新开启。DMG 保留应用、Applications 链接和原有独立驱动入口；驱动也可从应用设置内管理。完整源码归档保存在 `target/package-macos/{version}-build{number}/{arch}/`，不进入 DMG、应用或 LAN 更新 ZIP；应用保留许可证/署名、源码 SHA-256 和索取方式。构建产物布局保持原样：DMG、更新 ZIP、发行描述、签名记录和校验清单仍输出到原交付目录，LAN 更新、公共发行与 CI 流程不变。安装器仅操作自有 HAL 目录，验证 Bundle ID 和签名；重启音频服务由用户主动确认。默认输入按钮由用户显式点击；关闭共享时只在默认输入仍为 DeskFuse 时尝试恢复此前设备。
+`scripts/build-roc-microphone.sh` 只编译，不安装驱动。`scripts/package-macos.sh` 默认交付 arm64 本地 DMG，`--release` 构建 arm64 / x86_64 手动安装包，设置页直接提供安装/重装/卸载，使用系统管理员授权弹窗并展示进度、取消及失败结果，无需打开终端；接收端在缺少驱动时显示安装入口；已安装驱动的设备在折叠的“驱动维护”中提供重装和卸载，未加载时仍可卸载。安装或卸载前关闭共享，完成后由用户重新开启；独立重启音频服务保留共享设置。DMG 保留应用、Applications 链接和原有独立驱动入口；驱动也可从应用设置内管理。完整源码归档保存在 `target/package-macos/{version}-build{number}/{arch}/`，不进入 DMG、应用或 LAN 更新 ZIP；应用保留许可证/署名、源码 SHA-256 和索取方式。构建产物布局保持原样：DMG、更新 ZIP、发行描述、签名记录和校验清单仍输出到原交付目录，LAN 更新、公共发行与 CI 流程不变。安装器仅操作自有 HAL 目录，验证 Bundle ID 和签名；重启音频服务由用户主动确认。默认输入按钮由用户显式点击；关闭共享时只在默认输入仍为 DeskFuse 时尝试恢复此前设备。
 
 自动化检查不代替真实麦克风授权、HAL 加载、双机转写/延迟及目标语音软件的快捷键兼容性验收。实机步骤见随包清单。
 
@@ -73,3 +73,9 @@ macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 in
 实测 build 175 被系统“声音”设置页持续读取，唯一进程为 `com.apple.Sound-Settings.extension`，不是微信输入法。离开该页后读取者归零，日志记录 `session_ended reason=readers_stopped`。新界面开发版再次验证打开声音页 → 显示该占用者并建立音频会话 → 离开声音页 → 自动待机，未保留录音文件。任何应用若始终保持输入流打开（包括电平预览），仍算实际读取；DeskFuse 无法据此判断应用内部的“录音”按钮状态，不以静音截断会话。
 
 交付验证：`git diff --check`、`cargo check --locked`、`python3 scripts/release.py validate`、`./scripts/build_and_run.sh --build` 通过；最终 `./scripts/package-macos.sh --auto --fast` 使用 build 176 的 descriptor 重建成功。两端 `/Applications/DeskFuse.app` 均为 0.5.2 build 176，深度签名验证通过。占用应用查询在独立后台任务中完成，避免阻塞音频 worker。开发版完成 UI 与声音设置 StartIO/StopIO 验证；安装后本机驱动启动阶段曾短暂出现 RPC Deadline Exceeded，之后探针确认 available=1、readers=0，远端也没有活动输入流。已安装版的 UI 二次切换验证被电脑控制超时及用户窗口交互中断，没有重做微信人工转写验收。
+
+## 独立重启音频服务入口（2026-10-18）
+
+“驱动维护”使用与连接设置相同的实心卡片、左侧说明和右侧操作行；卸载入口采用普通按钮，破坏性强调保留在确认弹窗中。服务未响应时，主状态区直接提供“重启音频服务…”；维护卡片中也始终保留此入口。
+
+独立重启通过已有管理员授权流程调用 `manage-driver.sh restart-audio`，仅向 `coreaudiod` 发送终止信号，由系统重新启动服务；不安装、删除或替换任何驱动文件，也不更改共享开关。弹窗明确说明本机所有录音、播放会暂时中断。执行成功只表示已发出重启请求；音频 worker 清除会话和驱动缓存并重新查询服务，界面显示实际连接状态。取消与命令失败单独提示；语音应用可能需要重新开始录音。

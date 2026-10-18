@@ -14,6 +14,11 @@ verify_identity() {
 RESTART="${3:-no-restart}"
 [[ "$RESTART" == no-restart || "$RESTART" == restart-audio ]] || { echo '无效的音频服务选项' >&2; exit 2; }
 case "${1:-}" in
+  restart-audio)
+    /usr/bin/killall coreaudiod || { echo '无法重启音频服务，请重试或重新启动 Mac。' >&2; exit 1; }
+    echo '已请求重启音频服务。未修改任何音频驱动文件。'
+    exit 0
+    ;;
   install)
     SOURCE="${2:?missing driver source}"
     verify_identity "$SOURCE"
@@ -38,7 +43,7 @@ case "${1:-}" in
     if [[ -e "$DEST" || -L "$DEST" ]]; then verify_identity "$DEST"; /bin/rm -rf "$DEST"; fi
     echo 'DeskFuse 麦克风驱动已卸载。未修改其它音频驱动。'
     ;;
-  *) echo 'usage: manage-driver.sh install SOURCE | uninstall' >&2; exit 2 ;;
+  *) echo 'usage: manage-driver.sh install SOURCE | uninstall | restart-audio' >&2; exit 2 ;;
 esac
 if [[ "$RESTART" == restart-audio ]]; then
   /usr/bin/killall coreaudiod || { echo '驱动文件操作已完成，但重启音频服务失败，请重启 Mac。' >&2; exit 1; }

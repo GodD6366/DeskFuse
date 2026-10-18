@@ -6,8 +6,15 @@ import MicrophoneNative
 enum MicrophoneDriverManager {
     enum Action: String, Identifiable, Sendable {
         case install, uninstall
+        case restartAudio = "restart-audio"
         var id: String { rawValue }
-        var title: String { self == .install ? "安装麦克风驱动" : "卸载麦克风驱动" }
+        var title: String {
+            switch self {
+            case .install: "安装麦克风驱动"
+            case .uninstall: "卸载麦克风驱动"
+            case .restartAudio: "重启音频服务"
+            }
+        }
     }
     static let driverBundleName = String(cString: ud_mic_driver_bundle_name()) + ".driver"
     static let installedPath = "/Library/Audio/Plug-Ins/HAL/" + driverBundleName

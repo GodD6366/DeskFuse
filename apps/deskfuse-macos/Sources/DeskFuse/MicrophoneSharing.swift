@@ -31,6 +31,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     private(set) var connectionError: String?
     var saving = false
     var managingDriver = false
+    var driverOperation: MicrophoneDriverManager.Action?
     var driverInstalled = MicrophoneDriverManager.isInstalled
     var driverMessage: String?
     // Read-only UI observation, isolated from the latency-sensitive audio worker.
@@ -176,13 +177,13 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     }
     func manageDriver(_ action: MicrophoneDriverManager.Action, restartAudio: Bool) {
         guard !managingDriver, !saving, let engine, let resources = Bundle.main.resourceURL else { return }
-        managingDriver = true; error = nil; driverMessage = nil
+        managingDriver = true; driverOperation = action; error = nil; driverMessage = nil
         Task {
-            defer { managingDriver = false; driverInstalled = MicrophoneDriverManager.isInstalled; refreshInputs() }
+            defer { managingDriver = false; driverOperation = nil; driverInstalled = MicrophoneDriverManager.isInstalled; refreshInputs() }
             do {
                 // Stop sharing before changing a loaded HAL plugin. Leave the explicit
                 // switch off so audio cannot resume unexpectedly after authorization.
-                if var settings = snapshot?.settings, settings.enabled {
+                if action != .restartAudio, var settings = snapshot?.settings, settings.enabled {
                     settings.enabled = false
                     let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
                     try await Task.detached { try engine.configureMicrophone(settingsJson: json) }.value
@@ -190,12 +191,15 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                 let completed = try await Task.detached {
                     try MicrophoneDriverManager.run(action, resources: resources, restartAudio: restartAudio)
                 }.value
-                if completed {
+                if completed && action == .restartAudio {
+                    worker?.refreshDriver()
+                    driverMessage = "已请求重启音频服务，连接状态会自动刷新。语音应用可能需要重新开始录音。"
+                } else if completed {
                     driverMessage = action == .install ? "驱动安装完成。" : "驱动卸载完成。"
                     driverMessage! += restartAudio ? "已请求重启音频服务，请等待系统重新加载音频设备。" : "请重启 Mac 后生效。"
                     if action == .install { driverMessage! += "准备就绪后可重新开启麦克风共享。" }
                 } else {
-                    driverMessage = "已取消驱动操作。若共享原先已开启，请按需重新开启。"
+                    driverMessage = action == .restartAudio ? "已取消重启，未更改共享设置。" : "已取消驱动操作。若共享原先已开启，请按需重新开启。"
                 }
             } catch { self.error = error.localizedDescription }
         }
@@ -219,6 +223,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
     private var initializationGeneration: UInt64 = 1
     private var initializationPending = true
     private var initializationError: String?
+    private var driverRefreshRequested = false
     init(engine: Engine) { self.engine = engine }
     func status() -> (snapshot: MicrophoneSharingSnapshot?, error: String?) {
         lock.withLock { (projection, initializationError) }
@@ -256,6 +261,14 @@ private final class MicrophoneWorker: @unchecked Sendable {
             guard !stopped, generation == initializationGeneration,
                   projection != nil || initializationPending else { return }
             initializationError = message
+        }
+    }
+    func refreshDriver() { lock.withLock { driverRefreshRequested = true } }
+    private func takeDriverRefresh() -> Bool {
+        lock.withLock {
+            let requested = driverRefreshRequested
+            driverRefreshRequested = false
+            return requested
         }
     }
     func setLocked(_ value: Bool) { lock.lock(); locked = value; lock.unlock(); if value { engine.stopMicrophone() } }
@@ -316,6 +329,11 @@ private final class MicrophoneWorker: @unchecked Sendable {
                     if Date() >= nextPoll {
                         nextPoll = Date().addingTimeInterval(0.2)
                         refreshSessionLock()
+                        if takeDriverRefresh() {
+                            resetSession()
+                            driver = false; readers = false; driverEnabled = false
+                            configuredName = ""; nextDriverCheck = .distantPast
+                        }
                         let state = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
                         let wantsReceiver = state.settings.enabled && !state.settings.source.isEmpty && !flags().0
                         if Date() >= nextDriverCheck && capture == nil {

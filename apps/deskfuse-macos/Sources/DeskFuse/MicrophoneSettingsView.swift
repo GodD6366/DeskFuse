@@ -4,6 +4,7 @@ import DeskFuseEngine
 struct MicrophoneSettingsView: View {
     let store: AppStore
     @State private var model = MicrophoneSharing.shared
+    @State private var maintenanceExpanded = false
     @State private var driverAction: MicrophoneDriverManager.Action?
     @Environment(\.colorScheme) private var scheme
     private var peers: [Device] { (store.snapshot?.devices ?? []).filter { $0.trusted && !$0.blocked && $0.id != store.snapshot?.localId } }
@@ -18,7 +19,7 @@ struct MicrophoneSettingsView: View {
                     routeSurface(state)
                     configuration(state)
                     if model.driverInstalled { maintenance(state) }
-                    if model.managingDriver { ProgressView("正在处理驱动，请完成系统管理员授权…") }
+                    if model.managingDriver { ProgressView(model.driverOperation == .restartAudio ? "正在重启音频服务，请完成系统管理员授权…" : "正在处理驱动，请完成系统管理员授权…") }
                     if let message = model.driverMessage { Text(message).font(.callout).workspaceSecondaryText() }
                 } else if let connectionError = model.connectionError {
                     SystemSettingsFormBlock {
@@ -82,7 +83,9 @@ struct MicrophoneSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                if state.phase == "streaming" {
+                if !state.settings.source.isEmpty && !state.native.driver && model.driverInstalled {
+                    Button("重启音频服务…") { driverAction = .restartAudio }
+                } else if state.phase == "streaming" {
                     MicrophoneLevelView(level: state.native.level)
                         .frame(width: 72, height: 24)
                         .accessibilityLabel("麦克风电平")
@@ -173,7 +176,7 @@ struct MicrophoneSettingsView: View {
     private func statusText(_ state: MicrophoneSharingSnapshot) -> String {
         guard state.settings.enabled else { return "共享已关闭" }
         if !state.settings.source.isEmpty && !state.native.driver {
-            return model.driverInstalled ? "驱动服务未响应，请在“驱动维护”中恢复" : "安装虚拟麦克风后即可使用"
+            return model.driverInstalled ? "驱动服务未响应，重启音频服务后可重新连接" : "安装虚拟麦克风后即可使用"
         }
         if state.settings.source.isEmpty && state.native.permission != "authorized" {
             return state.native.permission == "denied" ? "未允许麦克风访问" : "需要允许麦克风访问"
@@ -260,18 +263,40 @@ struct MicrophoneSettingsView: View {
         }
     }
     private func maintenance(_ state: MicrophoneSharingSnapshot) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(state.native.driver ? "驱动已安装，连接正常。" : "驱动已安装，但服务未响应。可重新安装并选择立即重启音频服务。")
-                    .font(WorkspaceTypography.detail).workspaceSecondaryText()
-                HStack {
-                    Button("重新安装…") { driverAction = .install }
-                    Button("卸载…", role: .destructive) { driverAction = .uninstall }
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                maintenanceExpanded.toggle()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "wrench.and.screwdriver").foregroundStyle(.secondary)
+                    Text("驱动维护").font(WorkspaceTypography.heading)
+                    Spacer()
+                    Text(state.native.driver ? "运行正常" : "服务未响应")
+                        .font(WorkspaceTypography.detail).foregroundStyle(state.native.driver ? Color.secondary : Color.orange)
+                    Image(systemName: maintenanceExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 }
-            }.padding(.top, 12)
-        } label: {
-            Label("驱动维护", systemImage: "wrench.and.screwdriver").font(WorkspaceTypography.detail).workspaceSecondaryText()
+                .padding(20).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(maintenanceExpanded ? "已展开" : "已折叠")
+            if maintenanceExpanded {
+                Divider().padding(.horizontal, 20)
+                settingsRow("音频服务", detail: "连接异常时先重启，保留驱动与共享设置") {
+                    Button("重启音频服务…") { driverAction = .restartAudio }
+                }
+                Divider().padding(.horizontal, 20)
+                settingsRow("麦克风驱动", detail: "重启后仍不可用时，可尝试重新安装") {
+                    Button("重新安装…") { driverAction = .install }
+                }
+                Divider().padding(.horizontal, 20)
+                settingsRow("移除驱动", detail: "移除后，此 Mac 将无法接收远端麦克风") {
+                    // Keep the destructive emphasis in the confirmation sheet.
+                    Button("卸载…") { driverAction = .uninstall }
+                }
+            }
         }
+        .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -297,14 +322,20 @@ private struct MicrophoneDriverSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(action.title).font(.title2.bold())
-            Text("仅操作 DeskFuse 的麦克风驱动，需要在系统弹窗中授权管理员权限。操作前会关闭麦克风共享。")
-            Toggle("完成后立即重启音频服务", isOn: $restartAudio)
-            Text(restartAudio ? "这会短暂中断此 Mac 上所有应用的录音和播放。" : "稍后重启 Mac 后生效。")
-                .font(.callout).foregroundStyle(.secondary)
+            if action == .restartAudio {
+                Text("这会短暂中断此 Mac 上所有应用的录音和播放，需要管理员授权。")
+                Text("保留已安装的驱动和当前共享设置。服务恢复后按需连接，语音应用可能需要重新开始录音。")
+                    .font(.callout).workspaceSecondaryText()
+            } else {
+                Text("仅操作 DeskFuse 的麦克风驱动，需要在系统弹窗中授权管理员权限。操作前会关闭麦克风共享。")
+                Toggle("完成后立即重启音频服务", isOn: $restartAudio)
+                Text(restartAudio ? "这会短暂中断此 Mac 上所有应用的录音和播放。" : "稍后重启 Mac 后生效。")
+                    .font(.callout).workspaceSecondaryText()
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(action.title, role: action == .uninstall ? .destructive : nil) { confirm(restartAudio) }
+                Button(action.title, role: action == .uninstall ? .destructive : nil) { confirm(action == .restartAudio || restartAudio) }
             }
         }
         .padding(24).frame(width: 460)
