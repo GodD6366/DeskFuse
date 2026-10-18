@@ -382,8 +382,6 @@ impl State {
         }
     }
     async fn reclaim(&mut self, runtime: &RuntimeHandle, restore: Option<(f64, f64)>) {
-        #[cfg(target_os = "macos")]
-        deskfuse_platform_macos::sharing::microphone_shortcut::cancel();
         self.crossing_started = None;
         let outbound = self.outbound.take();
         let inbound = self.inbound.take();
@@ -1005,28 +1003,6 @@ async fn run(
     let mut timer = tokio::time::interval(Duration::from_millis(20));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        #[cfg(target_os = "macos")]
-        deskfuse_platform_macos::sharing::microphone_shortcut::set_route(
-            state.local,
-            state
-                .policy
-                .active_display()
-                .map(|display| display.device_id),
-            (state.effective.role == InputShareRole::Controlled)
-                .then_some(state.effective.authorized_controller)
-                .flatten(),
-            state
-                .inbound
-                .as_ref()
-                .is_some_and(|lease| !lease.expired(Instant::now())),
-            state.available
-                && state.effective.enabled
-                && !recording.load(Ordering::Acquire)
-                && observations
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(NativeObservation::permits_input),
-        );
         if stopping.load(Ordering::Acquire) {
             break;
         }

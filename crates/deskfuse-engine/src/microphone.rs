@@ -13,7 +13,7 @@ use std::{
 };
 static SERVICE: OnceLock<Mutex<Option<Arc<Service>>>> = OnceLock::new();
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub enabled: bool,
@@ -22,20 +22,6 @@ pub struct Settings {
     pub allowed: Vec<String>,
     /// Empty means the current physical system default input.
     pub input_uid: String,
-    pub shortcut_key: u16,
-    pub shortcut_modifiers: u64,
-}
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            source: String::new(),
-            allowed: vec![],
-            input_uid: String::new(),
-            shortcut_key: 63,
-            shortcut_modifiers: 0,
-        }
-    }
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct NativeState {
@@ -73,8 +59,6 @@ struct State {
     retry_at: Instant,
     detail: String,
     path: PathBuf,
-    shortcut_applied: Option<(bool, u16, u64)>,
-    shortcut_at: Instant,
 }
 impl State {
     fn ready(&self) -> bool {
@@ -141,8 +125,6 @@ pub fn install(transport: QuinnTransport, runtime: RuntimeHandle, diagnostics: D
             retry_at: Instant::now(),
             detail: String::new(),
             path,
-            shortcut_applied: None,
-            shortcut_at: Instant::now(),
         }),
     });
     *SERVICE
@@ -173,15 +155,6 @@ fn validate_settings(s: &Settings) -> Result<(), String> {
         || s.allowed.iter().any(|p| p.parse::<DeviceId>().is_err())
     {
         return Err("麦克风设置无效".into());
-    }
-    let modifier_key = matches!(s.shortcut_key, 54..=56 | 58..=63);
-    if (s.shortcut_key == 53 && s.shortcut_modifiers & 0x1c0000 == 0x1c0000)
-        || s.shortcut_key > 127
-        || s.shortcut_key == 57 // Caps Lock is a toggle, not a held key.
-        || s.shortcut_modifiers & !0x1e0000 != 0
-        || (modifier_key && s.shortcut_modifiers != 0)
-    {
-        return Err("请选择单个按键或组合键；Caps Lock 和紧急收回快捷键不可用".into());
     }
     Ok(())
 }
@@ -415,23 +388,6 @@ impl Service {
                 s.generation += 1;
                 s.retry_at = Instant::now() + Duration::from_millis(500);
             }
-            let shortcut = (
-                s.settings.enabled
-                    && !s.native.locked
-                    && s.native_at.elapsed() < Duration::from_secs(2),
-                s.settings.shortcut_key,
-                s.settings.shortcut_modifiers,
-            );
-            if (s.shortcut_applied != Some(shortcut)
-                || s.shortcut_at.elapsed() >= Duration::from_secs(1))
-                && self.runtime.input_service_control().is_some_and(|c| {
-                    c.set_microphone_shortcut(shortcut.0, shortcut.1, shortcut.2)
-                        .is_ok()
-                })
-            {
-                s.shortcut_applied = Some(shortcut);
-                s.shortcut_at = Instant::now();
-            }
             if ready
                 && s.native.driver
                 && s.native.readers
@@ -544,8 +500,6 @@ mod tests {
             retry_at: Instant::now(),
             detail: String::new(),
             path: PathBuf::new(),
-            shortcut_applied: None,
-            shortcut_at: Instant::now(),
         }
     }
 
@@ -592,5 +546,15 @@ mod tests {
         assert!(!state.can_receive(peer, false));
         state.settings.source = DeviceId::from_bytes([8; 32]).to_string();
         assert!(!state.can_receive(peer, true));
+    }
+    #[test]
+    fn legacy_shortcut_settings_are_ignored_without_losing_audio_configuration() {
+        let settings: Settings = serde_json::from_str(r#"{"enabled":true,"input_uid":"physical-mic","shortcut_key":54,"shortcut_modifiers":0}"#).unwrap();
+        assert!(settings.enabled);
+        assert_eq!(settings.input_uid, "physical-mic");
+        validate_settings(&settings).unwrap();
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("shortcut_key").is_none());
+        assert!(saved.get("shortcut_modifiers").is_none());
     }
 }

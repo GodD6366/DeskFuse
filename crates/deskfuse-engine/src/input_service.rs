@@ -18,9 +18,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[path = "input_service_microphone_shortcut.rs"]
-mod microphone_shortcut;
-
 pub fn main_with_platform(
     platform: Arc<dyn EnginePlatformPort>,
 ) -> std::result::Result<(), String> {
@@ -91,8 +88,7 @@ async fn run(
         | Capabilities::INPUT_ACTIVATION
         | Capabilities::INPUT_ENVIRONMENT
         | Capabilities::INPUT_MOTION_DATAGRAM_V1
-        | Capabilities::INPUT_RELATIVE_MOTION_V1
-        | Capabilities::MICROPHONE_SHORTCUT;
+        | Capabilities::INPUT_RELATIVE_MOTION_V1;
     let nonce = identity.device_id().into_bytes();
     let hello = PeerHello::signed(&identity, child.bootstrap.display_name.clone(), caps, nonce)
         .map_err(|e| e.to_string())?;
@@ -195,8 +191,6 @@ async fn run(
             std::thread::sleep(Duration::from_secs(2));
         }
     }).map_err(|e|e.to_string())?;
-    let mut microphone_shortcut =
-        microphone_shortcut::Owner::new(authority.local, transport.clone());
     // Wi-Fi observations arrive from the authorized UI process over input IPC.
     let mut remote_input =
         crate::remote_application_input::Owner::new(child.pause.clone(), platform.clone());
@@ -215,7 +209,6 @@ async fn run(
                 let remote_active = matches!(child.pause.load(Ordering::Acquire), 4 | 5);
                 let emergency = remote_active && child.emergency.swap(false, Ordering::AcqRel);
                 remote_input.tick(&authority, emergency);
-                microphone_shortcut.tick(&authority, &runtime.handle);
                 let mut changed = false;
                 // Bound discovery processing so a discovery burst cannot starve lifetime checks.
                 for _ in 0..32 {
@@ -289,10 +282,7 @@ async fn run(
                     }
                 });
             }
-            Some(packet) = child.remote.recv() => {
-                if packet.kind == "microphone_shortcut_config" { microphone_shortcut.configure(&packet); }
-                else { remote_input.receive(packet, &authority); }
-            },
+            Some(packet) = child.remote.recv() => { remote_input.receive(packet, &authority); },
             Some((id,command)) = child.commands.recv() => {
                 if let Err(error) = runtime.handle.try_send(command) { status.native.error = Some(error.to_string()); }
                 status.last_command = id;

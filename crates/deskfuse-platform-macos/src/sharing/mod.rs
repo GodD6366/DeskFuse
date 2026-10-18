@@ -5,7 +5,6 @@ mod background_cursor;
 mod capture;
 mod environment;
 mod injector;
-pub mod microphone_shortcut;
 pub use environment::MacOSInputEnvironment;
 pub mod timing;
 use crate::{PlatformError, PlatformResult};

@@ -18,7 +18,6 @@ mod control_executor;
 mod input;
 pub mod input_executor;
 pub mod microphone;
-pub mod microphone_shortcut;
 pub mod motion_diag;
 mod network;
 pub mod remote_application;
@@ -1469,7 +1468,6 @@ struct QuinnShared {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
-    microphone_shortcut: microphone_shortcut::ShortcutHub,
     microphone: microphone::MicrophoneHub,
     stopping: Arc<AtomicBool>,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -1535,7 +1533,6 @@ pub struct QuinnTransport {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
-    microphone_shortcut: microphone_shortcut::ShortcutHub,
     microphone: microphone::MicrophoneHub,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
@@ -1596,7 +1593,6 @@ impl QuinnTransport {
             identity: self.identity.clone(),
             network: self.network.clone(),
             remote_app: self.remote_app.clone(),
-            microphone_shortcut: self.microphone_shortcut.clone(),
             microphone: self.microphone.clone(),
             lan_tasks: self.lan_tasks.clone(),
             stopping: self.shutdown_started.clone(),
@@ -1629,7 +1625,6 @@ impl QuinnTransport {
             identity: Arc::default(),
             network: network::NetworkHub::new(),
             remote_app: remote_application::RemoteHub::new(),
-            microphone_shortcut: microphone_shortcut::ShortcutHub::new(),
             microphone: microphone::MicrophoneHub::new(),
             lan_tasks: Arc::default(),
             lan_endpoints: Arc::default(),
@@ -1815,11 +1810,7 @@ impl QuinnTransport {
         }
         let network = network::NetworkHub::new();
         let remote_app = remote_application::RemoteHub::new();
-        let microphone_shortcut = microphone_shortcut::ShortcutHub::new();
         let microphone = microphone::MicrophoneHub::new();
-        if config.input_service {
-            input.enable_microphone_shortcuts(microphone_shortcut.clone());
-        }
         let identity = Arc::default();
         let bound_addr = endpoint
             .local_addr()
@@ -1861,7 +1852,6 @@ impl QuinnTransport {
             identity: Arc::clone(&identity),
             network: network.clone(),
             remote_app: remote_app.clone(),
-            microphone_shortcut: microphone_shortcut.clone(),
             microphone: microphone.clone(),
             lan_tasks: lan_tasks.clone(),
             stopping: stopping.clone(),
@@ -1929,7 +1919,6 @@ impl QuinnTransport {
             identity,
             network,
             remote_app,
-            microphone_shortcut,
             microphone,
             lan_tasks,
             lan_endpoints,
@@ -3203,13 +3192,6 @@ async fn serve_connection(
                                 });
                             }
                         }
-                        Some(Message::MicrophoneShortcutOpen(open)) => {
-                            pending.insert(ordinal, None);
-                            if open.version == 1 && negotiated.contains(Capabilities::MICROPHONE_SHORTCUT) && !shared.is_revoked(peer).unwrap_or(true) {
-                                let hub = shared.microphone_shortcut.clone();
-                                tokio::spawn(async move { hub.accept(peer, open, send, recv).await; });
-                            }
-                        }
                         Some(Message::RemoteApplicationOpen(_)) => {
                             pending.insert(ordinal, None);
                             if negotiated.contains(Capabilities::REMOTE_APPLICATION) && !shared.is_revoked(peer).unwrap_or(true) {
@@ -3341,11 +3323,7 @@ async fn read_control_frame(
     let envelope = read_frame(recv, timeout).await?;
     if matches!(
         envelope.message,
-        Some(
-            Message::RemoteApplicationOpen(_)
-                | Message::MicrophoneOpen(_)
-                | Message::MicrophoneShortcutOpen(_)
-        )
+        Some(Message::RemoteApplicationOpen(_) | Message::MicrophoneOpen(_))
     ) {
         return Ok(envelope);
     }

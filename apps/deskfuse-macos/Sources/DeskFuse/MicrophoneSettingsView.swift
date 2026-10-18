@@ -4,7 +4,6 @@ import DeskFuseEngine
 struct MicrophoneSettingsView: View {
     let store: AppStore
     @State private var model = MicrophoneSharing.shared
-    @State private var editingShortcut = false
     @State private var driverAction: MicrophoneDriverManager.Action?
     private var peers: [Device] { (store.snapshot?.devices ?? []).filter { $0.trusted && !$0.blocked && $0.id != store.snapshot?.localId } }
     private func update(_ mutate: (inout MicrophoneSettings) -> Void) {
@@ -14,82 +13,54 @@ struct MicrophoneSettingsView: View {
     var body: some View {
         SystemSettingsFormPage {
             if let state = model.snapshot {
-                SystemSettingsFormBlock(title: "麦克风共享", titleSymbol: "mic") {
-                    Toggle("跨设备麦克风共享", isOn: Binding(get: { state.settings.enabled }, set: { value in update { $0.enabled = value } }))
-                    Picker("麦克风来源", selection: Binding(get: { state.settings.source }, set: { value in update { $0.source = value } })) {
-                        Text("此 Mac 的实体麦克风").tag("")
+                SystemSettingsFormBlock(footer: "应用使用麦克风时自动传输，结束使用后停止。音频不保存。") {
+                    Toggle("麦克风共享", isOn: Binding(get: { state.settings.enabled }, set: { value in update { $0.enabled = value } }))
+                    Picker("声音来自", selection: Binding(get: { state.settings.source }, set: { value in update { $0.source = value } })) {
+                        Text("此 Mac").tag("")
                         ForEach(peers, id: \.id) { peer in Text(peer.name + (peer.connected ? "" : "（离线）")).tag(peer.id) }
                         if !state.settings.source.isEmpty && !peers.contains(where: { $0.id == state.settings.source }) {
                             Text("原来源设备不可用").tag(state.settings.source)
                         }
                     }
-                    Text("在有麦克风的 A 上选择“此 Mac”，在 B 上选择 A。两端均须启用，并在 A 允许 B 使用麦克风。").font(.caption).foregroundStyle(.secondary)
-                    Text("Beta · 默认关闭，仅支持两台 Mac。设置修改后自动保存。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if state.settings.source.isEmpty {
-                    SystemSettingsFormBlock(title: "实体麦克风") {
-                        Picker("输入设备", selection: Binding(get: { state.settings.input_uid }, set: { value in update { $0.input_uid = value } })) {
-                            Text("系统默认实体麦克风").tag("")
-                            ForEach(model.inputs) { input in Text(input.name).tag(input.id) }
-                            if !state.settings.input_uid.isEmpty && !model.inputs.contains(where: { $0.id == state.settings.input_uid }) {
-                                Text("所选麦克风不可用").tag(state.settings.input_uid)
+                    Divider()
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: state.phase == "streaming" ? "waveform" : "mic")
+                            .foregroundStyle(state.phase == "streaming" ? Color.green : Color.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(statusText(state)).font(.callout)
+                            if !state.peer.isEmpty {
+                                Text((state.role == "sender" ? "正在提供给 " : "正在接收自 ") + (peers.first(where: { $0.id == state.peer })?.name ?? "已配对设备"))
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        Button("刷新麦克风列表", action: model.refreshInputs)
-                        if state.native.permission != "authorized" { Button("授权麦克风访问…", action: model.requestPermission) }
-                        Text("只在目标应用读取虚拟麦克风时采集；锁屏、断线或关闭功能后停止。音频不保存到磁盘。").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
-                    SystemSettingsFormBlock(title: "允许使用此麦克风的设备") {
-                        ForEach(peers, id: \.id) { peer in
-                            Toggle(peer.name, isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
-                                update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
-                            }))
+                    if state.phase == "streaming" {
+                        ProgressView(value: Double(state.native.level), total: 1)
+                            .accessibilityLabel("麦克风电平")
+                    }
+                }
+                if state.settings.source.isEmpty {
+                    sourceSettings(state)
+                } else {
+                    receiverSettings(state)
+                }
+                if model.driverInstalled {
+                    SystemSettingsFormBlock {
+                        DisclosureGroup("驱动维护") {
+                            LabeledContent("驱动状态", value: state.native.driver ? "已安装，可连接" : "已安装，服务未响应")
+                            Text("仅接收端需要驱动。服务未响应时可重新安装，并选择立即重启音频服务。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button("重新安装…") { driverAction = .install }
+                                Spacer()
+                                Button("卸载…", role: .destructive) { driverAction = .uninstall }
+                            }
                         }
-                        if peers.isEmpty { Text("请先在设备页配对另一台 Mac。").foregroundStyle(.secondary) }
-                        Text("同一时间仅允许一个目标设备使用。").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                SystemSettingsFormBlock(title: "虚拟麦克风驱动") {
-                    LabeledContent("安装状态", value: model.driverInstalled ? "已安装" : "未安装")
-                    if model.driverInstalled {
-                        LabeledContent("运行状态", value: state.native.driver ? "可连接" : "等待音频服务加载，请重启 Mac")
-                    }
-                    HStack {
-                        Button(model.driverInstalled ? "重新安装驱动…" : "安装驱动…") { driverAction = .install }
-                        if model.driverInstalled {
-                            Button("卸载驱动…", role: .destructive) { driverAction = .uninstall }
-                        }
-                    }
-                    if !state.settings.source.isEmpty {
-                        Button("设为系统默认输入", action: model.setDefaultInput)
-                            .disabled(!state.settings.enabled || !state.native.driver || !model.driverInstalled)
-                        Text("在 B 的语音软件中选择“DeskFuse 麦克风（来自 \(state.source_name)）”。仅使用系统默认输入的软件，可点击上方按钮。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("仅接收其它 Mac 麦克风的设备需要安装驱动。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if model.managingDriver { ProgressView("正在处理驱动，请完成系统管理员授权…") }
-                    if let message = model.driverMessage { Text(message).font(.callout).foregroundStyle(.secondary) }
-                }
-                SystemSettingsFormBlock(title: "语音快捷键") {
-                    HStack {
-                        Text("按住说话")
-                        Spacer()
-                        MicrophoneShortcutKeycaps(key: WorkflowKey(key_code: state.settings.shortcut_key, modifiers: state.settings.shortcut_modifiers))
-                        Button("更改…") { editingShortcut = true }
-                    }
-                    Text("两端配置需与目标语音软件一致。按住与松开都交给按下时的目标；快捷键不裁切音频，避免丢失尾音。共享按键需要现有键鼠共享及辅助功能权限。").font(.caption).foregroundStyle(.secondary)
-                }
-                SystemSettingsFormBlock(title: "连接状态") {
-                    LabeledContent("状态", value: state.detail)
-                    if !state.peer.isEmpty { LabeledContent("连接设备", value: peers.first(where: { $0.id == state.peer })?.name ?? "已配对设备") }
-                    if !state.role.isEmpty {
-                        ProgressView(value: Double(state.native.level), total: 1) { Text("麦克风电平") }
-                    }
-                    if state.native.readers { Text("目标应用正在读取虚拟麦克风").font(.caption).foregroundStyle(.secondary) }
-                }
+                if model.managingDriver { ProgressView("正在处理驱动，请完成系统管理员授权…") }
+                if let message = model.driverMessage { Text(message).font(.callout).foregroundStyle(.secondary) }
             } else if let connectionError = model.connectionError {
                 SystemSettingsFormBlock {
                     Label("无法连接麦克风服务", systemImage: "exclamationmark.triangle")
@@ -97,11 +68,9 @@ struct MicrophoneSettingsView: View {
                     Button("重试") { model.retryConnection(engine: store.engine) }
                 }
             } else {
-                ProgressView("正在连接麦克风服务…（最多 5 秒）")
+                ProgressView("正在连接麦克风服务…")
             }
-            if model.snapshot != nil, let connectionError = model.connectionError {
-                Text(connectionError).foregroundStyle(.red)
-            }
+            if model.snapshot != nil, let connectionError = model.connectionError { Text(connectionError).foregroundStyle(.red) }
             if let error = model.error { Text(error).foregroundStyle(.red) }
         }
         .disabled(model.saving || model.managingDriver)
@@ -112,34 +81,54 @@ struct MicrophoneSettingsView: View {
                 model.manageDriver(action, restartAudio: restartAudio)
             }.floatingWorkspaceStyle()
         }
-        .sheet(isPresented: $editingShortcut) {
-            if let settings = model.snapshot?.settings { MicrophoneShortcutSheet(store: store, settings: settings) { editingShortcut = false }.floatingWorkspaceStyle() }
+    }
+    private func statusText(_ state: MicrophoneSharingSnapshot) -> String {
+        guard state.settings.enabled else { return "共享已关闭" }
+        if !state.settings.source.isEmpty && !state.native.driver {
+            return model.driverInstalled ? "驱动服务未响应，请在“驱动维护”中恢复" : "安装虚拟麦克风后即可使用"
+        }
+        if state.settings.source.isEmpty && state.native.permission != "authorized" {
+            return state.native.permission == "denied" ? "未允许麦克风访问" : "需要允许麦克风访问"
+        }
+        if state.settings.source.isEmpty && state.settings.allowed.isEmpty { return "选择下方设备，允许它使用此麦克风" }
+        return state.detail
+    }
+    @ViewBuilder private func sourceSettings(_ state: MicrophoneSharingSnapshot) -> some View {
+        SystemSettingsFormBlock(title: "提供此 Mac 的麦克风", footer: "在另一台 Mac 开启麦克风共享，并将声音来源选为此 Mac。同一时间可供一台设备使用。") {
+            Picker("输入设备", selection: Binding(get: { state.settings.input_uid }, set: { value in update { $0.input_uid = value } })) {
+                Text("系统默认麦克风").tag("")
+                ForEach(model.inputs) { input in Text(input.name).tag(input.id) }
+                if !state.settings.input_uid.isEmpty && !model.inputs.contains(where: { $0.id == state.settings.input_uid }) {
+                    Text("所选麦克风不可用").tag(state.settings.input_uid)
+                }
+            }
+            if state.native.permission != "authorized" {
+                Button(state.native.permission == "denied" ? "打开麦克风权限设置…" : "允许麦克风访问…", action: model.requestPermission)
+            }
+            Divider()
+            Text("允许使用的设备").font(.callout.weight(.medium))
+            ForEach(peers, id: \.id) { peer in
+                Toggle(peer.name, isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
+                    update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
+                }))
+            }
+            if peers.isEmpty { Text("请先在“设备”中配对另一台 Mac。").foregroundStyle(.secondary) }
         }
     }
-}
-private struct MicrophoneShortcutSheet: View {
-    let store: AppStore
-    let settings: MicrophoneSettings
-    let close: () -> Void
-    @State private var key: WorkflowKey?
-    @State private var recording = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("语音快捷键").font(.title2.bold())
-            MicrophoneShortcutRecorder(store: store, shortcut: $key, onRecordingChange: { recording = $0 })
-            Text("请在目标设备的语音软件中设置相同按键。").font(.callout).foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("取消", action: close)
-                Button("保存") {
-                    var edited = settings
-                    edited.shortcut_key = key?.key_code ?? 63
-                    edited.shortcut_modifiers = key?.modifiers ?? 0
-                    MicrophoneSharing.shared.configure(edited); close()
-                }.buttonStyle(.borderedProminent).disabled(recording || key == nil)
+    @ViewBuilder private func receiverSettings(_ state: MicrophoneSharingSnapshot) -> some View {
+        SystemSettingsFormBlock(title: "在此 Mac 使用", footer: "直接使用微信输入法等语音软件的录音按钮或快捷键，无需在 DeskFuse 额外配置。") {
+            if !model.driverInstalled {
+                Text("先安装虚拟麦克风，让语音软件接收远端声音。")
+                Button("安装虚拟麦克风…") { driverAction = .install }
+            } else {
+                LabeledContent("应用中的输入设备", value: "DeskFuse 麦克风（来自 \(state.source_name)）")
+                Text("在语音软件中选择上述麦克风；使用系统默认输入的软件，可点击下方按钮。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("设为系统默认麦克风", action: model.setDefaultInput)
+                    .disabled(!state.settings.enabled || !state.native.driver)
             }
-        }.padding(24).frame(width: 500)
-        .onAppear { key = WorkflowKey(key_code: settings.shortcut_key, modifiers: settings.shortcut_modifiers) }
+            Text("来源 Mac 需开启共享，并允许此 Mac 使用。").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 

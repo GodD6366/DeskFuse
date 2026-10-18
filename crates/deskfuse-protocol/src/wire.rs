@@ -27,7 +27,7 @@ pub struct Envelope {
     /// The message carried by this envelope.
     #[prost(
         oneof = "envelope::Message",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 35, 36, 40, 41, 42, 43, 44, 45, 46, 47, 48"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, 44, 45, 46, 47, 48"
     )]
     pub message: Option<envelope::Message>,
 }
@@ -35,10 +35,10 @@ pub struct Envelope {
 pub mod envelope {
     use super::{
         ClipboardUpdate, DisplayInfo, Error, Goodbye, Hello, HelloAck, InputEndpoints,
-        InputEventBatch, InputSharing, MicrophoneOpen, MicrophoneShortcutOpen, NetworkControl,
-        PairingDecision, PairingRequest, PeerInfo, Ping, Pong, ReleaseInventory,
-        RemoteApplicationOpen, SessionProof, UpdateCancel, UpdateChunk, UpdateCommand,
-        UpdateCommandAck, UpdateReceipt, UpdateRequest, UpdateStatus, WorkflowSync,
+        InputEventBatch, InputSharing, MicrophoneOpen, NetworkControl, PairingDecision,
+        PairingRequest, PeerInfo, Ping, Pong, ReleaseInventory, RemoteApplicationOpen,
+        SessionProof, UpdateCancel, UpdateChunk, UpdateCommand, UpdateCommandAck, UpdateReceipt,
+        UpdateRequest, UpdateStatus, WorkflowSync,
     };
     use prost::Oneof;
 
@@ -81,8 +81,7 @@ pub mod envelope {
         RemoteApplicationOpen(RemoteApplicationOpen),
         #[prost(message, tag = "35")]
         MicrophoneOpen(MicrophoneOpen),
-        #[prost(message, tag = "36")]
-        MicrophoneShortcutOpen(MicrophoneShortcutOpen),
+        // Tag 36 was the removed microphone shortcut; do not reuse it.
         #[prost(message, tag = "40")]
         ReleaseInventory(ReleaseInventory),
         #[prost(message, tag = "41")]
@@ -572,18 +571,4 @@ pub struct MicrophoneOpen {
     pub version: u32,
     #[prost(uint32, tag = "2")]
     pub status: u32,
-}
-
-/// One bounded hold-to-talk stream. Key edges never share the audio queue.
-#[derive(Clone, PartialEq, Message)]
-pub struct MicrophoneShortcutOpen {
-    #[prost(uint32, tag = "1")]
-    pub version: u32,
-    #[prost(uint32, tag = "2")]
-    pub key_code: u32,
-    #[prost(uint64, tag = "3")]
-    pub modifiers: u64,
-    /// A controller has already selected the final target for this hold.
-    #[prost(bool, tag = "4")]
-    pub routed: bool,
 }

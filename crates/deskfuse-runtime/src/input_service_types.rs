@@ -69,7 +69,7 @@ impl ServiceControl {
 
 /// Separate remote-application lease, delivered to the existing signed helper.
 /// Quartz global coordinates and native key codes; never a raw UI event object.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoteApplicationInput {
     #[serde(default)]
     pub peer: Option<deskfuse_core::DeviceId>,
@@ -102,25 +102,6 @@ pub struct RemoteApplicationInput {
     pub dy: f64,
 }
 impl ServiceControl {
-    /// Configure the helper's opt-in microphone shortcut. Fn is key 63, flags 0.
-    /// Repeat on helper restart (or native polling); identical settings are idempotent.
-    pub fn set_microphone_shortcut(
-        &self,
-        enabled: bool,
-        key_code: u16,
-        modifiers: u64,
-    ) -> Result<(), String> {
-        if key_code > 127 || modifiers & !0x9E0000 != 0 || (key_code == 63 && modifiers != 0) {
-            return Err("麦克风快捷键无效".into());
-        }
-        self.remote_application(RemoteApplicationInput {
-            kind: "microphone_shortcut_config".into(),
-            key: key_code,
-            flags: modifiers,
-            repeat: enabled,
-            ..Default::default()
-        })
-    }
     pub fn remote_application(&self, packet: RemoteApplicationInput) -> Result<(), String> {
         self.remote
             .lock()

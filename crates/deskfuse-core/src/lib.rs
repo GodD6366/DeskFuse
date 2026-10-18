@@ -407,8 +407,7 @@ impl Capabilities {
     /// On-demand microphone audio on its own authenticated QUIC stream.
     pub const MICROPHONE: Self = Self(1 << 19);
 
-    /// Hold-to-talk shortcut control independent of audio readers.
-    pub const MICROPHONE_SHORTCUT: Self = Self(1 << 18);
+    // Bit 18 was the removed microphone shortcut capability; do not reuse.
     /// macOS mouse-button mapping synchronization (v1).
     pub const MAC_MOUSE_SETTINGS: Self = Self(1 << 17);
 
@@ -1625,11 +1624,7 @@ mod tests {
 
     #[test]
     fn capabilities_support_independent_bits() {
-        assert!(
-            !Capabilities::MAC_MOUSE_SETTINGS
-                .intersects(Capabilities::MICROPHONE | Capabilities::MICROPHONE_SHORTCUT)
-        );
-        assert!(!Capabilities::MICROPHONE.intersects(Capabilities::MICROPHONE_SHORTCUT));
+        assert!(!Capabilities::MAC_MOUSE_SETTINGS.intersects(Capabilities::MICROPHONE));
         let mut capabilities = Capabilities::NETWORK | Capabilities::CLIPBOARD;
         assert!(capabilities.contains(Capabilities::NETWORK));
         assert!(!capabilities.contains(Capabilities::TRANSFER));
@@ -1660,7 +1655,6 @@ mod tests {
             Capabilities::REMOTE_APPLICATION_RDP,
             Capabilities::WORKFLOW_SYNC,
             Capabilities::MICROPHONE,
-            Capabilities::MICROPHONE_SHORTCUT,
         ];
         let mut seen = Capabilities::NONE;
         for feature in features {

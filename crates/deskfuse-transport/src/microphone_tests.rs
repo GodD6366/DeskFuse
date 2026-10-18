@@ -206,48 +206,10 @@ async fn microphone_queue_overflow_closes_session_instead_of_buffering_speech() 
 }
 
 #[tokio::test]
-async fn microphone_capability_is_required_for_audio_and_shortcut_streams() {
+async fn microphone_capability_is_required_for_audio() {
     let pair = Pair::new(Capabilities::NETWORK).await;
     assert!(pair.a.open_microphone(pair.b_id).await.is_err());
-    assert!(
-        pair.a
-            .open_microphone_shortcut(pair.b_id, 63, 0, true)
-            .await
-            .is_err()
-    );
     assert!(pair.b.take_microphone().is_none());
-    assert!(pair.b.take_microphone_shortcut().is_none());
-    pair.close().await;
-}
-
-#[tokio::test]
-async fn microphone_shortcut_lost_release_times_out_and_disconnect_ends_hold() {
-    let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE_SHORTCUT).await;
-    let mut sender = pair
-        .a
-        .open_microphone_shortcut(pair.b_id, 63, 0, true)
-        .await
-        .unwrap();
-    sender.send_held(true).await.unwrap();
-    let mut receiver = time::timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(session) = pair.b.take_microphone_shortcut() {
-                return session;
-            }
-            time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(receiver.peer, pair.a_id);
-    assert!(receiver.receive_held().await.unwrap());
-    let result = time::timeout(Duration::from_secs(2), receiver.receive_held())
-        .await
-        .unwrap();
-    assert!(result.unwrap_err().contains("超时"));
-    sender.send_held(false).await.unwrap();
-    assert!(!receiver.receive_held().await.unwrap());
-    assert!(receiver.receive_held().await.is_err());
     pair.close().await;
 }
 

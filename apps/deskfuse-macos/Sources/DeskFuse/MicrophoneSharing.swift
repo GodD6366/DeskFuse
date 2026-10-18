@@ -11,8 +11,6 @@ struct MicrophoneSettings: Codable, Equatable, Sendable {
     var source = ""
     var allowed: [String] = []
     var input_uid = ""
-    var shortcut_key: UInt16 = 63
-    var shortcut_modifiers: UInt64 = 0
 }
 struct MicrophoneNativeObservation: Decodable, Sendable {
     var driver: Bool; var readers: Bool; var streaming: Bool; var locked: Bool
