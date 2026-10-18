@@ -71,3 +71,5 @@ DeskFuse 已移除独立语音快捷键（录制、捕获、按键保护、IPC �
 macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 input-scope `Devices` 查询当前读取此虚拟麦克风的应用，每秒刷新一次。该查询不打开输入流，名称仅在本机界面展示，不写配置、日志或网络；不参与启停决策。macOS 14.0/14.1 或无法识别进程时沿用通用使用状态。真正的启停仍以 HAL 首次 StartIO/最后 StopIO 为准。
 
 实测 build 175 被系统“声音”设置页持续读取，唯一进程为 `com.apple.Sound-Settings.extension`，不是微信输入法。离开该页后读取者归零，日志记录 `session_ended reason=readers_stopped`。新界面开发版再次验证打开声音页 → 显示该占用者并建立音频会话 → 离开声音页 → 自动待机，未保留录音文件。任何应用若始终保持输入流打开（包括电平预览），仍算实际读取；DeskFuse 无法据此判断应用内部的“录音”按钮状态，不以静音截断会话。
+
+交付验证：`git diff --check`、`cargo check --locked`、`python3 scripts/release.py validate`、`./scripts/build_and_run.sh --build` 通过；最终 `./scripts/package-macos.sh --auto --fast` 使用 build 176 的 descriptor 重建成功。两端 `/Applications/DeskFuse.app` 均为 0.5.2 build 176，深度签名验证通过。占用应用查询在独立后台任务中完成，避免阻塞音频 worker。开发版完成 UI 与声音设置 StartIO/StopIO 验证；安装后本机驱动启动阶段曾短暂出现 RPC Deadline Exceeded，之后探针确认 available=1、readers=0，远端也没有活动输入流。已安装版的 UI 二次切换验证被电脑控制超时及用户窗口交互中断，没有重做微信人工转写验收。
