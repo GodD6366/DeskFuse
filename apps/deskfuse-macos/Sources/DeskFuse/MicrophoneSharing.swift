@@ -21,9 +21,6 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     var phase: String; var detail: String; var session_id: UInt64
     var role: String; var peer: String; var source_name: String
     var native: MicrophoneNativeObservation
-    // Local UI observation only; never persisted or sent to the other Mac.
-    var readerApps: [MicrophoneReader]?
-    var isDefaultInput: Bool?
 }
 /// UI holds only a projection of Rust settings/session state.
 @MainActor @Observable final class MicrophoneSharing {
@@ -36,10 +33,14 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     var managingDriver = false
     var driverInstalled = MicrophoneDriverManager.isInstalled
     var driverMessage: String?
+    // Read-only UI observation, isolated from the latency-sensitive audio worker.
+    var readerApps: [MicrophoneReader] = []
+    var isDefaultInput: Bool?
     private var engine: Engine?
     private var worker: MicrophoneWorker?
     private var polling: Task<Void, Never>?
     private var inputRefresh: Task<Void, Never>?
+    private var usagePolling: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private var askedPermission = false
     private var connectionDeadline: ContinuousClock.Instant?
@@ -83,6 +84,23 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
+        usagePolling = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let inspectReaders = self.snapshot?.native.readers == true && self.snapshot?.settings.source.isEmpty == false
+                let usage = await Task.detached(priority: .utility) {
+                    let readers = inspectReaders ? MicrophoneAudioDevices.activeReaders() : []
+                    let isDefault = MicrophoneAudioDevices.defaultInput().flatMap {
+                        MicrophoneAudioDevices.string($0, kAudioDevicePropertyDeviceUID)
+                    } == MicrophoneAudioDevices.virtualUID
+                    return (readers, isDefault)
+                }.value
+                guard !Task.isCancelled else { return }
+                self.readerApps = usage.0
+                self.isDefaultInput = usage.1
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
     func ensureStarted(engine: Engine?) {
         guard worker == nil else { return }
@@ -108,6 +126,8 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         connectionDeadline = nil
         polling?.cancel(); polling = nil
         inputRefresh?.cancel(); inputRefresh = nil
+        usagePolling?.cancel(); usagePolling = nil
+        readerApps = []; isDefaultInput = nil
         worker?.stop(); worker = nil
         snapshot = nil; engine = nil; askedPermission = false
         for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); DistributedNotificationCenter.default().removeObserver(token) }
@@ -266,9 +286,6 @@ private final class MicrophoneWorker: @unchecked Sendable {
         var captureStarted = Date.distantPast
         var nextPoll = Date.distantPast
         var nextDriverCheck = Date.distantPast
-        var nextUsageCheck = Date.distantPast
-        var readerApps: [MicrophoneReader] = []
-        var isDefaultInput = false
         func nativeError() -> String { String(cString: ud_mic_last_error()) }
         func resetSession() {
             capture?.stop(); capture = nil
@@ -351,16 +368,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                             error: failure
                         ))
                         failure = ""
-                        var latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
-                        if Date() >= nextUsageCheck {
-                            nextUsageCheck = Date().addingTimeInterval(1)
-                            readerApps = wantsReceiver && readers ? MicrophoneAudioDevices.activeReaders() : []
-                            isDefaultInput = MicrophoneAudioDevices.defaultInput().flatMap {
-                                MicrophoneAudioDevices.string($0, kAudioDevicePropertyDeviceUID)
-                            } == MicrophoneAudioDevices.virtualUID
-                        }
-                        latest.readerApps = readers ? readerApps : []
-                        latest.isDefaultInput = isDefaultInput
+                        let latest = try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
                         // A completion from an expired attempt cannot clear the
                         // timeout or open a session for a later retry.
                         guard publish(latest, generation: generation) else {

@@ -146,7 +146,7 @@ struct MicrophoneSettingsView: View {
     private func usageTitle(_ state: MicrophoneSharingSnapshot) -> String {
         guard state.settings.enabled else { return "共享已关闭" }
         if state.phase == "streaming" {
-            let names = Array(Set((state.readerApps ?? []).map(\.name))).sorted()
+            let names = Array(Set(model.readerApps.map(\.name))).sorted()
             if !names.isEmpty { return names.joined(separator: "、") + "正在使用" }
             return state.role == "sender" ? "正在向另一台 Mac 提供声音" : "应用正在使用麦克风"
         }
@@ -161,7 +161,7 @@ struct MicrophoneSettingsView: View {
     }
     private func usageDetail(_ state: MicrophoneSharingSnapshot) -> String {
         guard state.settings.enabled else { return "开启后，仅在应用读取麦克风时采集和传输。" }
-        if (state.readerApps ?? []).contains(where: \.isSoundSettings) {
+        if model.readerApps.contains(where: \.isSoundSettings) {
             return "系统声音设置正在检测输入电平。离开该页面后，若没有其他应用使用，传输会自动停止。"
         }
         if state.phase == "streaming" { return "应用停止读取后自动结束采集与传输。" }
@@ -249,8 +249,8 @@ struct MicrophoneSettingsView: View {
                 Button("安装…") { driverAction = .install }
             }
         } else {
-            settingsRow("系统输入", detail: state.isDefaultInput == true ? "DeskFuse 麦克风已设为默认输入" : "让使用系统默认输入的应用接收远端声音") {
-                if state.isDefaultInput == true {
+            settingsRow("系统输入", detail: model.isDefaultInput == true ? "DeskFuse 麦克风已设为默认输入" : "让使用系统默认输入的应用接收远端声音") {
+                if model.isDefaultInput == true {
                     Label("已设为默认", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
                 } else {
                     Button("设为默认", action: model.setDefaultInput)
