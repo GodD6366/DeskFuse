@@ -58,11 +58,20 @@ void rocLogger(const roc_log_message* msg, void* arg)
     spdlog::log(level, "{}: {}", std::string(msg->module), std::string(msg->text));
 }
 
+void grpcLogger(gpr_log_func_args* args)
+{
+    if (args->severity == GPR_LOG_SEVERITY_ERROR) {
+        spdlog::error("control service: {}", args->message);
+    }
+}
+
 } // namespace
 
 LogManager::LogManager()
 {
-    spdlog::init_thread_pool(10000, 1);
+    // Core Audio hosts have a small memory budget. Logs are sparse, and the
+    // existing overrun_oldest policy bounds a burst without blocking audio.
+    spdlog::init_thread_pool(256, 1);
 
     syslog_sink_ = std::make_shared<LogSyslog>();
     syslog_sink_->set_pattern("[%L%L] %v");
@@ -83,10 +92,12 @@ LogManager::LogManager()
     logger_->set_level(spdlog::level::info);
 
     spdlog::set_default_logger(logger_);
+    gpr_set_log_function(&grpcLogger);
 }
 
 LogManager::~LogManager()
 {
+    gpr_set_log_function(nullptr);
     spdlog::shutdown();
 }
 

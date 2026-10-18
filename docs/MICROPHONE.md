@@ -105,4 +105,13 @@ build 179 现场：本机独立进程加载随包 `libroc-microphone.dylib` 连�
 
 交付检查：`cargo check --locked`、`git diff --check`、`bash -n scripts/test-microphone-native.sh`、`python3 vendor/roc-vad/verify-sources.py target/roc-microphone/build-arm64`、`python3 scripts/release.py validate`、`./scripts/test-microphone-native.sh --built`、`./scripts/package-macos.sh --auto --fast` 通过。本机应用已替换为 0.5.2 build 180（release ID `60f9dfc9-4142-45d3-9aa5-0bce91d54f28`），深度签名校验通过；随包驱动与最终构建 UUID 均为 `D9DA9864-9CC2-3837-9C93-717A99802AD6`。这是 Apple Development 签名的本地 arm64 测试包，未公证、未发布。
 
-已从应用“重新安装…”启动驱动更新并选择立即重启音频服务，目前等待用户完成 macOS 管理员授权；系统安装目录仍为旧 UUID `2F74C271-DC8A-319F-991B-3F7D4A08CC47`。应用重启、实际 HAL 控制连接恢复、系统重启和双机语音验收尚未完成；不能将隔离回归通过视为这些验收已通过。
+用户完成管理员授权后，安装目录和新进程 PID 82929 的 sample 均确认加载 build 180 的驱动 UUID；但独立 RPC 探针仍持续超时，实际 HAL 恢复验收未通过。新堆栈显示请求已进入 gRPC 的握手及通道创建路径；系统日志于 22:55:22 记录该驱动超过 15 MB 内存高水位（ActiveSoft / non-fatal）。这些证据不能把剩余超时归因于已修复的 accept 分支，也不能单凭非致命内存告警断定全部根因。
+
+
+### 控制服务资源收敛
+
+原 gRPC ExternalProject 未传递 `CMAKE_BUILD_TYPE`，即使驱动选择 Release，依赖仍使用默认未优化构建。现在传递构建模式；驱动二进制由约 9.9 MB 缩到 6.0 MB。异步日志队列从 10,000 条缩到 256 条，保留原来的覆盖旧日志策略，避免阻塞音频。专用控制网络库的常驻工作线程改用上游最小值 4，不再随 CPU 核数预分配，仍允许按负载增长；Roc 音频线程不受影响。
+
+gRPC 错误转发到驱动已有系统日志，弥补系统服务标准错误输出不可见的问题；不采集音频、转写内容或用户文本。以上资源调整需要新驱动实机验证，不能仅凭体积下降认定超时已解决。
+
+相同的独立控制服务回归（含客户端与服务端）的 `/usr/bin/time -l` 峰值 footprint 从 9,994,888 降为 4,178,544 字节，约下降 58%；这不是系统 HAL 宿主的实测内存。三组合成音频、两种监听实现的错误注入与各 40 次断连重连仍通过。

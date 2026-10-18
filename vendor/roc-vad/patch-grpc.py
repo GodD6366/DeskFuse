@@ -49,3 +49,15 @@ for relative, old, new in [
         source.write_text(text.replace(old, new))
     elif text.count(new) != 1:
         raise SystemExit('Pinned gRPC peer address patch does not match: ' + relative)
+
+# This private gRPC build carries only low-rate microphone control RPCs. Reserve
+# the upstream minimum instead of one worker per CPU in the small HAL host;
+# the pool can still grow on demand. Audio uses the separate Roc threads.
+source = pathlib.Path(sys.argv[1]) / 'src/core/lib/event_engine/posix_engine/posix_engine.cc'
+text = source.read_text()
+old = 'executor_(MakeThreadPool(grpc_core::Clamp(gpr_cpu_num_cores(), 4u, 16u)))'
+new = 'executor_(MakeThreadPool(4))'
+if text.count(old) == 2:
+    source.write_text(text.replace(old, new))
+elif text.count(new) != 2:
+    raise SystemExit('Pinned gRPC control worker pool patch does not match')

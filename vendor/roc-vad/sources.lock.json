@@ -139,6 +139,12 @@
       "path": "src/core/lib/event_engine/posix_engine/posix_engine_listener.cc",
       "sha256": "0433e45734f18b08d1655f3100c89ac68dfe4480279489604edb044f44a58df5",
       "reason": "Keep the macOS control listener accepting after a reset or empty peer address from an exiting client"
+    },
+    {
+      "parent": "grpc",
+      "path": "src/core/lib/event_engine/posix_engine/posix_engine.cc",
+      "sha256": "527ef3ede3c53b3c162d44dc767f38db3a541ee3788f5daa09eeb967541d2ac7",
+      "reason": "Reserve four workers for low-rate microphone control rather than scaling with host CPU count; retain on-demand growth"
     }
   ]
 }
