@@ -87,3 +87,9 @@ macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 in
 麦克风共享从设置分类移到功能列表，紧跟鼠标；鼠标、麦克风共享在侧栏和页头统一显示 Beta。旧麦克风设置链接自动跳转到新功能页，随包双机测试说明同步更新导航路径。
 
 `git diff --check`、`python3 scripts/release.py validate`、`cargo check --locked`、`./scripts/package-macos.sh --auto --fast` 通过。本机与 10.10.10.1 均安装 0.5.2 build 178，深度签名校验通过；本机随包双机测试说明与源码一致。实际界面已确认入口顺序、两个页面的 Beta 标记以及设置列表中移除麦克风分类。当前本机仍显示驱动服务未响应，本次未执行管理员重启或重新验收语音转写；本次只调整导航，未改变音频逻辑。
+
+## 应用重启后驱动控制服务无响应：待定位（2026-10-18）
+
+build 179 现场：本机独立进程加载随包 `libroc-microphone.dylib` 连续三次调用 `ud_mic_driver_available()`，均在 150–160 ms 返回 `Deadline Exceeded`；10.10.10.1 的同类探针在 1–4 ms 成功，更新到 build 179 后仍成功。说明故障不只存在于 UI 投影或应用内缓存。
+
+本机驱动运行在系统独立进程 `Core Audio Driver (uniDeskMicrophone.driver)`，当时 PID 87049、启动于 22:05:21。日志显示 HAL 设备创建和多次 StartIO/StopIO 正常；19712 端口由该进程监听，TCP 连接已建立，服务端接收队列保留 82 字节，多条旧连接处于 CLOSE_WAIT。控制服务尚未处理客户端握手/请求；这还不能证明具体死锁点。普通用户 `sample` 被 macOS 权限拒绝，`sudo -n` 没有缓存授权；已请用户手动执行只读的 `sudo /usr/bin/sample 87049 2 -file /tmp/deskfuse-driver-stall.sample.txt`。尚未取得堆栈，未把无效重试或重启系统音频当作根因修复。本轮未改变音频代码或重启系统音频服务。
