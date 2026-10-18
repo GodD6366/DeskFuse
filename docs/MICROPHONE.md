@@ -46,7 +46,7 @@ DeskFuse 已移除独立语音快捷键（录制、捕获、按键保护、IPC �
 
 基于 Roc VAD v0.0.4。驱动 Bundle ID、HAL 文件名和设备 UID 由 `config/previous-installation.json` 统一提供；插件 UUID 为 `E88452E3-1C2E-42C1-A1A4-7B496BC3D527`，与原版共存。固定来源及校验见 `vendor/roc-vad/sources.lock.json`，本地修改、源码/依赖许可证保存在按构建号归档的 `roc-microphone-sources.tar.gz` 中，可向提供测试版的维护者索取。
 
-`scripts/build-roc-microphone.sh` 只编译，不安装驱动。`scripts/package-macos.sh` 默认交付 arm64 本地 DMG，`--release` 构建 arm64 / x86_64 手动安装包，设置页直接提供安装/重装/卸载，使用系统管理员授权弹窗并展示进度、取消及失败结果，无需打开终端；驱动入口在来源端和接收端都可见，已安装但未加载时仍可卸载。操作前关闭共享，完成后由用户重新开启。DMG 保留应用、Applications 链接和原有独立驱动入口；驱动也可从应用设置内管理。完整源码归档保存在 `target/package-macos/{version}-build{number}/{arch}/`，不进入 DMG、应用或 LAN 更新 ZIP；应用保留许可证/署名、源码 SHA-256 和索取方式。构建产物布局保持原样：DMG、更新 ZIP、发行描述、签名记录和校验清单仍输出到原交付目录，LAN 更新、公共发行与 CI 流程不变。安装器仅操作自有 HAL 目录，验证 Bundle ID 和签名；重启音频服务由用户主动确认。默认输入按钮由用户显式点击；关闭共享时只在默认输入仍为 DeskFuse 时尝试恢复此前设备。
+`scripts/build-roc-microphone.sh` 只编译，不安装驱动。`scripts/package-macos.sh` 默认交付 arm64 本地 DMG，`--release` 构建 arm64 / x86_64 手动安装包，设置页直接提供安装/重装/卸载，使用系统管理员授权弹窗并展示进度、取消及失败结果，无需打开终端；接收端在缺少驱动时显示安装入口；已安装驱动的设备在折叠的“驱动维护”中提供重装和卸载，未加载时仍可卸载。操作前关闭共享，完成后由用户重新开启。DMG 保留应用、Applications 链接和原有独立驱动入口；驱动也可从应用设置内管理。完整源码归档保存在 `target/package-macos/{version}-build{number}/{arch}/`，不进入 DMG、应用或 LAN 更新 ZIP；应用保留许可证/署名、源码 SHA-256 和索取方式。构建产物布局保持原样：DMG、更新 ZIP、发行描述、签名记录和校验清单仍输出到原交付目录，LAN 更新、公共发行与 CI 流程不变。安装器仅操作自有 HAL 目录，验证 Bundle ID 和签名；重启音频服务由用户主动确认。默认输入按钮由用户显式点击；关闭共享时只在默认输入仍为 DeskFuse 时尝试恢复此前设备。
 
 自动化检查不代替真实麦克风授权、HAL 加载、双机转写/延迟及目标语音软件的快捷键兼容性验收。实机步骤见随包清单。
 
@@ -57,3 +57,9 @@ DeskFuse 已移除独立语音快捷键（录制、捕获、按键保护、IPC �
 虚拟设备出现只说明 B 的 HAL 驱动已加载，不能说明 A 的音频会话已建立。两端必须运行支持麦克风协议的应用；A 开启“此 Mac”共享并允许 B。仅 B 更新应用或安装驱动时，旧版 A 无法接收音频请求。
 
 音频打开前检查该条连接的签名 Hello 协商结果，未支持时提示更新两端，拒绝/请求队列满时发送明确回复，避免空流 EOF。音频时钟在协商完成后起算，排队时间不计入 250ms 音频过期判断。诊断的 `microphone` 分类记录协商或原生会话失败原因、会话及设备标识，不记录音频内容。
+
+## 2026-10-18 麦克风设置整理
+
+移除 DeskFuse 专用语音快捷键及其按键拦截、IPC 和网络消息；使用语音应用自身的录音操作，音频仍按虚拟麦克风读取者自动启停。设置页按提供端/接收端分组，集中显示状态和电平，驱动维护默认折叠。旧配置中的快捷键字段可兼容读取并忽略。
+
+`cargo check --locked --workspace --all-targets`、`./scripts/check.sh`（813 项 Rust 测试、Clippy、Swift/FFI 和原生音频检查）、`git diff --check`、`python3 scripts/release.py validate` 通过。`./scripts/package-macos.sh --auto --fast` 生成 0.5.2 build 175，已安装到本机及 10.10.10.1，两端应用签名校验通过。界面整理后的开发版已观察到远端音频传输和非零电平；build 175 的微信输入法人工转写尚待复测。此包为本地 fast 测试包，未公证或公开发布。
