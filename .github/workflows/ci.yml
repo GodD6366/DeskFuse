@@ -57,6 +57,8 @@ jobs:
         run: ./scripts/check.sh
 
   macos-build:
+    permissions:
+      contents: write
     name: macOS arm64 DMG
     if: github.event_name != 'workflow_call' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
@@ -87,15 +89,10 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh dist/DeskFuse-arm64.dmg
-      - name: Upload main-branch build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: DeskFuse-macos-arm64-${{ github.sha }}
-          path: |
-            dist/DeskFuse-arm64.dmg
-            dist/release.json
-          if-no-files-found: error
-          retention-days: 14
+      - name: Upload main-branch build to private draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci-artifacts.py upload --name main-macos-arm64 dist/DeskFuse-arm64.dmg dist/release.json
 
   windows:
     name: Windows adapters, service, and catalog checks
