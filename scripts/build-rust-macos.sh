@@ -98,6 +98,7 @@ if [[ ! -x "$BINDGEN_BIN" ]]; then
   echo "error: expected Rust binding generator missing: $BINDGEN_BIN" >&2
   exit 1
 fi
+mkdir -p "$(dirname "$BINDGEN_FINGERPRINT_FILE")"
 printf '%s\n' "$(bindgen_fingerprint)" > "$BINDGEN_FINGERPRINT_FILE"
 python3 "$ROOT_DIR/scripts/generate-swift-bindings.py" \
   --library "$RUST_OUTPUT/libdeskfuse_ffi.dylib" \

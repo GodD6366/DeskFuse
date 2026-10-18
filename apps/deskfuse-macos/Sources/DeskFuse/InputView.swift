@@ -631,55 +631,25 @@ struct InputView: View {
         /// 标题与说明沿用主窗口的统一层级。
         VStack(alignment: .leading, spacing: 10) {
             Text("当前屏幕排布").font(WorkspaceTypography.section).fixedSize()
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 28) {
-                    controllerSetting
-                    sharingSetting
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    controllerSetting
-                    sharingSetting
-                }
-            }
+            sharingSetting
         }
-    }
-
-    private var controllerSetting: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Toggle("本机主控", isOn: Binding(
-                get: { snapshot.input.settings.controller },
-                set: { enabled in
-                    var settings = (store.snapshot ?? snapshot).input.settings
-                    settings.controller = enabled
-                    if !enabled { settings.enabled = false }
-                    applySettings(settings)
-                }
-            ))
-            .font(.callout.weight(.medium))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .disabled(updatingSettings || snapshot.input.managed)
-            Text("由这台 Mac 管理屏幕排布，作为控制端。")
-                .font(.caption)
-                .workspaceSecondaryText()
-        }
-        .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
     }
 
     private var sharingSetting: some View {
         VStack(alignment: .leading, spacing: 3) {
             Toggle("共享键鼠", isOn: Binding(
-                get: { snapshot.input.settings.enabled },
+                get: { snapshot.input.settings.controller && snapshot.input.settings.enabled },
                 set: { setSharingEnabled($0) }
             ))
             .font(.callout.weight(.medium))
             .toggleStyle(.switch)
             .controlSize(.small)
-            .disabled(updatingSettings || snapshot.input.managed || !snapshot.input.settings.controller)
-            Text("使用本机键鼠控制已添加的设备。")
+            .disabled(updatingSettings || snapshot.input.managed)
+            Text("由这台 Mac 管理屏幕排布，并使用本机键鼠控制已添加的设备。")
                 .font(.caption)
                 .workspaceSecondaryText()
         }
+        .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
     }
 
     private var headerActions: some View {
@@ -694,28 +664,22 @@ struct InputView: View {
         }
     }
 
-    /// 打开共享时同时成为主控，避免提交引擎不接受的 enabled/disabled 组合。
+    /// 单一开关同步主控角色和共享状态，一次提交避免中间状态。
     private func setSharingEnabled(_ enabled: Bool) {
         var settings = (store.snapshot ?? snapshot).input.settings
         settings.enabled = enabled
-        // The engine only accepts an enabled controller. The empty-state action
-        // is the one place that can enable sharing before the controller switch
-        // is visible, so make that transition atomic.
-        if enabled { settings.controller = true }
+        settings.controller = enabled
         applySettings(settings)
     }
 
-    /// 成为主控但不自动打开共享，避免新设备默认开始注入键鼠。
+    /// 从等待页面启用主控时，同步开启键鼠共享。
     private func enableAsController() {
         let current = store.snapshot ?? snapshot
         if current.input.settings.controller {
             store.send(.chooseController(id: current.localId, remember: false))
             return
         }
-        var settings = current.input.settings
-        settings.controller = true
-        settings.enabled = false
-        applySettings(settings)
+        setSharingEnabled(true)
     }
 
     /// Dial the peer again and start a new input activation so the receiver can prepare.

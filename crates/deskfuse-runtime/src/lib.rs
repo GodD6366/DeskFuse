@@ -2256,6 +2256,8 @@ impl Actor {
 
         let mut transport_messages = self.transport.messages();
         let mut network_requests = self.transport.network_requests();
+        let mut cache_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        cache_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut network_tick = tokio::time::interval(std::time::Duration::from_secs(1));
         network_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -2264,6 +2266,7 @@ impl Actor {
                 request = network_requests.next() => { if let Some(request)=request {self.handle_network_request(request).await;} },
                 result = self.network_result_rx.recv() => {if let Some(result)=result {self.handle_network_result(result).await;}},
                 result = self.dial_result_rx.recv() => { if let Some(result) = result { self.handle_dial_result(result).await; } },
+                _=cache_tick.tick()=>{ self.cleanup_cached_routes().await; },
                 _=network_tick.tick()=>{ self.delivery_tick().await; self.recovery_tick().await; self.network_tick().await; },
                 command = self.command_rx.recv() => {
                     match command {

@@ -7,3 +7,10 @@ condition = "AND"
 paths = ['''(?:^|/)scripts/check-repository\.py$''']
 regexTarget = "line"
 regexes = ['''"resources/[a-z]+-transport-key\.der": "b673c567f36d4e2acc4f61b8aa82cf1e0fd5e4f275c8f93897c6cd797eab05ac"''']
+
+[[allowlists]]
+description = "Clipboard placeholder migration marker is a database metadata key, not a credential"
+condition = "AND"
+paths = ['''(?:^|/)crates/deskfuse-engine/src/clipboard_library\.rs$''']
+regexTarget = "line"
+regexes = ['''"SELECT EXISTS\(SELECT 1 FROM cl_meta WHERE key='placeholder_purge_v1'\)",''']

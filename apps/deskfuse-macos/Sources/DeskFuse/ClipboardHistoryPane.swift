@@ -57,6 +57,8 @@ struct ClipboardHistoryPane: View {
                 }
                 .animation(Motion.settle, value: displayMode)
             }
+            // Each search starts at the first screen; paging keeps the same scroll view.
+            .id(search)
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

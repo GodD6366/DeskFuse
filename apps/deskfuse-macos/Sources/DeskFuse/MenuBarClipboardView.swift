@@ -373,6 +373,8 @@ struct MenuBarClipboardView: View {
                 if let id { proxy.scrollTo(id) }
             }
         }
+        // Reset both list and grid scrolling without recreating the search field.
+        .id(query)
     }
 
     @ViewBuilder private var emptyState: some View {

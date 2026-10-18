@@ -1047,3 +1047,132 @@ async fn measure_routes(
 
 #[cfg(test)]
 mod tests;
+
+/// Only a live connection proves that a peer has a usable replacement route.
+/// Offline duration and cache size are never reasons to discard reconnect hints.
+fn prune_cached_routes(
+    routes: &mut BTreeMap<RouteId, RouteCandidate>,
+    active: Option<RouteId>,
+) -> bool {
+    let Some(active) = active.filter(|id| routes.contains_key(id)) else {
+        return false;
+    };
+    let before = routes.len();
+    routes.retain(|id, route| {
+        if *id == active || route.source != RouteSource::CachedDirect {
+            return true;
+        }
+        let failed_probe = route.probe_error.is_some()
+            && route.last_probe_unix_ms.is_some_and(|probe| {
+                route
+                    .last_success_unix_ms
+                    .is_none_or(|success| probe > success)
+            });
+        let failed_dials = route.health == RouteHealth::Unavailable && route.failure_count >= 3;
+        // Unknown includes restored cache entries. Historical failures alone
+        // must not erase an address that has not been retried this session.
+        let failed = matches!(
+            route.health,
+            RouteHealth::Backoff | RouteHealth::Unavailable
+        ) && (failed_probe || failed_dials);
+        !failed
+    });
+    routes.len() != before
+}
+
+impl Actor {
+    pub(super) async fn cleanup_cached_routes(&mut self) {
+        let mut changed = Vec::new();
+        for (id, peer) in &mut self.peers {
+            // Background tasks hold route snapshots; let their results settle
+            // before removing candidates they may still be using.
+            if self.recovery.attempts.contains_key(id) || self.recovery.evaluations.contains_key(id)
+            {
+                continue;
+            }
+            if peer.connection != ConnectionState::Connected
+                || self.transport.control_session_alive(*id) == Some(false)
+            {
+                continue;
+            }
+            if prune_cached_routes(&mut peer.routes, peer.active_route) {
+                changed.push(*id);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        for id in changed {
+            self.reselect(id);
+            self.persist_peer(id).await;
+        }
+        self.publish();
+    }
+}
+
+#[cfg(test)]
+mod cache_cleanup_tests {
+    use super::*;
+
+    fn cached(host: &str) -> RouteCandidate {
+        let mut route = RouteCandidate::new(
+            Endpoint::new(host, 42424).unwrap(),
+            RouteSource::CachedDirect,
+            RouteHealth::Backoff,
+            Capabilities::NETWORK,
+        );
+        route.last_success_unix_ms = Some(1);
+        route.last_probe_unix_ms = Some(30 * 86_400_000);
+        route.probe_error = Some("timeout".into());
+        route.failure_count = 10;
+        route
+    }
+
+    #[test]
+    fn offline_peer_keeps_all_reconnect_hints_even_after_a_month() {
+        let mut routes: BTreeMap<_, _> = (1..=20)
+            .map(|i| {
+                let route = cached(&format!("10.0.0.{i}"));
+                (route.id, route)
+            })
+            .collect();
+        let original = routes.clone();
+        assert!(!prune_cached_routes(&mut routes, None));
+        assert_eq!(routes, original);
+        assert!(!prune_cached_routes(&mut routes, Some(RouteId::new())));
+        assert_eq!(routes, original);
+    }
+
+    #[test]
+    fn live_replacement_allows_only_failed_cached_routes_to_be_removed() {
+        let active = cached("10.0.0.1");
+        let active_id = active.id;
+        let failed = cached("10.0.0.2");
+        let mut manual = cached("10.0.0.3");
+        manual.source = RouteSource::Manual;
+        let mut mdns = cached("10.0.0.4");
+        mdns.source = RouteSource::Mdns;
+        let mut restored = cached("10.0.0.5");
+        restored.health = RouteHealth::Unknown;
+        let mut healthy = cached("10.0.0.6");
+        healthy.health = RouteHealth::Healthy;
+        let mut recovered = cached("10.0.0.7");
+        recovered.last_success_unix_ms = recovered.last_probe_unix_ms;
+        let retained = [
+            active.id,
+            manual.id,
+            mdns.id,
+            restored.id,
+            healthy.id,
+            recovered.id,
+        ];
+        let mut routes = [active, failed, manual, mdns, restored, healthy, recovered]
+            .into_iter()
+            .map(|r| (r.id, r))
+            .collect();
+        assert!(prune_cached_routes(&mut routes, Some(active_id)));
+        assert_eq!(routes.len(), retained.len());
+        assert!(retained.iter().all(|id| routes.contains_key(id)));
+        assert!(!prune_cached_routes(&mut routes, Some(active_id)));
+    }
+}
