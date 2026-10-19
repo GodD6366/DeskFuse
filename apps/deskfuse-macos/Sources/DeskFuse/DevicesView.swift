@@ -108,37 +108,37 @@ struct DevicesView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
                             Text("设备列表")
-                                .font(WorkspaceTypography.section)
+                                .font(DFType.title)
                         }
                         Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
                             .font(.callout)
-                            .workspaceSecondaryText()
+                            .dfSecondaryText()
                     }
                     Spacer(minLength: 0)
                     Button {
                         showManualPairing = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                            .font(DFType.title.weight(.medium))
+                            .frame(width: DFMetrics.controlHeight, height: DFMetrics.controlHeight)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .modifier(NativeGlassBackdrop(cornerRadius: 10))
+                    .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
                     .controlSize(.small)
                     .help("手动输入 IPv4 地址")
                     .accessibilityLabel("手动输入 IPv4 地址")
                     .popover(isPresented: $showManualPairing, arrowEdge: .top) {
-                        manualPairPopover.floatingWorkspaceStyle()
+                        manualPairPopover.dfFloating()
                     }
                     Button { store.send(.refreshDevices) } label: {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                            .font(DFType.title.weight(.medium))
+                            .frame(width: DFMetrics.controlHeight, height: DFMetrics.controlHeight)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .modifier(NativeGlassBackdrop(cornerRadius: 10))
+                    .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
                     .controlSize(.small)
                     .help("刷新设备")
                     .accessibilityLabel("刷新设备")
@@ -150,12 +150,12 @@ struct DevicesView: View {
                             confirmBatchUpdate = true
                         } label: {
                             Image(systemName: "arrow.down.app")
-                                .font(.system(size: 15, weight: .medium))
-                                .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                                .font(DFType.title.weight(.medium))
+                                .frame(width: DFMetrics.controlHeight, height: DFMetrics.controlHeight)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.borderless)
-                        .modifier(NativeGlassBackdrop(cornerRadius: 10))
+                        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
                         .controlSize(.small)
                         .disabled(batchUpdateCandidates.isEmpty)
                         .help("批量触发 \(batchUpdateCandidates.count) 台设备更新")
@@ -165,7 +165,7 @@ struct DevicesView: View {
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                     TextField("搜索设备名称、IP 地址…", text: $search)
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
@@ -173,27 +173,19 @@ struct DevicesView: View {
                     if !search.isEmpty {
                         Button { search = "" } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .workspaceSecondaryText()
+                                .dfSecondaryText()
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("清除设备搜索")
                     }
-                    Button { } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                            .font(.system(size: 16, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .workspaceSecondaryText()
-                    .help("设备筛选")
-                    .accessibilityLabel("设备筛选")
                 }
-                .font(.system(size: 13))
+                .font(DFType.body)
                 .padding(.horizontal, 12)
-                .frame(height: WorkspaceControlMetrics.height)
-                .modifier(NativeGlassBackdrop(cornerRadius: 10))
+                .frame(height: DFMetrics.controlHeight)
+                .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(searchFocused ? Color.accentColor.opacity(0.8) : .clear, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+                        .strokeBorder(searchFocused ? DFPalette.accent.opacity(0.8) : .clear, lineWidth: 2)
                 }
             }
             .padding(.horizontal, 20)
@@ -212,8 +204,8 @@ struct DevicesView: View {
                         localDeviceRow
                     } header: {
                         Text("本机")
-                            .font(.system(size: 13, weight: .semibold))
-                            .workspaceSecondaryText()
+                            .font(DFType.section)
+                            .dfSecondaryText()
                             .textCase(nil)
                             .padding(.top, 8)
                             .padding(.bottom, 4)
@@ -225,7 +217,7 @@ struct DevicesView: View {
                 if paired.isEmpty && nearby.isEmpty && blocked.isEmpty {
                     Text(search.isEmpty ? "尚未发现其他设备" : "没有匹配的设备")
                         .font(.callout)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .listRowSeparator(.hidden)
                         .padding(.vertical, 20)
@@ -260,8 +252,8 @@ struct DevicesView: View {
                 }
             } header: {
                 Text("\(title)（\(count)）")
-                    .font(.system(size: 13, weight: .semibold))
-                    .workspaceSecondaryText()
+                    .font(DFType.section)
+                    .dfSecondaryText()
                     .textCase(nil)
                     .padding(.top, 8)
                     .padding(.bottom, 4)
@@ -279,8 +271,8 @@ struct DevicesView: View {
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        Color.orange.opacity(0.2),
-                                        Color.orange.opacity(0.1)
+                                        DFPalette.warning.opacity(0.2),
+                                        DFPalette.warning.opacity(0.1)
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
@@ -289,20 +281,20 @@ struct DevicesView: View {
                             .frame(width: 40, height: 40)
 
                         Image(systemName: "person.crop.circle.badge.plus")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(Color.orange)
+                            .font(DFType.icon(.medium).weight(.medium))
+                            .foregroundStyle(DFPalette.warning)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(request.name)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(DFType.icon(.regular).weight(.semibold))
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(Color.orange)
+                                .fill(DFPalette.warning)
                                 .frame(width: 5, height: 5)
                             Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
-                                .font(.system(size: 12))
-                                .workspaceSecondaryText()
+                                .font(DFType.detail)
+                                .dfSecondaryText()
                         }
                     }
 
@@ -318,11 +310,11 @@ struct DevicesView: View {
                                 Button("拒绝") {
                                     store.send(.reject(requestId: request.id), pairing: request.id)
                                 }
-                                .buttonStyle(WorkspaceButtonStyle(compact: true))
+                                .buttonStyle(DFButtonStyle(compact: true))
                                 Button("允许") {
                                     store.send(.approve(requestId: request.id), pairing: request.id)
                                 }
-                                .buttonStyle(WorkspaceButtonStyle(prominent: true, compact: true))
+                                .buttonStyle(DFButtonStyle(kind: .primary, compact: true))
                             }
                         }
                     }
@@ -330,23 +322,23 @@ struct DevicesView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.orange.opacity(0.06))
+                    RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                        .fill(DFPalette.warning.opacity(0.06))
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.orange.opacity(0.2), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                        .strokeBorder(DFPalette.warning.opacity(0.2), lineWidth: 1)
                 }
             }
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.orange.opacity(0.04))
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                .fill(DFPalette.warning.opacity(0.04))
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.15), lineWidth: 1)
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                .strokeBorder(DFPalette.warning.opacity(0.15), lineWidth: 1)
         }
     }
 
@@ -356,13 +348,13 @@ struct DevicesView: View {
                 .font(.headline)
             Text("配对仍需对方确认。")
                 .font(.callout)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
             HStack(spacing: 8) {
                 TextField("192.168.1.10", text: $ip)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(pairByIP)
                 Button("配对", action: pairByIP)
-                    .modifier(NativeGlassAction())
+                    .buttonStyle(.dfPrimary)
                     .disabled(ip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -379,7 +371,7 @@ struct DevicesView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(device.name)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(DFType.icon(.regular).weight(.semibold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Circle()
@@ -387,7 +379,7 @@ struct DevicesView: View {
                         .frame(width: 7, height: 7)
                     Text(listDetail(for: device))
                         .font(.caption)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .lineLimit(1)
                 }
             }
@@ -399,7 +391,7 @@ struct DevicesView: View {
                     if !showsApplications { RemoteApplicationManager.shared.open(device) }
                 } label: {
                     Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(DFType.title.weight(.medium))
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(.borderless)
@@ -413,8 +405,8 @@ struct DevicesView: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
-            selected == device.id ? DeskFuseBrand.selectionFill : .clear,
-            in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
+            selected == device.id ? DFPalette.selection : .clear,
+            in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
         )
         .background(NativeListSelection())
         .tag(device.id)
@@ -431,11 +423,11 @@ struct DevicesView: View {
             )
             VStack(alignment: .leading, spacing: 5) {
                 Text(snapshot.localName)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(DFType.icon(.regular).weight(.semibold))
                     .lineLimit(1)
                 Text(snapshot.runtimeStatus)
                     .font(.caption)
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -444,8 +436,8 @@ struct DevicesView: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
-            selected == snapshot.localId ? DeskFuseBrand.selectionFill : .clear,
-            in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
+            selected == snapshot.localId ? DFPalette.selection : .clear,
+            in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
         )
         .background(NativeListSelection())
         .tag(snapshot.localId)
@@ -505,7 +497,7 @@ struct DevicesView: View {
                 if let message = snapshot.pairingMessage {
                     Text(message)
                         .font(.caption)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .textSelection(.enabled)
                 }
                 if selected == snapshot.localId {
@@ -517,8 +509,8 @@ struct DevicesView: View {
                         .frame(maxWidth: .infinity, minHeight: 360)
                 }
             }
-            .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
-            .padding(.vertical, SystemSettingsMetrics.pageTopInset)
+            .padding(.horizontal, DFMetrics.pageInset)
+            .padding(.vertical, DFMetrics.pageTopInset)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(.clear)
@@ -528,9 +520,9 @@ struct DevicesView: View {
         VStack(alignment: .leading, spacing: 14) {
             deviceHeader(device)
                 .padding(20)
-                .systemSettingsBlock()
+                .dfCard()
             DeviceRoutesPanel(routes: device.routes) { store.send(.refreshDevices) }
-                .systemSettingsBlock()
+                .dfCard()
             transferActivity
             operations(for: device)
         }
@@ -545,15 +537,15 @@ struct DevicesView: View {
                 size: 58
             )
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(snapshot.localName).font(WorkspaceTypography.section)
+                    Text(snapshot.localName).font(DFType.title)
                     Label(snapshot.runtimeStatus, systemImage: "circle.fill")
                         .font(.callout)
-                        .foregroundStyle(snapshot.error == nil ? Color.green : Color.orange)
+                        .foregroundStyle(snapshot.error == nil ? Color.green : DFPalette.warning)
                 }
                 Spacer(minLength: 0)
             }
             .padding(20)
-            .systemSettingsBlock()
+            .dfCard()
             infoCard {
                 infoRow("运行状态", symbol: "power", value: snapshot.runtimeStatus)
                 Divider()
@@ -562,14 +554,14 @@ struct DevicesView: View {
             if snapshot.networkId != nil {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("退出设备网络", systemImage: "rectangle.portrait.and.arrow.right") { confirmLeave = true }
-                        .buttonStyle(WorkspaceButtonStyle(destructive: true))
+                        .buttonStyle(.dfDestructive)
                         .tint(.red)
                     Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
-                        .font(.caption).workspaceSecondaryText()
+                        .font(.caption).dfSecondaryText()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
-                .systemSettingsBlock()
+                .dfCard()
             }
         }
     }
@@ -582,7 +574,7 @@ struct DevicesView: View {
             )
             VStack(alignment: .leading, spacing: 7) {
                 Text(device.name)
-                    .font(WorkspaceTypography.section)
+                    .font(DFType.title)
                     .lineLimit(1)
                 HStack(spacing: 8) {
                     Circle().fill(device.connected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 10, height: 10)
@@ -591,12 +583,12 @@ struct DevicesView: View {
                         .foregroundStyle(device.connected ? Color.primary : Color.secondary)
                     Text("· \(device.endpoint)")
                         .font(.callout)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .lineLimit(1)
                 }
                 Text(device.detail)
                     .font(.callout)
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -612,10 +604,10 @@ struct DevicesView: View {
                 Button("刷新连接", systemImage: "arrow.clockwise") { store.send(.refreshDevices) }
             } label: {
                 Image(systemName: "ellipsis")
-                    .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                    .frame(width: DFMetrics.controlHeight, height: DFMetrics.controlHeight)
             }
             .menuStyle(.borderlessButton)
-            .modifier(NativeGlassBackdrop(cornerRadius: 10))
+            .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
             .accessibilityLabel("设备操作")
         }
     }
@@ -625,14 +617,14 @@ struct DevicesView: View {
             HStack {
                 Text("传输活动").font(.headline)
                 Spacer()
-                Button("查看全部") { store.selectedPage = .lanTransfer }
+                Button("查看全部") { store.selectedPage = .files }
                     .buttonStyle(.link)
                     .font(.callout)
             }
             let recent = Array(snapshot.transfers.prefix(3))
             if recent.isEmpty {
                 Text("暂无传输任务")
-                    .font(.callout).workspaceSecondaryText()
+                    .font(.callout).dfSecondaryText()
                     .padding(.vertical, 8)
             } else {
                 VStack(spacing: 0) {
@@ -648,12 +640,12 @@ struct DevicesView: View {
     private func transferRow(_ task: Transfer) -> some View {
         HStack(spacing: 10) {
             Image(systemName: task.outgoing ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                .font(.system(size: 22))
-                .foregroundStyle(task.outgoing ? Color.accentColor : Color.green)
+                .font(DFType.pageTitle)
+                .foregroundStyle(task.outgoing ? DFPalette.accent : Color.green)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.name).font(.callout.weight(.medium)).lineLimit(1)
-                Text(task.detail).font(.caption).workspaceSecondaryText().lineLimit(1)
+                Text(task.detail).font(.caption).dfSecondaryText().lineLimit(1)
             }
             .frame(minWidth: 90, maxWidth: 180, alignment: .leading)
             if task.total > 0 {
@@ -668,7 +660,7 @@ struct DevicesView: View {
                 .lineLimit(1)
             if task.phase == .completed {
                 Image(systemName: "magnifyingglass")
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
             } else if task.canRetry {
                 Button { store.send(.retryTransfer(id: task.id)) } label: {
                     Image(systemName: "arrow.clockwise")
@@ -680,7 +672,7 @@ struct DevicesView: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .accessibilityLabel("取消传输")
             }
         }
@@ -695,26 +687,26 @@ struct DevicesView: View {
                     Button("允许重新配对", systemImage: "checkmark.shield") {
                         store.send(.allowPairing(peerId: device.id))
                     }
-                    .buttonStyle(WorkspaceButtonStyle())
+                    .buttonStyle(.dfSecondary)
                 } else if !device.trusted {
                     Button("邀请配对", systemImage: "person.badge.plus") {
                         store.send(.pair(peerId: device.id))
                     }
-                    .modifier(NativeGlassAction())
+                    .buttonStyle(.dfPrimary)
                 } else {
                     Button(device.connected ? "断开连接" : "重新连接", systemImage: device.connected ? "pin.slash" : "arrow.clockwise") {
                         store.send(device.connected ? .disconnect(peerId: device.id) : .connect(peerId: device.id))
                     }
-                    .buttonStyle(WorkspaceButtonStyle())
+                    .buttonStyle(.dfSecondary)
                     Button("忘记设备", systemImage: "trash", role: .destructive) {
                         forgetTarget = device.id
                         confirmForget = true
                     }
-                    .buttonStyle(WorkspaceButtonStyle())
+                    .buttonStyle(.dfSecondary)
                     Button("触发更新", systemImage: "arrow.down.app") {
                         store.send(.triggerPeerUpdate(peerId: device.id))
                     }
-                    .buttonStyle(WorkspaceButtonStyle())
+                    .buttonStyle(.dfSecondary)
                     .disabled(!device.connected || !device.canTriggerUpdate)
                     .help(device.canTriggerUpdate
                           ? "请求 \(device.name) 立即检查并安装可用更新"
@@ -725,7 +717,7 @@ struct DevicesView: View {
                         blockTarget = device.id
                         confirmBlock = true
                     }
-                    .buttonStyle(WorkspaceButtonStyle())
+                    .buttonStyle(.dfSecondary)
                     .tint(.red)
                 }
                 Spacer(minLength: 0)
@@ -750,13 +742,13 @@ struct DevicesView: View {
     private func infoRow(_ title: String, symbol: String, value: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
-                .font(.system(size: 17))
+                .font(DFType.title)
                 .frame(width: 24)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
             Text(title)
                 .frame(width: 62, alignment: .leading)
             Text(value.isEmpty ? "暂无信息" : value)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -789,7 +781,7 @@ struct DevicesView: View {
 /// 详情区的分组表面：统一走系统设置风格的浅灰圆角 block。
 private struct DeviceDetailsSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content.systemSettingsBlock()
+        content.dfCard()
     }
 }
 
@@ -803,12 +795,12 @@ struct PairingRow: View {
                 // Icon container with gradient background
                 ZStack {
                     Circle()
-                        .fill(DeskFuseBrand.fusionGradient.opacity(0.15))
+                        .fill(DFPalette.brandGradient.opacity(0.15))
                         .frame(width: 56, height: 56)
 
                     Image(systemName: "person.crop.circle.badge.plus")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(DeskFuseBrand.fusionGradient)
+                        .font(DFType.icon(.large).weight(.medium))
+                        .foregroundStyle(DFPalette.brandGradient)
                 }
 
                 // Content
@@ -816,16 +808,16 @@ struct PairingRow: View {
                     Text(request.name)
                         .lineLimit(2)
                         .truncationMode(.tail)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(DFType.title.weight(.semibold))
                         .foregroundStyle(.primary)
 
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(Color.orange)
+                            .fill(DFPalette.warning)
                             .frame(width: 6, height: 6)
                         Text(request.incoming ? "请求加入设备网络" : "等待对端确认")
-                            .font(.system(size: 13))
-                            .workspaceSecondaryText()
+                            .font(DFType.body)
+                            .dfSecondaryText()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -843,11 +835,11 @@ struct PairingRow: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
         )
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
@@ -860,8 +852,8 @@ struct PairingRow: View {
                 )
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(DeskFuseBrand.fusionGradient.opacity(0.4), lineWidth: 1)
+            RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
+                .strokeBorder(DFPalette.brandGradient.opacity(0.4), lineWidth: 1)
         }
         .shadow(color: Color.black.opacity(0.08), radius: 12, y: 4)
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
@@ -875,8 +867,8 @@ struct PairingRow: View {
                     .controlSize(.small)
                     .scaleEffect(0.8)
                 Text("处理中")
-                    .font(.system(size: 12, weight: .medium))
-                    .workspaceSecondaryText()
+                    .font(DFType.detail.weight(.medium))
+                    .dfSecondaryText()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -886,8 +878,8 @@ struct PairingRow: View {
                     store.send(.reject(requestId: request.id), pairing: request.id)
                 } label: {
                     Text("拒绝")
-                        .font(.system(size: 13, weight: .semibold))
-                        .workspaceSecondaryText()
+                        .font(DFType.section)
+                        .dfSecondaryText()
                         .padding(.horizontal, 18)
                         .padding(.vertical, 9)
                 }
@@ -904,18 +896,18 @@ struct PairingRow: View {
                     store.send(.approve(requestId: request.id), pairing: request.id)
                 } label: {
                     Text("允许配对")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(DFType.section)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 9)
                 }
                 .buttonStyle(.plain)
-                .background(DeskFuseBrand.fusionGradient)
+                .background(DFPalette.brandGradient)
                 /// 白字压在青色一端的对比度不足，压一层极淡黑色保证深浅色下可读。
                 .overlay { Capsule().fill(Color.black.opacity(0.12)) }
                 .clipShape(Capsule())
                 .contentShape(Capsule())
-                .shadow(color: DeskFuseBrand.fusionBlue.opacity(0.3), radius: 8, y: 4)
+                .shadow(color: DFPalette.accent.opacity(0.3), radius: 8, y: 4)
             }
         }
     }

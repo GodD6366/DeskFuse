@@ -173,8 +173,8 @@ private struct ShelfWindowContent: View {
 
     var body: some View {
         if reduceTransparency {
-            ShelfView(controller: controller).floatingWorkspaceStyle()
-                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
+            ShelfView(controller: controller).dfFloating()
+                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: DFRadius.panel))
         } else {
             ShelfNativeGlass(controller: controller)
         }
@@ -186,7 +186,7 @@ private struct ShelfNativeGlass: NSViewRepresentable {
     let controller: ShelfController
 
     func makeNSView(context: Context) -> NSView {
-        let content = NSHostingView(rootView: ShelfView(controller: controller).floatingWorkspaceStyle())
+        let content = NSHostingView(rootView: ShelfView(controller: controller).dfFloating())
         content.sizingOptions = []
         let background: NSView
         if #available(macOS 26.0, *) {
@@ -250,7 +250,7 @@ struct ShelfView: View {
                 // height the representable inflates the row and pushes all
                 // controls down, leaving a large blank strip above them.
                 ShelfWindowDragHandle()
-                    .frame(maxWidth: .infinity, maxHeight: WorkspaceControlMetrics.compactHeight)
+                    .frame(maxWidth: .infinity, maxHeight: DFMetrics.compactControlHeight)
                 Menu {
                     let targets = controller.store.snapshot?.devices.filter { $0.trusted && $0.connected } ?? []
                     if targets.isEmpty { Text("没有可发送的在线设备") }
@@ -262,7 +262,7 @@ struct ShelfView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: WorkspaceControlMetrics.compactHeight, height: WorkspaceControlMetrics.compactHeight)
+                .frame(width: DFMetrics.compactControlHeight, height: DFMetrics.compactControlHeight)
                 .disabled(controller.files.isEmpty || controller.preparing)
                 .help(controller.files.isEmpty ? "先拖入文件，再选择发送设备" : "发送到设备")
                 Button { controller.toggleExpanded() } label: {
@@ -281,9 +281,9 @@ struct ShelfView: View {
             else if controller.files.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 36, weight: .medium))
+                        .font(DFType.icon(.hero, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("拖入文件").font(WorkspaceTypography.section)
+                    Text("拖入文件").font(DFType.title)
                     Text("文件会暂存在这里，拖出即可取用")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -307,7 +307,7 @@ struct ShelfView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("\(controller.files.count) 个项目")
-                            .font(WorkspaceTypography.heading)
+                            .font(DFType.title)
                             .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
                             .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
                         Text("拖出全部文件")
@@ -315,7 +315,7 @@ struct ShelfView: View {
                     }
                     Spacer(minLength: 8)
                     Button("查看全部") { controller.toggleExpanded() }
-                        .buttonStyle(WorkspaceButtonStyle(compact: true))
+                        .buttonStyle(DFButtonStyle(compact: true))
                         .controlSize(.small)
                         .help("展开暂存区")
                 }
@@ -340,10 +340,10 @@ struct ShelfView: View {
     private func shelfIcon(_ name: String, label: String) -> some View {
         Label(label, systemImage: name)
             .labelStyle(.iconOnly)
-            .font(.system(size: 12, weight: .medium))
+            .font(DFType.detail.weight(.medium))
             .symbolRenderingMode(.monochrome)
-            .frame(width: WorkspaceControlMetrics.compactHeight, height: WorkspaceControlMetrics.compactHeight)
-            .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .frame(width: DFMetrics.compactControlHeight, height: DFMetrics.compactControlHeight)
+            .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: DFRadius.control))
             .contentShape(Rectangle())
     }
 

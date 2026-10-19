@@ -16,7 +16,7 @@ struct RootView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .tint(DeskFuseBrand.accent)
+        .tint(DFPalette.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
         .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
@@ -24,15 +24,14 @@ struct RootView: View {
         .onAppear {
             store.showMainWindow = { openWindow(id: "main") }
         }
-        .sheet(isPresented: permissionPromptBinding) {
-            if store.previousInstallation.isPresented {
-                PreviousInstallationPrompt(controller: store.previousInstallation).floatingWorkspaceStyle()
-            } else {
-                PermissionPromptView(controller: store.permissionPrompt).floatingWorkspaceStyle()
-            }
+        .sheet(isPresented: Binding(
+            get: { store.previousInstallation.isPresented },
+            set: { show in if !show { store.previousInstallation.isPresented = false } }
+        )) {
+            PreviousInstallationPrompt(controller: store.previousInstallation).dfFloating()
         }
         .sheet(isPresented: onboardingBinding) {
-            OnboardingPrompt(store: store).floatingWorkspaceStyle()
+            OnboardingFlow(store: store).dfFloating()
         }
     }
 
@@ -43,12 +42,6 @@ struct RootView: View {
         )
     }
 
-    private var permissionPromptBinding: Binding<Bool> {
-        Binding(
-            get: { store.previousInstallation.isPresented || store.permissionPrompt.presented != nil },
-            set: { show in if !show { store.permissionPrompt.presented = nil } }
-        )
-    }
 
     private var workspace: some View {
         SettingsPageContainer(selection: store.selectedPage == .settings ? "settings" : "workspace", pages: [
@@ -69,7 +62,7 @@ struct RootView: View {
                     .frame(width: 320).padding(14)
             }
         }
-        .systemSettingsContentBackground()
+        .dfCanvas()
         .ignoresSafeArea(.container, edges: .top)
     }
 

@@ -4,7 +4,7 @@ import AppKit
 /// Nearby floating controls share one native sampling container. Reading surfaces
 /// remain opaque in the main window; floating panels keep native glass.
 struct NativeGlassGroup<Content: View>: View {
-    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.dfOpaque) private var quiet
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -20,13 +20,13 @@ struct NativeGlassGroup<Content: View>: View {
 
 /// Use inside a NativeGlassGroup when several controls overlay the same content.
 struct NativeGlassBackdrop: ViewModifier {
-    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.dfOpaque) private var quiet
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let cornerRadius: CGFloat
 
     @ViewBuilder func body(content: Content) -> some View {
         if quiet {
-            content.modifier(QuietControlSurface(cornerRadius: cornerRadius))
+            content.modifier(DFControlSurface(radius: cornerRadius))
         } else if reduceTransparency {
             content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: cornerRadius))
         } else if #available(macOS 26.0, *) {
@@ -43,11 +43,5 @@ struct NativeGlassSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         NativeGlassGroup { content.modifier(NativeGlassBackdrop(cornerRadius: cornerRadius)) }
-    }
-}
-
-struct NativeGlassAction: ViewModifier {
-    func body(content: Content) -> some View {
-        content.buttonStyle(WorkspaceButtonStyle(prominent: true))
     }
 }

@@ -34,17 +34,17 @@ struct MouseSettingsView: View {
     private var mappedCount: Int { buttons.filter { selected($0) != nil }.count }
 
     var body: some View {
-        SystemSettingsFormPage {
-            SystemSettingsFormBlock {
+        DFScrollPage {
+            DFSection {
                 HStack(spacing: 16) {
                     Image(systemName: "computermouse.fill")
-                        .font(.system(size: 28, weight: .light))
+                        .font(DFType.metric.weight(.light))
                         .frame(width: 52, height: 56)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(source == 1 ? "G502 LIGHTSPEED" : source == 2 ? "MX Master 3" : "通用鼠标").font(.system(size: 17, weight: .semibold))
+                        Text(source == 1 ? "G502 LIGHTSPEED" : source == 2 ? "MX Master 3" : "通用鼠标").font(DFType.title.weight(.semibold))
                         Text(controller.settings.enabled ? "自定义已启用 · 修改自动保存" : "先配置按键，再开启自定义")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                            .font(DFType.detail).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Toggle("启用鼠标自定义", isOn: Binding(get: { controller.settings.enabled }, set: {
@@ -68,7 +68,7 @@ struct MouseSettingsView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("按键分配").font(.system(size: 17, weight: .semibold))
+                    Text("按键分配").font(DFType.title.weight(.semibold))
                     Text("已设置 \(mappedCount) 项").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Picker("鼠标类型", selection: $source) {
@@ -93,7 +93,7 @@ struct MouseSettingsView: View {
                         actionMenu(button)
                     }
                 } else {
-                    SystemSettingsFormBlock {
+                    DFSection {
                         ForEach(buttons, id: \.self) { button in
                             if button != buttons.first { Divider() }
                             mappingRow(button)
@@ -115,7 +115,7 @@ struct MouseSettingsView: View {
                 }
             }
 
-            SystemSettingsFormBlock {
+            DFSection {
                 DisclosureGroup("设备状态与使用说明") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(controller.hidStatus)
@@ -146,7 +146,7 @@ struct MouseSettingsView: View {
     private func mappingRow(_ button: Int) -> some View {
         HStack(spacing: 12) {
             Image(systemName: selected(button) == nil ? "computermouse" : "cursorarrow.click")
-                .foregroundStyle(selected(button) == nil ? Color.secondary : Color.accentColor)
+                .foregroundStyle(selected(button) == nil ? Color.secondary : DFPalette.accent)
                 .frame(width: 24)
             Text(MouseSettings.buttonName(button)).lineLimit(2)
             Spacer(minLength: 12)
@@ -167,7 +167,7 @@ struct MouseSettingsView: View {
             } label: {
                 HStack(spacing: 8) {
                     Text(recording == button ? "请按快捷键…" : label(button)).lineLimit(2)
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down").font(DFType.caption.weight(.semibold))
                 }.foregroundStyle(selected(button) == nil ? Color.secondary : Color.primary)
                     .frame(minWidth: 150, alignment: .trailing)
                     .padding(.vertical, 8)

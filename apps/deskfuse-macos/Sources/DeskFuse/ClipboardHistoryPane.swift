@@ -55,14 +55,14 @@ struct ClipboardHistoryPane: View {
                             .transition(.opacity.combined(with: .scale(0.98)))
                     }
                 }
-                .animation(Motion.settle, value: displayMode)
+                .animation(DFMotion.settle, value: displayMode)
             }
             // Each search starts at the first screen; paging keeps the same scroll view.
             .id(search)
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(QuietWorkspacePalette.surface(scheme))
+        .background(DFPalette.surface(scheme))
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
         .onChange(of: searchRequest) { _, _ in historyFocused = false; searchFocused = true }
         .onAppear { if let selected { selection = [selected] } }
@@ -95,10 +95,10 @@ struct ClipboardHistoryPane: View {
         NativeGlassGroup {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("历史记录").font(.system(size: 14, weight: .semibold))
+                    Text("历史记录").font(DFType.icon(.regular).weight(.semibold))
                     Spacer(minLength: 8)
                     if let total {
-                        Text("\(total) 条").font(.caption).monospacedDigit().workspaceSecondaryText()
+                        Text("\(total) 条").font(.caption).monospacedDigit().dfSecondaryText()
                             .fixedSize()
                             .accessibilityLabel("共 \(total) 条历史")
                     }
@@ -111,7 +111,7 @@ struct ClipboardHistoryPane: View {
                         Image(systemName: "ellipsis").frame(width: 28, height: 28)
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                    .modifier(NativeGlassBackdrop(cornerRadius: 14))
+                    .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.card))
                     .accessibilityLabel("历史记录操作")
                 }
                 HStack(spacing: 8) {
@@ -131,7 +131,7 @@ struct ClipboardHistoryPane: View {
                     } label: {
                         Label(sources.first(where: { $0.id == source })?.name ?? source ?? "所有设备",
                               systemImage: "laptopcomputer")
-                            .font(.system(size: 12)).lineLimit(1)
+                            .font(DFType.detail).lineLimit(1)
                     }
                     .menuStyle(.borderlessButton)
                     .accessibilityLabel("来源设备")
@@ -142,7 +142,7 @@ struct ClipboardHistoryPane: View {
                 }
                 if selection.count > 1 {
                     HStack {
-                        Text("已选 \(selection.count) 条").workspaceSecondaryText()
+                        Text("已选 \(selection.count) 条").dfSecondaryText()
                         Spacer()
                         Button("删除所选", role: .destructive) { requestDelete(selection) }
                             .buttonStyle(.borderless)
@@ -160,7 +160,7 @@ struct ClipboardHistoryPane: View {
                     if startsDayGroup(at: index) {
                         Text(dayTitle(item))
                             .font(.headline)
-                            .workspaceSecondaryText()
+                            .dfSecondaryText()
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, index == 0 ? 4 : 14)
                             .padding(.bottom, 2)
@@ -175,10 +175,10 @@ struct ClipboardHistoryPane: View {
                                         onDelete: { deleteFromContext(item.id) })
                         .clipboardSelectionFrame(item.id)
                         .padding(.horizontal, 10)
-                        .background(rowBackground(item.id), in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous))
+                        .background(rowBackground(item.id), in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
                         .overlay {
-                            RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous)
-                                .strokeBorder(item.id == selected && historyFocused ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+                                .strokeBorder(item.id == selected && historyFocused ? DFPalette.accent.opacity(0.5) : .clear, lineWidth: 1)
                         }
                         .background(NativeListSelection())
                         .onHover { over in
@@ -186,7 +186,7 @@ struct ClipboardHistoryPane: View {
                         }
                         .tag(item.id)
                         .listRowSeparator(.visible)
-                        .listRowSeparatorTint(QuietWorkspacePalette.line(scheme))
+                        .listRowSeparatorTint(DFPalette.line(scheme))
                         .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -200,14 +200,14 @@ struct ClipboardHistoryPane: View {
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 56)
             /// 新条目插入时从顶部淡入滑入。
-            .animation(Motion.snappy, value: items.map(\.id)),
+            .animation(DFMotion.snappy, value: items.map(\.id)),
             proxy: proxy
         )
     }
 
     private func rowBackground(_ id: UInt64) -> Color {
-        if selection.contains(id) { return DeskFuseBrand.selectionFill }
-        return hoveredItem == id ? DeskFuseBrand.listRowHoverFill : .clear
+        if selection.contains(id) { return DFPalette.selection }
+        return hoveredItem == id ? DFPalette.hover : .clear
     }
 
     private func startsDayGroup(at index: Int) -> Bool {
@@ -284,8 +284,8 @@ struct ClipboardHistoryPane: View {
             .onPreferenceChange(ClipboardSelectionFrames.self) { itemFrames = $0 }
             .overlay(alignment: .topLeading) {
                 if let selectionRect {
-                    Rectangle().fill(Color.accentColor.opacity(0.12))
-                        .overlay { Rectangle().strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1) }
+                    Rectangle().fill(DFPalette.accent.opacity(0.12))
+                        .overlay { Rectangle().strokeBorder(DFPalette.accent.opacity(0.8), lineWidth: 1) }
                         .frame(width: selectionRect.width, height: selectionRect.height)
                         .offset(x: selectionRect.minX, y: selectionRect.minY)
                         .allowsHitTesting(false)
@@ -411,7 +411,7 @@ struct ClipboardHistoryPane: View {
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").workspaceSecondaryText()
+            Image(systemName: "magnifyingglass").dfSecondaryText()
             TextField("搜索剪贴板", text: $search)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
@@ -420,19 +420,19 @@ struct ClipboardHistoryPane: View {
                 Text("⌘ F").font(.caption).foregroundStyle(.tertiary)
             } else {
                 Button { search = "" } label: {
-                    Image(systemName: "xmark.circle.fill").workspaceSecondaryText()
+                    Image(systemName: "xmark.circle.fill").dfSecondaryText()
                 }
                 .buttonStyle(.plain).help("清除搜索")
                 .accessibilityLabel("清除搜索")
             }
         }
-        .font(.system(size: 13))
+        .font(DFType.body)
         .padding(.horizontal, 12)
         .frame(height: 40)
-        .modifier(NativeGlassBackdrop(cornerRadius: 10))
+        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(searchFocused ? Color.accentColor : .clear, lineWidth: 2)
+            RoundedRectangle(cornerRadius: DFRadius.control)
+                .strokeBorder(searchFocused ? DFPalette.accent : .clear, lineWidth: 2)
         }
     }
 
@@ -440,14 +440,14 @@ struct ClipboardHistoryPane: View {
         VStack(spacing: 10) {
             if searching {
                 ProgressView().controlSize(.small)
-                Text("正在搜索…").font(.callout).workspaceSecondaryText()
+                Text("正在搜索…").font(.callout).dfSecondaryText()
             } else {
                 Image(systemName: historyIsEmpty ? "clipboard" : "magnifyingglass")
-                    .font(.system(size: 28)).foregroundStyle(DeskFuseBrand.fusionGradient)
+                    .font(DFType.metric).foregroundStyle(DFPalette.brandGradient)
                 Text(historyIsEmpty ? "还没有剪贴板历史" : "没有匹配的内容")
                     .font(.callout.weight(.medium))
                 Text(historyIsEmpty ? "复制文字、图片或文件后\n会显示在这里。" : "试试其他关键词或筛选条件。")
-                    .font(.caption).workspaceSecondaryText().multilineTextAlignment(.center)
+                    .font(.caption).dfSecondaryText().multilineTextAlignment(.center)
             }
         }
         .padding(20)
@@ -477,17 +477,17 @@ private struct ClipboardHistoryRow: View {
             VStack(alignment: .trailing, spacing: 4) {
                 if let date = item.copiedDate {
                     Text(Self.timeFormatter.string(from: date))
-                        .font(.system(size: 12)).monospacedDigit().workspaceSecondaryText()
+                        .font(DFType.detail).monospacedDigit().dfSecondaryText()
                 }
                 HStack(spacing: 4) {
                     if ocrHit {
                         Image(systemName: "text.viewfinder")
-                            .font(.system(size: 11)).workspaceSecondaryText()
+                            .font(DFType.caption).dfSecondaryText()
                             .help("由图片识别文字匹配")
                     }
                     if meta?.remote == true && meta?.available == false {
                         Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 11)).workspaceSecondaryText()
+                            .font(DFType.caption).dfSecondaryText()
                             .help("使用时从来源设备获取")
                     }
                 }
@@ -502,7 +502,7 @@ private struct ClipboardHistoryRow: View {
             copyEnabled: client != nil,
             onEditTitle: { editingTitle = true }, onDelete: onDelete))
         .sheet(isPresented: $editingTitle) {
-            ClipboardTitleEditor(title: title, onSave: onRename).floatingWorkspaceStyle()
+            ClipboardTitleEditor(title: title, onSave: onRename).dfFloating()
         }
         .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
             guard item.hasImage || item.fileCount > 0, let client else { return }

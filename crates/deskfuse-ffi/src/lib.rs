@@ -617,6 +617,13 @@ impl Engine {
         self.bridge.record_startup_stage(&stage);
     }
 
+    /// 工作流入口由界面开关控制；关闭时全局工作流快捷键一并停用。
+    pub fn set_workflow_hotkeys_enabled(&self, enabled: bool) {
+        if let Ok(mut keys) = self.workflow_hotkeys.lock() {
+            keys.disabled = !enabled;
+        }
+    }
+
     pub fn set_recording(&self, enabled: bool) {
         if let Ok(mut keys) = self.workflow_hotkeys.lock() {
             keys.recording = enabled;

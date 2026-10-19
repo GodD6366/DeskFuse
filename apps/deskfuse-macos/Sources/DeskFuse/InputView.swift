@@ -4,7 +4,7 @@ import Charts
 import DeskFuseEngine
 
 /// 图表底部色条的卡顿来源颜色。建议由引擎侧生成，Swift 只负责呈现。
-private let hitchCaptureColor = Color.orange
+private let hitchCaptureColor = DFPalette.warning
 private let hitchNetworkColor = Color.blue
 
 struct InputView: View {
@@ -50,8 +50,8 @@ struct InputView: View {
                         qualityChart
                     }
                     }
-                    .padding(.horizontal, SystemSettingsMetrics.pageHorizontalInset)
-                    .padding(.vertical, SystemSettingsMetrics.pageTopInset)
+                    .padding(.horizontal, DFMetrics.pageInset)
+                    .padding(.vertical, DFMetrics.pageTopInset)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
@@ -77,7 +77,7 @@ struct InputView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .systemSettingsContentBackground()
+        .dfCanvas()
         .background(WindowVisibilityObserver { windowVisible = $0 })
         .onAppear { latencyScale.include(peak: latencyPeak) }
         .onChange(of: latencyPeak) { _, peak in latencyScale.include(peak: peak) }
@@ -87,7 +87,7 @@ struct InputView: View {
             }, onOpenDevices: {
                 showAddDevice = false
                 store.selectedPage = .devices
-            }).floatingWorkspaceStyle()
+            }).dfFloating()
         }
         .onChange(of: snapshot.input.canConfigure) { _, allowed in
             if !allowed { showAddDevice = false }
@@ -134,7 +134,7 @@ struct InputView: View {
             peak > $0 + 0.2 && peak > $0 * 1.25
         } ?? true)
         return VStack(alignment: .leading, spacing: compactQuality ? 6 : 16) {
-            qualityHeader(status: blocked != nil ? ("暂不可用", Color.orange) : status)
+            qualityHeader(status: blocked != nil ? ("暂不可用", DFPalette.warning) : status)
             VStack(alignment: .leading, spacing: 10) {
                 if !compactQuality, let typical {
                     latencyHero(typical: typical, peak: showsPeak ? peak : nil)
@@ -159,7 +159,7 @@ struct InputView: View {
                     legendItem(hitchNetworkColor, "网络卡顿")
                 }
                 .font(.caption2)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
             }
             if !compactQuality {
                 qualityAdvice(quality)
@@ -182,7 +182,7 @@ struct InputView: View {
                     }
                 }
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
             }
@@ -194,7 +194,7 @@ struct InputView: View {
             }
         }
         .padding(compactQuality ? 10 : 18)
-        .systemSettingsBlock()
+        .dfCard()
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -205,7 +205,7 @@ struct InputView: View {
         if let fallback = pointerFallback {
             Label(fallback, systemImage: "info.circle")
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
         }
         if !quality.suggestions.isEmpty {
@@ -231,7 +231,7 @@ struct InputView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .font(.caption)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -239,7 +239,7 @@ struct InputView: View {
                         get: { openSuggestionId == suggestion.id },
                         set: { shown in if !shown { openSuggestionId = nil } }
                     ), arrowEdge: .bottom) {
-                        suggestionDetail(suggestion).floatingWorkspaceStyle()
+                        suggestionDetail(suggestion).dfFloating()
                     }
                 }
             }
@@ -250,19 +250,19 @@ struct InputView: View {
     private func qualityHeader(status: (title: String, color: Color)) -> some View {
         HStack(alignment: .center, spacing: 10) {
             Label("流畅度", systemImage: "chart.xyaxis.line")
-                .font(.system(size: 14, weight: .semibold))
+                .font(DFType.icon(.regular).weight(.semibold))
                 .fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 8)
             Text(pointerModeLabel)
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
             datagramChannelBadge
             HStack(spacing: 5) {
                 Circle()
                     .fill(status.color)
                     .frame(width: 6, height: 6)
                 Text(status.title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(DFType.caption.weight(.semibold))
             }
             .foregroundStyle(status.color)
             .padding(.horizontal, 9)
@@ -285,14 +285,14 @@ struct InputView: View {
         if snapshot.input.quality.datagramReady == false {
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
+                    .font(DFType.caption)
                 Text("已降级到可靠通道")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(DFType.caption.weight(.medium))
             }
             .foregroundStyle(.orange)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color.orange.opacity(0.12), in: Capsule())
+            .background(DFPalette.warning.opacity(0.12), in: Capsule())
             .help("数据报运动通道不可用，移动改走可靠传输：延迟更高，但输入不会中断。检查网络质量或重新连接设备。")
         }
     }
@@ -301,16 +301,16 @@ struct InputView: View {
     private func latencyHero(typical: Double, peak: Double?) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(milliseconds(typical))
-                .font(.system(size: 28, weight: .semibold))
+                .font(DFType.metric.weight(.semibold))
                 .monospacedDigit()
             Text("典型往返延迟")
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
             Spacer(minLength: 8)
             if let peak {
                 Text("峰值 \(milliseconds(peak))")
                     .font(.caption.monospacedDigit())
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
             }
         }
     }
@@ -367,7 +367,7 @@ struct InputView: View {
                     ) {
                         Text(milliseconds(point.rttMs))
                             .font(.caption2.weight(.medium).monospacedDigit())
-                            .workspaceSecondaryText()
+                            .dfSecondaryText()
                     }
                 } else if points.count <= 8 || (runCount[point.series] ?? 0) == 1 || points.last?.second == point.second as Double? {
                     PointMark(
@@ -386,7 +386,7 @@ struct InputView: View {
                 AxisValueLabel {
                     Text(latencyTimeLabel(value.as(Double.self) ?? 0))
                         .font(.caption2)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                 }
             }
         }
@@ -397,7 +397,7 @@ struct InputView: View {
                 AxisValueLabel {
                     Text(latencyAxisTick(value.as(Double.self) ?? 0, ceiling: ceiling))
                         .font(.caption2.monospacedDigit())
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .frame(width: 64, alignment: .trailing)
                 }
             }
@@ -410,7 +410,7 @@ struct InputView: View {
                     for tick in hitchTicks {
                         guard let x = proxy.position(forX: tick.second) else { continue }
                         let rect = CGRect(x: x - 1, y: plot.maxY - 6, width: 2, height: 6)
-                        context.fill(Path(roundedRect: rect, cornerRadius: 1),
+                        context.fill(Path(roundedRect: rect, cornerRadius: DFRadius.small),
                                      with: .color(hitchTickColor(tick)))
                     }
                 }
@@ -436,7 +436,7 @@ struct InputView: View {
 
     private func legendItem(_ color: Color, _ title: String) -> some View {
         HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 1)
+            RoundedRectangle(cornerRadius: DFRadius.small)
                 .fill(color)
                 .frame(width: 3, height: 8)
             Text(title)
@@ -463,7 +463,7 @@ struct InputView: View {
                 .foregroundStyle(.tertiary)
             Text(body)
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -493,7 +493,7 @@ struct InputView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             Text(value)
-                .font(.system(size: compactQuality ? 13 : 15, weight: .semibold))
+                .font(compactQuality ? DFType.body.weight(.semibold) : DFType.title)
                 .monospacedDigit()
                 .foregroundStyle(.primary)
         }
@@ -605,23 +605,23 @@ struct InputView: View {
     private var receiverState: some View {
         VStack(spacing: 20) {
             Image(systemName: snapshot.input.managedPaused ? "pause.circle" : "keyboard")
-                .font(.system(size: 44, weight: .light)).workspaceSecondaryText()
+                .font(DFType.icon(.hero, weight: .light)).dfSecondaryText()
                 .accessibilityHidden(true)
             Text(snapshot.input.managedPaused ? "已停止被控" : snapshot.input.managed ? "被控状态" : snapshot.input.settings.controller ? "主控已自动暂停" : "等待主控")
-                .font(WorkspaceTypography.section)
-            Text(snapshot.input.summary).font(.callout).workspaceSecondaryText()
+                .font(DFType.title)
+            Text(snapshot.input.summary).font(.callout).dfSecondaryText()
                 .multilineTextAlignment(.center)
             if snapshot.input.managed {
                 Button("停止被控") { store.reclaim() }
-                    .modifier(NativeGlassAction())
+                    .buttonStyle(.dfPrimary)
                     .disabled(snapshot.input.managedPaused)
             } else {
                 if snapshot.input.settings.controller {
-                    Text(snapshot.input.environmentMessage).font(.callout).workspaceSecondaryText()
+                    Text(snapshot.input.environmentMessage).font(.callout).dfSecondaryText()
                         .multilineTextAlignment(.center)
                 }
                 Button(snapshot.input.settings.controller ? "本次使用此 Mac 作为主控" : "在此 Mac 启用主控") { enableAsController() }
-                    .modifier(NativeGlassAction())
+                    .buttonStyle(.dfPrimary)
             }
         }.frame(maxWidth: 520)
     }
@@ -630,7 +630,7 @@ struct InputView: View {
         /// 标题与开关行视作页头的一组：行间距对齐 SystemSettingsPageHeader
         /// 标题与说明沿用主窗口的统一层级。
         VStack(alignment: .leading, spacing: 10) {
-            Text("当前屏幕排布").font(WorkspaceTypography.section).fixedSize()
+            Text("当前屏幕排布").font(DFType.title).fixedSize()
             sharingSetting
         }
     }
@@ -647,7 +647,7 @@ struct InputView: View {
             .disabled(updatingSettings || snapshot.input.managed)
             Text("由这台 Mac 管理屏幕排布，并使用本机键鼠控制已添加的设备。")
                 .font(.caption)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
         }
         .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
     }
@@ -655,7 +655,7 @@ struct InputView: View {
     private var headerActions: some View {
         NativeGlassGroup {
             HStack(alignment: .center, spacing: 12) {
-                WorkspaceChromeButton("添加设备", systemImage: "plus", prominent: true) {
+                DFActionButton("添加设备", systemImage: "plus", kind: .primary) {
                     showAddDevice = true
                 }
             }
@@ -723,10 +723,10 @@ struct InputView: View {
             HStack(alignment: .center, spacing: 12) {
                 Text("\(snapshot.input.displays.count) 个屏幕")
                     .font(.callout.weight(.medium))
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
                 Spacer(minLength: 8)
                 Text("拖动屏幕以匹配实际摆放位置 · pt 为 macOS 逻辑尺寸")
-                    .font(.caption).workspaceSecondaryText()
+                    .font(.caption).dfSecondaryText()
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 14)
@@ -738,7 +738,7 @@ struct InputView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
-        .systemSettingsBlock()
+        .dfCard()
     }
 
     /// The user requested twice the previous canvas height so vertically
@@ -751,7 +751,7 @@ struct InputView: View {
         let maxX = displays.map { $0.x + $0.width }.max() ?? 1
         let maxY = displays.map { $0.y + $0.height }.max() ?? 1
         let aspect = max(0.5, (maxX - minX) / max(1, maxY - minY))
-        let contentWidth = max(320, size.width - SystemSettingsMetrics.pageHorizontalInset * 2 - 64)
+        let contentWidth = max(320, size.width - DFMetrics.pageInset * 2 - 64)
         let aspectHeight = contentWidth / aspect + 110
         let availableHeight = max(220, min(400, size.height - 430))
         return min(max(220, aspectHeight), availableHeight) * 2

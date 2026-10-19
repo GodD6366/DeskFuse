@@ -18,7 +18,7 @@ struct MainSidebar: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 DeskFuseBrandMark()
-                Text("DeskFuse").font(.system(size: 16, weight: .semibold))
+                Text("DeskFuse").font(DFType.title.weight(.semibold))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 18).padding(.top, 4).padding(.bottom, 12)
@@ -26,7 +26,7 @@ struct MainSidebar: View {
             List(selection: $store.selectedPage) {
                 sectionTitle("功能")
                 ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
-                    QuietSidebarRow(title: page.rawValue, symbol: page.symbol,
+                    DFSidebarRow(title: page.rawValue, symbol: page.symbol,
                         selected: store.selectedPage == page,
                         badge: page.isBeta ? "Beta" : nil)
                         .tag(page)
@@ -51,14 +51,14 @@ struct MainSidebar: View {
 
             VStack(spacing: 4) {
                 Button { store.openSettings() } label: {
-                    QuietSidebarRow(title: "设置", symbol: "gearshape", selected: store.selectedPage == .settings)
+                    DFSidebarRow(title: "设置", symbol: "gearshape", selected: store.selectedPage == .settings)
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 10)
                 if store.selectedPage == .settings {
                     List(selection: categorySelection) {
                         ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
-                            QuietSidebarRow(title: category.title,
+                            DFSidebarRow(title: category.title,
                                             selected: store.settingsDestination.category == category)
                                 .tag(category)
                                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
@@ -72,29 +72,29 @@ struct MainSidebar: View {
                     .frame(height: CGFloat(SettingsCategory.allCases.count) * 32)
                     .padding(.leading, 26).padding(.trailing, 10)
                     .overlay(alignment: .leading) {
-                        Rectangle().fill(QuietWorkspacePalette.line(scheme))
+                        Rectangle().fill(DFPalette.line(scheme))
                             .frame(width: 1).padding(.leading, 20).padding(.vertical, 4)
                     }
                     .accessibilityLabel("设置分类")
                 }
-                SidebarDeviceStatus(store: store)
+                SidebarHealthStatus(store: store)
 
             }
             .padding(.top, 8)
             .overlay(alignment: .top) {
-                Rectangle().fill(QuietWorkspacePalette.line(scheme)).frame(height: 0.5)
+                Rectangle().fill(DFPalette.line(scheme)).frame(height: 0.5)
             }
         }
-        .quietWorkspaceStyle()
+        .dfWorkspace()
         .overlay(alignment: .trailing) {
-            Rectangle().fill(QuietWorkspacePalette.line(scheme)).frame(width: 0.5)
+            Rectangle().fill(DFPalette.line(scheme)).frame(width: 0.5)
         }
     }
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11))
-            .workspaceSecondaryText()
+            .font(DFType.caption)
+            .dfSecondaryText()
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.top, 12)
@@ -107,90 +107,106 @@ struct MainSidebar: View {
 }
 
 
-private struct DeskFuseBrandMark: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var image: NSImage? {
-        let name = colorScheme == .dark ? "DeskFuse-icon-1024" : "DeskFuse-icon-light-1024"
-        return Bundle.main.url(forResource: name, withExtension: "png")
-            .flatMap { NSImage(contentsOf: $0) }
-    }
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-            } else {
-                Image(systemName: "rectangle.on.rectangle")
-                    .resizable()
-                    .scaledToFit()
-            }
-        }
-        .frame(width: 22, height: 22)
-        .accessibilityHidden(true)
-    }
-}
-
 private struct SidebarDevicesRow: View {
     let store: AppStore
 
     var body: some View {
         let count = store.snapshot?.devices.filter(\.connected).count ?? 0
-        QuietSidebarRow(title: Page.devices.rawValue, symbol: Page.devices.symbol,
+        DFSidebarRow(title: Page.devices.rawValue, symbol: Page.devices.symbol,
                         selected: store.selectedPage == .devices,
                         trailingText: "\(count) 台已连接")
     }
 }
 
-private struct SidebarDeviceStatus: View {
+/// 侧栏底部：只显示一句整体状态，点开才展开需要处理的问题清单。
+private struct SidebarHealthStatus: View {
     let store: AppStore
+    @State private var showingIssues = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button { store.showLocalDevice() } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Circle().fill(runtimeColor).frame(width: 7, height: 7)
-                        Text(store.snapshot?.runtimeStatus ?? "正在启动")
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                    }
-                    Text(Self.versionLabel)
-                        .font(.system(size: 12, weight: .regular))
-                        .workspaceSecondaryText()
-                        .lineLimit(1)
+        let issues = HealthCenter.issues(store)
+        Button { showingIssues = true } label: {
+            HStack(spacing: DFSpace.s) {
+                Circle().fill(HealthCenter.tone(of: issues).color).frame(width: 7, height: 7)
+                Text(HealthCenter.summary(of: issues))
+                    .font(DFType.detail)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if !issues.isEmpty {
+                    Image(systemName: "chevron.right")
+                        .font(DFType.icon(.small, weight: .semibold))
+                        .dfSecondaryText()
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("查看本机运行状态：\(store.snapshot?.localName ?? "这台 Mac")")
-            Spacer(minLength: 0)
-            Button { store.checkForUpdates() } label: {
-                Group {
-                    if store.isCheckingForUpdates {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                }
-                .frame(width: 26, height: 26)
-            }
-            .buttonStyle(.plain)
-            .disabled(store.client == nil || store.isCheckingForUpdates)
-            .accessibilityLabel(store.isCheckingForUpdates ? "正在检查更新" : "检查更新")
-            .help(store.isCheckingForUpdates ? "正在检查更新…" : "检查更新")
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .buttonStyle(.plain)
+        .help("查看运行状态与需要处理的问题")
+        .accessibilityLabel("运行状态：\(HealthCenter.summary(of: issues))")
+        .popover(isPresented: $showingIssues, arrowEdge: .top) {
+            KeyboardIssueList(store: store, issues: issues)
+                .dfFloating()
+        }
+        .padding(.horizontal, 22).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 10)
     }
+}
 
-    private static let versionLabel: String = {
+/// 健康问题清单：每条都有可直接执行的下一步。
+struct KeyboardIssueList: View {
+    let store: AppStore
+    let issues: [HealthIssue]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DFSpace.m) {
+            HStack(spacing: DFSpace.s) {
+                Text("运行状态").font(DFType.title)
+                Spacer(minLength: DFSpace.s)
+                Button { store.send(.refreshDevices) } label: {
+                    Image(systemName: "arrow.clockwise").font(DFType.icon(.small, weight: .semibold))
+                }
+                .buttonStyle(.dfIcon)
+                .help("刷新设备")
+            }
+            if issues.isEmpty {
+                Text("DeskFuse 正在正常工作。")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+            } else {
+                ForEach(issues) { issue in
+                    VStack(alignment: .leading, spacing: DFSpace.xs) {
+                        HStack(spacing: DFSpace.s) {
+                            Circle().fill(issue.tone.color).frame(width: 6, height: 6)
+                            Text(issue.title).font(DFType.bodyMedium)
+                        }
+                        if let detail = issue.detail {
+                            Text(detail)
+                                .font(DFType.detail)
+                                .dfSecondaryText()
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let actionTitle = issue.actionTitle, let action = issue.action {
+                            Button(actionTitle, action: action)
+                                .buttonStyle(.dfSecondary)
+                                .controlSize(.small)
+                        }
+                    }
+                    if issue.id != issues.last?.id { Divider() }
+                }
+            }
+            Divider()
+            DFValueRow(title: "本机", value: store.snapshot?.localName ?? "这台 Mac")
+            if UpdateInstallationChannel.current.isInternal {
+                DFValueRow(title: "版本", value: SidebarHealthStatus.versionLabel)
+            }
+        }
+        .padding(DFSpace.l)
+        .frame(width: 320, alignment: .leading)
+    }
+}
+
+extension SidebarHealthStatus {
+    static let versionLabel: String = {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "—"
         let channel = Bundle.main.url(forResource: "update-channel", withExtension: nil)
@@ -201,10 +217,4 @@ private struct SidebarDeviceStatus: View {
         }
         return "v\(version)"
     }()
-
-    private var runtimeColor: Color {
-        if store.error != nil || store.snapshot?.error != nil { return .orange }
-        return store.snapshot == nil || store.starting ? .secondary : .green
-    }
-
 }

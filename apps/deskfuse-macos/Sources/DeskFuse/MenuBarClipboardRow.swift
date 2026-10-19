@@ -40,19 +40,19 @@ struct MenuBarClipboardRow: View {
                 VStack(alignment: .trailing, spacing: 15) {
                     HStack(spacing: 4) {
                         if ocrHit {
-                            Image(systemName: "text.viewfinder").font(.system(size: 11))
+                            Image(systemName: "text.viewfinder").font(DFType.caption)
                                 .foregroundStyle(.secondary).help("由图片识别文字匹配")
                         }
                         if remoteUnavailable {
-                            Image(systemName: "arrow.down.circle").font(.system(size: 11))
+                            Image(systemName: "arrow.down.circle").font(DFType.caption)
                                 .foregroundStyle(.secondary).help("使用时从来源设备获取")
                         }
                         if let date = item.copiedDate {
-                            Text(Self.timeFormatter.string(from: date)).font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(Self.timeFormatter.string(from: date)).font(DFType.caption).foregroundStyle(.secondary)
                         }
                     }
                     if index < 9 {
-                        Text("⌘ \(index + 1)").font(.system(size: 12)).monospacedDigit()
+                        Text("⌘ \(index + 1)").font(DFType.detail).monospacedDigit()
                             .opacity(showShortcuts ? 1 : 0).accessibilityHidden(!showShortcuts)
                     }
                 }
@@ -61,8 +61,8 @@ struct MenuBarClipboardRow: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 10).padding(.vertical, 10)
             .frame(minHeight: 64)
-            .background(selected ? DeskFuseBrand.selectionFill : .clear, in: RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: DeskFuseBrand.listRowRadius, style: .continuous).strokeBorder(selected ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
+            .background(selected ? DFPalette.selection : .clear, in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous).strokeBorder(selected ? DFPalette.accent.opacity(0.25) : .clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -160,10 +160,10 @@ struct MenuBarClipboardCard: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
-                .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                .fill(selected ? DFPalette.selection : Color(nsColor: .quaternaryLabelColor).opacity(0.22))
                 .overlay(alignment: .bottomTrailing) { watermark }
-                .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
             VStack(spacing: 0) {
                 if hasTitle {
                     ClipboardCardHeader(title: title, selected: selected, editing: $editingTitle)
@@ -171,14 +171,14 @@ struct MenuBarClipboardCard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     content
                     if requestFiles {
-                        Text("使用时从来源设备获取").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("使用时从来源设备获取").font(DFType.caption).foregroundStyle(.secondary)
                     }
                     if hasMetadata || index < 9 {
                         metadata
                             .frame(maxWidth: .infinity)
                             .overlay(alignment: .trailing) {
                                 if index < 9 {
-                                    Text("⌘ \(index + 1)").font(.system(size: 11)).monospacedDigit()
+                                    Text("⌘ \(index + 1)").font(DFType.caption).monospacedDigit()
                                         .opacity(showShortcut ? 1 : 0).accessibilityHidden(!showShortcut)
                                 }
                             }
@@ -188,12 +188,12 @@ struct MenuBarClipboardCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
-                .strokeBorder(selected ? Color.accentColor.opacity(0.25) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                .strokeBorder(selected ? DFPalette.accent.opacity(0.25) : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
         // A stacked single + double tap makes the single click wait out the
         // double-click interval, which reads as the card responding half a beat
         // late. The double tap is simultaneous instead, exactly like the list
@@ -223,17 +223,17 @@ struct MenuBarClipboardCard: View {
         ZStack {
             if let date = item.copiedDate {
                 Text(Self.timeFormatter.string(from: date))
-                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                    .font(DFType.caption).monospacedDigit().foregroundStyle(.secondary)
             }
             HStack(spacing: 4) {
                 if ocrHit {
                     Image(systemName: "text.viewfinder")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                         .help("由图片识别文字匹配")
                 }
                 if remoteUnavailable {
                     Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                         .help("使用时从来源设备获取")
                 }
                 Spacer(minLength: 0)

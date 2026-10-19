@@ -28,7 +28,7 @@ struct RemoteApplicationDisplayModeToggle: View {
             HStack(spacing: 7) {
                 Toggle("虚拟屏幕模式", isOn: $remote.virtualDisplayEnabled)
                     .toggleStyle(.switch).controlSize(.small)
-                FeatureBadge(text: "实验性")
+                DFBadge("实验性")
             }
                 .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
             Text("下次打开或重新连接时生效")
@@ -45,7 +45,7 @@ struct RemoteApplicationPicker: View {
     var embedded = false
     var select: (RemoteApplicationInfo) -> Void
     @Bindable private var remote = RemoteApplicationManager.shared
-    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.dfOpaque) private var quiet
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var category: RemoteApplicationCategory = .all
@@ -73,7 +73,7 @@ struct RemoteApplicationPicker: View {
                     Text(session.failure ?? session.status).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center).textSelection(.enabled)
                     if !session.active && !session.busy {
-                        Button("重新连接") { session.refreshApplications() }.buttonStyle(WorkspaceButtonStyle(prominent: true))
+                        Button("重新连接") { session.refreshApplications() }.buttonStyle(.dfPrimary)
                     }
                 }.padding(32)
                 Spacer()
@@ -122,9 +122,9 @@ struct RemoteApplicationPicker: View {
     }
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "square.grid.2x2").font(WorkspaceTypography.body).foregroundStyle(.secondary)
+            Image(systemName: "square.grid.2x2").font(DFType.body).foregroundStyle(.secondary)
             TextField("应用程序", text: $session.applicationQuery)
-                .textFieldStyle(.plain).font(WorkspaceTypography.body)
+                .textFieldStyle(.plain).font(DFType.body)
                 .focused($searchFocused)
                 .onSubmit { if let first = applications.first { select(first) } }
                 .onKeyPress(.downArrow) {
@@ -140,7 +140,7 @@ struct RemoteApplicationPicker: View {
                 Button("刷新应用列表") { session.refreshApplications() }
                 Button("搜索应用") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
             } label: {
-                Image(systemName: "ellipsis").font(.system(size: 16))
+                Image(systemName: "ellipsis").font(DFType.title)
             }.menuStyle(.borderlessButton).fixedSize().help("应用列表操作")
         }
     }
@@ -164,8 +164,8 @@ struct RemoteApplicationPicker: View {
     // 虚拟屏幕模式是高频查看项，直接放在分类行右侧，不收进菜单。
     private var displayModeControl: some View {
         HStack(spacing: 6) {
-            Text("虚拟屏幕").font(.system(size: 12))
-            FeatureBadge(text: "实验性")
+            Text("虚拟屏幕").font(DFType.detail)
+            DFBadge("实验性")
             Toggle("虚拟屏幕模式", isOn: $remote.virtualDisplayEnabled)
                 .toggleStyle(.switch).controlSize(.small).labelsHidden()
         }
@@ -175,7 +175,7 @@ struct RemoteApplicationPicker: View {
         HStack(spacing: 5) {
             ForEach(RemoteApplicationCategory.allCases) { item in
                 categoryButton(item)
-                    .buttonStyle(WorkspaceButtonStyle(prominent: category == item, compact: true))
+                    .buttonStyle(DFButtonStyle(kind: category == item ? .primary : .secondary, compact: true))
             }
         }
     }
@@ -186,11 +186,11 @@ struct RemoteApplicationPicker: View {
     }
     @ViewBuilder private var panelBackground: some View {
         if embedded {
-            QuietWorkspacePalette.canvas(scheme)
+            DFPalette.canvas(scheme)
         } else if reduceTransparency {
             Color(nsColor: .windowBackgroundColor)
         } else if #available(macOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
+            Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: DFRadius.panel))
         } else { Rectangle().fill(.regularMaterial) }
     }
     private func grid(_ values: [RemoteApplicationInfo], columns: Int) -> some View {
@@ -240,18 +240,18 @@ private struct RemoteApplicationTile: View {
                     else { Image(systemName: "app.fill").resizable().foregroundStyle(.secondary) }
                 }
                 .scaledToFit().frame(width: 64, height: 64)
-                Text(application.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+                Text(application.name).font(DFType.detail).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity)
                 HStack(spacing: 4) {
-                    if isOpen || application.processID != nil { Circle().fill(isOpen ? Color.accentColor : .secondary).frame(width: 5, height: 5) }
+                    if isOpen || application.processID != nil { Circle().fill(isOpen ? DFPalette.accent : .secondary).frame(width: 5, height: 5) }
                     Text(isOpen ? "已打开" : application.processID != nil ? "运行中" : " ")
-                }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }.font(DFType.caption).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4).padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .background((isSelected ? DeskFuseBrand.selectionFill : Color.primary.opacity(hovering ? 0.06 : 0)),
-                        in: RoundedRectangle(cornerRadius: 12))
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .background((isSelected ? DFPalette.selection : Color.primary.opacity(hovering ? 0.06 : 0)),
+                        in: RoundedRectangle(cornerRadius: DFRadius.card))
+            .contentShape(RoundedRectangle(cornerRadius: DFRadius.card))
         }
         .buttonStyle(.plain).focusable(false)
         .onHover { hovering = $0 }

@@ -11,7 +11,7 @@ struct DeviceRoutesPanel: View {
             HStack(spacing: 7) {
                 Text("连接与路由").font(.headline)
                 Image(systemName: "info.circle")
-                    .font(.system(size: 13))
+                    .font(DFType.body)
                     .foregroundStyle(.secondary)
                     .help("候选地址来自已发现或手动配置的连接链路")
                 Text("\(routes.count)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -58,8 +58,8 @@ struct DeviceRoutesPanel: View {
             ForEach(routes, id: \.id) { route in
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Image(systemName: route.active ? "circle.inset.filled" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
+                        .font(DFType.icon(.medium))
+                        .foregroundStyle(route.active ? DFPalette.accent : Color.secondary)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(route.endpoint)
@@ -106,12 +106,12 @@ struct DeviceRoutesPanel: View {
             ForEach(routes, id: \.id) { route in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: route.active ? "circle.inset.filled" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(route.active ? Color.accentColor : Color.secondary)
+                        .font(DFType.icon(.medium))
+                        .foregroundStyle(route.active ? DFPalette.accent : Color.secondary)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(route.endpoint)
-                            .font(.system(size: 13, design: .monospaced))
+                            .font(DFType.mono)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack(spacing: 8) {
@@ -129,7 +129,7 @@ struct DeviceRoutesPanel: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .font(WorkspaceTypography.detail)
+                    .font(DFType.detail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, 12)

@@ -181,12 +181,6 @@ pub enum Command {
     DeleteWorkflow {
         id: String,
     },
-    SaveWorkflowRule {
-        rule: deskfuse_core::workflow::WorkflowRule,
-    },
-    DeleteWorkflowRule {
-        id: String,
-    },
     RunWorkflow {
         workflow_id: String,
         input: Vec<WorkflowInput>,

@@ -93,7 +93,7 @@ struct WorkflowSettingsView: View {
             } else {
                 VStack(spacing: 16) {
                     Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 40, weight: .light))
+                        .font(DFType.icon(.hero).weight(.light))
                         .foregroundStyle(.secondary)
                     VStack(spacing: 8) {
                         Text("组合你的内容处理动作").font(.title3.bold())
@@ -103,7 +103,7 @@ struct WorkflowSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Button("新建流程") { newDraft() }
-                        .buttonStyle(WorkspaceButtonStyle(prominent: true))
+                        .buttonStyle(.dfPrimary)
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,9 +128,9 @@ struct WorkflowSettingsView: View {
     }
     private var editor: some View {
         VStack(spacing: 0) {
-            SystemSettingsFormPage {
+            DFScrollPage {
                 if let original, workflows.first(where: { $0.id == original.id }) != original {
-                    SystemSettingsFormBlock {
+                    DFSection {
                         Text("其他设备已更新或删除此工作流。当前草稿已保留；保存会创建新修订。")
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -138,7 +138,7 @@ struct WorkflowSettingsView: View {
                     }
                 }
 
-                SystemSettingsFormBlock(title: "流程") {
+                DFSection("流程") {
                     TextField("名称", text: value(\.name, fallback: ""))
                     Picker("接受内容", selection: value(\.input_type, fallback: .any)) {
                         ForEach(WorkflowContent.allCases) { Text($0.title).tag($0) }
@@ -146,8 +146,8 @@ struct WorkflowSettingsView: View {
                     Toggle("启用流程", isOn: value(\.enabled, fallback: true))
                     WorkflowShortcutRecorder(store: store, shortcut: Binding(get: { draft?.shortcut }, set: { draft?.shortcut = $0 }), workflowID: draft?.id)
                 }
-                SystemSettingsFormBlock(
-                    title: "依次处理",
+                DFSection(
+                    "依次处理",
                     footer: "中间结果不会写入剪贴板，源文件保持不变。图片步骤不遍历文件夹，混合非图片文件会明确失败；目标体积约束最终输出。用每行右侧的箭头调整步骤顺序，终点始终保留在末尾。"
                 ) {
                     ForEach(Array((draft?.steps ?? []).indices), id: \.self) { index in
@@ -169,9 +169,6 @@ struct WorkflowSettingsView: View {
                         Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     }
                 }
-                SystemSettingsFormBlock {
-                    WorkflowRulesView(store: store)
-                }
             }
             if !WorkflowStore.shared.runs.isEmpty || WorkflowStore.shared.error != nil {
                 Divider()
@@ -187,7 +184,7 @@ struct WorkflowSettingsView: View {
                 Button("保存流程") {
                     guard let draft else { return }
                     store.saveWorkflow(draft) { load(draft.id) }
-                }.buttonStyle(WorkspaceButtonStyle(prominent: true)).disabled(!dirty || !(draft?.incompatibilities.isEmpty ?? true) || draft?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
+                }.buttonStyle(.dfPrimary).disabled(!dirty || !(draft?.incompatibilities.isEmpty ?? true) || draft?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
             }.padding(12)
             if let error = store.error { Text(error).foregroundStyle(.red).font(.caption).padding([.horizontal, .bottom], 12) }
         }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)

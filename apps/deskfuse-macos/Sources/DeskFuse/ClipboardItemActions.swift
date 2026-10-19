@@ -25,53 +25,19 @@ enum ClipboardPreviewPolicy {
     }
 }
 
-enum ClipboardTextFormat: String, CaseIterable, Identifiable {
-    case original
-    case plain
-    case dashBullets
-    case starBullets
-    case numbered
-    case fullPath
-    case markdown
-
-    var id: Self { self }
-
-    var menuTitle: String {
-        switch self {
-        case .original: "原始文本"
-        case .plain: "纯文本"
-        case .dashBullets: "带 - 短划线项目符号的纯文本"
-        case .starBullets: "带 * 星形项目符号的纯文本"
-        case .numbered: "带 1. 2. 3. 的纯文本"
-        case .fullPath: "完整路径"
-        case .markdown: "Markdown"
-        }
-    }
-}
-
 /// Shared copy / paste-as / save / reveal / edit actions for history rows.
 @MainActor enum ClipboardItemActions {
     static func contentType(for item: HistoryItem) -> WorkflowContent {
         item.fileCount > 0 ? .files : item.hasImage ? .image : .text
     }
 
-    static func copyAsFormats(for item: HistoryItem) -> [ClipboardTextFormat] {
-        var formats: [ClipboardTextFormat] = [.original]
-        if item.fileCount > 0 {
-            formats += [.fullPath, .markdown]
-        }
-        if !item.hasImage || item.fileCount > 0 {
-            formats += [.dashBullets, .starBullets, .numbered]
-        }
-        return formats
+    /// 纯文本只对文字条目有意义；图片与文件始终恢复原始内容。
+    static func canCopyPlainText(_ item: HistoryItem) -> Bool {
+        item.fileCount == 0 && !item.hasImage
     }
 
-    static func pasteAsFormats(for item: HistoryItem) -> [ClipboardTextFormat] {
-        copyAsFormats(for: item)
-    }
-
-    static func copy(_ id: UInt64, format: ClipboardTextFormat, paste: Bool) {
-        Task { await perform(id, format: format, paste: paste) }
+    static func copy(_ id: UInt64, plainText: Bool = false, paste: Bool) {
+        Task { await perform(id, plainText: plainText, paste: paste) }
     }
 
     static func save(_ item: HistoryItem) {
@@ -116,14 +82,14 @@ enum ClipboardTextFormat: String, CaseIterable, Identifiable {
         ClipboardLibraryStore.shared.updateText(id, text: attributed.string, rtf: rtf)
     }
 
-    private static func perform(_ id: UInt64, format: ClipboardTextFormat, paste: Bool) async {
+    private static func perform(_ id: UInt64, plainText: Bool, paste: Bool) async {
         guard let client = AppStore.shared.client else {
             report("引擎尚未就绪")
             return
         }
         do {
             let panelSession = ClipboardPanelController.shared.session
-            if format == .original {
+            if !plainText {
                 let token = UUID().uuidString
                 let changeCount = try await client.prepareClipboardPaste(id, session: token)
                 if paste {
@@ -136,8 +102,7 @@ enum ClipboardTextFormat: String, CaseIterable, Identifiable {
                 }
                 return
             }
-            let rendered = try await render(id, format: format, client: client)
-            let changeCount = writePlainText(rendered)
+            let changeCount = writePlainText(try await loadContent(id, client: client).text)
             if paste {
                 try await ClipboardPanelController.shared.pasteRestoredContent(
                     expectedChangeCount: changeCount,
@@ -148,32 +113,6 @@ enum ClipboardTextFormat: String, CaseIterable, Identifiable {
             }
         } catch {
             report(error.userFacingMessage)
-        }
-    }
-
-    private static func render(_ id: UInt64, format: ClipboardTextFormat, client: EngineClient) async throws -> String {
-        let content = try await loadContent(id, client: client)
-        switch format {
-        case .original, .plain:
-            return content.text
-        case .dashBullets:
-            return transformList(content.text, marker: .dash)
-        case .starBullets:
-            return transformList(content.text, marker: .star)
-        case .numbered:
-            return transformList(content.text, marker: .numbered)
-        case .fullPath:
-            let paths = content.filePaths
-            guard !paths.isEmpty else { throw ClipboardActionFailure.message("没有可复制的路径") }
-            return paths.joined(separator: "\n")
-        case .markdown:
-            let paths = content.filePaths
-            guard !paths.isEmpty else { throw ClipboardActionFailure.message("没有可复制的路径") }
-            return paths.map { path in
-                let name = URL(fileURLWithPath: path).lastPathComponent
-                let image = UTType(filenameExtension: URL(fileURLWithPath: path).pathExtension)?.conforms(to: .image) == true
-                return image ? "![\(name)](\(path))" : "[\(name)](\(path))"
-            }.joined(separator: "\n")
         }
     }
 
@@ -311,45 +250,6 @@ enum ClipboardTextFormat: String, CaseIterable, Identifiable {
             if let content = try? await client.content(id) { return content }
         }
         throw ClipboardActionFailure.message("内容尚未就绪，请等待获取完成后重试。")
-    }
-
-    private enum ListMarker { case dash, star, numbered }
-
-    private static func transformList(_ text: String, marker: ListMarker) -> String {
-        var index = 1
-        return text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map { line in
-            let raw = String(line)
-            let body = stripListMarker(raw)
-            if body.trimmingCharacters(in: .whitespaces).isEmpty { return raw }
-            switch marker {
-            case .dash: return "- \(body)"
-            case .star: return "* \(body)"
-            case .numbered:
-                defer { index += 1 }
-                return "\(index). \(body)"
-            }
-        }.joined(separator: "\n")
-    }
-
-    private static func stripListMarker(_ line: String) -> String {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        for prefix in ["- ", "* ", "• ", "· "] {
-            if trimmed.hasPrefix(prefix) { return String(trimmed.dropFirst(prefix.count)) }
-        }
-        var digits = trimmed.startIndex
-        while digits < trimmed.endIndex, trimmed[digits].isNumber {
-            digits = trimmed.index(after: digits)
-        }
-        if digits > trimmed.startIndex, digits < trimmed.endIndex {
-            let punct = trimmed[digits]
-            if punct == "." || punct == ")" {
-                let next = trimmed.index(after: digits)
-                if next < trimmed.endIndex, trimmed[next].isWhitespace {
-                    return String(trimmed[trimmed.index(after: next)...])
-                }
-            }
-        }
-        return trimmed
     }
 
     private static func report(_ message: String) {

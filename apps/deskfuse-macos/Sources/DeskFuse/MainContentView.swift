@@ -12,14 +12,13 @@ struct MainContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if page != .settings {
-                QuietPageHeader(section: page == .devices ? "配置" : "功能", title: page.rawValue,
-                    badge: page.isBeta ? "Beta" : nil)
+                DFPageHeader(page.rawValue, badge: page.isBeta ? "Beta" : nil)
                 Divider()
             }
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-            .quietWorkspaceStyle()
+            .dfWorkspace()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .bottomLeading) {
                 ErrorNoticeView(notice: store.errorNotice)
@@ -31,7 +30,8 @@ struct MainContentView: View {
 
     @ViewBuilder private var pageContent: some View {
         if store.selfTest {
-            ContentUnavailableView("正在确认更新启动", systemImage: "checkmark.shield", description: Text("初始化原生界面与本地存储"))
+            DFEmptyState(symbol: "checkmark.shield", title: "正在确认更新启动",
+                         message: "初始化原生界面与本地存储。")
                 .onAppear { store.confirmSelfTest() }
         } else if store.isEngineLoading {
             // RootView owns the window-wide loading presentation.
@@ -57,12 +57,15 @@ struct MainContentView: View {
                     localSelectionRequest: 0,
                     showsApplications: true
                 )
-            case .transfers: TransfersView(store: store, transfers: snapshot.transfers)
-            case .lanTransfer: ShareAndTransferView(store: store, snapshot: snapshot)
+            case .files: FileTransferView(store: store, snapshot: snapshot)
             case .settings: EmptyView() // Owned by the retained settings host in RootView.
             }
         } else {
-            ContentUnavailableView("无法启动", systemImage: "exclamationmark.triangle", description: Text(store.error ?? "引擎未就绪"))
+            DFEmptyState(symbol: "exclamationmark.triangle",
+                         title: "无法启动",
+                         message: store.error.map(friendlyError) ?? "后台服务未就绪，请重新打开 DeskFuse。",
+                         actionTitle: "重试",
+                         action: { store.error = nil; store.start() })
         }
     }
 }

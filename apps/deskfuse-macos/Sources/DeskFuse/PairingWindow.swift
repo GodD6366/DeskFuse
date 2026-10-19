@@ -42,9 +42,9 @@ struct PairingWindowView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设备配对")
-                            .font(.system(size: 20, weight: .bold))
+                            .font(DFType.pageTitle.weight(.bold))
                         Text("确认设备加入网络")
-                            .font(.system(size: 13))
+                            .font(DFType.body)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -66,15 +66,15 @@ struct PairingWindowView: View {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
                             Text(error)
-                                .font(.system(size: 13))
+                                .font(DFType.body)
                                 .foregroundStyle(.orange)
                         }
                         .padding(.horizontal, 20)
                         .padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.orange.opacity(0.1))
+                            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                                .fill(DFPalette.warning.opacity(0.1))
                         )
                     }
                 }
@@ -84,11 +84,11 @@ struct PairingWindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor))
         )
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
@@ -100,7 +100,7 @@ struct PairingWindowView: View {
                     )
                 )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous))
         .shadow(color: Color.black.opacity(0.25), radius: 30, y: 10)
         .shadow(color: Color.black.opacity(0.1), radius: 10, y: 5)
         .padding(20)

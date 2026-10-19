@@ -121,9 +121,10 @@ struct DeskFuseImageAppShortcuts: AppShortcutsProvider {
 }
 
 private enum WorkflowIntentError: LocalizedError {
-    case unavailable, startup(String), fileSize, ambiguousInput
+    case disabled, unavailable, startup(String), fileSize, ambiguousInput
     var errorDescription: String? {
         switch self {
+        case .disabled: "工作流功能未开启，请在 DeskFuse「设置 → 高级」中开启。"
         case .unavailable: "工作流已删除或停用，请重新选择。"
         case .startup(let message): "DeskFuse 引擎无法启动：\(message)"
         case .fileSize: "内存文件超过 128 MiB，请通过文件 URL 输入。"
@@ -137,6 +138,7 @@ private enum WorkflowIntentRuntime {
 
     @MainActor static func readyEngine() async throws -> Engine {
         let app = AppStore.shared
+        guard app.workflowsEnabled else { throw WorkflowIntentError.disabled }
         app.start()
         // Startup currently creates Engine synchronously; allow asynchronous startup too.
         for _ in 0..<200 {

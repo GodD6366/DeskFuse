@@ -46,7 +46,7 @@ import DeskFuseEngine
                 Button("立即收回键鼠") { store.reclaim() }.keyboardShortcut(.escape, modifiers: [.control, .option, .command])
                     .disabled(!(store.snapshot?.input.managed == true || store.snapshot?.input.settings.enabled == true))
                 Divider()
-                Button("搜索设备") { store.send(.refreshDevices) }
+                Button("刷新设备") { store.send(.refreshDevices) }
             }
         }
 
@@ -121,23 +121,21 @@ import DeskFuseEngine
             // 全新安装：先弹功能引导，本次启动不再重复弹权限提醒。
             store.onboarding.present()
         } else {
-            // 老用户（含迁移完成）：维持缺权限时提示一次的现行为。
-            store.permissionPrompt.evaluateAtLaunch()
+            // 权限按需申请：功能页或设置页会在确有需要时提示。
+            store.permissions.refresh()
         }
         ClipboardPanelController.shared.install(store: store)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // 授权弹窗仍在时，系统设置的「退出并重新打开」已经进入退出流程。
+        // 引导弹窗中授权后，系统设置的「退出并重新打开」已经进入退出流程。
         // 再确认模态窗口不拦截终止，避免 AppKit 在委托返回后丢掉这次退出。
-        if AppStore.shared.permissionPrompt.presented != nil {
-            for window in NSApp.windows {
-                if let sheet = window.attachedSheet {
-                    sheet.preventsApplicationTerminationWhenModal = false
-                }
-                if window.isSheet {
-                    window.preventsApplicationTerminationWhenModal = false
-                }
+        for window in NSApp.windows {
+            if let sheet = window.attachedSheet {
+                sheet.preventsApplicationTerminationWhenModal = false
+            }
+            if window.isSheet {
+                window.preventsApplicationTerminationWhenModal = false
             }
         }
         return AppStore.shared.terminate()

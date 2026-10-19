@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct ClipboardLibraryTabs: View {
-    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.dfOpaque) private var quiet
     @Environment(\.colorScheme) private var scheme
     @Bindable var library = ClipboardLibraryStore.shared
     @Binding var selectedListID: String?
@@ -20,12 +20,12 @@ struct ClipboardLibraryTabs: View {
                         verticalList(list)
                     }
                     Divider().padding(.vertical, 6)
-                    sectionLabel("我的分组")
-                    ForEach(library.lists.filter { !$0.isDefaultTypeGroup }) { list in
+                    sectionLabel("我的列表")
+                    ForEach(library.lists.filter { !$0.isDefaultTypeGroup && $0.kind != "smart" }) { list in
                         verticalList(list)
                     }
                     Divider().padding(.vertical, 8)
-                    newListButton(label: "新建智能分组", vertical: true)
+                    newListButton(label: "新建列表", vertical: true)
                 }
             } else {
                 HStack(spacing: 6) {
@@ -35,7 +35,7 @@ struct ClipboardLibraryTabs: View {
                             ForEach(library.lists) { list in
                                 tab(list.name, id: list.id, count: library.counts[list.id])
                                     .contextMenu {
-                                        Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
+                                        Button("重命名…") { editing = list }
                                         Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
                                         Button("向后移动") { move(list, by: 1) }.disabled(library.lists.last?.id == list.id)
                                         Divider()
@@ -60,7 +60,7 @@ struct ClipboardLibraryTabs: View {
         }
     }
     private func sectionLabel(_ title: String) -> some View {
-        Text(title).font(.caption.weight(.medium)).workspaceSecondaryText()
+        Text(title).font(.caption.weight(.medium)).dfSecondaryText()
             .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
     }
@@ -68,7 +68,7 @@ struct ClipboardLibraryTabs: View {
     private func verticalList(_ list: ClipboardLibraryList) -> some View {
         verticalTab(list.name, id: list.id, symbol: symbol(for: list), count: library.counts[list.id])
             .contextMenu {
-                Button(list.kind == "smart" ? "编辑智能列表…" : "重命名…") { editing = list }
+                if list.kind != "smart" { Button("重命名…") { editing = list } }
                 Button("向前移动") { move(list, by: -1) }.disabled(library.lists.first?.id == list.id)
                 Button("向后移动") { move(list, by: 1) }.disabled(library.lists.last?.id == list.id)
                 Divider()
@@ -79,10 +79,6 @@ struct ClipboardLibraryTabs: View {
             }
     }
 
-    private func editTypeGroup(name: String, value: String) {
-        editing = ClipboardLibraryList(name: name, kind: "smart",
-            rules: [ClipboardLibraryRule(field: "kind", op: "is", value: value)])
-    }
     private func tab(_ name: String, id: String?, count: Int? = nil) -> some View {
         Button { selectedListID = id } label: {
             HStack(spacing: 6) {
@@ -90,9 +86,9 @@ struct ClipboardLibraryTabs: View {
                 if let count { Text("\(count)").font(.caption).monospacedDigit() }
             }
                 .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 9)
-                .frame(minHeight: spacious ? WorkspaceControlMetrics.height : 34)
-                .foregroundStyle(selectedListID == id ? Color.accentColor : .secondary)
-                .background(selectedListID == id ? DeskFuseBrand.selectionFill
+                .frame(minHeight: spacious ? DFMetrics.controlHeight : 34)
+                .foregroundStyle(selectedListID == id ? DFPalette.accent : .secondary)
+                .background(selectedListID == id ? DFPalette.selection
                             : spacious ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
                             in: RoundedRectangle(cornerRadius: spacious ? 9 : 100))
                 .contentShape(RoundedRectangle(cornerRadius: spacious ? 9 : 100))
@@ -101,26 +97,26 @@ struct ClipboardLibraryTabs: View {
 
     private func verticalTab(_ name: String, id: String?, symbol: String, count: Int?) -> some View {
         let selected = selectedListID == id
-        let shape = RoundedRectangle(cornerRadius: SystemSettingsMetrics.rowCorner, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
         return Button { selectedListID = id } label: {
             HStack(spacing: 9) {
                 Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(DFType.icon(.regular).weight(.medium))
                     .frame(width: 18)
                 Text(name).lineLimit(1)
                 Spacer(minLength: 0)
                 if let count {
                     Text("\(count)").font(.caption).monospacedDigit()
-                        .foregroundStyle(selected && !quiet ? Color.white.opacity(0.8) : QuietWorkspacePalette.secondaryText(scheme))
+                        .foregroundStyle(selected && !quiet ? Color.white.opacity(0.8) : DFPalette.secondaryText(scheme))
                 }
             }
-            .font(.system(size: 13))
+            .font(DFType.body)
             .padding(.horizontal, 8)
-            .frame(height: SystemSettingsMetrics.rowHeight)
-            .foregroundStyle(selected && !quiet ? Color.white : count == 0 && !selected ? QuietWorkspacePalette.secondaryText(scheme) : Color.primary)
-            .background(selected ? AnyShapeStyle(quiet ? QuietWorkspacePalette.surface(scheme) : Color.accentColor)
+            .frame(height: DFMetrics.rowHeight)
+            .foregroundStyle(selected && !quiet ? Color.white : count == 0 && !selected ? DFPalette.secondaryText(scheme) : Color.primary)
+            .background(selected ? AnyShapeStyle(quiet ? DFPalette.surface(scheme) : DFPalette.accent)
                                  : AnyShapeStyle(.clear), in: shape)
-            .animation(Motion.snappy, value: selected)
+            .animation(DFMotion.snappy, value: selected)
             .contentShape(shape)
         }
         .buttonStyle(.plain)
@@ -138,14 +134,7 @@ struct ClipboardLibraryTabs: View {
 
     @ViewBuilder private func newListButton(label: String?, vertical: Bool) -> some View {
         Menu {
-            Button("新建智能列表…") { editing = ClipboardLibraryList(kind: "smart", rules: [ClipboardLibraryRule()]) }
-            Button("新建手动列表…") { editing = ClipboardLibraryList() }
-            Divider()
-            Menu("按类型新建智能分组") {
-                Button("文字…") { editTypeGroup(name: "文字", value: "text") }
-                Button("图片…") { editTypeGroup(name: "图片", value: "image") }
-                Button("文件…") { editTypeGroup(name: "文件", value: "files") }
-            }
+            Button("新建列表…") { editing = ClipboardLibraryList() }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "plus.circle.fill")
@@ -156,14 +145,14 @@ struct ClipboardLibraryTabs: View {
             .font(.callout)
             .frame(maxWidth: vertical ? .infinity : nil, alignment: .leading)
             .padding(.horizontal, vertical ? 10 : 6)
-            .frame(minWidth: vertical ? nil : 32, minHeight: vertical ? 34 : (spacious ? WorkspaceControlMetrics.height : 32))
+            .frame(minWidth: vertical ? nil : 32, minHeight: vertical ? 34 : (spacious ? DFMetrics.controlHeight : 32))
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .fixedSize(horizontal: !vertical, vertical: false)
         .help("新建列表")
         .background(spacious && !vertical ? Color(nsColor: .quaternaryLabelColor).opacity(0.3) : .clear,
-                    in: RoundedRectangle(cornerRadius: 9))
+                    in: RoundedRectangle(cornerRadius: DFRadius.control))
     }
     private func move(_ list: ClipboardLibraryList, by step: Int) {
         var ids = library.lists.map(\.id)

@@ -63,7 +63,6 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     /// bubble routes them back to the list for record-to-record switching.
     @ObservationIgnored private var navigateHandler: ((UInt16) -> Void)?
     @ObservationIgnored private var keyMonitor: Any?
-    @ObservationIgnored private var keyboardControlled = false
     /// 同一条记录的后续内容更新不再改气泡尺寸，避免加载完成后撑开并盖住光标。
     @ObservationIgnored private var lockedSize = false
     @ObservationIgnored private var closeRequested = false
@@ -83,12 +82,11 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     /// Re-calling `show` on a visible popover repositions it onto the new
     /// anchor without closing, so switching records never blinks the bubble.
     func present(itemID: UInt64, from anchor: NSView, lockSize: Bool = true,
-                 keyboardControlled: Bool = true, navigate: ((UInt16) -> Void)? = nil,
+                 navigate: ((UInt16) -> Void)? = nil,
                  dismiss: @escaping () -> Void) {
         guard let parent = anchor.window, let container = parent.contentView else { return }
         dismissHandler = dismiss
         navigateHandler = navigate
-        self.keyboardControlled = keyboardControlled
 
         let popover: NSPopover
         if let existing = self.popover {
@@ -180,10 +178,8 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
     }
 
     private func relinquish() {
-        ClipboardPreviewHoverGate.unlockAfterClosingPreview()
         presented = false
         lockedSize = false
-        keyboardControlled = false
         positioningView = nil
         presentedItemID = nil
         dismissHandler = nil
@@ -219,26 +215,16 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
                 guard let self, self.presented, event.window === self.window else { return false }
                 switch event.keyCode {
                 case 49:
-                    guard self.keyboardControlled else { return false }
-                    // Space mode owns the key: when the popover is already
-                    // keyboard-controlled, Space closes it.
-                    if ClipboardPreviewHoverGate.keyboardLocked {
-                        self.dismissAndNotify()
-                    } else {
-                        ClipboardPreviewHoverGate.lockForKeyboardPreview()
-                        self.navigateHandler?(49)
-                    }
+                    // 空格打开的预览再按空格关闭。
+                    self.dismissAndNotify()
                     return true
                 case 53:
                     self.dismissAndNotify()
                     return true
                 case 123, 124, 125, 126:
-                    guard self.keyboardControlled else { return false }
-                    // Route all four arrows through the same keyboard-only preview mode.
                     // Modified arrows still belong to the preview's own content.
                     guard let navigate = self.navigateHandler,
                           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
-                    ClipboardPreviewHoverGate.lockForKeyboardPreview()
                     navigate(event.keyCode)
                     return true
                 default:
@@ -311,7 +297,7 @@ private struct ClipboardQuickLook: View {
                 } else {
                 ScrollView {
                     Text(text)
-                        .font(.system(size: 16))
+                        .font(DFType.title)
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -322,7 +308,7 @@ private struct ClipboardQuickLook: View {
             } else if let paths = content?.filePaths, !paths.isEmpty {
                 HStack(spacing: 14) {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 28))
+                        .font(DFType.metric)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(paths.count == 1 ? URL(fileURLWithPath: paths[0]).lastPathComponent : "\(paths.count) 个文件")

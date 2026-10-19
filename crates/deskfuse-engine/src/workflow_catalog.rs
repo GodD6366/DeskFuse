@@ -29,6 +29,8 @@ struct Revision {
 #[serde(tag = "kind", content = "value")]
 enum Definition {
     Workflow(Workflow),
+    /// 共享自动规则已从产品中移除；仍按原格式保留已持久化或对端同步来的记录，
+    /// 让目录摘要与旧版本设备保持一致，但不再执行、展示或新建。
     Rule(WorkflowRule),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,44 +194,6 @@ impl Catalog {
         let mut next = state.document.clone();
         put_local(&mut next, workflow_key(id), None)?;
         next.bindings.retain(|b| b.workflow_id != id);
-        self.commit(&mut state, next)
-    }
-
-    pub fn rules(&self) -> Result<Vec<WorkflowRule>, String> {
-        let state = self.state.lock().map_err(|_| "工作流目录不可用")?;
-        let mut rules: Vec<_> = state
-            .document
-            .records
-            .values()
-            .filter_map(|r| match &r.definition {
-                Some(Definition::Rule(rule)) => Some(rule.clone()),
-                _ => None,
-            })
-            .collect();
-        rules.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
-        Ok(rules)
-    }
-
-    pub fn save_rule(&self, rule: WorkflowRule) -> Result<(), String> {
-        rule.validate()?;
-        let mut state = self.state.lock().map_err(|_| "工作流目录不可用")?;
-        let mut next = state.document.clone();
-        if !next
-            .records
-            .get(&workflow_key(&rule.workflow_id))
-            .is_some_and(|r| matches!(r.definition, Some(Definition::Workflow(_))))
-        {
-            return Err("规则引用的工作流不存在".into());
-        }
-        put_local(&mut next, rule_key(&rule.id), Some(Definition::Rule(rule)))?;
-        self.commit(&mut state, next)
-    }
-
-    pub fn delete_rule(&self, id: &str) -> Result<(), String> {
-        valid_id(id)?;
-        let mut state = self.state.lock().map_err(|_| "工作流目录不可用")?;
-        let mut next = state.document.clone();
-        put_local(&mut next, rule_key(id), None)?;
         self.commit(&mut state, next)
     }
 
@@ -426,22 +390,13 @@ impl Catalog {
     pub fn view_json(&self) -> Result<String, String> {
         let state = self.state.lock().map_err(|_| "工作流目录不可用")?;
         let current_digest = digest(&state.document)?;
-        let rules: Vec<_> = state
-            .document
-            .records
-            .values()
-            .filter_map(|r| match &r.definition {
-                Some(Definition::Rule(rule)) => Some(rule),
-                _ => None,
-            })
-            .collect();
-        let conflicts: Vec<_> = state.document.conflicts.values().map(|conflict| {
+        let conflicts: Vec<_> = state.document.conflicts.values().filter_map(|conflict| {
             let (name, workflow) = match &conflict.record.definition {
                 Some(Definition::Workflow(workflow)) => (workflow.name.clone(), Some(workflow)),
-                Some(Definition::Rule(rule)) => (format!("共享规则 {}", rule.id), None),
+                Some(Definition::Rule(_)) => return None,
                 None => (conflict.record.key.clone(), None),
             };
-            serde_json::json!({"id":conflict.id,"name":name,"workflow":workflow,"message":"设备并发修改，未采用的版本已保留，可恢复"})
+            Some(serde_json::json!({"id":conflict.id,"name":name,"workflow":workflow,"message":"设备并发修改，未采用的版本已保留，可恢复"}))
         }).collect();
         let bindings: Vec<_> = state.document.records.values().flat_map(|r| match &r.definition {
             Some(Definition::Workflow(workflow)) => workflow.steps.iter().enumerate().filter_map(|(i, step)| {
@@ -464,7 +419,7 @@ impl Catalog {
         } else {
             "pending"
         };
-        serde_json::to_string(&serde_json::json!({"local_device_id":state.document.local_device_id,"sync_status":status,"generation":self.generation(),"rules":rules,"conflicts":conflicts,"bindings":bindings,"peers":peers,"error":state.last_error})).map_err(|e| e.to_string())
+        serde_json::to_string(&serde_json::json!({"local_device_id":state.document.local_device_id,"sync_status":status,"generation":self.generation(),"conflicts":conflicts,"bindings":bindings,"peers":peers,"error":state.last_error})).map_err(|e| e.to_string())
     }
 
     fn commit(&self, state: &mut State, next: Document) -> Result<(), String> {
@@ -484,9 +439,6 @@ impl Catalog {
 
 fn workflow_key(id: &str) -> String {
     format!("workflow:{id}")
-}
-fn rule_key(id: &str) -> String {
-    format!("rule:{id}")
 }
 fn valid_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {

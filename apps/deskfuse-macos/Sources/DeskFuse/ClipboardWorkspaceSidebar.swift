@@ -10,17 +10,17 @@ private struct WorkflowSyncCard: View {
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: SystemSettingsMetrics.iconSize, height: SystemSettingsMetrics.iconSize)
+                    .font(DFType.icon(.regular).weight(.semibold))
+                    .frame(width: DFIconSize.medium.rawValue, height: DFIconSize.medium.rawValue)
                     .foregroundStyle(.secondary)
                 Text("工作流")
-                    .font(.system(size: 13))
+                    .font(DFType.body)
                 Spacer(minLength: 0)
                 Text(String(workflows.definitions.count))
-                    .font(.system(size: 11))
+                    .font(DFType.caption)
                     .foregroundStyle(.secondary)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(DFType.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 10)
@@ -42,7 +42,7 @@ struct ClipboardWorkspaceSidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("分组与列表")
-                .font(WorkspaceTypography.heading)
+                .font(DFType.title)
                 .padding(.horizontal, 20)
                 .frame(height: 56)
 
@@ -59,6 +59,6 @@ struct ClipboardWorkspaceSidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // 这一栏和它右侧的历史列表同属内容区，用同一个亮底，靠 ClipboardView
         // 的 Divider 分栏；只有最外层的主侧栏用材质灰底。
-        .quietWorkspaceStyle()
+        .dfWorkspace()
     }
 }

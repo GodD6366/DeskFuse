@@ -88,10 +88,10 @@ struct RemoteRdpPicker: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "windowslogo")
-                    .font(.system(size: 22))
-                    .workspaceSecondaryText()
-                Text("Windows 远程应用").font(WorkspaceTypography.section)
-                FeatureBadge()
+                    .font(DFType.pageTitle)
+                    .dfSecondaryText()
+                Text("Windows 远程应用").font(DFType.title)
+                DFBadge()
                 Spacer()
                 if session.phase == .connecting { ProgressView() }
                 if !embedded {
@@ -125,7 +125,7 @@ struct RemoteRdpPicker: View {
         } else if session.phase == .idle || session.phase == .connecting {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("正在读取 Windows 应用…").workspaceSecondaryText()
+                Text("正在读取 Windows 应用…").dfSecondaryText()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if session.apps.isEmpty {
@@ -155,10 +155,10 @@ struct RemoteRdpPicker: View {
                     if !credentialsAreReady {
                         Label("请先填写 Windows 用户名和账户密码，之后才能打开应用。", systemImage: "lock.fill")
                             .font(.callout)
-                            .workspaceSecondaryText()
+                            .dfSecondaryText()
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+                            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: DFRadius.control))
                     }
                     if visibleApps.isEmpty {
                         if appScope == .favorites, searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -181,7 +181,7 @@ struct RemoteRdpPicker: View {
                                     Image(systemName: systemSectionIsExpanded ? "chevron.down" : "chevron.right")
                                     Text("系统与内部组件")
                                     Text("\(systemApps.count)")
-                                        .workspaceSecondaryText()
+                                        .dfSecondaryText()
                                 }
                                 .font(.callout.weight(.medium))
                             }
@@ -193,11 +193,11 @@ struct RemoteRdpPicker: View {
                     }
                     Text("Windows 主机需已启用远程桌面和相应防火墙规则。")
                         .font(.caption)
-                        .workspaceSecondaryText()
+                        .dfSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                     if let selected, session.launchedName == selected.name {
                         Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
-                            .font(.caption).workspaceSecondaryText()
+                            .font(.caption).dfSecondaryText()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -216,7 +216,7 @@ struct RemoteRdpPicker: View {
             HStack(spacing: 6) {
                 Text("使用 Windows 账户密码，而不是 PIN。")
                     .font(.caption)
-                    .workspaceSecondaryText()
+                    .dfSecondaryText()
                 Button {
                     showsCredentialInfo.toggle()
                 } label: {
@@ -257,7 +257,7 @@ struct RemoteRdpPicker: View {
                 toggleFavorite(app.name)
             } label: {
                 Image(systemName: favoriteAppIDs.contains(app.name) ? "star.fill" : "star")
-                    .foregroundStyle(favoriteAppIDs.contains(app.name) ? Color.accentColor : .secondary)
+                    .foregroundStyle(favoriteAppIDs.contains(app.name) ? DFPalette.accent : .secondary)
                     .padding(8)
             }
             .buttonStyle(.plain)
@@ -282,11 +282,11 @@ struct RemoteRdpPicker: View {
         } label: {
             VStack(spacing: 8) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(Color.accentColor.opacity(0.12))
+                    RoundedRectangle(cornerRadius: DFRadius.control)
+                        .fill(DFPalette.accent.opacity(0.12))
                     Image(systemName: "macwindow")
-                        .font(.system(size: 23, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+                        .font(DFType.icon(.large, weight: .medium))
+                        .foregroundStyle(DFPalette.accent)
                 }
                 .frame(width: 42, height: 42)
                 .accessibilityHidden(true)
@@ -296,7 +296,7 @@ struct RemoteRdpPicker: View {
             }
             .frame(maxWidth: .infinity, minHeight: 86)
         }
-        .buttonStyle(WorkspaceButtonStyle())
+        .buttonStyle(.dfSecondary)
         .disabled(!credentialsAreReady)
         .help(appHelp(for: app))
     }
@@ -437,7 +437,7 @@ private struct RemoteRdpViewer: View {
             }
             if let error = session.certificateTrustError { Text(error).foregroundStyle(.orange) }
             Button(session.savedCertificateFingerprint == nil ? "核对后信任并重试" : "核对后替换指纹并重试") { session.trustCurrentCertificate() }
-                .buttonStyle(WorkspaceButtonStyle(prominent: true))
+                .buttonStyle(.dfPrimary)
                 .disabled(session.certificateTrustInProgress)
         }
         .padding()

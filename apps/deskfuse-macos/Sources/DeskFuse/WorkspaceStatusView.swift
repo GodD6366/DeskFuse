@@ -35,12 +35,12 @@ private struct WorkspaceLoadingView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "rectangle.on.rectangle")
-                .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .font(DFType.metric.weight(.medium))
+                .foregroundStyle(DFPalette.accent)
                 .frame(width: 72, height: 72)
                 .background(
-                    Color.accentColor.opacity(0.08),
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    DFPalette.accent.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
                 )
                 .accessibilityHidden(true)
 
@@ -115,10 +115,10 @@ struct WorkspaceErrorNotice: View {
         .padding(14)
         .background(
             Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            in: RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
                 .strokeBorder(
                     Color.primary.opacity(contrast == .increased ? 0.5 : 0.1),
                     lineWidth: 1

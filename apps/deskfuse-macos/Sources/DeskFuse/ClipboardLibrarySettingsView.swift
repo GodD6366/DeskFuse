@@ -22,8 +22,8 @@ struct ClipboardLibrarySettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SystemSettingsFormPage {
-                SystemSettingsFormBlock(title: "快捷键") {
+            DFScrollPage {
+                DFSection("快捷键") {
                     ClipboardShortcutSettings(store: AppStore.shared, shortcut: Binding(
                         get: { shortcut },
                         set: { key in
@@ -31,28 +31,28 @@ struct ClipboardLibrarySettingsView: View {
                                 key_code: key?.key_code ?? 9, modifiers: key?.modifiers ?? 0x180000)
                         }), onRecordingChange: { recording = $0 })
                 }
-                SystemSettingsFormBlock(title: "普通历史") {
-                    QuietSettingsRow(title: "保留天数",
+                DFSection("普通历史") {
+                    DFSettingRow(title: "保留天数",
                         detail: "默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。") {
                         TextField("天数", value: $draft.retention_days, format: .number).frame(width: 80)
                     }
                 }
-                SystemSettingsFormBlock(title: "跨设备搜索") {
-                    QuietSettingsToggle("同步标题与识别文字到其他设备",
+                DFSection("跨设备搜索") {
+                    DFToggleRow("同步标题与识别文字到其他设备",
                         detail: "只同步标题、识别文字和元数据，方便在其他设备搜索；图片和文件正文按需获取。关闭后不再发布或接收远端索引。", isOn: Binding(
                         get: { draft.sync_index ?? true },
                         set: { draft.sync_index = $0 }))
                     Divider()
-                    QuietSettingsRow(title: "已同步的远端索引",
+                    DFSettingRow(title: "已同步的远端索引",
                         detail: "清除其他设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。") {
                         Button("清除远端索引") { library.clearRemoteIndex() }
                     }
                 }
-                SystemSettingsFormBlock(title: "图片文字识别") {
-                    QuietSettingsToggle("自动识别图片文字",
+                DFSection("图片文字识别") {
+                    DFToggleRow("自动识别图片文字",
                         detail: "默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。", isOn: $draftAutomaticOCR)
                 }
-                SystemSettingsFormBlock(title: "排除 App") {
+                DFSection("排除 App") {
                     ForEach(draft.excluded_apps) { app in
                         HStack {
                             Text(app.name).textSelection(.enabled)
@@ -62,7 +62,7 @@ struct ClipboardLibrarySettingsView: View {
                             }
                         }
                     }
-                    QuietSettingsRow(title: "不保存历史的应用",
+                    DFSettingRow(title: "不保存历史的应用",
                         detail: "新复制仍正常实时同步，但发送端和接收端不保存历史。不会删除已有历史或手动列表内容；此配置仅属于当前设备。") {
                         Button("添加应用…") {
                             guard let id = ClipboardLibraryAppPicker.choose(),

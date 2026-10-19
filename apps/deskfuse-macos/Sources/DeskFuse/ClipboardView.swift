@@ -24,6 +24,8 @@ struct ClipboardView: View {
     @State private var previewImage: NSImage?
     @State private var loading = false
     @State private var previewError: String?
+    /// 预览重试令牌：只改变 task 的 id，不改变选中的历史记录。
+    @State private var previewReloadToken = 0
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var listID: String?
     @AppStorage("deskfuse.clipboard.textDisplayMode") private var textDisplayMode: ClipboardDisplayMode = .list
@@ -101,12 +103,12 @@ struct ClipboardView: View {
                         detail.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .frame(minWidth: ClipboardPaneMetrics.minimumPreview, maxWidth: .infinity, maxHeight: .infinity)
-                    .background(QuietWorkspacePalette.surface(scheme))
+                    .background(DFPalette.surface(scheme))
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .quietWorkspaceStyle()
+        .dfWorkspace()
         .task {
             while !Task.isCancelled {
                 await library.refresh()
@@ -147,7 +149,7 @@ struct ClipboardView: View {
                 cancelCopy()
             }
         }
-        .task(id: selected) {
+        .task(id: PreviewTaskKey(id: selected, token: previewReloadToken)) {
             content = nil; media = nil; previewImage = nil; previewError = nil; loading = false
             guard let id = selected, let client = store.client else { return }
             loading = true
@@ -199,6 +201,11 @@ struct ClipboardView: View {
             selected = ids.first
         }
 
+    }
+
+    private func retryPreview() {
+        previewError = nil
+        previewReloadToken &+= 1
     }
 
     private func cancelCopy() {
@@ -369,7 +376,8 @@ struct ClipboardView: View {
         if loading {
             ProgressView("正在读取预览…")
         } else if let previewError {
-            ContentUnavailableView("无法读取预览", systemImage: "exclamationmark.triangle", description: Text(previewError))
+            DFEmptyState(symbol: "exclamationmark.triangle", title: "无法读取预览",
+                         message: previewError, actionTitle: "重试", action: retryPreview)
         } else if let content, content.id == selected, let media, let item = items.first(where: { $0.id == content.id }) {
             ClipboardPreviewPane(store: store, item: item, title: presentation.titles[item.id],
                                  appID: presentation.appIDs[item.id],
@@ -379,13 +387,19 @@ struct ClipboardView: View {
                 .equatable()
                 .id(content.id)
         } else {
-            ContentUnavailableView {
-                Label(snapshot.history.isEmpty ? "复制内容，从这里接着用" : "选择一条历史", systemImage: "clipboard")
-            } description: {
-                Text("文字、图片与文件会在可信设备之间同步。")
-            }
+            DFEmptyState(symbol: "clipboard",
+                         title: snapshot.history.isEmpty ? "复制内容，从这里接着用" : "选择一条历史",
+                         message: snapshot.history.isEmpty
+                            ? "在任意应用里复制，按 ⌥⌘V 就能从这里取回；内容会在可信设备之间同步。"
+                            : "文字、图片与文件会在可信设备之间同步。")
         }
     }
 }
 
 private struct ClipboardSelectionKey: Equatable { let ids: [UInt64]; let ready: Bool }
+
+/// 选中项 + 重试令牌共同决定预览的加载任务。
+private struct PreviewTaskKey: Hashable {
+    let id: UInt64?
+    let token: Int
+}

@@ -13,7 +13,7 @@ struct MicrophoneSettingsView: View {
         mutate(&settings); model.configure(settings)
     }
     var body: some View {
-        SystemSettingsFormPage {
+        DFScrollPage {
             VStack(alignment: .leading, spacing: 24) {
                 if let state = model.snapshot {
                     routeSurface(state)
@@ -21,11 +21,11 @@ struct MicrophoneSettingsView: View {
                     if state.settings.source.isEmpty { deviceAccess(state) }
                     if model.driverInstalled { maintenance(state) }
                     if model.managingDriver { ProgressView(model.driverOperation == .restartAudio ? "正在重启音频服务，请完成系统管理员授权…" : "正在处理驱动，请完成系统管理员授权…") }
-                    if let message = model.driverMessage { Text(message).font(.callout).workspaceSecondaryText() }
+                    if let message = model.driverMessage { Text(message).font(.callout).dfSecondaryText() }
                 } else if let connectionError = model.connectionError {
-                    SystemSettingsFormBlock {
+                    DFSection {
                         Label("无法连接麦克风服务", systemImage: "exclamationmark.triangle")
-                        Text(connectionError).font(.callout).workspaceSecondaryText()
+                        Text(connectionError).font(.callout).dfSecondaryText()
                         Button("重试") { model.retryConnection(engine: store.engine) }
                     }
                 } else {
@@ -42,7 +42,7 @@ struct MicrophoneSettingsView: View {
             MicrophoneDriverSheet(action: action) { restartAudio in
                 driverAction = nil
                 model.manageDriver(action, restartAudio: restartAudio)
-            }.floatingWorkspaceStyle()
+            }.dfFloating()
         }
     }
 
@@ -50,9 +50,9 @@ struct MicrophoneSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("跨设备麦克风").font(WorkspaceTypography.section)
+                    Text("跨设备麦克风").font(DFType.title)
                     Text(state.settings.source.isEmpty ? "把此 Mac 的麦克风提供给其他设备。" : "用另一台 Mac 的麦克风，在此 Mac 听写或通话。")
-                        .font(WorkspaceTypography.detail).workspaceSecondaryText()
+                        .font(DFType.detail).dfSecondaryText()
                 }
                 Spacer(minLength: 8)
                 Toggle("麦克风共享", isOn: Binding(get: { state.settings.enabled }, set: { value in update { $0.enabled = value } }))
@@ -77,10 +77,10 @@ struct MicrophoneSettingsView: View {
             Divider().padding(.horizontal, 24)
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: state.phase == "streaming" ? "waveform" : (isReady(state) ? "moon.zzz" : "mic"))
-                    .font(.system(size: 16)).foregroundStyle(statusColor(state)).frame(width: 24, height: 20)
+                    .font(DFType.title).foregroundStyle(statusColor(state)).frame(width: 24, height: 20)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(usageTitle(state)).font(WorkspaceTypography.heading)
-                    Text(usageDetail(state)).font(WorkspaceTypography.detail).workspaceSecondaryText()
+                    Text(usageTitle(state)).font(DFType.title)
+                    Text(usageDetail(state)).font(DFType.detail).dfSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -95,16 +95,16 @@ struct MicrophoneSettingsView: View {
             }
             .padding(24)
         }
-        .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
+        .background(DFPalette.surface(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
     }
     private func endpoint(symbol: String, title: String, subtitle: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 22, weight: .regular))
+            Image(systemName: symbol).font(DFType.pageTitle.weight(.regular))
                 .frame(width: 48, height: 48)
-                .background(QuietWorkspacePalette.control(scheme), in: RoundedRectangle(cornerRadius: 12))
+                .background(DFPalette.control(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
             VStack(alignment: .leading, spacing: 5) {
-                Text(subtitle).font(WorkspaceTypography.detail).workspaceSecondaryText()
-                Text(title).font(WorkspaceTypography.heading).lineLimit(2)
+                Text(subtitle).font(DFType.detail).dfSecondaryText()
+                Text(title).font(DFType.title).lineLimit(2)
             }
         }
         .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
@@ -112,14 +112,14 @@ struct MicrophoneSettingsView: View {
     private func routeConnection(_ state: MicrophoneSharingSnapshot) -> some View {
         VStack(spacing: 10) {
             Text(connectionLabel(state))
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(statusColor(state))
+                .font(DFType.caption.weight(.medium)).foregroundStyle(statusColor(state))
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .background(statusColor(state).opacity(0.08), in: Capsule())
             HStack(spacing: 0) {
-                Rectangle().fill(QuietWorkspacePalette.line(scheme)).frame(height: 1)
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                Rectangle().fill(DFPalette.line(scheme)).frame(height: 1)
+                Image(systemName: "chevron.right").font(DFType.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
-            Text("音频不保存").font(.system(size: 11)).workspaceSecondaryText()
+            Text("音频不保存").font(DFType.caption).dfSecondaryText()
         }
     }
     private func sourceName(_ state: MicrophoneSharingSnapshot) -> String {
@@ -188,7 +188,7 @@ struct MicrophoneSettingsView: View {
     }
     @ViewBuilder private func configuration(_ state: MicrophoneSharingSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("连接设置").font(WorkspaceTypography.heading).padding(.bottom, 12)
+            Text("连接设置").font(DFType.title).padding(.bottom, 12)
             VStack(alignment: .leading, spacing: 0) {
                 settingsRow("声音来源", detail: "选择提供麦克风的 Mac") {
                     Picker("声音来源", selection: Binding(get: { state.settings.source }, set: { value in update { $0.source = value } })) {
@@ -202,18 +202,18 @@ struct MicrophoneSettingsView: View {
                 Divider().padding(.horizontal, 20)
                 if state.settings.source.isEmpty { sourceSettings(state) } else { receiverSettings(state) }
             }
-            .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
+            .background(DFPalette.surface(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
             if !state.settings.source.isEmpty {
                 Label("直接使用微信输入法等应用的录音按钮或快捷键。", systemImage: "info.circle")
-                    .font(WorkspaceTypography.detail).workspaceSecondaryText().padding(.top, 12)
+                    .font(DFType.detail).dfSecondaryText().padding(.top, 12)
             }
         }
     }
     private func settingsRow<Control: View>(_ title: String, detail: String, @ViewBuilder control: () -> Control) -> some View {
         HStack(spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(WorkspaceTypography.body)
-                Text(detail).font(WorkspaceTypography.detail).workspaceSecondaryText().fixedSize(horizontal: false, vertical: true)
+                Text(title).font(DFType.body)
+                Text(detail).font(DFType.detail).dfSecondaryText().fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             control()
@@ -237,27 +237,27 @@ struct MicrophoneSettingsView: View {
     private func deviceAccess(_ state: MicrophoneSharingSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("允许使用的设备").font(WorkspaceTypography.heading)
+                Text("允许使用的设备").font(DFType.title)
                 Spacer(minLength: 12)
                 Text("同一时间可供一台设备使用")
-                    .font(WorkspaceTypography.detail).workspaceSecondaryText()
+                    .font(DFType.detail).dfSecondaryText()
             }
             VStack(spacing: 0) {
                 if peers.isEmpty {
                     Label("先在“设备”中配对另一台 Mac。", systemImage: "laptopcomputer")
-                        .font(WorkspaceTypography.body).workspaceSecondaryText()
+                        .font(DFType.body).dfSecondaryText()
                         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
                 ForEach(peers, id: \.id) { peer in
                     HStack(spacing: 12) {
                         Image(systemName: "laptopcomputer")
-                            .font(.system(size: 17)).foregroundStyle(.secondary)
+                            .font(DFType.title).foregroundStyle(.secondary)
                             .frame(width: 32, height: 32)
-                        Text(peer.name).font(WorkspaceTypography.body)
+                        Text(peer.name).font(DFType.body)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer(minLength: 12)
                         Text(peer.connected ? "在线" : "离线")
-                            .font(WorkspaceTypography.detail).workspaceSecondaryText()
+                            .font(DFType.detail).dfSecondaryText()
                         Toggle(peer.name, isOn: Binding(get: { state.settings.allowed.contains(peer.id) }, set: { value in
                             update { settings in settings.allowed.removeAll { $0 == peer.id }; if value { settings.allowed.append(peer.id) } }
                         }))
@@ -268,7 +268,7 @@ struct MicrophoneSettingsView: View {
                     if peer.id != peers.last?.id { Divider().padding(.leading, 64).padding(.trailing, 20) }
                 }
             }
-            .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
+            .background(DFPalette.surface(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
         }
     }
     @ViewBuilder private func receiverSettings(_ state: MicrophoneSharingSnapshot) -> some View {
@@ -294,12 +294,12 @@ struct MicrophoneSettingsView: View {
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "wrench.and.screwdriver").foregroundStyle(.secondary)
-                    Text("驱动维护").font(WorkspaceTypography.heading)
+                    Text("驱动维护").font(DFType.title)
                     Spacer()
                     Text(state.native.driver ? "运行正常" : "服务未响应")
-                        .font(WorkspaceTypography.detail).foregroundStyle(state.native.driver ? Color.secondary : Color.orange)
+                        .font(DFType.detail).foregroundStyle(state.native.driver ? Color.secondary : DFPalette.warning)
                     Image(systemName: maintenanceExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                        .font(DFType.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
                 .padding(20).contentShape(Rectangle())
             }
@@ -321,7 +321,7 @@ struct MicrophoneSettingsView: View {
                 }
             }
         }
-        .background(QuietWorkspacePalette.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
+        .background(DFPalette.surface(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
     }
 }
 
@@ -350,12 +350,12 @@ private struct MicrophoneDriverSheet: View {
             if action == .restartAudio {
                 Text("这会短暂中断此 Mac 上所有应用的录音和播放，需要管理员授权。")
                 Text("保留已安装的驱动和当前共享设置。服务恢复后按需连接，语音应用可能需要重新开始录音。")
-                    .font(.callout).workspaceSecondaryText()
+                    .font(.callout).dfSecondaryText()
             } else {
                 Text("仅操作 DeskFuse 的麦克风驱动，需要在系统弹窗中授权管理员权限。操作前会关闭麦克风共享。")
                 Toggle("完成后立即重启音频服务", isOn: $restartAudio)
                 Text(restartAudio ? "这会短暂中断此 Mac 上所有应用的录音和播放。" : "稍后重启 Mac 后生效。")
-                    .font(.callout).workspaceSecondaryText()
+                    .font(.callout).dfSecondaryText()
             }
             HStack {
                 Spacer()

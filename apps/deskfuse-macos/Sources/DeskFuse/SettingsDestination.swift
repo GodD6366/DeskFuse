@@ -6,7 +6,7 @@ struct SettingsDestination: Equatable {
     init() {}
 
     init(tab: String?, clipboardSegment: String?, previous: Self = Self()) {
-        category = tab.map { SettingsCategory(rawValue: $0) ?? .general } ?? previous.category
+        category = tab.map { SettingsCategory(legacy: $0) ?? .general } ?? previous.category
         self.clipboardSegment = clipboardSegment.map {
             ["history", "workflows"].contains($0) ? $0 : "history"
         } ?? previous.clipboardSegment

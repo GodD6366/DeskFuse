@@ -179,11 +179,11 @@ struct PreviousInstallationPrompt: View {
                 Button(controller.imported ? "保留旧应用并继续" : "暂不处理") { controller.finish() }
                 Spacer()
                 if controller.hasHistory && !controller.imported {
-                    Button("导入历史") { controller.importHistory() }.buttonStyle(.borderedProminent)
+                    Button("导入历史") { controller.importHistory() }.buttonStyle(.dfPrimary)
                 } else if !controller.appURLs.isEmpty {
                     Button("移除\(controller.name)", role: .destructive) { controller.removePreviousApp() }
                 } else {
-                    Button("继续") { controller.finish() }.buttonStyle(.borderedProminent)
+                    Button("继续") { controller.finish() }.buttonStyle(.dfPrimary)
                 }
             }
             .disabled(controller.busy)

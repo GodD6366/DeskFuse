@@ -8,11 +8,11 @@ struct ShortcutKeycaps: View {
         HStack(spacing: 4) {
             ForEach(Array(shortcutParts(shortcut).enumerated()), id: \.offset) { _, key in
                 Text(verbatim: key)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .font(DFType.keycap)
                     .frame(minWidth: 18, minHeight: 24)
                     .padding(.horizontal, 5)
-                    .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
-                    .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.primary.opacity(0.12)) }
+                    .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: DFRadius.control))
+                    .overlay { RoundedRectangle(cornerRadius: DFRadius.control).strokeBorder(.primary.opacity(0.12)) }
             }
         }
         .fixedSize()

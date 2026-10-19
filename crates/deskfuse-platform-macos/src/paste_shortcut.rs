@@ -69,6 +69,8 @@ pub struct WorkflowHotkey {
 pub struct WorkflowHotkeys {
     pub bindings: Vec<WorkflowHotkey>,
     pub recording: bool,
+    /// 工作流功能关闭时保留绑定数据，但不响应任何全局快捷键。
+    pub disabled: bool,
 }
 
 /// Sent once on physical key-down; processing happens outside the callback.
@@ -439,7 +441,7 @@ unsafe extern "C" fn paste_tap_callback(
             // Never wait on settings/UI work in the event tap. Drop the guard
             // before consulting AppKit or sending a request to the engine.
             let id = context.workflows.try_lock().ok().and_then(|state| {
-                if state.recording {
+                if state.recording || state.disabled {
                     return None;
                 }
                 state

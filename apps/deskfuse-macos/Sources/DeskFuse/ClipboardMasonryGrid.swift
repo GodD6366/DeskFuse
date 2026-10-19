@@ -11,7 +11,7 @@ enum ClipboardDisplayMode: String, CaseIterable, Identifiable {
 
 /// Two-icon list/grid switch shared by the main history pane and the menu bar panel.
 struct ClipboardDisplayModePicker: View {
-    @Environment(\.quietWorkspace) private var quiet
+    @Environment(\.dfOpaque) private var quiet
     @Environment(\.colorScheme) private var scheme
     @Binding var mode: ClipboardDisplayMode
 
@@ -22,12 +22,12 @@ struct ClipboardDisplayModePicker: View {
                     mode = option
                 } label: {
                     Image(systemName: option.symbol)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(DFType.detail.weight(.medium))
                         .frame(width: 34, height: 30)
                         .contentShape(Rectangle())
-                        .foregroundStyle(mode == option ? (quiet ? Color.primary : Color.accentColor) : Color.secondary)
-                        .background(mode == option ? (quiet ? QuietWorkspacePalette.surface(scheme) : Color.accentColor.opacity(0.16)) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 6))
+                        .foregroundStyle(mode == option ? (quiet ? Color.primary : DFPalette.accent) : Color.secondary)
+                        .background(mode == option ? (quiet ? DFPalette.surface(scheme) : DFPalette.accent.opacity(0.16)) : .clear,
+                                    in: RoundedRectangle(cornerRadius: DFRadius.control))
                 }
                 .buttonStyle(ClipboardHeaderButtonStyle())
                 .help(option.label)
@@ -36,7 +36,7 @@ struct ClipboardDisplayModePicker: View {
             }
         }
         .padding(2)
-        .modifier(NativeGlassBackdrop(cornerRadius: 9))
+        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
     }
 }
 
@@ -223,7 +223,7 @@ struct ClipboardMasonryGrid<Card: View>: View {
         }
         .scrollIndicators(.never)
         /// 新条目插入时淡入；不带动效的列重排（move）会让两列抖动，瀑布流只用 opacity。
-        .animation(Motion.snappy, value: items.map(\.id))
+        .animation(DFMotion.snappy, value: items.map(\.id))
     }
 }
 
@@ -298,8 +298,8 @@ struct ClipboardHistoryCard: View {
     var body: some View {
         let kind = ClipboardCardKind.kind(for: item)
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
-                .fill(selected ? DeskFuseBrand.selectionFill : Color(nsColor: .controlBackgroundColor))
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                .fill(selected ? DFPalette.selection : Color(nsColor: .controlBackgroundColor))
                 .overlay(alignment: .bottomTrailing) { sourceAppWatermark }
 
             VStack(spacing: 0) {
@@ -314,22 +314,22 @@ struct ClipboardHistoryCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
                 .strokeBorder(
-                    selected ? DeskFuseBrand.accent : DeskFuseBrand.cardBorder,
-                    lineWidth: selected ? DeskFuseBrand.selectionStrokeWidth : DeskFuseBrand.cardRestStrokeWidth
+                    selected ? DFPalette.accent : DFPalette.border,
+                    lineWidth: selected ? DFMetrics.selectionStroke : DFMetrics.hairline
                 )
         }
         .shadow(
-            color: hovering ? DeskFuseBrand.cardHoverShadowColor : DeskFuseBrand.cardShadowColor,
-            radius: hovering ? DeskFuseBrand.cardHoverShadowRadius : DeskFuseBrand.cardShadowRadius,
-            y: hovering ? DeskFuseBrand.cardHoverShadowY : DeskFuseBrand.cardShadowY
+            color: hovering ? DFShadow.hoverColor : DFShadow.color,
+            radius: hovering ? DFShadow.hoverRadius : DFShadow.radius,
+            y: hovering ? DFShadow.hoverY : DFShadow.y
         )
         .offset(y: hovering ? -1 : 0)
-        .animation(Motion.snappy, value: selected)
-        .contentShape(RoundedRectangle(cornerRadius: DeskFuseBrand.cardRadius, style: .continuous))
+        .animation(DFMotion.snappy, value: selected)
+        .contentShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
         .onTapGesture(perform: onSelect)
         .onHover { over in withMotion(.snappy) { hovering = over } }
         .clipboardHistoryContextMenu(ClipboardHistoryMenuContext(
@@ -379,7 +379,7 @@ struct ClipboardHistoryCard: View {
                 .frame(width: 96, height: 96)
                 .rotationEffect(.degrees(-45))
                 .offset(x: 24, y: 24)
-                .opacity(DeskFuseBrand.watermarkOpacity)
+                .opacity(DFOpacity.watermark)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -393,7 +393,7 @@ struct ClipboardHistoryCard: View {
         if hovering || hoveringActions {
             HStack(spacing: 6) {
                 ClipboardCardActionButton(systemImage: "doc.on.doc", help: "复制") {
-                    ClipboardItemActions.copy(item.id, format: .original, paste: false)
+                    ClipboardItemActions.copy(item.id, paste: false)
                 }
                 .disabled(client == nil)
                 ClipboardCardActionButton(systemImage: "trash", help: "删除", action: onDelete)
@@ -437,17 +437,17 @@ struct ClipboardHistoryCard: View {
     private var linkContent: some View {
         HStack(spacing: 8) {
             Image(systemName: "link")
-                .font(.system(size: 13, weight: .medium))
-                .workspaceSecondaryText()
+                .font(DFType.bodyMedium)
+                .dfSecondaryText()
                 .frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(linkParts?.host ?? item.clipboardTitle)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(DFType.section)
                     .lineLimit(1)
                 if let path = linkParts?.path, !path.isEmpty {
                     Text(path)
-                        .font(.system(size: 11))
-                        .workspaceSecondaryText()
+                        .font(DFType.caption)
+                        .dfSecondaryText()
                         .lineLimit(1)
                 }
             }
@@ -457,13 +457,13 @@ struct ClipboardHistoryCard: View {
     /// 代码/JSON 卡片：等宽字体，底板比背景深一档。
     private var codeContent: some View {
         Text(item.clipboardTitle)
-            .font(.system(size: 12.5, design: .monospaced))
+            .font(DFType.mono)
             .lineSpacing(2)
             .lineLimit(4).truncationMode(.tail)
             .multilineTextAlignment(.leading)
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(codeFillOpacity), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(codeFillOpacity), in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
     }
 
     private var codeFillOpacity: Double {
@@ -475,16 +475,16 @@ struct ClipboardHistoryCard: View {
     private var fileContent: some View {
         HStack(spacing: 8) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(DeskFuseBrand.fusionBlue)
+                .font(DFType.title)
+                .foregroundStyle(DFPalette.accent)
                 .frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.clipboardTitle)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(DFType.bodyMedium)
                     .lineLimit(1)
                 Text(item.fileCount > 1 ? "\(item.fileCount) 项 · \(byteCount(item.length))" : byteCount(item.length))
-                    .font(.system(size: 11))
-                    .workspaceSecondaryText()
+                    .font(DFType.caption)
+                    .dfSecondaryText()
             }
         }
     }
@@ -492,7 +492,7 @@ struct ClipboardHistoryCard: View {
     /// Four readable lines with a consistent trailing ellipsis.
     private var textContent: some View {
         Text(item.clipboardTitle)
-            .font(.system(size: 13))
+            .font(DFType.body)
             .lineSpacing(3)
             .lineLimit(4).truncationMode(.tail)
             .multilineTextAlignment(.leading)
@@ -518,8 +518,8 @@ struct ClipboardHistoryCard: View {
                     .help("使用时从来源设备获取")
             }
         }
-        .font(.system(size: 10.5))
-        .workspaceSecondaryText()
+        .font(DFType.caption)
+        .dfSecondaryText()
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -542,14 +542,14 @@ private struct ClipboardCardActionButton: View {
     var body: some View {
         Button(action: perform) {
             Image(systemName: copied ? "checkmark" : systemImage)
-                .font(.system(size: 11, weight: .semibold))
+                .font(DFType.caption.weight(.semibold))
                 .frame(width: 24, height: 24)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(copied ? DeskFuseBrand.accent : (enabled ? Color.primary : Color.secondary))
-        .background(QuietWorkspacePalette.surface(colorScheme), in: Circle())
-        .overlay { Circle().strokeBorder(QuietWorkspacePalette.line(colorScheme), lineWidth: 0.5) }
+        .foregroundStyle(copied ? DFPalette.accent : (enabled ? Color.primary : Color.secondary))
+        .background(DFPalette.surface(colorScheme), in: Circle())
+        .overlay { Circle().strokeBorder(DFPalette.line(colorScheme), lineWidth: 0.5) }
         .help(help)
         .accessibilityLabel(help)
     }
@@ -587,20 +587,20 @@ struct ClipboardCardImage: View {
                     .frame(maxWidth: .infinity, maxHeight: maxHeight)
             } else {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
+                    RoundedRectangle(cornerRadius: DFRadius.control)
                         .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.25))
                     if loading {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(unavailable, systemImage: "photo.badge.exclamationmark")
-                            .font(.caption).workspaceSecondaryText()
+                            .font(.caption).dfSecondaryText()
                     }
                 }
                 .aspectRatio(Self.placeholderAspect, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: maxHeight)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: DFRadius.control))
         .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -613,7 +613,7 @@ struct ClipboardCardText: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(DFType.body)
             .lineLimit(min(4, lineLimit)).truncationMode(.tail)
             .multilineTextAlignment(.leading)
             .foregroundStyle(Color(nsColor: .labelColor))

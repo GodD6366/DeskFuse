@@ -10,10 +10,10 @@ struct SettingsPermissionsView: View {
     @State private var screenRecordingGranted = false
 
     var body: some View {
-        SystemSettingsFormPage {
+        DFScrollPage {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 12) {
-                    SystemSettingsSectionLabel(title: "系统权限")
+                    DFSectionLabel("系统权限")
                     Spacer(minLength: 0)
                     Button {
                         store.send(.refreshPermissions)
@@ -41,17 +41,12 @@ struct SettingsPermissionsView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .systemSettingsBlock()
+                .dfCard()
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("状态来自 macOS。仅展示 DeskFuse 实际使用的系统权限。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    if store.permissionPrompt.hasSuppressedPermissions {
-                        Button("恢复启动授权提醒") { store.permissionPrompt.resetSuppression() }
-                            .buttonStyle(.borderless)
-                            .font(.caption)
-                    }
                 }
                 .padding(.horizontal, 4)
             }
@@ -70,7 +65,7 @@ struct SettingsPermissionsView: View {
     private var screenRecordingRow: some View {
         HStack(spacing: 16) {
             Image(systemName: "rectangle.dashed.badge.record")
-                .font(.system(size: 20))
+                .font(DFType.pageTitle)
                 .foregroundStyle(.secondary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
@@ -94,7 +89,7 @@ struct SettingsPermissionsView: View {
                 }
                 refreshScreenRecordingPermission()
             }
-            .buttonStyle(WorkspaceButtonStyle())
+            .buttonStyle(.dfSecondary)
             .frame(width: 88)
         }
         .padding(.vertical, 8)
@@ -103,27 +98,27 @@ struct SettingsPermissionsView: View {
     }
 
     private var wifiPermissionRow: some View {
-        let state = store.permissionPrompt.wifiState
-        let granted = state == .granted
+        let granted = store.permissions.isGranted(.wifi)
         return HStack(spacing: 16) {
-            Image(systemName: "wifi").font(.system(size: 20)).foregroundStyle(.secondary).frame(width: 28)
+            Image(systemName: "wifi").font(DFType.pageTitle).foregroundStyle(.secondary).frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
-                Text(LaunchPermission.wifi.title).font(.body.weight(.medium))
-                Text(LaunchPermission.wifi.purpose).font(.caption).foregroundStyle(.secondary)
+                Text("Wi-Fi 名称（定位）").font(.body.weight(.medium))
+                Text("按 Wi-Fi 自动切换主控电脑时读取网络名称；不会获取位置。")
                     .fixedSize(horizontal: false, vertical: true)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            Label(state.label, systemImage: granted ? "checkmark.circle.fill" : "circle.dashed")
+                Label(granted ? "已授权" : "未授权或需要操作",
+                      systemImage: granted ? "checkmark.circle.fill" : "circle.dashed")
                 .font(.caption).foregroundStyle(granted ? Color.green : Color.secondary)
                 .frame(width: 120, alignment: .leading)
             Button(granted ? "查看设置" : "前往授权") { store.permissionPrompt.authorize(.wifi) }
-                .buttonStyle(WorkspaceButtonStyle()).frame(width: 88)
+                .buttonStyle(.dfSecondary).frame(width: 88)
         }.padding(.vertical, 8)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(LaunchPermission.wifi.title)，\(state.label)")
+            .accessibilityLabel("Wi-Fi 名称（定位），\(granted ? "已授权" : "未授权")")
     }
 
     private func refreshScreenRecordingPermission() {
-        store.permissionPrompt.refreshWifiPermission()
+        store.permissions.refresh()
         guard #available(macOS 14.2, *) else { return }
         screenRecordingGranted = RemoteAppCapture.hasScreenRecordingPermission
     }
@@ -136,7 +131,7 @@ struct SettingsPermissionsView: View {
     private func permissionRow(_ permission: Permission) -> some View {
         HStack(spacing: 16) {
             Image(systemName: symbol(permission.kind))
-                .font(.system(size: 20))
+                .font(DFType.pageTitle)
                 .foregroundStyle(.secondary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
@@ -162,7 +157,7 @@ struct SettingsPermissionsView: View {
                 }
                 store.send(.refreshPermissions)
             }
-            .buttonStyle(WorkspaceButtonStyle())
+            .buttonStyle(.dfSecondary)
             .frame(width: 88)
         }
         .padding(.vertical, 8)

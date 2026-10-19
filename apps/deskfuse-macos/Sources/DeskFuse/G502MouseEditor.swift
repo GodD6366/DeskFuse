@@ -40,8 +40,8 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 Text("\(locations.buttons.count) / 11 个位置已确认")
             }.font(.caption).foregroundStyle(.secondary).padding(16)
         }
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
+        .background(.background, in: RoundedRectangle(cornerRadius: DFRadius.panel))
+        .overlay(RoundedRectangle(cornerRadius: DFRadius.panel).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
         .onChange(of: side) { _, value in
             editing = nil
             select(value ? .back : .middle)
@@ -61,7 +61,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
             let scale = side ? min(size.width - 40, 740) / 1384 : (size.height - 35) / 1038
             let photoSize = CGSize(width: 1384 * scale, height: 1038 * scale)
             ZStack {
-                LinearGradient(colors: [Color.primary.opacity(0.015), Color.accentColor.opacity(0.045)], startPoint: .topLeading, endPoint: .bottomTrailing).allowsHitTesting(false)
+                LinearGradient(colors: [Color.primary.opacity(0.015), DFPalette.accent.opacity(0.045)], startPoint: .topLeading, endPoint: .bottomTrailing).allowsHitTesting(false)
                 if let photo = side ? G502Photos.side : G502Photos.top {
                     Image(nsImage: photo).resizable().frame(width: photoSize.width, height: photoSize.height)
                         .position(x: size.width / 2, y: size.height / 2).allowsHitTesting(false)
@@ -73,11 +73,11 @@ struct G502MouseEditor<ActionEditor: View>: View {
                     let active = editing == position
                     Button { select(position); editing = position } label: {
                         ZStack {
-                            Circle().fill(active ? Color.accentColor : Color.white)
-                            Circle().strokeBorder(active ? Color.white : Color.accentColor, lineWidth: 2)
+                            Circle().fill(active ? DFPalette.accent : Color.white)
+                            Circle().strokeBorder(active ? Color.white : DFPalette.accent, lineWidth: 2)
                             if active { Circle().fill(.white).frame(width: 6, height: 6) }
                             else if locations.button(at: position) != nil {
-                                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.accentColor)
+                                Image(systemName: "checkmark").font(DFType.caption.weight(.bold)).foregroundStyle(DFPalette.accent)
                             }
                         }.frame(width: 23, height: 23)
                             .shadow(color: .black.opacity(0.22), radius: 4, y: 2)
@@ -109,7 +109,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(selection.title).font(.system(size: 18, weight: .semibold))
+                    Text(selection.title).font(DFType.icon(.medium).weight(.semibold))
                     Spacer()
                     Button {
                         editing = nil; cancelCapture(); onSelection()
@@ -129,10 +129,10 @@ struct G502MouseEditor<ActionEditor: View>: View {
             if let button = locations.button(at: selection), locating == nil {
                 Text("附加动作").font(.caption).foregroundStyle(.secondary)
                 actionEditor(button)
-                    .padding(10).background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(10).background(DFPalette.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: DFRadius.control))
                 Button("重新确认位置") { startCapture() }.buttonStyle(.link).font(.caption)
             } else if let candidate, let position = locating {
-                Label("已收到按键", systemImage: "checkmark.circle").foregroundStyle(Color.accentColor)
+                Label("已收到按键", systemImage: "checkmark.circle").foregroundStyle(DFPalette.accent)
                 Text("刚才按下的是「\(position.title)」吗？确认后才会记住位置。")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("确认这个位置") {
@@ -140,12 +140,12 @@ struct G502MouseEditor<ActionEditor: View>: View {
                     updated.locate(candidate, at: position)
                     savedLocations = updated.json
                     cancelCapture()
-                }.buttonStyle(.borderedProminent)
+                }.buttonStyle(.dfPrimary)
                 Button("重新识别") { startCapture() }
                 Button("取消") { cancelCapture() }.buttonStyle(.link)
             } else if locating != nil {
                 Label(controller.captureReleased ? "请重试识别" : controller.detecting ? "正在监听…" : controller.lastButton != nil ? "请松开按键" : "未收到按键", systemImage: "waveform")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(DFPalette.accent)
                 Text("按下并松开「\(selection.title)」。只确认位置，不改变鼠标原有设置。")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
@@ -154,11 +154,11 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 }
             } else {
                 Text("第一次，确认一下位置")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(DFType.bodyMedium)
                 Text("按一下对应的实体键，让 DeskFuse 记住它。已有快捷键不会丢失。")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button("识别这个位置", systemImage: "cursorarrow.click") { startCapture() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.dfPrimary)
             }
         }.fixedSize(horizontal: false, vertical: true)
     }

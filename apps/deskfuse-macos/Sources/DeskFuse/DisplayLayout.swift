@@ -69,17 +69,17 @@ struct DisplayLayout: View {
                             Color.black.opacity(contrast == .increased ? 0.34 : 0.24)
                                 .allowsHitTesting(false)
                             Label(display.ready ? "已断开" : "等待连接", systemImage: "wifi.slash")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(DFType.caption.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8).padding(.vertical, 5)
                                 .background(.black.opacity(0.48), in: Capsule())
                                 .padding(8)
                                 .allowsHitTesting(false)
                         }
-                        RoundedRectangle(cornerRadius: 2)
+                        RoundedRectangle(cornerRadius: DFRadius.small)
                             .fill(outline.opacity(dragging == display.deviceId ? 0.09 : (display.ready ? 0.025 : 0.06)))
                             .overlay {
-                                RoundedRectangle(cornerRadius: 2)
+                                RoundedRectangle(cornerRadius: DFRadius.small)
                                     .strokeBorder(outline, style: StrokeStyle(
                                         lineWidth: contrast == .increased || dragging == display.deviceId ? 3 : 2,
                                         dash: display.ready ? [] : [6, 4]
@@ -132,15 +132,15 @@ struct DisplayLayout: View {
                         if hoveredDisplay == display.layoutID && dragging == nil {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("屏幕 \(String(format: "%02d", index + 1)) · \(display.local ? "本机" : "远端")")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(display.name).font(.system(size: 12, weight: .medium))
+                                    .font(DFType.caption.weight(.semibold))
+                                Text(display.name).font(DFType.detail.weight(.medium))
                                 Text("\(display.layoutSizeLabel) · \(display.ready ? "已就绪" : "未就绪")")
-                                    .font(.system(size: 11))
+                                    .font(DFType.caption)
                             }
                             .foregroundStyle(.primary)
                             .padding(.horizontal, 10).padding(.vertical, 7)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(outline.opacity(0.35)))
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DFRadius.control))
+                            .overlay(RoundedRectangle(cornerRadius: DFRadius.control).strokeBorder(outline.opacity(0.35)))
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .allowsHitTesting(false)
@@ -158,7 +158,7 @@ struct DisplayLayout: View {
                         }
                     }
                     .frame(width: display.width * scale, height: display.height * scale)
-                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                    .clipShape(RoundedRectangle(cornerRadius: DFRadius.small))
                     .contentShape(Rectangle())
                     .scaleEffect(hoveredDisplay == display.layoutID && dragging == nil ? 1.01 : 1)
                     .shadow(color: .black.opacity(hoveredDisplay == display.layoutID ? 0.18 : 0.08),
@@ -200,14 +200,14 @@ struct DisplayLayout: View {
             .overlay(alignment: .topLeading) {
                 if let snapGuideX, dragging != nil {
                     Rectangle()
-                        .fill(DeskFuseBrand.accent.opacity(0.78))
+                        .fill(DFPalette.accent.opacity(0.78))
                         .frame(width: 1, height: geometry.size.height)
                         .offset(x: snapGuideX)
                         .allowsHitTesting(false)
                 }
                 if let snapGuideY, dragging != nil {
                     Rectangle()
-                        .fill(DeskFuseBrand.accent.opacity(0.78))
+                        .fill(DFPalette.accent.opacity(0.78))
                         .frame(width: geometry.size.width, height: 1)
                         .offset(y: snapGuideY)
                         .allowsHitTesting(false)
@@ -219,7 +219,7 @@ struct DisplayLayout: View {
                 }
             }
             // 只用来裁掉拖动溢出，圆角与外层分组对齐；不再单独铺底或描边。
-            .clipShape(RoundedRectangle(cornerRadius: SystemSettingsMetrics.blockCorner, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
         }
         .onChange(of: snapshot.input.displays) { _, displays in confirmMove(using: displays) }
         .onDisappear { resetDrag() }
@@ -379,14 +379,14 @@ private struct DisplayInfoBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
+                .font(DFType.caption.weight(.medium))
             Circle()
                 .fill(status.color)
                 .frame(width: 6, height: 6)
             if !compact || expanded {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(name).lineLimit(1)
-                    Text(resolution).font(.system(size: 9)).opacity(0.78).lineLimit(1)
+                    Text(resolution).font(DFType.caption).opacity(0.78).lineLimit(1)
                 }
             } else {
                 Text(name).lineLimit(1)
@@ -395,7 +395,7 @@ private struct DisplayInfoBar: View {
                 Text(status.label).opacity(0.84).lineLimit(1)
             }
         }
-        .font(.system(size: 10, weight: .semibold))
+        .font(DFType.caption.weight(.semibold))
         .foregroundStyle(.white)
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.black.opacity(0.58), in: Capsule())
@@ -423,7 +423,7 @@ private struct DisplayReconnectButton: View {
                 }
                 reconnectGlyph
             }
-            .font(.system(size: 12, weight: .semibold))
+            .font(DFType.detail.weight(.semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(height: 28)
@@ -513,7 +513,7 @@ private struct DisplayWallpaperView: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: 2))
+        .clipShape(RoundedRectangle(cornerRadius: DFRadius.small))
         .saturation(isOffline ? 0 : 1)
         .allowsHitTesting(false)
         .task(id: display.wallpaperJpeg?.hashValue) {

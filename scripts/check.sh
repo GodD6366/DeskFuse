@@ -28,5 +28,8 @@ cargo test --workspace --all-targets --locked
 printf '== cargo clippy ==\n'
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+printf '== design system guard ==\n'
+"$ROOT_DIR/scripts/check-design-system.sh"
+
 "$ROOT_DIR/scripts/build-native-macos.sh" debug
 "$ROOT_DIR/scripts/test-microphone-native.sh" --built

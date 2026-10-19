@@ -12,7 +12,7 @@ struct ShortcutEditor: View {
     var body: some View {
         ForEach(Array(shortcuts.indices), id: \.self) { index in
             HStack { Text(Self.titles[index]); Spacer(); Button { begin(index) } label: {
-                if recording == index { Label("按下组合键…", systemImage: "record.circle").foregroundStyle(Color.accentColor) }
+                if recording == index { Label("按下组合键…", systemImage: "record.circle").foregroundStyle(DFPalette.accent) }
                 else { ShortcutKeycaps(shortcut: shortcuts[index]) }
             }.buttonStyle(.borderless).help("更改快捷键") }
         }

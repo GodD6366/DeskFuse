@@ -16,7 +16,7 @@ struct HostingEnvironment {
     let scenePhase: ScenePhase
 
     init(_ environment: EnvironmentValues) {
-        quietWorkspace = environment.quietWorkspace
+        quietWorkspace = environment.dfOpaque
         colorScheme = environment.colorScheme
         controlSize = environment.controlSize
         font = environment.font
@@ -31,7 +31,7 @@ struct HostingEnvironment {
     // Read-only accessibility preferences are supplied by each native host.
     func wrap(_ content: some View) -> AnyView {
         AnyView(content
-            .environment(\.quietWorkspace, quietWorkspace)
+            .environment(\.dfOpaque, quietWorkspace)
             .environment(\.colorScheme, colorScheme)
             .environment(\.controlSize, controlSize)
             .environment(\.font, font)
@@ -41,7 +41,7 @@ struct HostingEnvironment {
             .environment(\.displayScale, displayScale)
             .environment(\.dynamicTypeSize, dynamicTypeSize)
             .environment(\.scenePhase, scenePhase)
-            .tint(DeskFuseBrand.accent)
-            .buttonStyle(WorkspaceButtonStyle()))
+            .tint(DFPalette.accent)
+            .buttonStyle(.dfSecondary))
     }
 }

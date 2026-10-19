@@ -32,7 +32,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>仅在您开启共享且允许的设备使用虚拟麦克风时采集此 Mac 的麦克风。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>DeskFuse uses the local network to discover and connect trusted Macs.</string>
+	<string>DeskFuse 需要访问本地网络，用来发现并连接你添加的 Mac、同步剪贴板和传输文件。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>DeskFuse 需要读取当前 Wi-Fi 名称，以应用你保存的家里或公司主控规则；不会收集地理位置。</string>
 	<key>NSLocationUsageDescription</key>

@@ -25,7 +25,7 @@ struct SettingsSaveFooter: View {
                 Spacer()
                 Button("撤销修改", action: revert).disabled(!canRevert || saving)
                 Button(saving ? "保存中…" : "保存", action: save)
-                    .buttonStyle(WorkspaceButtonStyle(prominent: true)).disabled(!canSave || saving)
+                    .buttonStyle(.dfPrimary).disabled(!canSave || saving)
             }.padding(.horizontal, 12)
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")

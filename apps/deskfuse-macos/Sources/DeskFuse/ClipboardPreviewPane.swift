@@ -33,7 +33,7 @@ struct ClipboardPreviewPane: View, Equatable {
         paneContent
             .id(item.id)
             .transition(.opacity)
-            .animation(Motion.settle, value: item.id)
+            .animation(DFMotion.settle, value: item.id)
     }
 
     private var paneContent: some View {
@@ -56,7 +56,7 @@ struct ClipboardPreviewPane: View, Equatable {
                     VStack(alignment: .leading, spacing: 12) {
                         if let stagingHint {
                             Text(stagingHint)
-                                .font(.caption).workspaceSecondaryText()
+                                .font(.caption).dfSecondaryText()
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         NativeGlassGroup {
@@ -77,7 +77,7 @@ struct ClipboardPreviewPane: View, Equatable {
         VStack(alignment: .leading, spacing: 10) {
             if let displayTitle {
                 Text(displayTitle)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(DFType.title.weight(.semibold))
                     .lineLimit(2).truncationMode(.middle)
                     .textSelection(.enabled)
             }
@@ -87,21 +87,21 @@ struct ClipboardPreviewPane: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(Motion.snappy, value: availability)
+        .animation(DFMotion.snappy, value: availability)
     }
 
     private var sourceLabel: some View {
         Text("来自 \(item.source) · \(item.fileCount > 0 ? "\(item.fileCount) 项" : byteCount(item.length))")
-            .font(.callout).workspaceSecondaryText().lineLimit(1)
+            .font(.callout).dfSecondaryText().lineLimit(1)
             .help(item.copiedDate.map { "复制于 \($0.formatted(date: .abbreviated, time: .standard))" } ?? item.source)
     }
 
     private var availabilityBadge: some View {
         Label(availability, systemImage: availabilitySymbol)
             .font(.caption)
-            .foregroundStyle(hasMissingFiles ? Color.orange : Color.accentColor)
+            .foregroundStyle(hasMissingFiles ? DFPalette.warning : DFPalette.accent)
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .background((hasMissingFiles ? Color.orange : Color.accentColor).opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
+            .background((hasMissingFiles ? DFPalette.warning : DFPalette.accent).opacity(0.1), in: RoundedRectangle(cornerRadius: DFRadius.control))
             .fixedSize()
             .transition(.scale(scale: 0.9).combined(with: .opacity))
     }
@@ -127,7 +127,7 @@ struct ClipboardPreviewPane: View, Equatable {
         DisclosureGroup {
             ScrollView {
                 Text(text)
-                    .font(.system(size: 12))
+                    .font(DFType.detail)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 6)
@@ -148,7 +148,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 .resizable()
                 .aspectRatio(contentMode: fillImage ? .fill : .fit)
                 .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .clipShape(RoundedRectangle(cornerRadius: DFRadius.card))
                 .accessibilityLabel(displayTitle ?? item.clipboardTitle)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
@@ -161,18 +161,18 @@ struct ClipboardPreviewPane: View, Equatable {
                 .frame(height: min(300, CGFloat(document.text.components(separatedBy: "\n").count) * 22 + 80))
             if content.truncated {
                 Text("预览已截断；复制会恢复完整内容。")
-                    .font(.caption).workspaceSecondaryText().padding(8)
+                    .font(.caption).dfSecondaryText().padding(8)
             }
         } else {
             VStack(alignment: .leading, spacing: 16) {
                 Text(content.text)
-                    .font(.system(size: 15))
+                    .font(DFType.title)
                     .lineSpacing(6)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if content.truncated {
                     Label("预览已截断；复制会恢复完整内容。", systemImage: "info.circle")
-                        .font(.caption).workspaceSecondaryText()
+                        .font(.caption).dfSecondaryText()
                 }
             }
             .padding(.vertical, 12)
@@ -189,7 +189,7 @@ struct ClipboardPreviewPane: View, Equatable {
                             .resizable().frame(width: 44, height: 44)
                         VStack(alignment: .leading, spacing: 6) {
                             Text(URL(fileURLWithPath: path).lastPathComponent)
-                                .font(.system(size: 14, weight: .medium))
+                                .font(DFType.icon(.regular).weight(.medium))
                                 .lineLimit(2).truncationMode(.middle)
                             Text(media.localPaths.contains(path) ? "本地可用" : "文件已不可用，请重新获取")
                                 .font(.caption)
@@ -215,13 +215,13 @@ struct ClipboardPreviewPane: View, Equatable {
             }
         } label: {
             Label(fillImage ? "填满预览" : "适合窗口", systemImage: "arrow.up.left.and.arrow.down.right")
-                .modifier(WorkspaceControlLabel())
+                .modifier(DFControlLabel())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .frame(minHeight: WorkspaceControlMetrics.height)
-        .modifier(NativeGlassBackdrop(cornerRadius: 10))
+        .frame(minHeight: DFMetrics.controlHeight)
+        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
         .help("调整图片在预览区的显示方式，不改变原图")
     }
 
@@ -247,22 +247,22 @@ struct ClipboardPreviewPane: View, Equatable {
     }
 
     private var copyButton: some View {
-        WorkspaceChromeButton(copying ? "正在准备…" : copied ? "已复制" : "复制",
+        DFActionButton(copying ? "正在准备…" : copied ? "已复制" : "复制",
                               systemImage: copied ? "checkmark" : "doc.on.doc",
                               help: hasMissingFiles ? "来源文件已不可用，请重新复制" : "将原始内容放回剪贴板",
-                              prominent: !copied, action: copyContent)
+                              kind: copied ? .secondary : .primary, action: copyContent)
             .disabled(copying || hasMissingFiles)
             .keyboardShortcut("c", modifiers: .command)
             /// 复制成功：实心主按钮退回 glass，对勾用品牌 accent 色。
-            .foregroundStyle(copied ? DeskFuseBrand.accent : Color.primary)
+            .foregroundStyle(copied ? DFPalette.accent : Color.primary)
     }
 
     @ViewBuilder private func stagingButton(compact: Bool) -> some View {
         if !content.imagePng.isEmpty && content.filePaths.isEmpty && !canStageFiles {
-            WorkspaceChromeButton(exportingImage ? "正在保存…" : "保存图片…", systemImage: "square.and.arrow.down", action: saveImage)
+            DFActionButton(exportingImage ? "正在保存…" : "保存图片…", systemImage: "square.and.arrow.down", action: saveImage)
                 .disabled(exportingImage)
         } else if item.fileCount > 0 || image != nil || savedImageURL != nil {
-            WorkspaceChromeButton(compact ? "暂存" : "加入暂存区", systemImage: "tray.and.arrow.down", action: stageFiles)
+            DFActionButton(compact ? "暂存" : "加入暂存区", systemImage: "tray.and.arrow.down", action: stageFiles)
                 .disabled(!canStageFiles || store.shelf == nil || store.shelf?.preparing == true)
                 .help(stagingHint ?? "暂存本地文件，可从暂存区拖出或发送")
         }
@@ -295,13 +295,13 @@ struct ClipboardPreviewPane: View, Equatable {
             Button("打开文件暂存区", systemImage: "tray") { store.shelf?.show() }
         } label: {
             Image(systemName: "ellipsis")
-                .frame(width: WorkspaceControlMetrics.height, height: WorkspaceControlMetrics.height)
+                .frame(width: DFMetrics.controlHeight, height: DFMetrics.controlHeight)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .frame(minWidth: WorkspaceControlMetrics.height, minHeight: WorkspaceControlMetrics.height)
-        .modifier(NativeGlassBackdrop(cornerRadius: WorkspaceControlMetrics.cornerRadius))
+        .frame(minWidth: DFMetrics.controlHeight, minHeight: DFMetrics.controlHeight)
+        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.control))
         .accessibilityLabel("更多操作")
     }
 
@@ -319,7 +319,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 else { finderButton }
             }
         }
-        .font(.caption).workspaceSecondaryText()
+        .font(.caption).dfSecondaryText()
     }
 
     private var metadataCard: some View {
@@ -345,7 +345,7 @@ struct ClipboardPreviewPane: View, Equatable {
     private func metadataRow(_ label: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(label)
-                .workspaceSecondaryText()
+                .dfSecondaryText()
                 .frame(width: 62, alignment: .leading)
             Text(value)
                 .foregroundStyle(.primary)

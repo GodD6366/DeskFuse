@@ -162,7 +162,7 @@ private struct TransferProgressPill: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: task.outgoing ? "arrow.up" : "arrow.down")
-                .font(.system(size: 13, weight: .semibold))
+                .font(DFType.section)
                 .foregroundStyle(tint)
                 .frame(width: 30, height: 30)
                 .background(tint.opacity(0.14), in: Circle())
@@ -172,18 +172,18 @@ private struct TransferProgressPill: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Text(task.name)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(DFType.detail.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                     Text(statusTitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(DFType.caption.weight(.medium))
                         .monospacedDigit()
-                        .foregroundStyle(task.phase == .failed ? Color.orange : .secondary)
+                        .foregroundStyle(task.phase == .failed ? DFPalette.warning : .secondary)
                         .fixedSize()
                     Button(action: cancel) {
                         Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(DFType.caption.weight(.bold))
                             .foregroundStyle(.secondary)
                             .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
@@ -197,7 +197,7 @@ private struct TransferProgressPill: View {
                     .animation(.easeInOut(duration: 0.25), value: fraction)
 
                 Text(detailTitle)
-                    .font(.system(size: 10.5))
+                    .font(DFType.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -210,7 +210,7 @@ private struct TransferProgressPill: View {
         // Fixed height: the panel sizes itself from a per-pill constant, so the
         // pill must not grow or shrink with state wording.
         .frame(width: 300, height: 76)
-        .modifier(NativeGlassBackdrop(cornerRadius: 16))
+        .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.panel))
     }
 }
 

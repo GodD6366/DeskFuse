@@ -55,7 +55,7 @@ struct InputLatencyTransitionView<Content: View>: View {
                 transition.snap(to: updated)
                 moving = false
             } else {
-                transition.retarget(updated, at: .now, duration: Motion.telemetryDuration)
+                transition.retarget(updated, at: .now, duration: DFMotion.telemetryDuration)
                 moving = transition.source != transition.target
             }
         }
@@ -67,7 +67,7 @@ struct InputLatencyTransitionView<Content: View>: View {
         .task(id: transition.startedAt) {
             guard moving, active, !reduceMotion else { return }
             let token = transition.startedAt
-            do { try await Task.sleep(for: .seconds(Motion.telemetryDuration)) } catch { return }
+            do { try await Task.sleep(for: .seconds(DFMotion.telemetryDuration)) } catch { return }
             guard !Task.isCancelled, moving, transition.startedAt == token else { return }
             transition.snap(to: points)
             moving = false

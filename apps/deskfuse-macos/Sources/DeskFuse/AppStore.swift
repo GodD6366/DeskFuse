@@ -25,11 +25,11 @@ import DeskFuseEngine
     var isEngineLoading: Bool {
         !selfTest && error == nil && (starting || (client != nil && snapshot == nil))
     }
-    var selectedPage: Page = .clipboard {
+    var selectedPage: Page = .devices {
         didSet { if selectedPage != .settings { workspacePage = selectedPage } }
     }
     /// Keep the workspace mounted while settings occupies the detail area.
-    private(set) var workspacePage: Page = .clipboard
+    private(set) var workspacePage: Page = .devices
     var settingsDestination = SettingsDestination()
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)
@@ -42,6 +42,14 @@ import DeskFuseEngine
         }
     }
     static let keepAwakeDefaultsKey = "deskfuse.keepAwake"
+    /// 工作流属于进阶功能：默认关闭，关闭时隐藏全部入口并停用全局工作流快捷键。
+    var workflowsEnabled = UserDefaults.standard.bool(forKey: AppStore.workflowsEnabledDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(workflowsEnabled, forKey: AppStore.workflowsEnabledDefaultsKey)
+            engine?.setWorkflowHotkeysEnabled(enabled: workflowsEnabled)
+        }
+    }
+    static let workflowsEnabledDefaultsKey = "deskfuse.workflowsEnabled"
     private let caffeineController = CaffeineController()
     @ObservationIgnored private let displayWallpaperPublisher = DisplayWallpaperPublisher()
     @ObservationIgnored private var wallpaperPublicationTask: Task<Void, Never>?
@@ -78,8 +86,10 @@ import DeskFuseEngine
     // These nonblocking native calls bypass the actor queue for emergency/drag callbacks.
     var engine: Engine?
     var shelf: ShelfController?
-    /// Launch-time guidance for permissions used by local features.
-    let permissionPrompt = PermissionPromptController()
+    /// 权限状态的唯一来源；各功能按需申请。
+    let permissions = PermissionCenter()
+    /// 旧页面使用的访问器；实际状态仍只有 PermissionCenter 一个来源。
+    var permissionPrompt: PermissionCenter { permissions }
     let onboarding = OnboardingController()
     let previousInstallation = PreviousInstallationController()
     var showMainWindow: (() -> Void)?
@@ -92,6 +102,8 @@ import DeskFuseEngine
     private var errorHandlers: [UInt64: (String) -> Void] = [:]
     private var failureHandlers: [UInt64: () -> Void] = [:]
     private var requestPairings: [UInt64: String] = [:]
+    /// 已自动加入键鼠共享的设备，避免授权失败时每次快照都重复提交。
+    private var autoJoinedInputPeers: Set<String> = []
     private var quitting = false
 
     func start() {
@@ -116,6 +128,7 @@ import DeskFuseEngine
                 let engine = try await Task.detached { try Engine() }.value
                 recordStartup("engine_ready")
                 self.engine = engine
+                engine.setWorkflowHotkeysEnabled(enabled: workflowsEnabled)
                 MouseButtonController.shared.start(engine: engine)
                 if #available(macOS 14.2, *) { RemoteApplicationManager.shared.start(engine: engine) }
                 await WorkflowStore.shared.reload(engine: engine)
@@ -150,6 +163,26 @@ import DeskFuseEngine
                 publishDisplayWallpapers()
             } catch { self.error = error.userFacingMessage; starting = false }
         }
+    }
+
+    /// 已配对且在线的设备自动加入键鼠参与者：用户只需要配对一次，
+    /// 不必再到键鼠页里手动添加。只在本机是主控且功能已开启时执行。
+    private func autoJoinInputParticipants(_ value: EngineSnapshot) {
+        let input = value.input
+        guard input.canConfigure, input.settings.enabled, input.settings.controller else { return }
+        let candidates = value.devices
+            .filter { $0.id != value.localId && $0.member && $0.trusted && $0.connected && !$0.blocked }
+            .map(\.id)
+        let additions = candidates.filter { id in
+            !input.settings.participants.contains(id) && !autoJoinedInputPeers.contains(id)
+        }
+        guard !additions.isEmpty else { return }
+        autoJoinedInputPeers.formUnion(additions)
+        var settings = input.settings
+        settings.participants.append(contentsOf: additions)
+        send(.setInput(settings: settings), failed: { [weak self] _ in
+            self?.autoJoinedInputPeers.subtract(additions)
+        })
     }
 
     /// Capture local wallpaper previews for the layout UI and publish them to
@@ -202,6 +235,7 @@ import DeskFuseEngine
                     RemoteApplicationManager.shared.reconcileViewerRole()
                 }
                 pairingDecisions.formIntersection(Set(value.pairing.map(\.id)))
+                autoJoinInputParticipants(value)
                 shelf?.reconcileTransfers(value.transfers)
                 transferWindow?.reconcile(value.transfers)
                 pairingWindow?.reconcile(value.pairing)
@@ -320,6 +354,11 @@ import DeskFuseEngine
         selectedPage = .devices
         deviceSelectionRequest &+= 1
     }
+
+    /// 从健康中心进入“添加电脑”时，先回到设备页；设备页的添加入口保持唯一。
+    func presentAddDevice() {
+        showLocalDevice()
+    }
     func confirmSelfTest() {
         guard selfTest else { return }
         Task {
@@ -348,16 +387,26 @@ import DeskFuseEngine
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case clipboard = "剪贴板", input = "键鼠共享", mouse = "鼠标", microphone = "麦克风共享", remoteApplications = "远程应用", devices = "设备", transfers = "传输", lanTransfer = "分享与传输", settings = "设置"
-    /// The transfer queue is presented together with LAN sharing. Keep the
-    /// legacy case for deep links and existing command code, but do not expose
-    /// a second top-level destination in the redesigned sidebar.
-    static var allCases: [Page] { [.clipboard, .input, .mouse, .microphone, .remoteApplications, .devices, .lanTransfer, .settings] }
+    case devices = "设备", clipboard = "剪贴板", input = "键鼠共享", files = "文件传输"
+    case remoteApplications = "远程应用", microphone = "麦克风共享", mouse = "鼠标按键"
+    case settings = "设置"
     var id: Self { self }
-    var isBeta: Bool { self == .mouse || self == .microphone || self == .remoteApplications }
-    var symbol: String { switch self { case .clipboard: "doc.on.clipboard"; case .input: "rectangle.on.rectangle"; case .mouse: "computermouse"; case .microphone: "mic"; case .remoteApplications: "square.grid.2x2"; case .devices: "laptopcomputer.and.iphone"; case .transfers: "arrow.left.arrow.right"; case .lanTransfer: "paperplane"; case .settings: "gearshape" } }
-    /// 侧栏彩色方块图标的识别色，与设置页同名功能保持同色。
-    var color: Color { switch self { case .clipboard: .blue; case .input: .purple; case .mouse: .orange; case .microphone: .teal; case .remoteApplications: .teal; case .devices: .green; case .transfers: .orange; case .lanTransfer: .orange; case .settings: .gray } }
+    /// 侧栏分两组：日常协作的核心功能在上，进阶差异化功能在分隔线下。
+    static let primary: [Page] = [.devices, .clipboard, .input, .files]
+    static let extended: [Page] = [.remoteApplications, .microphone, .mouse]
+    var isBeta: Bool { Page.extended.contains(self) }
+    var symbol: String {
+        switch self {
+        case .devices: "laptopcomputer.and.iphone"
+        case .clipboard: "doc.on.clipboard"
+        case .input: "keyboard"
+        case .files: "arrow.up.arrow.down.square"
+        case .remoteApplications: "macwindow.on.rectangle"
+        case .microphone: "mic"
+        case .mouse: "computermouse"
+        case .settings: "gearshape"
+        }
+    }
 }
 func byteCount(_ bytes: UInt64) -> String { ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file) }
 

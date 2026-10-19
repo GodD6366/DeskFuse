@@ -89,12 +89,6 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                 }
                 menu.addItem(row)
             }
-            func addFormats(_ formats: [ClipboardTextFormat], to menu: NSMenu, enabled: Bool, action: @escaping (ClipboardTextFormat) -> Void) {
-                for format in formats {
-                    if format == .dashBullets { menu.addItem(.separator()) }
-                    add(format.menuTitle, to: menu, enabled: enabled) { action(format) }
-                }
-            }
             func submenu(_ title: String, enabled: Bool = true, build: (NSMenu) -> Void) {
                 let child = NSMenu(title: title)
                 child.autoenablesItems = false
@@ -115,17 +109,14 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
             }
 
             let canUse = value.copyEnabled
+            let plainText = ClipboardItemActions.canCopyPlainText(item)
             if let name = value.pasteTargetName, let paste = value.onPaste {
                 add("粘贴至“\(name)”", to: menu, enabled: canUse, image: "arrow.uturn.forward") {
                     paste()
                 }
-                submenu("粘贴为", enabled: canUse) { child in
-                    addFormats(ClipboardItemActions.pasteAsFormats(for: item), to: child, enabled: canUse) { format in
-                        if format == .original {
-                            paste()
-                        } else {
-                            ClipboardItemActions.copy(item.id, format: format, paste: true)
-                        }
+                if plainText {
+                    add("粘贴为纯文本", to: menu, enabled: canUse) {
+                        ClipboardItemActions.copy(item.id, plainText: true, paste: true)
                     }
                 }
             }
@@ -133,16 +124,7 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                 if let copy = value.onCopy {
                     copy()
                 } else {
-                    ClipboardItemActions.copy(item.id, format: .original, paste: false)
-                }
-            }
-            submenu("复制为", enabled: canUse) { child in
-                addFormats(ClipboardItemActions.copyAsFormats(for: item), to: child, enabled: canUse) { format in
-                    if format == .original, let copy = value.onCopy {
-                        copy()
-                    } else {
-                        ClipboardItemActions.copy(item.id, format: format, paste: false)
-                    }
+                    ClipboardItemActions.copy(item.id, paste: false)
                 }
             }
             menu.addItem(.separator())
@@ -198,10 +180,10 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                     preview()
                 }
             }
-            submenu("分享") { child in
+            submenu("发送到设备") { child in
                 let peers = (AppStore.shared.snapshot?.devices ?? []).filter { $0.trusted && !$0.blocked }
                 if peers.isEmpty {
-                    add("请先配对一台设备", to: child, enabled: false, action: {})
+                    add("请先添加一台设备", to: child, enabled: false, action: {})
                 }
                 for peer in peers {
                     add(peer.name, to: child, enabled: peer.connected) {
@@ -209,16 +191,17 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                     }
                 }
             }
-            menu.addItem(.separator())
-            submenu("自动填充") { child in
-                let type = ClipboardItemActions.contentType(for: item)
-                let flows = AppStore.shared.workflowDefinitions.filter { $0.enabled && $0.accepts(type) }
-                if flows.isEmpty {
-                    add("没有适合此内容的已启用工作流", to: child, enabled: false, action: {})
-                }
-                for flow in flows {
-                    add(flow.name, to: child) {
-                        AppStore.shared.runWorkflow(flow.id, historyID: item.id)
+            if AppStore.shared.workflowsEnabled {
+                submenu("使用工作流") { child in
+                    let type = ClipboardItemActions.contentType(for: item)
+                    let flows = AppStore.shared.workflowDefinitions.filter { $0.enabled && $0.accepts(type) }
+                    if flows.isEmpty {
+                        add("没有适合此内容的已启用工作流", to: child, enabled: false, action: {})
+                    }
+                    for flow in flows {
+                        add(flow.name, to: child) {
+                            AppStore.shared.runWorkflow(flow.id, historyID: item.id)
+                        }
                     }
                 }
             }

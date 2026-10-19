@@ -11,7 +11,7 @@ struct WorkflowRunStatusView: View {
                 ForEach(visible, id: \.id) { run in
                     HStack(alignment: .top, spacing: 10) {
                         if run.phase == "running" { ProgressView().controlSize(.small) }
-                        else { Image(systemName: icon(run.phase)).foregroundStyle(run.phase == "failed" ? Color.orange : Color.secondary) }
+                        else { Image(systemName: icon(run.phase)).foregroundStyle(run.phase == "failed" ? DFPalette.warning : Color.secondary) }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(title(run)).font(.caption.bold()).lineLimit(1)
                             if !run.message.isEmpty { Text(run.message).font(.caption).foregroundStyle(.secondary).lineLimit(compact ? 2 : 4) }

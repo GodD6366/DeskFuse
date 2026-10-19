@@ -87,7 +87,7 @@ private struct ClipboardContentEditor: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             styleButton("B", help: "粗体") { coordinator.toggle(.bold) }
-                .font(.system(size: 13, weight: .bold))
+                .font(DFType.body.weight(.bold))
             styleButton("I", help: "斜体") { coordinator.toggle(.italic) }
                 .italic()
             styleButton("U", help: "下划线") { coordinator.toggle(.underline) }
@@ -107,7 +107,7 @@ private struct ClipboardContentEditor: View {
             .help(plainOnly ? "恢复富文本编辑" : "去掉样式，只保留文字")
             Button("保存") { save() }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.dfPrimary)
         }
         .controlSize(.regular)
         .padding(.horizontal, 16)

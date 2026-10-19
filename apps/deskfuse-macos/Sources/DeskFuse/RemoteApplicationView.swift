@@ -77,13 +77,13 @@ struct RemoteApplicationView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     } else {
                         Image(systemName: session.connected ? "exclamationmark.triangle" : "network.slash")
-                            .font(.system(size: 28, weight: .regular)).foregroundStyle(.secondary)
+                            .font(DFType.metric.weight(.regular)).foregroundStyle(.secondary)
                         Text(session.connected ? "无法打开应用" : "连接已中断").font(.headline)
                         Text(session.failure ?? session.status).font(.callout).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                         Button("重新连接") { session.reconnectApplication() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.dfPrimary)
                     }
                 }
                 .padding(24).frame(maxWidth: 420)
@@ -124,7 +124,7 @@ struct RemoteApplicationView: View {
         RemoteTrafficLights(close: closeWindow, minimize: minimizeWindow, zoom: zoomWindow)
             .frame(width: 56, height: 20)
             .padding(.horizontal, 7).padding(.vertical, 4)
-            .modifier(RemoteChromeSurface(cornerRadius: 14, color: chrome.titlebarBackground))
+            .modifier(RemoteChromeSurface(cornerRadius: DFRadius.card, color: chrome.titlebarBackground))
             .padding(.leading, 7).padding(.top, 6)
     }
 
@@ -135,9 +135,9 @@ struct RemoteApplicationView: View {
                 chooseApplication: chooseApplication, closeWindow: closeWindow,
                 minimizeWindow: minimizeWindow, zoomWindow: zoomWindow)
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(DFType.caption.weight(.medium))
         .padding(.horizontal, 5).padding(.vertical, 3)
-        .modifier(RemoteChromeSurface(cornerRadius: 14, color: chrome.titlebarBackground))
+        .modifier(RemoteChromeSurface(cornerRadius: DFRadius.card, color: chrome.titlebarBackground))
         .padding(.trailing, 7).padding(.top, 6)
         .opacity(chrome.controlsRevealed || chrome.menuPresented ? 1 : 0)
         .animation(.easeOut(duration: 0.16), value: chrome.controlsRevealed || chrome.menuPresented)
@@ -174,7 +174,7 @@ struct RemoteMetricsReadout: View {
             Divider().frame(height: 9)
             value("延迟", latencyText)
         }
-        .font(.system(size: 10, weight: .medium))
+        .font(DFType.caption.weight(.medium))
         .monospacedDigit()
         .lineLimit(1)
         .fixedSize()

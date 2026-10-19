@@ -1,30 +1,26 @@
 import Foundation
 import Observation
 
-/// Transient presentation only: dismissing a notice must not mark the engine healthy.
+/// 只负责展示状态：关闭提示不等于把引擎标记为健康。
+/// 可操作的错误一直保留到用户处理或显式关闭，不再数秒后自动消失。
 @MainActor @Observable final class ErrorNotice {
     private(set) var message: String?
+    /// 原始错误文本；界面只在「复制详情」里暴露它。
+    private(set) var rawMessage: String?
     private var localError: String?
     private var runtimeError: String?
     private var dismissedLocalError: String?
     private var dismissedRuntimeError: String?
-    @ObservationIgnored private var dismissalTask: Task<Void, Never>?
-    private let displayDuration: Duration
-
-    init(displayDuration: Duration = .seconds(8)) {
-        self.displayDuration = displayDuration
-    }
 
     func updateLocalError(_ error: String?) {
         localError = error
-        // An explicit local error assignment is a new failure, even if its text repeats.
+        // 显式赋值代表一次新的失败，即使文本相同也要重新出现。
         dismissedLocalError = nil
-        refresh(restartTimer: true)
+        refresh()
     }
 
     func updateRuntimeError(_ error: String?) {
-        // Repeated snapshots are observations, not new failures. They must neither
-        // restart the timer nor resurrect an already dismissed sticky engine error.
+        // 重复快照只是观察，不是新的失败：不能复活已被关闭的错误。
         guard runtimeError != error else { return }
         runtimeError = error
         dismissedRuntimeError = nil
@@ -32,27 +28,17 @@ import Observation
     }
 
     func dismiss() {
-        dismissalTask?.cancel()
-        dismissalTask = nil
         dismissedLocalError = localError
         dismissedRuntimeError = runtimeError
         message = nil
+        rawMessage = nil
     }
 
-    private func refresh(restartTimer: Bool = false) {
+    private func refresh() {
         let next = (localError != dismissedLocalError ? localError : nil)
             ?? (runtimeError != dismissedRuntimeError ? runtimeError : nil)
-        guard next != message || restartTimer else { return }
-        dismissalTask?.cancel()
-        dismissalTask = nil
-        message = next
-        guard next != nil else { return }
-        let duration = displayDuration
-        dismissalTask = Task { [weak self] in
-            do { try await Task.sleep(for: duration) }
-            catch { return }
-            guard !Task.isCancelled else { return }
-            self?.dismiss()
-        }
+        guard next != rawMessage else { return }
+        rawMessage = next
+        message = next.map(friendlyError)
     }
 }

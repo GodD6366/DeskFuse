@@ -14,7 +14,7 @@ struct MousePhotoAnglePicker: View {
             Text(title).font(.callout.weight(.medium))
                 .foregroundStyle(side == value ? Color.white : Color.primary)
                 .padding(.horizontal, 15).padding(.vertical, 7)
-                .background(side == value ? Color.accentColor : Color.clear, in: Capsule())
+                .background(side == value ? DFPalette.accent : Color.clear, in: Capsule())
                 .contentShape(Capsule())
         }.buttonStyle(.plain).accessibilityLabel(title)
             .accessibilityAddTraits(side == value ? .isSelected : [])
@@ -50,8 +50,8 @@ struct MXMasterMouseEditor<Editor: View>: View {
             Text("普通按键直接设置 · 手势键与模式键需检测到 HID++ 支持 · 横向滚轮保留原功能")
                 .font(.caption).foregroundStyle(.secondary).padding(16)
         }
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
+        .background(.background, in: RoundedRectangle(cornerRadius: DFRadius.panel))
+        .overlay(RoundedRectangle(cornerRadius: DFRadius.panel).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
         .onChange(of: side) { _, _ in close() }
         .onDisappear { close() }
     }
@@ -61,7 +61,7 @@ struct MXMasterMouseEditor<Editor: View>: View {
             let width = side ? min(proxy.size.width - 40, 740) : proxy.size.height * 2400 / 2061
             let height = width * 2061 / 2400
             ZStack {
-                LinearGradient(colors: [.primary.opacity(0.015), Color.accentColor.opacity(0.045)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                LinearGradient(colors: [.primary.opacity(0.015), DFPalette.accent.opacity(0.045)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     .allowsHitTesting(false)
                 if let photo = side ? MXMasterPhotos.side : MXMasterPhotos.top {
                     Image(nsImage: photo).resizable().frame(width: width, height: height)
@@ -70,11 +70,11 @@ struct MXMasterMouseEditor<Editor: View>: View {
                 ForEach(side ? [4, 3, 195] : [0, 1, 2, 196], id: \.self) { button in
                     let point = anchor(button)
                     Button { onSelection(); editing = button } label: {
-                        Circle().fill(editing == button ? Color.accentColor : Color.white)
-                            .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false))
+                        Circle().fill(editing == button ? DFPalette.accent : Color.white)
+                            .overlay(Circle().strokeBorder(DFPalette.accent, lineWidth: 2).allowsHitTesting(false))
                             .overlay {
                                 if controller.settings.bindings.contains(where: { $0.button == button }) {
-                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
+                                    Image(systemName: "checkmark").font(DFType.caption.weight(.bold)).foregroundStyle(DFPalette.accent)
                                         .allowsHitTesting(false)
                                 }
                             }.frame(width: 25, height: 25).shadow(color: .black.opacity(0.2), radius: 4, y: 2)

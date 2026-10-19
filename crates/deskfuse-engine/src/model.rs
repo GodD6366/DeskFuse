@@ -1046,8 +1046,34 @@ fn runtime_error_label(error: &str) -> String {
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "设备连接超时，请确认对方在线且网络可达；若对方运行旧版，请将两端都升级到最新版 DeskFuse"
             .into()
-    } else if lower.contains("connection is closed") {
+    } else if lower.contains("connection is closed") || lower.contains("connection reset") {
         "设备连接已关闭，请确认对方在线后重新连接；旧版设备需与本机一起升级".into()
+    } else if lower.contains("connection refused")
+        || lower.contains("unreachable")
+        || lower.contains("no route")
+        || lower.contains("network is down")
+    {
+        "无法连接到对方电脑，请确认对方已打开 DeskFuse 且在同一网络".into()
+    } else if lower.contains("permission denied")
+        || lower.contains("not permitted")
+        || lower.contains("accessibility is not enabled")
+    {
+        "缺少系统权限，请在「设置 → 权限」中授权后重试".into()
+    } else if lower.contains("no space") || lower.contains("disk full") {
+        "磁盘空间不足，请清理后重试".into()
+    } else if lower.contains("transport operation failed")
+        || lower.contains("stream stalled")
+        || lower.contains("transport closed")
+    {
+        "网络传输中断，DeskFuse 会自动重试；持续失败时请检查网络后重新连接".into()
+    } else if lower.contains("store operation failed")
+        || lower.contains("database")
+        || lower.contains("sqlite")
+    {
+        "本地数据读写失败，请重新打开 DeskFuse；如果反复出现，请导出诊断信息".into()
+    } else if lower.contains("command channel is closed") || lower.contains("runtime is not ready")
+    {
+        "后台服务未就绪，请稍后重试或重新打开 DeskFuse".into()
     } else {
         error.to_owned()
     }

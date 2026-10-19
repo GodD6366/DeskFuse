@@ -400,21 +400,6 @@ impl Engine {
         );
         serde_json::to_string(&view).map_err(failure)
     }
-    pub fn save_workflow_rule_json(&self, rule: String) -> Result<(), EngineError> {
-        self.active()?;
-        let rule: core_workflow::WorkflowRule = serde_json::from_str(&rule).map_err(failure)?;
-        deskfuse_engine::workflow_catalog::global()
-            .map_err(failure)?
-            .save_rule(rule)
-            .map_err(failure)
-    }
-    pub fn delete_workflow_rule(&self, id: String) -> Result<(), EngineError> {
-        self.active()?;
-        deskfuse_engine::workflow_catalog::global()
-            .map_err(failure)?
-            .delete_rule(&id)
-            .map_err(failure)
-    }
     pub fn bind_workflow_shortcut(
         &self,
         workflow_id: String,
@@ -446,12 +431,9 @@ impl Engine {
         self.active()?;
         let peer = deskfuse_core::DeviceId::from_hex(&peer_id).map_err(failure)?;
         let id = deskfuse_transfer::TransferId::new();
-        let selection = if bypass {
-            deskfuse_engine::workflow_sharing::Selection::Bypass
-        } else if let Some(id) = workflow_id {
-            deskfuse_engine::workflow_sharing::Selection::Id(id)
-        } else {
-            deskfuse_engine::workflow_sharing::Selection::Automatic
+        let selection = match workflow_id.filter(|_| !bypass) {
+            Some(id) => deskfuse_engine::workflow_sharing::Selection::Id(id),
+            None => deskfuse_engine::workflow_sharing::Selection::Bypass,
         };
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.bridge

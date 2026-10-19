@@ -65,13 +65,13 @@ struct ClipboardCodePreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Label(document.language, systemImage: "chevron.left.forwardslash.chevron.right")
-                .font(.system(size: 12, weight: .medium))
+                .font(DFType.detail.weight(.medium))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 10)
             Divider()
             ScrollView([.horizontal, .vertical]) {
                 Text(document.highlighted)
-                    .font(.system(size: 14, design: .monospaced))
+                    .font(DFType.mono)
                     .lineSpacing(4)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: true)

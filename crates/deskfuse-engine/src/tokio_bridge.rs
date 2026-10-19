@@ -2212,7 +2212,7 @@ async fn run_worker(
                             clipboard_sync.publish_tracked(snapshot,peer_id,selection,transfer_id,shared_cancel,&runtime,&ui_sender);
                         } else {
                             let paths=snapshot.file_urls; let pin_paths=paths.clone();
-                            let selected=crate::workflow_sharing::select(&peer_id.to_hex(),deskfuse_core::workflow::WorkflowContentType::Files,&selection);
+                            let selected=crate::workflow_sharing::select(&selection);
                             let started=start_local_file_clipboard(paths,Some(peer_id),FileClipboardStartContext {
                                 expected_source:None, workflow:Some(selected), cancellation:Some(shared_cancel),expected_change_count:None,output_leases:cache_leases.clone(),transfer_id:Some(transfer_id),runtime:&runtime,sequence:&clipboard_sequence,ui_sender:&ui_sender,diagnostics:&diagnostics,acknowledgements:&file_clipboard_acknowledgements,
                             },&mut outgoing_file_cancellations,&mut outgoing_file_sources,&transfer_task_tx);
@@ -2227,7 +2227,7 @@ async fn run_worker(
                             Some(peer_id),
                             FileClipboardStartContext {
                                 expected_source: None,
-                                workflow: Some(crate::workflow_sharing::select(&peer_id.to_hex(),deskfuse_core::workflow::WorkflowContentType::Files,&crate::workflow_sharing::Selection::Automatic)),
+                                workflow: Some(crate::workflow_sharing::select(&crate::workflow_sharing::Selection::Bypass)),
                                 cancellation: None,
                                 expected_change_count: None,
                                 output_leases: cache_leases.clone(),

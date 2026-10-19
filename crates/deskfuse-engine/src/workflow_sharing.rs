@@ -1,6 +1,6 @@
 //! Sender-side workflow selection. No transformed output is committed to the sender's pasteboard.
 use crate::workflow::{WorkflowInput, WorkflowOutputMode, WorkflowService};
-use deskfuse_core::workflow::{Workflow, WorkflowContentType};
+use deskfuse_core::workflow::Workflow;
 use deskfuse_platform::PasteboardSnapshot;
 use std::sync::{
     Arc, Mutex, OnceLock, Weak,
@@ -23,8 +23,8 @@ fn service() -> Result<Arc<WorkflowService>, String> {
 }
 #[derive(Clone, Debug, Default)]
 pub enum Selection {
+    /// 不经过工作流，直接共享原始内容。
     #[default]
-    Automatic,
     Bypass,
     Id(String),
 }
@@ -33,32 +33,7 @@ pub struct Selected {
     pub workflow: Option<Workflow>,
     pub error: Option<String>,
 }
-pub fn content_type(snapshot: &PasteboardSnapshot) -> WorkflowContentType {
-    if !snapshot.file_urls.is_empty() {
-        return WorkflowContentType::Files;
-    }
-    if snapshot.png.is_some()
-        || snapshot
-            .items
-            .iter()
-            .flat_map(|i| &i.representations)
-            .any(|r| {
-                matches!(
-                    r.type_name.as_str(),
-                    "public.png"
-                        | "public.jpeg"
-                        | "public.tiff"
-                        | "public.heic"
-                        | "public.heif"
-                        | "org.webmproject.webp"
-                )
-            })
-    {
-        return WorkflowContentType::Image;
-    }
-    WorkflowContentType::Text
-}
-pub fn select(peer: &str, kind: WorkflowContentType, selection: &Selection) -> Selected {
+pub fn select(selection: &Selection) -> Selected {
     if matches!(selection, Selection::Bypass) {
         return Selected::default();
     }
@@ -67,20 +42,6 @@ pub fn select(peer: &str, kind: WorkflowContentType, selection: &Selection) -> S
         let list = catalog.list()?;
         let id = match selection {
             Selection::Id(id) => Some(id.clone()),
-            Selection::Automatic => {
-                let view: serde_json::Value =
-                    serde_json::from_str(&catalog.view_json()?).map_err(|e| e.to_string())?;
-                let local = view["local_device_id"].as_str().unwrap_or("");
-                let mut rules = catalog.rules()?;
-                rules.retain(|r| {
-                    r.enabled
-                        && r.sender_id == local
-                        && (r.target_id.is_empty() || r.target_id == peer)
-                        && (r.content_type == WorkflowContentType::Any || r.content_type == kind)
-                });
-                rules.sort_by_key(|r| (r.target_id.is_empty(), r.position, r.id.clone()));
-                rules.first().map(|r| r.workflow_id.clone())
-            }
             Selection::Bypass => None,
         };
         match id {

@@ -85,6 +85,6 @@ struct RemoteDiagnosticsView: View {
             Text(name).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value).monospacedDigit().textSelection(.enabled)
-        }.font(.system(size: 12))
+        }.font(DFType.detail)
     }
 }

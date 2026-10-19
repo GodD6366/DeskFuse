@@ -11,7 +11,7 @@ struct LoginItemSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            QuietSettingsRow(title: "开机自启", detail: statusDescription) {
+            DFSettingRow(title: "开机自启", detail: statusDescription) {
                 Toggle("开机自启", isOn: Binding(
                     get: { status == .enabled || status == .requiresApproval },
                     set: { setEnabled($0) }
@@ -21,7 +21,7 @@ struct LoginItemSettingsView: View {
             }
 
             if status == .requiresApproval {
-                WorkspaceChromeButton("打开登录项设置", systemImage: "gearshape") {
+                DFActionButton("打开登录项设置", systemImage: "gearshape") {
                     SMAppService.openSystemSettingsLoginItems()
                 }
             }

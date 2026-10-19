@@ -378,7 +378,7 @@ impl Sync {
         self.prepare(
             snapshot,
             None,
-            crate::workflow_sharing::Selection::Automatic,
+            crate::workflow_sharing::Selection::Bypass,
             force,
             runtime,
             ui,
@@ -434,11 +434,7 @@ impl Sync {
         }
         self.preparations.retain(|task| !task.is_finished());
         for target in targets {
-            let selected = crate::workflow_sharing::select(
-                &target.0.to_hex(),
-                crate::workflow_sharing::content_type(&snapshot),
-                &selection,
-            );
+            let selected = crate::workflow_sharing::select(&selection);
             // A source image hash cannot describe a workflow's output, and an
             // explicit file send must retain its requested file semantics.
             if (explicit || selected.workflow.is_some())

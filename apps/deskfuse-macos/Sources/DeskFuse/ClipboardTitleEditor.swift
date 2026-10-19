@@ -47,7 +47,7 @@ struct ClipboardCardHeader: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(selected ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.04))
+            .background(selected ? DFPalette.accent.opacity(0.08) : Color.primary.opacity(0.04))
             .overlay(alignment: .bottom) { Divider().opacity(0.5) }
     }
 }
@@ -82,7 +82,7 @@ struct ClipboardTitleEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Button("保存", action: save)
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.dfPrimary)
             }
         }
         .padding(24)

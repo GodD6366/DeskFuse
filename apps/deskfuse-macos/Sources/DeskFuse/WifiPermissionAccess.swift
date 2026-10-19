@@ -43,7 +43,7 @@ enum WifiPermissionState: Equatable {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor [weak self] in
             self?.refresh()
-            AppStore.shared.permissionPrompt.reevaluateWhilePresented()
+            AppStore.shared.permissions.refresh()
             AppStore.shared.send(.refreshPermissions)
         }
     }

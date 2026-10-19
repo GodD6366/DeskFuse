@@ -28,13 +28,13 @@ struct FeatureGateView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: symbol)
-                .font(.system(size: 17))
+                .font(DFType.title)
                 .foregroundStyle(symbolColor)
                 .frame(width: 56, height: 56)
-                .modifier(NativeGlassSurface(cornerRadius: 28))
+                .modifier(NativeGlassSurface(cornerRadius: DFRadius.panel))
                 .accessibilityHidden(true)
             Text(title)
-                .font(WorkspaceTypography.section)
+                .font(DFType.title)
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -47,7 +47,7 @@ struct FeatureGateView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             if let permission, !permissionGranted {
                 permissionRow(permission)
             }
@@ -61,7 +61,7 @@ struct FeatureGateView: View {
                     Text(actionTitle)
                 }
             }
-            .modifier(NativeGlassAction())
+            .buttonStyle(.dfPrimary)
             .disabled(confirming)
             if let secondaryTitle, let secondaryAction {
                 Button(secondaryTitle, action: secondaryAction)
@@ -83,7 +83,7 @@ struct FeatureGateView: View {
     private func permissionRow(_ permission: LaunchPermission) -> some View {
         HStack(spacing: 12) {
             Image(systemName: permission.symbol)
-                .font(.system(size: 15))
+                .font(DFType.title)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
                 .accessibilityHidden(true)
@@ -96,7 +96,7 @@ struct FeatureGateView: View {
                 Label("前往授权", systemImage: "arrow.up.forward.app")
                     .font(.callout)
             }
-            .buttonStyle(WorkspaceButtonStyle())
+            .buttonStyle(.dfSecondary)
             .controlSize(.small)
         }
         .padding(.horizontal, 14)
@@ -104,7 +104,7 @@ struct FeatureGateView: View {
         .frame(maxWidth: 340)
         .background(
             Color(nsColor: .controlBackgroundColor).opacity(0.52),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
         )
     }
 

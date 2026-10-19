@@ -56,19 +56,6 @@ import DeskFuseEngine
         await reload(engine: engine)
         if let error { throw WorkflowExecutionError(message: error) }
     }
-    func saveRule(_ rule: WorkflowRuleDraft) async throws {
-        let engine = try readyEngine()
-        let json = String(decoding: try JSONEncoder().encode(rule), as: UTF8.self)
-        try await Task.detached { try engine.saveWorkflowRuleJson(rule: json) }.value
-        await reload(engine: engine)
-        if let error { throw WorkflowExecutionError(message: error) }
-    }
-    func deleteRule(_ id: String) async throws {
-        let engine = try readyEngine()
-        try await Task.detached { try engine.deleteWorkflowRule(id: id) }.value
-        await reload(engine: engine)
-        if let error { throw WorkflowExecutionError(message: error) }
-    }
     func restoreConflict(_ id: String) async throws {
         let engine = try readyEngine()
         try await Task.detached { try engine.restoreWorkflowConflict(id: id) }.value

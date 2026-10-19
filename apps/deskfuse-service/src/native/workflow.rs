@@ -226,26 +226,6 @@ impl Catalog {
     pub fn delete(&self, id: &str) -> std::result::Result<(), String> {
         self.local_edit(format!("workflow:{id}"), None)
     }
-    pub fn save_rule(
-        &self,
-        rule: deskfuse_core::workflow::WorkflowRule,
-    ) -> std::result::Result<(), String> {
-        rule.validate()?;
-        if !self
-            .list()?
-            .iter()
-            .any(|workflow| workflow.id == rule.workflow_id)
-        {
-            return Err("规则引用的工作流不存在".into());
-        }
-        self.local_edit(
-            format!("rule:{}", rule.id),
-            Some(serde_json::json!({"kind":"Rule","value":rule})),
-        )
-    }
-    pub fn delete_rule(&self, id: &str) -> std::result::Result<(), String> {
-        self.local_edit(format!("rule:{id}"), None)
-    }
     fn local_edit(
         &self,
         key: String,

@@ -15,18 +15,18 @@ struct ClipboardRecordLabel: View {
         HStack(spacing: 12) {
             thumbnailView
                 .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .clipShape(RoundedRectangle(cornerRadius: DFRadius.control))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
                 Text(displayTitle)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(DFType.bodyMedium)
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                 Text("来自 \(meta?.originDevice ?? item.source)")
-                    .font(.system(size: 11))
-                    .workspaceSecondaryText()
+                    .font(DFType.caption)
+                    .dfSecondaryText()
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -43,14 +43,14 @@ struct ClipboardRecordLabel: View {
             Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fill)
         } else {
             ZStack {
-                RoundedRectangle(cornerRadius: 9)
+                RoundedRectangle(cornerRadius: DFRadius.control)
                     .fill(Color.primary.opacity(0.035))
                 if let icon = ClipboardAppInfoCache.shared.icon(for: appID) {
                     Image(nsImage: icon).resizable().scaledToFit().padding(6)
                 } else {
                     Image(systemName: item.clipboardSymbol)
-                        .font(.system(size: 20, weight: .regular))
-                        .workspaceSecondaryText()
+                        .font(DFType.pageTitle.weight(.regular))
+                        .dfSecondaryText()
                 }
             }
         }
@@ -81,7 +81,7 @@ struct ClipboardPopupSurface: ViewModifier {
     private static let baseOpacity: Double = 0.6
 
     @ViewBuilder func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: DFRadius.panel, style: .continuous)
         let base = Color(nsColor: .windowBackgroundColor).opacity(Self.baseOpacity)
         if reduceTransparency {
             content.background(Color(nsColor: .windowBackgroundColor), in: shape)

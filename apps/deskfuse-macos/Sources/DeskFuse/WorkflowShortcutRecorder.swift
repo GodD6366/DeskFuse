@@ -27,7 +27,7 @@ struct WorkflowShortcutRecorder: View {
             Button(action: begin) {
                 HStack(spacing: 12) {
                     Image(systemName: recording ? "record.circle" : "keyboard")
-                        .font(.title3).foregroundStyle(recording ? Color.accentColor : .secondary)
+                        .font(.title3).foregroundStyle(recording ? DFPalette.accent : .secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(recording ? "现在按下组合键" : shortcut == nil ? "点击录制快捷键" : "已设置快捷键")
                             .font(.body.weight(.medium))
@@ -39,9 +39,9 @@ struct WorkflowShortcutRecorder: View {
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(recording ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(recording ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: recording ? 2 : 1) }
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .background(recording ? DFPalette.accent.opacity(0.08) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DFRadius.control))
+                .overlay { RoundedRectangle(cornerRadius: DFRadius.control).strokeBorder(recording ? DFPalette.accent : Color.primary.opacity(0.12), lineWidth: recording ? 2 : 1) }
+                .contentShape(RoundedRectangle(cornerRadius: DFRadius.control))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(recording ? "正在录制快捷键，按 Esc 取消" : "录制全局快捷键")
@@ -102,9 +102,9 @@ struct WorkflowShortcutSettings: View {
     let manageWorkflows: () -> Void
     @State private var editing: WorkflowDefinition?
     var body: some View {
-        SystemSettingsFormBlock(
-            title: "工作流",
-            titleSymbol: "photo.on.rectangle",
+        DFSection(
+            "工作流",
+            symbol: "photo.on.rectangle",
             footer: "点击右侧组合键即可修改。停用的流程不会响应快捷键；全局触发需要辅助功能权限。"
         ) {
             ForEach(store.workflowDefinitions) { flow in
@@ -165,13 +165,14 @@ private struct WorkflowShortcutSheet: View {
                         do { try await WorkflowStore.shared.save(initial); close() }
                         catch { failure = error.userFacingMessage; saving = false }
                     }
-                }.buttonStyle(.borderedProminent).disabled(recording || saving)
+                }.buttonStyle(.dfPrimary).disabled(recording || saving)
             }
         }.padding(24).frame(width: 500)
         .interactiveDismissDisabled(saving)
     }
 }
 
+/// 工作流默认关闭：关闭时不渲染任何入口，也不注册全局快捷键。
 struct WorkflowMenu: View {
     @Bindable var store: AppStore
     let historyID: UInt64
@@ -180,16 +181,19 @@ struct WorkflowMenu: View {
         store.workflowDefinitions.filter { $0.enabled && $0.accepts(contentType) }
     }
     var body: some View {
-        Menu("使用工作流…", systemImage: "square.stack.3d.up") {
-            ForEach(eligible) { flow in
-                Button(flow.name) { store.runWorkflow(flow.id, historyID: historyID) }
+        if store.workflowsEnabled {
+            Menu("使用工作流…", systemImage: "square.stack.3d.up") {
+                ForEach(eligible) { flow in
+                    Button(flow.name) { store.runWorkflow(flow.id, historyID: historyID) }
+                }
+                if eligible.isEmpty { Text("没有适合此内容的已启用工作流") }
             }
-            if eligible.isEmpty { Text("没有适合此内容的已启用工作流") }
         }
     }
 }
 
 /// Share menus also serve the file shelf; each target starts from the original input.
+/// 统一的「发送到设备」菜单：直接发送；工作流启用后才追加处理选项。
 struct WorkflowShareMenu: View {
     @Bindable var store: AppStore
     var historyID: UInt64? = nil
@@ -200,20 +204,20 @@ struct WorkflowShareMenu: View {
         store.workflowDefinitions.filter { $0.enabled && $0.accepts(contentType) }
     }
     var body: some View {
-        Menu("共享到设备", systemImage: "paperplane") {
+        Menu("发送到设备", systemImage: "paperplane") {
             ForEach(peers, id: \.id) { peer in
                 Menu(peer.name) {
-                    Button("共享（匹配自动规则）") {
-                        store.shareWorkflow(nil, historyID: historyID, paths: paths, peerID: peer.id)
-                    }
-                    Button("不处理，直接共享") {
+                    Button("直接发送") {
                         store.shareWorkflow(nil, historyID: historyID, paths: paths, peerID: peer.id, bypass: true)
                     }
-                    if !eligible.isEmpty {
-                        Divider()
-                        ForEach(eligible) { flow in
-                            Button("使用「\(flow.name)」共享") {
-                                store.shareWorkflow(flow.id, historyID: historyID, paths: paths, peerID: peer.id)
+                    if store.workflowsEnabled {
+                        let flows = eligible
+                        if !flows.isEmpty {
+                            Divider()
+                            ForEach(flows) { flow in
+                                Button("使用「\(flow.name)」发送") {
+                                    store.shareWorkflow(flow.id, historyID: historyID, paths: paths, peerID: peer.id)
+                                }
                             }
                         }
                     }

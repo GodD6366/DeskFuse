@@ -1146,18 +1146,6 @@ impl State {
                 Ok(()) => ipc::Reply::queued(),
                 Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
             },
-            ipc::Command::SaveWorkflowRule { rule } => {
-                match network.workflow_catalog.save_rule(rule) {
-                    Ok(()) => ipc::Reply::queued(),
-                    Err(error) => ipc::Reply::rejected("invalid_workflow_rule", &error),
-                }
-            }
-            ipc::Command::DeleteWorkflowRule { id } => {
-                match network.workflow_catalog.delete_rule(&id) {
-                    Ok(()) => ipc::Reply::queued(),
-                    Err(error) => ipc::Reply::rejected("storage_unavailable", &error),
-                }
-            }
             ipc::Command::RunWorkflow { workflow_id, input } => {
                 let workflow = match network.workflow_catalog.list() {
                     Ok(workflows) => workflows.into_iter().find(|item| item.id == workflow_id),
