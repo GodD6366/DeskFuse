@@ -684,7 +684,7 @@ struct MicrophoneSettingsView: View {
                         MicrophoneStatusRow(symbol: "exclamationmark.circle.fill", tone: .warning,
                                             title: "系统默认输入 · 待设置",
                                             detail: "请设为默认，完成设置后应用才能通过系统默认输入接收远端声音。",
-                                            tint: .yellow, primaryAction: true,
+                                            primaryAction: true,
                                             actionTitle: "设为默认", action: model.setDefaultInput)
                     }
                     Text("也可以直接在微信输入法等应用的麦克风设置中选择“DeskFuse 麦克风（来自 \(sourcePeerName(state))）”。")
