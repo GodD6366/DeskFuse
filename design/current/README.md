@@ -10,7 +10,7 @@
 
 ## 信息架构
 
-侧栏是扁平结构，去掉“功能 / 配置”分组标题与页头面包屑：
+侧栏按“功能 / 配置”分组，品牌位放在红绿灯右侧的标题栏行内；内容区不再有大标题，改为与红绿灯对齐的“分组 / 页面”面包屑顶栏（`DFTopBar`）：
 
 ```
 DeskFuse
@@ -69,21 +69,22 @@ DeskFuse
 
 ## 页面约定
 
-- 每个页面只有一个标题，由 `MainContentView` 用 `DFPageHeader` 统一提供；页面内不再重复大标题。
+- 每个页面的标题只出现在顶栏面包屑里，由 `MainContentView` / `SettingsView` 用 `DFTopBar` 统一提供；页面内不再重复大标题。
+- 侧栏选中行只换实心表面、细描边与 `DFShadow.row*` 阴影，字号字重与未选中行一致。
 - **设备**：列表 + 详情；附近设备行内直接“添加”；单台设备操作在“…”菜单；手动 IPv4 是“+”次要入口；连接与路由表折叠为高级信息。
 - **键鼠共享**：一个开关 + 屏幕排布画布；已配对且在线的主机自动加入参与者（`AppStore` 在快照更新时提交 `.setInput`），仍可手动移除；未就绪屏幕直接显示“重新连接”；流畅度收敛为“连接质量：良好 / 一般 / 较差”，P50/P95、慢注入、数据报等进“高级信息”。
 - **剪贴板**：三栏；同步开关只在历史页头一处；左栏只有“全部、文字、图片、文件、我的列表”；智能列表不再新建或编辑，已有列表照常使用；列表/瀑布流偏好统一；右键菜单“粘贴为纯文本”“发送到设备”。
 - **文件传输**：发送区（拖入/选择 + 选择设备发送）→ 传输队列 → 手机扫码（开关 + 二维码 + 地址，网络接口与端口固定自动分配）→ 手机发送记录。阈值类设置不再暴露，缓存上限在设置 → 文件。
 - **远程应用**：虚拟屏幕模式、分辨率、编码、刷新率、比例、性能与详细诊断收进窗口“高级”子菜单；徽标统一 Beta。
-- **麦克风共享**：首屏选择“我提供麦克风 / 我使用其他设备的麦克风”；提供端选择实体输入，可信已配对电脑默认直接可用，接收端选择来源并安装虚拟麦克风；驱动维护收进接收端的故障排除。
-- **鼠标按键**：不再显示 `saveStatus`、`lastExecution` 与 HID++ CID 调试文案；组合键分层与“Mac 间自动同步”说明收进“更多选项”。
+- **麦克风共享**：首屏选择“我提供麦克风 / 我使用其他设备的麦克风”（居中聚焦，身份卡悬停浮起）；选定后宽窗口为“当前状态”主卡 + 右侧设置步骤双栏，主卡用 `MicrophoneSignalStage` 展示来源 → 链路 → 目标：关闭为静止虚线、等待为流动虚线、需处理为语义色虚线、就绪为光点穿梭与节点呼吸、传输中为随真实电平起伏的声波与粒子；开启“减弱动态效果”时全部静止；提供端选择实体输入，可信已配对电脑默认直接可用，接收端选择来源并安装虚拟麦克风；驱动维护收进接收端的故障排除。
+- **鼠标按键**：宽窗口为设备与按键编辑主栏 + 说明与同步侧栏；不再显示 `saveStatus`、`lastExecution` 与 HID++ CID 调试文案；组合键分层与“Mac 间自动同步”说明收进“更多选项”。
 
 ## 设计系统
 
 `Sources/DeskFuse/DesignSystem/` 是唯一的样式来源，不保留兼容层。
 
 - `DFTokens.swift`：`DFType` 字号、`DFRadius` 圆角、`DFSpace` 间距、`DFPalette` 颜色、`DFMotion` 动效、`DFMetrics` 尺寸。
-- `DFComponents.swift`：`DFPageHeader`、`DFSection`、`DFCard`、`DFSettingRow`、`DFToggleRow`、`DFValueRow`、`DFEmptyState`、`DFNotice`、`DFStatusPill`、`DFBadge`、`DFDisclosure`、`DFSidebarRow`、`DeskFuseBrandMark`。
+- `DFComponents.swift`：`DFTopBar`、`DFAdaptiveColumns`（主栏 + 固定宽侧栏，主栏不足最小宽度时上下堆叠）、`DFSection`、`DFCard`、`DFSettingRow`、`DFToggleRow`、`DFValueRow`、`DFEmptyState`、`DFNotice`、`DFStatusPill`、`DFBadge`、`DFDisclosure`、`DFSidebarRow`、`DeskFuseBrandMark`。
 - `DFButtons.swift`：`.dfPrimary`、`.dfSecondary`、`.dfPlain`、`.dfDestructive`、`.dfIcon`、`DFActionButton`。
 
 ### 令牌

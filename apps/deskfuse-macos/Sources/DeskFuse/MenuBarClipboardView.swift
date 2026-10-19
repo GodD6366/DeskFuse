@@ -122,8 +122,7 @@ struct MenuBarClipboardView: View {
         }
         .scrollIndicators(.never)
         .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
-        .dfFloating()
-        .background(.clear)
+        .dfFloating(opaque: true)
         .modifier(ClipboardPopupSurface())
         .background(MenuBarPanelBridge(handle: panel, opened: beginSession, closed: endSession, modifiersChanged: { commandHeld = $0.contains(.command) }, keyDown: handleKey))
         .task(id: searchKey) { if panelActive { await searchHistory() } }

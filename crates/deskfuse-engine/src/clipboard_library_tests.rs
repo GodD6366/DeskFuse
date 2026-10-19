@@ -1037,3 +1037,144 @@ fn optional_count_deadline_interrupts_sqlite_and_reader_remains_usable() {
     );
     db.progress_handler(0, None::<fn() -> bool>);
 }
+
+fn item_title(library: &Library, id: u64) -> Option<String> {
+    library
+        .reader()
+        .unwrap()
+        .query_row("SELECT title FROM cl_items WHERE id=?1", [id], |r| r.get(0))
+        .unwrap()
+}
+
+fn row_id(library: &Library, global_id: &str) -> u64 {
+    library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT id FROM cl_items WHERE global_id=?1",
+            [global_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn archived_item_title_syncs_to_peer_and_survives_text_edit() {
+    let library = Library::open().unwrap();
+    library.set_local_device("a".into()).unwrap();
+    let peer = Library::open().unwrap();
+    peer.set_local_device("b".into()).unwrap();
+    library.mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#).unwrap();
+    let id = text(&library, "90731230");
+    library.membership("group", id, true).unwrap();
+    let manual: Value = serde_json::from_str(
+        &library
+            .query(r#"{"op":"items","list_id":"group","include_total":false}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let archived = manual["items"][0]["id"].as_u64().unwrap();
+    let gid: String = library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT global_id FROM cl_items WHERE id=?1",
+            [archived],
+            |r| r.get(0),
+        )
+        .unwrap();
+    library
+        .mutate(
+            &json!({"op":"set_item_title","id":archived,"title":"测试店铺","compact":true})
+                .to_string(),
+        )
+        .unwrap();
+    assert_eq!(item_title(&library, archived).as_deref(), Some("测试店铺"));
+
+    peer.merge_operations(library.export_operations(0, 100).unwrap())
+        .unwrap();
+    let remote_archive = row_id(&peer, &gid);
+    assert_eq!(
+        item_title(&peer, remote_archive).as_deref(),
+        Some("测试店铺")
+    );
+
+    // 对端改名后回传；编辑归档正文不丢标题。
+    let after = peer.export_operations(0, 100).unwrap().len() as u64;
+    peer.mutate(
+        &json!({"op":"set_item_title","id":remote_archive,"title":"连锁","compact":true})
+            .to_string(),
+    )
+    .unwrap();
+    library
+        .merge_operations(peer.export_operations(0, 100).unwrap()[after as usize..].to_vec())
+        .unwrap();
+    assert_eq!(item_title(&library, archived).as_deref(), Some("连锁"));
+    library
+        .mutate(
+            &json!({"op":"set_item_text","id":archived,"text":"90731231","compact":true})
+                .to_string(),
+        )
+        .unwrap();
+    assert_eq!(item_title(&library, archived).as_deref(), Some("连锁"));
+    let fresh = Library::open().unwrap();
+    fresh.set_local_device("c".into()).unwrap();
+    fresh
+        .merge_operations(library.export_operations(0, 100).unwrap())
+        .unwrap();
+    assert_eq!(
+        item_title(&fresh, row_id(&fresh, &gid)).as_deref(),
+        Some("连锁")
+    );
+
+    // 清空标题同样同步。
+    library
+        .mutate(&json!({"op":"set_item_title","id":archived,"title":"","compact":true}).to_string())
+        .unwrap();
+    peer.merge_operations(library.export_operations(0, 200).unwrap())
+        .unwrap();
+    assert_eq!(item_title(&peer, remote_archive), None);
+}
+
+#[test]
+fn history_title_edited_on_peer_updates_origin_row() {
+    let library = Library::open().unwrap();
+    library.set_local_device("a".into()).unwrap();
+    let peer = Library::open().unwrap();
+    peer.set_local_device("b".into()).unwrap();
+    let id = text(&library, "cloud_page_show_shop_nav");
+    library
+        .mutate(
+            &json!({"op":"set_item_title","id":id,"title":"导航开关","compact":true}).to_string(),
+        )
+        .unwrap();
+    peer.merge_operations(library.export_operations(0, 100).unwrap())
+        .unwrap();
+    let gid: String = library
+        .reader()
+        .unwrap()
+        .query_row("SELECT global_id FROM cl_items WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let remote = row_id(&peer, &gid);
+    assert_eq!(item_title(&peer, remote).as_deref(), Some("导航开关"));
+
+    peer.mutate(
+        &json!({"op":"set_item_title","id":remote,"title":"店铺导航","compact":true}).to_string(),
+    )
+    .unwrap();
+    library
+        .merge_operations(peer.export_operations(0, 100).unwrap())
+        .unwrap();
+    assert_eq!(item_title(&library, id).as_deref(), Some("店铺导航"));
+
+    // 启动时批量 reconcile 不改写本机标题。
+    library
+        .writer()
+        .unwrap()
+        .execute("UPDATE cl_items SET title='本机' WHERE id=?1", [id])
+        .unwrap();
+    library.reconcile_index().unwrap();
+    assert_eq!(item_title(&library, id).as_deref(), Some("本机"));
+}

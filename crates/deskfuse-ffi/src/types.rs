@@ -26,6 +26,8 @@ pub struct Device {
     pub connected: bool,
     pub member: bool,
     pub blocked: bool,
+    /// 未在线时的简短原因（已手动断开 / 对方已断开 / 等待对方确认），否则为空。
+    pub link_status: String,
     pub input_reason: String,
     /// The far side reclaimed input locally; a new enable cycle is required.
     pub input_restart_required: bool,
@@ -47,6 +49,28 @@ pub struct DeviceRoute {
     pub rtt_ms: Option<u32>,
     pub last_probe_unix_ms: Option<u64>,
     pub probe_error: Option<String>,
+}
+
+/// 两端连接状态的说明：(列表里的短状态, 详情行的完整说明)。
+fn link_hold_text(
+    network: &deskfuse_runtime::DeviceNetworkSnapshot,
+    device_id: &str,
+) -> Option<(&'static str, &'static str)> {
+    let id = device_id.parse::<core::DeviceId>().ok()?;
+    let hold = network.link_holds.iter().find(|hold| hold.peer_id == id)?;
+    Some(match hold.kind {
+        deskfuse_runtime::PeerLinkHoldKind::LocalSuspended => (
+            "已手动断开",
+            "已在本机手动断开，不会自动重连；点击“连接”恢复",
+        ),
+        deskfuse_runtime::PeerLinkHoldKind::RemoteSuspended => (
+            "对方已断开",
+            "对方设备已手动断开与本机的连接，需在对方设备上点击“连接”",
+        ),
+        deskfuse_runtime::PeerLinkHoldKind::AwaitingPeer => {
+            ("等待对方确认", "本机已连上对方，正在等待对方回连确认")
+        }
+    })
 }
 
 fn device_routes(device: &model::Device) -> Vec<DeviceRoute> {
@@ -811,10 +835,12 @@ impl From<&EngineState> for EngineSnapshot {
             .chain(m.discovered_peers.iter())
             .fold(Vec::<Device>::new(), |mut devices, d| {
                 if d.id != local && !devices.iter().any(|x| x.id == d.id) {
+                    let hold = link_hold_text(&m.device_network, &d.id);
                     devices.push(Device {
                         id: d.id.clone(),
                         name: d.name.clone(),
-                        detail: d.subtitle.clone(),
+                        detail: hold
+                            .map_or_else(|| d.subtitle.clone(), |(_, note)| note.to_owned()),
                         endpoint: d.endpoint.clone(),
                         routes: device_routes(d),
                         trusted: matches!(d.trust, model::TrustState::Trusted),
@@ -824,6 +850,9 @@ impl From<&EngineState> for EngineSnapshot {
                             .id
                             .parse::<core::DeviceId>()
                             .is_ok_and(|id| m.device_network.blocked_peer_ids.contains(&id)),
+                        link_status: hold
+                            .map(|(status, _)| status.to_owned())
+                            .unwrap_or_default(),
                         input_reason: m.input_availability_reason(&d.id),
                         input_restart_required: m.input_restart_required(&d.id),
                         remote_app_rdp: d.routes.iter().any(|route| {

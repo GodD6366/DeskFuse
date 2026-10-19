@@ -197,6 +197,48 @@ final class WindowChromeMarker: NSView {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        observeTitlebarLayout(window)
+        layoutTrafficLights()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutTrafficLights()
+    }
+
+    /// 只对主窗口生效：把标题栏容器加高到 `DFMetrics.titlebarHeight`，红绿灯在这一行内垂直居中，
+    /// 品牌位与页面面包屑按同一高度对齐。不用 NSToolbar：macOS 26 会把内容托管进玻璃工具栏并加滚动边缘效果。
+    private func layoutTrafficLights() {
+        guard windowIdentifier != nil, let window, !window.styleMask.contains(.fullScreen),
+              let close = window.standardWindowButton(.closeButton),
+              let miniaturize = window.standardWindowButton(.miniaturizeButton),
+              let zoom = window.standardWindowButton(.zoomButton),
+              let container = close.superview?.superview else { return }
+        let height = DFMetrics.titlebarHeight
+        let containerFrame = NSRect(x: 0, y: window.frame.height - height, width: window.frame.width, height: height)
+        if container.frame != containerFrame { container.frame = containerFrame }
+        let inset = (height - close.frame.height) / 2
+        // 沿用系统按钮间距，只平移整组。
+        let spacing = miniaturize.frame.minX - close.frame.minX
+        for (index, button) in [close, miniaturize, zoom].enumerated() {
+            let origin = NSPoint(x: inset + CGFloat(index) * spacing, y: inset)
+            if button.frame.origin != origin { button.setFrameOrigin(origin) }
+        }
+    }
+
+    private var titlebarObservers: [NSObjectProtocol] = []
+
+    /// AppKit 会在缩放、切换 key 状态、退出全屏时重排标题栏，需要重新定位红绿灯。
+    private func observeTitlebarLayout(_ window: NSWindow) {
+        titlebarObservers.forEach(NotificationCenter.default.removeObserver)
+        let names: [Notification.Name] = [NSWindow.didResizeNotification, NSWindow.didBecomeKeyNotification,
+                                          NSWindow.didResignKeyNotification, NSWindow.didExitFullScreenNotification,
+                                          NSWindow.didChangeScreenNotification]
+        titlebarObservers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.layoutTrafficLights() }
+            }
+        }
     }
 }
 

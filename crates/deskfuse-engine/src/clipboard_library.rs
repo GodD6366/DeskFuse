@@ -2277,10 +2277,15 @@ END;").map_err(err)?;
                     self.publication_committed(id)?;
                 } else {
                     // 归档内容经 item 记录同步；materialize 按新 blob 更新本地行。
+                    // 标题一并写入，避免新记录覆盖掉已同步的标题。
                     self.write_blob(&hash, &bytes)?;
+                    let title: Option<String> = self
+                        .reader()?
+                        .query_row("SELECT title FROM cl_items WHERE id=?1", [id], |r| r.get(0))
+                        .map_err(err)?;
                     self.local_record(
                         format!("item:{gid}"),
-                        json!({"id":gid,"summary":serde_json::to_value(&s).map_err(err)?,"blob_hash":hash}),
+                        json!({"id":gid,"summary":serde_json::to_value(&s).map_err(err)?,"blob_hash":hash,"title":title}),
                         false,
                     )?;
                 }
@@ -2295,22 +2300,39 @@ END;").map_err(err)?;
                     .take(200)
                     .collect();
                 let stored = if title.is_empty() { None } else { Some(title) };
-                let mut db = self.writer()?;
-                let tx = db.transaction().map_err(err)?;
-                let updated = tx
-                    .execute(
-                        "UPDATE cl_items SET title=?1 WHERE id=?2",
-                        params![stored, id],
+                let archive: Option<(String, String)> = self
+                    .reader()?
+                    .query_row(
+                        "SELECT r.key,r.value FROM cl_items i JOIN cl_records r ON r.key='item:' || i.global_id AND r.deleted=0 WHERE i.id=?1 AND i.ordinary=0",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
+                    .optional()
                     .map_err(err)?;
-                if updated == 0 {
-                    return Err("内容不存在".into());
+                if let Some((key, raw)) = archive {
+                    // 列表里的归档副本不发布 index 记录，标题写入 item 记录，
+                    // 本机与对端都经 materialize 落到归档行。
+                    let mut value: Value = serde_json::from_str(&raw).map_err(err)?;
+                    value["title"] = json!(stored);
+                    self.local_record(key, value, false)?;
+                } else {
+                    let mut db = self.writer()?;
+                    let tx = db.transaction().map_err(err)?;
+                    let updated = tx
+                        .execute(
+                            "UPDATE cl_items SET title=?1 WHERE id=?2",
+                            params![stored, id],
+                        )
+                        .map_err(err)?;
+                    if updated == 0 {
+                        return Err("内容不存在".into());
+                    }
+                    self.publication_intent_db(&tx, id as u64)?;
+                    tx.commit().map_err(err)?;
+                    drop(db);
+                    self.changed();
+                    self.publication_committed(id as u64)?;
                 }
-                self.publication_intent_db(&tx, id as u64)?;
-                tx.commit().map_err(err)?;
-                drop(db);
-                self.changed();
-                self.publication_committed(id as u64)?;
             }
             "set_item_ocr" => {
                 let id = q["id"].as_u64().ok_or("内容 ID 无效")? as i64;
@@ -2707,7 +2729,7 @@ END;").map_err(err)?;
                 }
                 if key.starts_with("index:") && !deleted && sync_index {
                     let before = tx.total_changes();
-                    materialize_index(&tx, value, author)?;
+                    materialize_index(&tx, value, author, true)?;
                     changed |= tx.total_changes() > before;
                 }
             }
@@ -3016,7 +3038,7 @@ fn materialize(db: &Connection, blob_dir: &std::path::Path, v: &Value) -> Result
             params![serde_json::to_string(&s).map_err(err)?, s.copied_at_ms, id],
         )
         .map_err(err)?;
-        return Ok(());
+        return apply_archive_title(db, gid, v);
     }
     let existing_text: Option<String> = db
         .query_row(
@@ -3048,12 +3070,28 @@ fn materialize(db: &Connection, blob_dir: &std::path::Path, v: &Value) -> Result
         params![serde_json::to_string(&s).map_err(err)?, gid, Option::<Vec<u8>>::None, text, hash, s.copied_at_ms, s.source_device_id],
     )
     .map_err(err)?;
+    apply_archive_title(db, gid, v)
+}
+/// 归档标题随 `item:` 记录同步。旧版本记录不带 `title` 字段，此时保留本地标题；
+/// 显式 `null` 表示对端清空了标题。
+fn apply_archive_title(db: &Connection, gid: &str, v: &Value) -> Result<()> {
+    let Some(title) = v.get("title") else {
+        return Ok(());
+    };
+    let title = title.as_str().filter(|t| !t.is_empty());
+    db.execute(
+        "UPDATE cl_items SET title=?1 WHERE global_id=?2 AND ordinary=0 AND title IS NOT ?1",
+        params![title, gid],
+    )
+    .map_err(err)?;
     Ok(())
 }
 /// Project a synced `index:` record into a searchable row. Merges by global id
 /// and by content digest so the same content never appears twice, and never
 /// overwrites a local row that already holds the payload.
-fn materialize_index(db: &Connection, v: &Value, author: &str) -> Result<()> {
+/// `live` 仅在实时合并刚被接受的较新记录时为 true：此时对端改过的标题
+/// 也写回本机原始行；启动/重新启用时的批量 reconcile 不覆盖本地标题。
+fn materialize_index(db: &Connection, v: &Value, author: &str, live: bool) -> Result<()> {
     let gid = v["id"].as_str().ok_or("索引ID无效")?;
     let digest = v["digest"].as_str().unwrap_or("");
     let mut s: Summary = serde_json::from_value(v["summary"].clone()).map_err(err)?;
@@ -3078,7 +3116,16 @@ fn materialize_index(db: &Connection, v: &Value, author: &str) -> Result<()> {
         .map_err(err)?
     {
         if !remote {
-            // A local record already covers this content; never overwrite it.
+            // A local record already covers this content; never overwrite its
+            // payload. Only a newer synced title edit is applied to it.
+            if live && ordinary && v.get("title").is_some() {
+                let title = title.filter(|t| !t.is_empty());
+                db.execute(
+                    "UPDATE cl_items SET title=?1 WHERE id=?2 AND title IS NOT ?1",
+                    params![title, id],
+                )
+                .map_err(err)?;
+            }
             return Ok(());
         }
         if ordinary {
@@ -3144,7 +3191,7 @@ fn reconcile_index_db(db: &Connection) -> Result<()> {
     for row in rows {
         let (raw, author) = row.map_err(err)?;
         let value: Value = serde_json::from_str(&raw).map_err(err)?;
-        materialize_index(db, &value, &author)?;
+        materialize_index(db, &value, &author, false)?;
     }
     Ok(())
 }

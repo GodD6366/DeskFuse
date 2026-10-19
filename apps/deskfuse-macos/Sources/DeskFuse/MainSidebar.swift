@@ -3,92 +3,85 @@ import AppKit
 import DeskFuseEngine
 
 /// Navigation observes selection; runtime refreshes stay in the device row and footer.
+/// 导航项固定且很少，用按钮栈而不是 List：List 会按表格行样式缩小行内字号，导致与列表外的行不一致。
 struct MainSidebar: View {
     @Bindable var store: AppStore
 
     @Environment(\.colorScheme) private var scheme
-    private var categorySelection: Binding<SettingsCategory> {
-        Binding(get: { store.settingsDestination.category }, set: {
-            store.settingsDestination.category = $0
-            store.selectedPage = .settings
-        })
-    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            // 品牌位放在红绿灯右侧的标题栏行内，与内容区面包屑同一基线。
+            HStack(spacing: DFSpace.s) {
                 DeskFuseBrandMark()
-                Text("DeskFuse").font(DFType.title.weight(.semibold))
+                Text("DeskFuse").font(DFType.title)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 18).padding(.top, 4).padding(.bottom, 12)
+            .padding(.leading, DFMetrics.trafficLightsInset)
+            .frame(height: DFMetrics.titlebarHeight)
+            .padding(.bottom, DFSpace.xs)
 
-            List(selection: $store.selectedPage) {
-                sectionTitle("功能")
-                ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
-                    DFSidebarRow(title: page.rawValue, symbol: page.symbol,
-                        selected: store.selectedPage == page,
-                        badge: page.isBeta ? "Beta" : nil)
-                        .tag(page)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                }
-                sectionTitle("配置")
-                SidebarDevicesRow(store: store)
-                    .tag(Page.devices)
-                    .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-            .listStyle(.plain)
-            .contentMargins(.horizontal, 0, for: .scrollContent)
-            .listSectionSeparator(.hidden, edges: .all)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 32)
-            // Plain List adds an 8 pt row inset; match the settings button's 10 pt edge.
-            .padding(.horizontal, 2)
-
-            VStack(spacing: 4) {
-                Button { store.openSettings() } label: {
-                    DFSidebarRow(title: "设置", symbol: "gearshape", selected: store.selectedPage == .settings)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 10)
-                if store.selectedPage == .settings {
-                    List(selection: categorySelection) {
-                        ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
-                            DFSidebarRow(title: category.title,
-                                            selected: store.settingsDestination.category == category)
-                                .tag(category)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
+            ScrollView {
+                VStack(spacing: DFSpace.xxs) {
+                    sectionTitle(Page.clipboard.section)
+                    ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
+                        navButton(page) {
+                            DFSidebarRow(title: page.rawValue, symbol: page.symbol,
+                                selected: store.selectedPage == page,
+                                badge: page.isBeta ? "Beta" : nil)
                         }
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                    .environment(\.defaultMinListRowHeight, 32)
-                    .frame(height: CGFloat(SettingsCategory.allCases.count) * 32)
-                    .padding(.leading, 26).padding(.trailing, 10)
+                    sectionTitle(Page.devices.section)
+                    navButton(.devices) { SidebarDevicesRow(store: store) }
+                }
+                .padding(.horizontal, DFSpace.s + 2)
+                // 给选中行阴影留出空间，避免被滚动区域裁切。
+                .padding(.bottom, DFSpace.xs)
+            }
+            .scrollIndicators(.never)
+
+            VStack(spacing: DFSpace.xxs) {
+                navButton(.settings) {
+                    DFSidebarRow(title: Page.settings.rawValue, symbol: Page.settings.symbol,
+                                 selected: store.selectedPage == .settings)
+                }
+                if store.selectedPage == .settings {
+                    VStack(spacing: DFSpace.xxs) {
+                        ForEach(SettingsCategory.allCases, id: \.rawValue) { category in
+                            Button { store.settingsDestination.category = category } label: {
+                                DFSidebarRow(title: category.title,
+                                             selected: store.settingsDestination.category == category)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.leading, DFSpace.l)
                     .overlay(alignment: .leading) {
                         Rectangle().fill(DFPalette.line(scheme))
-                            .frame(width: 1).padding(.leading, 20).padding(.vertical, 4)
+                            .frame(width: DFMetrics.hairline * 2).padding(.leading, DFSpace.s + 2).padding(.vertical, DFSpace.xs)
                     }
+                    .accessibilityElement(children: .contain)
                     .accessibilityLabel("设置分类")
                 }
                 SidebarHealthStatus(store: store)
-
             }
-            .padding(.top, 8)
+            .padding(.horizontal, DFSpace.s + 2)
+            .padding(.top, DFSpace.s)
             .overlay(alignment: .top) {
-                Rectangle().fill(DFPalette.line(scheme)).frame(height: 0.5)
+                Rectangle().fill(DFPalette.line(scheme)).frame(height: DFMetrics.hairline)
             }
         }
         .dfWorkspace()
         .overlay(alignment: .trailing) {
-            Rectangle().fill(DFPalette.line(scheme)).frame(width: 0.5)
+            Rectangle().fill(DFPalette.line(scheme)).frame(width: DFMetrics.hairline)
         }
+    }
+
+    private func navButton<Label: View>(_ page: Page, @ViewBuilder label: () -> Label) -> some View {
+        Button {
+            if page == .settings { store.openSettings() } else { store.selectedPage = page }
+        } label: { label() }
+        .buttonStyle(.plain)
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -96,12 +89,9 @@ struct MainSidebar: View {
             .font(DFType.caption)
             .dfSecondaryText()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+            .padding(.horizontal, DFSpace.s + 2)
+            .padding(.top, DFSpace.m)
+            .padding(.bottom, DFSpace.xs)
             .accessibilityAddTraits(.isHeader)
     }
 }
@@ -147,7 +137,7 @@ private struct SidebarHealthStatus: View {
             KeyboardIssueList(store: store, issues: issues)
                 .dfFloating()
         }
-        .padding(.horizontal, 22).padding(.vertical, 10)
+        .padding(.horizontal, DFSpace.m).padding(.vertical, DFSpace.s + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

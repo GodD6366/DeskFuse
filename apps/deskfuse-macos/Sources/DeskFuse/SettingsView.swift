@@ -30,7 +30,7 @@ struct SettingsView: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            DFPageHeader(destination.category.title)
+            DFTopBar(section: Page.settings.section, title: destination.category.title)
             SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
                 SettingsPageContainer.Page(id: category.rawValue,
                     content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))

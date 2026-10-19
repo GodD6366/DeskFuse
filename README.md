@@ -91,7 +91,7 @@ rustup component add rust-src
 CODESIGN_IDENTITY=- ./scripts/build_and_run.sh
 ```
 
-无签名证书时显式加 `CODESIGN_IDENTITY=-`；加 `--build` 只构建不启动，多套 Xcode 用 `DEVELOPER_DIR=...` 单次选择。本地局域网安装包直接运行 `./scripts/package-macos.sh`（等同 `--lan`），输出到 `dist/{version}-build{number}/`。Homebrew/GitHub 渠道需显式指定 `--homebrew`；无发行证书的渠道测试可使用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --homebrew`，输出到 `dist/homebrew/`，不参与局域网更新。
+无签名证书时显式加 `CODESIGN_IDENTITY=-`；加 `--build` 只构建不启动，多套 Xcode 用 `DEVELOPER_DIR=...` 单次选择。本地局域网安装包直接运行 `./scripts/package-macos.sh`（等同 `--lan`），输出到 `dist/{version}-build{number}/`。本机迭代运行 `./scripts/package-macos.sh --auto`：默认使用增量 Swift、复用 Rust 和麦克风缓存，签名并安装应用，保留 LAN 更新包，跳过 DMG 和公证。首次构建或缓存失效仍需编译；需要完整打包时使用 `--auto --full`，仅需额外生成 DMG 时使用 `--auto --with-dmg`。快速模式产物仅供本地测试，不用于公开发布；CI 或要求公证时默认保留完整流程。Homebrew/GitHub 渠道需显式指定 `--homebrew`；无发行证书的渠道测试可使用 `CODESIGN_IDENTITY=- ./scripts/package-macos.sh --homebrew`，输出到 `dist/homebrew/`，不参与局域网更新。
 
 ## 项目结构
 

@@ -22,55 +22,59 @@ struct MicrophoneSettingsView: View {
     }
 
     var body: some View {
-        DFScrollPage {
-            VStack(alignment: .leading, spacing: DFSpace.xl) {
+        DFScrollPage(maxWidth: nil) {
+            Group {
                 if let state = model.snapshot {
                     let role = resolvedRole(state)
                     if role == nil || editingRole {
                         identityPicker(current: role, state: state)
+                            .frame(maxWidth: DFMetrics.focusMaxWidth)
+                            .frame(maxWidth: .infinity)
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.97)),
+                                                    removal: .opacity))
                     } else if let role {
-                        roleStatus(state, role: role)
-                        setupSteps(state, role: role)
-                        completionNotice(state, role: role)
-                        if role == .receiver, let message = model.driverMessage {
-                            DFNotice(tone: .neutral, title: "驱动操作", message: message,
-                                     onDismiss: { model.driverMessage = nil })
-                        }
-                        if let connectionError = model.connectionError,
-                           !connectionErrorHandled(state, role: role) {
-                            DFNotice(tone: .warning, title: "后台连接暂时异常",
-                                     message: MicrophoneErrorText.friendly(connectionError))
-                        }
-                        privacyNote
+                        configured(state, role: role)
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                                    removal: .opacity))
                     }
                 } else if let connectionError = model.connectionError {
-                    MicrophoneNoticeCard(
-                        symbol: "mic.slash",
-                        tone: .warning,
-                        title: "无法连接麦克风服务",
-                        message: MicrophoneErrorText.friendly(connectionError),
-                        detail: MicrophoneErrorText.detail(connectionError),
-                        primaryTitle: "重新连接",
-                        primaryAction: { model.retryConnection(engine: store.engine) }
-                    )
-                    privacyNote
+                    VStack(alignment: .leading, spacing: DFSpace.xl) {
+                        MicrophoneNoticeCard(
+                            symbol: "mic.slash",
+                            tone: .warning,
+                            title: "无法连接麦克风服务",
+                            message: MicrophoneErrorText.friendly(connectionError),
+                            detail: MicrophoneErrorText.detail(connectionError),
+                            primaryTitle: "重新连接",
+                            primaryAction: { model.retryConnection(engine: store.engine) }
+                        )
+                        privacyNote
+                    }
+                    .frame(maxWidth: DFMetrics.focusMaxWidth)
+                    .frame(maxWidth: .infinity)
                 } else {
-                    MicrophoneLoadingCard()
-                    privacyNote
-                }
-                if let error = model.error {
-                    MicrophoneNoticeCard(
-                        symbol: "exclamationmark.triangle.fill",
-                        tone: .danger,
-                        title: "操作未完成",
-                        message: MicrophoneErrorText.friendly(error),
-                        detail: MicrophoneErrorText.detail(error),
-                        onDismiss: { model.error = nil }
-                    )
+                    VStack(alignment: .leading, spacing: DFSpace.xl) {
+                        MicrophoneLoadingCard()
+                        privacyNote
+                    }
+                    .frame(maxWidth: DFMetrics.focusMaxWidth)
+                    .frame(maxWidth: .infinity)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(DFMotion.settle, value: screenKey)
+            if let error = model.error {
+                MicrophoneNoticeCard(
+                    symbol: "exclamationmark.triangle.fill",
+                    tone: .danger,
+                    title: "操作未完成",
+                    message: MicrophoneErrorText.friendly(error),
+                    detail: MicrophoneErrorText.detail(error),
+                    onDismiss: { model.error = nil }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .animation(DFMotion.snappy, value: model.error)
         .disabled(model.saving || model.managingDriver)
         .onAppear {
             model.ensureStarted(engine: store.engine)
@@ -91,6 +95,73 @@ struct MicrophoneSettingsView: View {
                 driverAction = nil
                 model.manageDriver(action, restartAudio: restartAudio)
             }.dfFloating()
+        }
+    }
+
+    /// 页面处于哪一屏：身份选择、已配置（区分角色）、连接失败或加载中，用于驱动屏间过渡。
+    private var screenKey: String {
+        guard let state = model.snapshot else { return model.connectionError == nil ? "loading" : "failed" }
+        guard let role = resolvedRole(state), !editingRole else { return "identity" }
+        return role.rawValue
+    }
+
+    /// 接收端按行布局，确保下方两个区块从同一条水平线开始。
+    @ViewBuilder private func configured(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
+        if role == .receiver {
+            VStack(alignment: .leading, spacing: DFSpace.l) {
+                DFAdaptiveColumns(sideWidth: DFMetrics.wideSideColumnWidth, equalHeight: true) {
+                    VStack(alignment: .leading, spacing: DFSpace.m) {
+                        DFSectionLabel("当前状态")
+                        roleStatus(state, role: role)
+                    }
+                    VStack(alignment: .leading, spacing: DFSpace.m) {
+                        DFSectionLabel("设置步骤")
+                        sourceStep(state)
+                    }
+                }
+                DFAdaptiveColumns(sideWidth: DFMetrics.wideSideColumnWidth) {
+                    MicrophoneSpeechTestCard(receiver: true)
+                    // 所有运行异常集中在右下列，左侧与右上卡片高度不随异常出现而变化。
+                    VStack(alignment: .leading, spacing: DFSpace.l) {
+                        driverStep(state)
+                        runtimeNotices(state, role: role)
+                    }
+                }
+                configurationNotices(state, role: role)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: DFSpace.l) {
+                DFSectionLabel("当前状态")
+                roleStatus(state, role: role)
+                inputPermission(state)
+                runtimeNotices(state, role: role)
+                configurationNotices(state, role: role)
+                MicrophoneSpeechTestCard(receiver: false)
+            }
+            .frame(maxWidth: DFMetrics.focusMaxWidth)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder private func configurationNotices(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
+        completionNotice(state, role: role)
+    }
+
+    /// 运行期异常：来源不可用、连接中断、后台连接异常。权限与驱动问题由各自的设置区展示。
+    @ViewBuilder private func runtimeNotices(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
+        if role == .receiver && !state.settings.source.isEmpty && !peers.isEmpty
+            && !peers.contains(where: { $0.id == state.settings.source }) {
+            DFNotice(tone: .warning, title: "原来源设备不可用",
+                     message: "重新配对来源设备，或在“选择来源设备”中换一台 Mac。")
+        }
+        if state.settings.enabled && state.phase == "failed" {
+            DFNotice(tone: .warning, title: "连接暂时中断",
+                     message: statusText(state, role: role))
+        }
+        if let connectionError = model.connectionError,
+           !connectionErrorHandled(state, role: role) {
+            DFNotice(tone: .warning, title: "后台连接暂时异常",
+                     message: MicrophoneErrorText.friendly(connectionError))
         }
     }
 
@@ -181,13 +252,23 @@ struct MicrophoneSettingsView: View {
             }
             .padding(DFSpace.xl)
             Divider()
-            routePath(state, role: role).padding(DFSpace.xl)
-            if state.settings.enabled && canEnable(state, role: role) {
-                Divider()
-                usageSection(state, role: role).padding(DFSpace.xl)
-            }
+            MicrophoneSignalStage(source: routeSource(state, role: role),
+                                  destination: routeDestination(state, role: role),
+                                  mode: signalMode(state, role: role),
+                                  tone: connectionTone(state, role: role),
+                                  label: connectionLabel(state, role: role),
+                                  level: state.native.level,
+                                  sourceMenu: role == .provider ? AnyView(inputPicker(state)) : nil)
+                .padding(.horizontal, DFSpace.xl)
+                .padding(.vertical, DFSpace.xl + DFSpace.xs)
+            // 使用状态区常驻显示：开始/结束采集只切换内容，不插入或移除行，避免卡片高度变化引发整页抖动。
+            Divider()
+            usageSection(state, role: role)
+                .padding(DFSpace.xl)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .dfCard()
+        .animation(DFMotion.settle, value: state.settings.enabled)
     }
 
     private func sharingToggle(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
@@ -236,37 +317,23 @@ struct MicrophoneSettingsView: View {
             let name = sourcePeerName(state)
             if !model.driverInstalled { return "来源：\(name) · 尚未安装虚拟麦克风" }
             if !state.native.driver { return "来源：\(name) · 等待驱动就绪" }
+            guard model.isDefaultInput == true else { return "来源：\(name) · 请设为系统默认输入" }
             guard state.settings.enabled else { return "来源：\(name) · 设置已完成，打开开关即可使用" }
             if model.isDefaultInput == true { return "来源：\(name) · 已是系统默认输入" }
             return "来源：\(name) · 等待语音应用使用"
         }
     }
 
-    private func routePath(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: DFSpace.l) {
-                routeSource(state, role: role)
-                routeConnection(state, role: role)
-                routeDestination(state, role: role)
-            }
-            VStack(spacing: DFSpace.l) {
-                routeSource(state, role: role)
-                routeConnection(state, role: role)
-                routeDestination(state, role: role)
-            }
-        }
-    }
-
-    private func routeSource(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
+    private func routeSource(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> MicrophoneSignalEndpoint {
         switch role {
         case .provider:
-            return endpoint(symbol: "mic.fill", title: inputDisplayName(state), subtitle: "此 Mac 的麦克风")
+            MicrophoneSignalEndpoint(symbol: "mic.fill", title: inputDisplayName(state), subtitle: "点击选择麦克风")
         case .receiver:
-            return endpoint(symbol: "laptopcomputer", title: sourcePeerName(state), subtitle: "声音来源")
+            MicrophoneSignalEndpoint(symbol: "laptopcomputer", title: sourcePeerName(state), subtitle: "声音来源")
         }
     }
 
-    private func routeDestination(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
+    private func routeDestination(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> MicrophoneSignalEndpoint {
         switch role {
         case .provider:
             let count = peers.count
@@ -275,7 +342,7 @@ struct MicrophoneSettingsView: View {
                 ?? (count == 0 ? "等待配对设备" : (count == 1 ? "1 台已配对电脑" : "\(count) 台已配对电脑"))
             let subtitle: String
             if active != nil {
-                subtitle = state.phase == "streaming" ? "正在使用 · 共 \(count) 台已配对" : "已连接 · 共 \(count) 台已配对"
+                subtitle = state.phase == "streaming" ? "正在使用 · 共 \(count) 台" : "已连接 · 共 \(count) 台"
             } else if count == 0 {
                 subtitle = "先在设备中配对"
             } else if !state.settings.enabled {
@@ -283,47 +350,21 @@ struct MicrophoneSettingsView: View {
             } else {
                 subtitle = onlinePeerCount > 0 ? "无需授权 · 按需连接" : "等待设备上线"
             }
-            return endpoint(symbol: "laptopcomputer", title: title, subtitle: subtitle)
+            return MicrophoneSignalEndpoint(symbol: "laptopcomputer", title: title, subtitle: subtitle)
         case .receiver:
-            return endpoint(symbol: "desktopcomputer",
-                            title: model.driverInstalled ? "DeskFuse 麦克风" : "虚拟麦克风",
-                            subtitle: model.driverInstalled ? "此 Mac 的虚拟输入" : "需要安装驱动")
+            return MicrophoneSignalEndpoint(symbol: "waveform",
+                                            title: model.driverInstalled ? "DeskFuse 麦克风" : "虚拟麦克风",
+                                            subtitle: model.driverInstalled ? "此 Mac 的虚拟输入" : "需要安装驱动")
         }
     }
 
-    private func endpoint(symbol: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: DFSpace.m) {
-            Image(systemName: symbol).font(DFType.pageTitle.weight(.regular))
-                .frame(width: 48, height: 48)
-                .background(DFPalette.control(scheme), in: RoundedRectangle(cornerRadius: DFRadius.card))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: DFSpace.xxs) {
-                Text(subtitle).font(DFType.detail).dfSecondaryText()
-                Text(title).font(DFType.title).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(minWidth: 170, maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func routeConnection(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
-        let tone = connectionTone(state, role: role)
-        return VStack(spacing: DFSpace.s) {
-            Text(connectionLabel(state, role: role))
-                .font(DFType.caption.weight(.medium))
-                .foregroundStyle(tone.color)
-                .padding(.horizontal, DFSpace.s + 2)
-                .padding(.vertical, DFSpace.xs)
-                .background(tone.color.opacity(DFOpacity.soft), in: Capsule())
-            HStack(spacing: 0) {
-                Rectangle().fill(DFPalette.line(scheme)).frame(height: DFMetrics.hairline)
-                Image(systemName: "chevron.right")
-                    .font(DFType.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            Text("音频不保存").font(DFType.caption).dfSecondaryText()
-        }
-        .frame(minWidth: 120, maxWidth: 180)
+    /// 把连接状态映射到信号舞台的动效档位，与状态胶囊的文案和色调保持一致。
+    private func signalMode(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> MicrophoneSignalMode {
+        guard state.settings.enabled else { return .off }
+        if state.phase == "streaming" { return .streaming }
+        if connectionTone(state, role: role) == .warning { return .attention }
+        if isReady(state, role: role) { return .ready }
+        return .waiting
     }
 
     private func connectionTone(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> DFTone {
@@ -362,48 +403,57 @@ struct MicrophoneSettingsView: View {
                 .frame(width: 24, height: 20)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: DFSpace.xs) {
-                Text(usageTitle(state, role: role)).font(DFType.title)
+                Text(usageTitle(state, role: role))
+                    .font(DFType.title)
+                    .lineLimit(1)
+                // 固定两行占位：不同状态文案长短不一，也保持区块高度不变。
                 Text(usageDetail(state, role: role))
                     .font(DFType.detail).dfSecondaryText()
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2, reservesSpace: true)
             }
             Spacer(minLength: DFSpace.s)
-            if state.phase == "streaming" {
-                MicrophoneLevelView(level: state.native.level)
-                    .frame(width: 72, height: 24)
-                    .accessibilityLabel("麦克风电平")
-                    .accessibilityValue("\(Int(state.native.level * 100))%")
-            } else if role == .receiver && !state.native.driver && model.driverInstalled {
-                Button("重启音频服务…") { driverAction = .restartAudio }
+            Group {
+                if state.phase == "streaming" {
+                    MicrophoneLevelView(level: state.native.level)
+                        .frame(width: 72, height: 24)
+                        .accessibilityLabel("麦克风电平")
+                        .accessibilityValue("\(Int(state.native.level * 100))%")
+                }
             }
+            .frame(minWidth: 72, minHeight: 28)
         }
     }
 
     private func usageSymbol(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> String {
         if state.phase == "streaming" { return "waveform" }
-        if usageTone(state, role: role) == .warning { return "exclamationmark.triangle" }
+        if hasIssue(state, role: role) { return "pause.circle" }
         if isReady(state, role: role) { return "moon.zzz" }
         return "mic"
     }
 
+    /// 使用状态区只表达运行状态；异常统一由设置步骤（接收端右下角）或下方提示展示，
+    /// 这里不出现告警色和操作按钮，保证状态卡高度与视觉稳定。
     private func usageTone(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> DFTone {
-        guard state.settings.enabled else { return .neutral }
-        if state.phase == "streaming" { return .success }
-        if state.phase == "failed" { return .warning }
-        if role == .provider && state.native.permission != "authorized" { return .warning }
-        if role == .receiver && (!model.driverInstalled || !state.native.driver) { return .warning }
-        return .neutral
+        state.settings.enabled && state.phase == "streaming" ? .success : .neutral
+    }
+
+    /// 需要用户处理才能继续使用的异常：权限、来源、驱动或连接失败。
+    private func hasIssue(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> Bool {
+        guard state.settings.enabled, state.phase != "streaming" else { return false }
+        if state.phase == "failed" { return true }
+        switch role {
+        case .provider: return state.native.permission != "authorized"
+        case .receiver: return state.settings.source.isEmpty || !model.driverInstalled || !state.native.driver
+        }
     }
 
     private func usageTitle(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> String {
         guard state.settings.enabled else { return "共享已关闭" }
+        if hasIssue(state, role: role) { return "暂不可用" }
         switch role {
         case .provider:
             if state.phase == "streaming" {
                 return "\(activePeerName(state) ?? "另一台 Mac") 正在使用麦克风"
-            }
-            if state.native.permission != "authorized" {
-                return state.native.permission == "denied" ? "麦克风权限已关闭" : "需要麦克风权限"
             }
             if peers.isEmpty { return "等待配对设备" }
             if onlinePeerCount == 0 { return "等待已配对设备上线" }
@@ -413,13 +463,9 @@ struct MicrophoneSettingsView: View {
                     : "已就绪，\(peers.count) 台已配对设备可直接使用"
             }
             if state.phase == "waiting" { return "设备正在连接" }
-            if state.phase == "failed" { return "连接暂时中断" }
             if state.native.locked { return "已暂停共享" }
             return "等待已配对设备使用"
         case .receiver:
-            if state.settings.source.isEmpty { return "尚未选择来源设备" }
-            if !model.driverInstalled { return "需要安装虚拟麦克风" }
-            if !state.native.driver { return "驱动服务未响应" }
             if state.phase == "streaming" {
                 let names = Array(Set(model.readerApps.map(\.name))).sorted()
                 if !names.isEmpty { return names.joined(separator: "、") + "正在使用" }
@@ -428,7 +474,6 @@ struct MicrophoneSettingsView: View {
             if isReady(state, role: role) { return "已就绪，等待语音应用使用" }
             if !sourcePeerConnected(state) { return "来源设备离线" }
             if state.phase == "waiting" { return "正在连接来源设备" }
-            if state.phase == "failed" { return "连接暂时中断" }
             if state.native.locked { return "已暂停共享" }
             return "等待来源设备"
         }
@@ -440,15 +485,17 @@ struct MicrophoneSettingsView: View {
                 ? "开启后，仅在设备使用麦克风时采集和传输。"
                 : "开启后，仅在语音应用读取虚拟麦克风时连接来源设备。"
         }
+        if hasIssue(state, role: role) {
+            return role == .receiver
+                ? "需要处理的问题已列在右侧设置步骤中，处理后自动恢复。"
+                : "需要处理的问题已列在下方，处理后自动恢复。"
+        }
         switch role {
         case .provider:
             if state.phase == "streaming" {
                 return peers.count > 1
                     ? "应用停止读取后自动结束。其他已配对设备需等本次使用结束。"
                     : "应用停止读取后自动结束采集与传输。"
-            }
-            if state.native.permission != "authorized" {
-                return "macOS 需要授权 DeskFuse 读取实体麦克风。"
             }
             if peers.isEmpty {
                 return "先在“设备”中配对另一台电脑；配对后可直接使用，不需要逐台授权。"
@@ -463,9 +510,6 @@ struct MicrophoneSettingsView: View {
             }
             return statusText(state, role: role)
         case .receiver:
-            if state.settings.source.isEmpty { return "先选择另一台已配对的 Mac。" }
-            if !model.driverInstalled { return "安装虚拟麦克风后，语音应用才能接收远端声音。" }
-            if !state.native.driver { return "驱动已安装但服务没有响应；可重启音频服务或重新安装驱动。" }
             if model.readerApps.contains(where: \.isSoundSettings) {
                 return "系统声音设置正在检测输入电平。离开该页面后，若没有其他应用使用，传输会自动停止。"
             }
@@ -496,96 +540,32 @@ struct MicrophoneSettingsView: View {
 
     // MARK: - 设置步骤
 
-    @ViewBuilder private func setupSteps(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
-        VStack(alignment: .leading, spacing: DFSpace.m) {
-            DFSectionLabel(role == .provider ? "麦克风设置" : "设置步骤")
-            switch role {
-            case .provider:
-                inputStep(state)
-                providerDevices(state)
-            case .receiver:
-                sourceStep(state)
-                driverStep(state)
+    private func inputPicker(_ state: MicrophoneSharingSnapshot) -> some View {
+        Picker("输入设备", selection: Binding(
+            get: { state.settings.input_uid },
+            set: { value in update { $0.input_uid = value } }
+        )) {
+            Text("系统默认麦克风").tag("")
+            ForEach(model.inputs) { input in Text(input.name).tag(input.id) }
+            if !state.settings.input_uid.isEmpty && !model.inputs.contains(where: { $0.id == state.settings.input_uid }) {
+                Text("所选麦克风不可用").tag(state.settings.input_uid)
             }
+        }
+        .pickerStyle(.inline)
+        .onAppear { model.refreshInputs() }
+    }
+
+    @ViewBuilder private func inputPermission(_ state: MicrophoneSharingSnapshot) -> some View {
+        if state.native.permission != "authorized" {
+            DFNotice(tone: state.native.permission == "denied" ? .warning : .accent,
+                     title: state.native.permission == "denied" ? "麦克风权限已关闭" : "需要允许麦克风访问",
+                     message: "macOS 会询问是否允许 DeskFuse 读取实体麦克风。",
+                     actionTitle: state.native.permission == "denied" ? "打开系统设置…" : "允许访问…",
+                     action: model.requestPermission)
         }
     }
 
-    private func inputStep(_ state: MicrophoneSharingSnapshot) -> some View {
-        MicrophoneStepCard(index: 1, title: "选择麦克风",
-                           detail: "仅使用此 Mac 的实体输入，不会采集 DeskFuse 虚拟设备。",
-                           complete: state.native.permission == "authorized") {
-            DFSettingRow(title: "输入设备", detail: "系统默认会跟随 macOS 当前选择。", symbol: "mic") {
-                Picker("输入设备", selection: Binding(
-                    get: { state.settings.input_uid },
-                    set: { value in update { $0.input_uid = value } }
-                )) {
-                    Text("系统默认麦克风").tag("")
-                    ForEach(model.inputs) { input in Text(input.name).tag(input.id) }
-                    if !state.settings.input_uid.isEmpty && !model.inputs.contains(where: { $0.id == state.settings.input_uid }) {
-                        Text("所选麦克风不可用").tag(state.settings.input_uid)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 240)
-            }
-            if state.native.permission != "authorized" {
-                DFNotice(tone: state.native.permission == "denied" ? .warning : .accent,
-                         title: state.native.permission == "denied" ? "麦克风权限已关闭" : "需要允许麦克风访问",
-                         message: "macOS 会询问是否允许 DeskFuse 读取实体麦克风。",
-                         actionTitle: state.native.permission == "denied" ? "打开系统设置…" : "允许访问…",
-                         action: model.requestPermission)
-            }
-        }
-    }
-
-    private func providerDevices(_ state: MicrophoneSharingSnapshot) -> some View {
-        DFSection("可直接使用", footer: "可信的已配对电脑不需要逐台授权；同一时间只服务一台设备，其他设备会收到占用中状态。") {
-            if peers.isEmpty {
-                MicrophoneEmptyRow(symbol: "laptopcomputer",
-                                   title: "还没有已配对的电脑",
-                                   message: "先在“设备”中完成配对；之后无需授权即可使用此麦克风。",
-                                   actionTitle: "前往设备") { store.selectedPage = .devices }
-            } else {
-                let ordered = orderedPeers(state)
-                VStack(spacing: 0) {
-                    ForEach(ordered, id: \.id) { peer in
-                        providerDeviceRow(peer, state: state)
-                        if peer.id != ordered.last?.id {
-                            DFDivider(inset: 30)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func providerDeviceRow(_ peer: Device, state: MicrophoneSharingSnapshot) -> some View {
-        HStack(spacing: DFSpace.m) {
-            Image(systemName: "laptopcomputer")
-                .font(DFType.icon(.regular))
-                .foregroundStyle(state.peer == peer.id ? DFPalette.accent : Color.secondary)
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: DFSpace.xxs) {
-                HStack(spacing: DFSpace.s) {
-                    Text(peer.name).font(DFType.body)
-                        .lineLimit(1).truncationMode(.middle)
-                    if state.peer == peer.id { DFBadge("使用中", tone: .success) }
-                }
-                Text(providerDeviceDetail(peer, state: state))
-                    .font(DFType.detail).dfSecondaryText()
-            }
-            Spacer(minLength: DFSpace.s)
-        }
-        .padding(.vertical, DFSpace.s)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func providerDeviceDetail(_ peer: Device, state: MicrophoneSharingSnapshot) -> String {
-        if state.peer == peer.id { return peer.connected ? "在线 · 正在使用" : "正在使用" }
-        if !state.peer.isEmpty && peer.connected { return "在线 · 当前设备结束后可用" }
-        return peer.connected ? "在线 · 可直接使用" : "离线 · 上线后可直接使用"
-    }
+    private let sourceDeviceRowHeight: CGFloat = 52
 
     private func sourceStep(_ state: MicrophoneSharingSnapshot) -> some View {
         MicrophoneStepCard(index: 1, title: "选择来源设备",
@@ -598,18 +578,21 @@ struct MicrophoneSettingsView: View {
                                    actionTitle: "前往设备") { store.selectedPage = .devices }
             } else {
                 let ordered = orderedPeers(state)
-                VStack(spacing: 0) {
-                    ForEach(ordered, id: \.id) { peer in
-                        receiverPeerRow(peer, state: state)
-                        if peer.id != ordered.last?.id {
-                            DFDivider(inset: 30)
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        ForEach(ordered, id: \.id) { peer in
+                            receiverPeerRow(peer, state: state)
+                                .frame(height: sourceDeviceRowHeight)
+                                .overlay(alignment: .bottom) {
+                                    if peer.id != ordered.last?.id {
+                                        DFDivider(inset: 30)
+                                    }
+                                }
                         }
                     }
                 }
-                if !state.settings.source.isEmpty && !peers.contains(where: { $0.id == state.settings.source }) {
-                    DFNotice(tone: .warning, title: "原来源设备不可用",
-                             message: "重新配对来源设备，或在上面选择另一台 Mac。")
-                }
+                .frame(height: sourceDeviceRowHeight * CGFloat(min(ordered.count, 3)))
+                .scrollDisabled(ordered.count <= 3)
             }
         }
     }
@@ -636,6 +619,8 @@ struct MicrophoneSettingsView: View {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(DFType.icon(.medium))
                     .foregroundStyle(selected ? DFPalette.accent : Color.secondary.opacity(0.5))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(DFMotion.snappy, value: selected)
                     .accessibilityHidden(true)
             }
             .padding(.vertical, DFSpace.s)
@@ -647,9 +632,9 @@ struct MicrophoneSettingsView: View {
     }
 
     private func driverStep(_ state: MicrophoneSharingSnapshot) -> some View {
-        MicrophoneStepCard(index: 2, title: "安装虚拟麦克风",
-                           detail: "安装后，语音软件才会把远端声音识别为本机输入。",
-                           complete: model.driverInstalled && state.native.driver) {
+        MicrophoneStepCard(index: 2, title: "设置虚拟麦克风",
+                           detail: "安装驱动并设为系统默认输入，完成麦克风设置。",
+                           complete: model.driverInstalled && state.native.driver && model.isDefaultInput == true) {
             if model.managingDriver {
                 HStack(spacing: DFSpace.s) {
                     ProgressView().controlSize(.small)
@@ -661,10 +646,24 @@ struct MicrophoneSettingsView: View {
             }
             if !model.driverInstalled {
                 MicrophoneStatusRow(symbol: "arrow.down.circle", tone: .accent,
-                                    title: "需要安装虚拟麦克风",
-                                    detail: "安装需要管理员授权；完成后建议立即重启音频服务。",
+                                    title: model.legacyDriverInstalled ? "需要更新虚拟麦克风" : "需要安装虚拟麦克风",
+                                    detail: model.legacyDriverInstalled
+                                        ? "检测到旧版名称的麦克风驱动，安装时会自动移除；完成后建议立即重启音频服务。"
+                                        : "安装需要管理员授权；完成后建议立即重启音频服务。",
                                     actionTitle: "安装…") { driverAction = .install }
+                if model.legacyDriverInstalled {
+                    DFSettingRow(title: "不再使用", detail: "也可以直接移除旧版驱动，不安装新驱动。") {
+                        Button("卸载旧版…") { driverAction = .uninstall }
+                    }
+                }
             } else {
+                if model.legacyDriverInstalled {
+                    // 新旧驱动共用插件 UUID，不能并存；重新安装会校验身份后移除旧版。
+                    MicrophoneStatusRow(symbol: "exclamationmark.triangle", tone: .warning,
+                                        title: "检测到旧版麦克风驱动",
+                                        detail: "旧版驱动会与当前驱动冲突，重新安装会自动移除它。",
+                                        actionTitle: "重新安装…") { driverAction = .install }
+                }
                 if state.native.driver {
                     MicrophoneStatusRow(symbol: "checkmark.circle.fill", tone: .success,
                                         title: "驱动已安装并运行",
@@ -682,10 +681,11 @@ struct MicrophoneSettingsView: View {
                             .font(DFType.body)
                             .foregroundStyle(DFPalette.success)
                     } else {
-                        DFSettingRow(title: "系统默认输入",
-                                     detail: "使用系统默认输入的应用会自动收到远端声音。") {
-                            Button("设为默认", action: model.setDefaultInput)
-                        }
+                        MicrophoneStatusRow(symbol: "exclamationmark.circle.fill", tone: .warning,
+                                            title: "系统默认输入 · 待设置",
+                                            detail: "请设为默认，完成设置后应用才能通过系统默认输入接收远端声音。",
+                                            tint: .yellow, primaryAction: true,
+                                            actionTitle: "设为默认", action: model.setDefaultInput)
                     }
                     Text("也可以直接在微信输入法等应用的麦克风设置中选择“DeskFuse 麦克风（来自 \(sourcePeerName(state))）”。")
                         .font(DFType.detail).dfSecondaryText()
@@ -721,7 +721,8 @@ struct MicrophoneSettingsView: View {
     // MARK: - 完成与提示
 
     @ViewBuilder private func completionNotice(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
-        if !state.settings.enabled && canEnable(state, role: role) {
+        if !state.settings.enabled && canEnable(state, role: role)
+            && (role == .provider || model.isDefaultInput == true) {
             DFNotice(tone: .accent, title: "设置已完成",
                      message: role == .provider
                         ? "打开顶部开关后，所有已配对电脑都可在需要时直接连接。"
@@ -862,15 +863,17 @@ private struct MicrophoneIdentityCard: View {
                 HStack(alignment: .top) {
                     Image(systemName: role.symbol)
                         .font(DFType.icon(.large, weight: .regular))
-                        .foregroundStyle(DFPalette.accent)
+                        .foregroundStyle(hovering ? Color.white : DFPalette.accent)
+                        .symbolEffect(.bounce, value: hovering)
                         .frame(width: 48, height: 48)
-                        .background(DFPalette.control(scheme),
+                        .background(hovering ? DFPalette.accent : DFPalette.control(scheme),
                                     in: RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
                         .accessibilityHidden(true)
                     Spacer(minLength: DFSpace.s)
                     Image(systemName: "arrow.right")
                         .font(DFType.icon(.small, weight: .semibold))
                         .foregroundStyle(hovering ? DFPalette.accent : Color.secondary)
+                        .offset(x: hovering ? DFSpace.xs : 0)
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: DFSpace.xs) {
@@ -894,6 +897,9 @@ private struct MicrophoneIdentityCard: View {
                                   lineWidth: hovering ? DFMetrics.selectionStroke : DFMetrics.hairline)
             }
             .contentShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
+            .shadow(color: hovering ? DFShadow.hoverColor : .clear,
+                    radius: DFShadow.hoverRadius, y: DFShadow.hoverY)
+            .offset(y: hovering ? -DFSpace.xxs : 0)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -922,10 +928,12 @@ private struct MicrophoneStepCard<Content: View>: View {
                         Image(systemName: "checkmark")
                             .font(DFType.icon(.small, weight: .semibold))
                             .foregroundStyle(.white)
+                            .transition(.scale(scale: 0.3).combined(with: .opacity))
                     } else {
                         Text("\(index)")
                             .font(DFType.caption.weight(.semibold))
                             .dfSecondaryText()
+                            .transition(.opacity)
                     }
                 }
                 .frame(width: 24, height: 24)
@@ -940,12 +948,14 @@ private struct MicrophoneStepCard<Content: View>: View {
                 Text(complete ? "已完成" : "待完成")
                     .font(DFType.caption.weight(.medium))
                     .foregroundStyle(complete ? DFPalette.success : Color.secondary)
+                    .contentTransition(.opacity)
             }
             content()
         }
         .padding(DFMetrics.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dfCard()
+        .animation(DFMotion.snappy, value: complete)
     }
 }
 
@@ -1041,16 +1051,20 @@ private struct MicrophoneStatusRow: View {
     let tone: DFTone
     let title: String
     var detail: String? = nil
+    var tint: Color? = nil
+    var primaryAction = false
     var actionTitle: String? = nil
     var action: (() -> Void)? = nil
+
+    private var color: Color { tint ?? tone.color }
 
     var body: some View {
         HStack(spacing: DFSpace.m) {
             Image(systemName: symbol)
                 .font(DFType.icon(.medium, weight: .regular))
-                .foregroundStyle(tone.color)
+                .foregroundStyle(color)
                 .frame(width: 32, height: 32)
-                .background(tone.color.opacity(DFOpacity.faint),
+                .background(color.opacity(DFOpacity.faint),
                             in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: DFSpace.xxs) {
@@ -1063,15 +1077,19 @@ private struct MicrophoneStatusRow: View {
             }
             Spacer(minLength: DFSpace.s)
             if let actionTitle, let action {
-                Button(actionTitle, action: action).buttonStyle(.dfSecondary)
+                if primaryAction {
+                    Button(actionTitle, action: action).buttonStyle(.dfPrimary)
+                } else {
+                    Button(actionTitle, action: action).buttonStyle(.dfSecondary)
+                }
             }
         }
         .padding(DFSpace.m)
-        .background(tone.color.opacity(DFOpacity.faint),
+        .background(color.opacity(DFOpacity.faint),
                     in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
-                .strokeBorder(tone.color.opacity(DFOpacity.strong), lineWidth: DFMetrics.hairline)
+                .strokeBorder(color.opacity(DFOpacity.strong), lineWidth: DFMetrics.hairline)
         }
     }
 }
@@ -1142,7 +1160,7 @@ private enum MicrophoneErrorText {
 }
 
 /// A compact level indicator, not a progress bar. It only reflects real samples.
-private struct MicrophoneLevelView: View {
+struct MicrophoneLevelView: View {
     let level: Float
     var body: some View {
         HStack(spacing: 3) {
@@ -1150,7 +1168,9 @@ private struct MicrophoneLevelView: View {
                 Capsule().fill(Double(index) / 12 < min(1, sqrt(Double(max(0, level)))) ? DFPalette.success : Color.primary.opacity(0.08))
                     .frame(width: 3, height: CGFloat(8 + (index % 4) * 4))
             }
-        }.accessibilityElement(children: .ignore)
+        }
+        .animation(.easeOut(duration: 0.12), value: level)
+        .accessibilityElement(children: .ignore)
     }
 }
 
@@ -1168,7 +1188,7 @@ private struct MicrophoneDriverSheet: View {
                 Text("保留已安装的驱动和当前共享设置。服务恢复后按需连接，语音应用可能需要重新开始录音。")
                     .font(DFType.detail).dfSecondaryText()
             } else {
-                Text("仅操作 DeskFuse 的麦克风驱动，需要在系统弹窗中授权管理员权限。操作前会关闭麦克风共享。")
+                Text("仅操作 DeskFuse 的麦克风驱动（包括旧版名称遗留的驱动），需要在系统弹窗中授权管理员权限。操作前会关闭麦克风共享。")
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("完成后立即重启音频服务", isOn: $restartAudio).font(DFType.body)
                 Text(restartAudio ? "这会短暂中断此 Mac 上所有应用的录音和播放。" : "稍后重启 Mac 后生效。")

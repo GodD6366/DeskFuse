@@ -10,8 +10,7 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             MainSidebar(store: store)
-                .padding(.top, 28) // Keep navigation below the native window buttons.
-                .frame(width: 212)
+                .frame(width: DFMetrics.sidebarWidth)
             workspace
         }
         .ignoresSafeArea(.container, edges: .top)

@@ -12,8 +12,7 @@ struct MainContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if page != .settings {
-                DFPageHeader(page.rawValue, badge: page.isBeta ? "Beta" : nil)
-                Divider()
+                DFTopBar(section: page.section, title: page.rawValue, badge: page.isBeta ? "Beta" : nil)
             }
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

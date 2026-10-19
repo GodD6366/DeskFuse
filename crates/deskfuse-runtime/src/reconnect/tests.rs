@@ -569,3 +569,278 @@ async fn real_quic_peer_restart_recovers_same_route_and_delivers_one_clipboard()
     adapter.shutdown().await.unwrap();
     restarted.shutdown().await.unwrap();
 }
+
+/// 两个真实 QUIC 端点：`local` 由 actor 驱动，`remote` 直接操作传输层。
+struct QuicPair {
+    actor: Actor,
+    adapter: ControlTransportAdapter<deskfuse_transport::QuinnTransport>,
+    local_endpoint: Endpoint,
+    local_id: DeviceId,
+    remote: deskfuse_transport::QuinnTransport,
+    peer: DeviceId,
+    route: RouteId,
+    // watch 没有接收者时 send 不会更新值，测试必须持有订阅。
+    snapshot_rx: watch::Receiver<NetworkSnapshot>,
+    view_rx: watch::Receiver<SnapshotView>,
+}
+
+async fn quic_pair(remote_seed: u8) -> QuicPair {
+    use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
+    let cert = rcgen::generate_simple_self_signed(vec!["deskfuse.local".into()]).unwrap();
+    let der = cert.cert.der().to_vec();
+    let key = cert.key_pair.serialize_der();
+    let config = |addr| {
+        QuinnTransportConfig::new(
+            addr,
+            addr,
+            "deskfuse.local",
+            der.clone(),
+            key.clone(),
+            der.clone(),
+        )
+    };
+    let local = LocalIdentity::from_bytes(&[80; 32]).unwrap();
+    let remote = LocalIdentity::from_bytes(&[remote_seed; 32]).unwrap();
+    let caps = Capabilities::NETWORK | Capabilities::CLIPBOARD;
+    let local_hello = PeerHello::signed(&local, "local", caps, [80; 32]).unwrap();
+    let remote_hello = PeerHello::signed(&remote, "remote", caps, [remote_seed; 32]).unwrap();
+    let local_transport =
+        QuinnTransport::bind(local_hello.clone(), config("127.0.0.1:0".parse().unwrap()))
+            .await
+            .unwrap();
+    let remote_transport =
+        QuinnTransport::bind(remote_hello.clone(), config("127.0.0.1:0".parse().unwrap()))
+            .await
+            .unwrap();
+    remote_transport
+        .configure_identity(Arc::new(
+            LocalIdentity::from_bytes(&[remote_seed; 32]).unwrap(),
+        ))
+        .unwrap();
+    remote_transport
+        .register_peer_identity(local.device_id(), local_hello.public_key)
+        .await
+        .unwrap();
+    let remote_addr = remote_transport.local_addr().unwrap();
+    let local_addr = local_transport.local_addr().unwrap();
+    let adapter = ControlTransportAdapter::new(local_transport);
+    adapter
+        .configure_identity(Arc::new(LocalIdentity::from_bytes(&[80; 32]).unwrap()))
+        .unwrap();
+    let fake = ProbeTransport::default();
+    let mut actor = actor(fake.clone());
+    let (peer, route) = add_peer(&mut actor, &fake, remote_seed);
+    actor
+        .peers
+        .get_mut(&peer)
+        .unwrap()
+        .routes
+        .get_mut(&route.id)
+        .unwrap()
+        .endpoint = Endpoint::new("127.0.0.1", remote_addr.port()).unwrap();
+    actor.transport = Arc::new(adapter.clone());
+    let snapshot_rx = actor.snapshot_tx.subscribe();
+    let view_rx = actor.view_tx.subscribe();
+    QuicPair {
+        snapshot_rx,
+        view_rx,
+        actor,
+        adapter,
+        local_endpoint: Endpoint::new("127.0.0.1", local_addr.port()).unwrap(),
+        local_id: local.device_id(),
+        remote: remote_transport,
+        peer,
+        route: route.id,
+    }
+}
+
+impl QuicPair {
+    fn published(&self) -> (ConnectionState, Option<PeerLinkHoldKind>) {
+        let connection = self
+            .snapshot_rx
+            .borrow()
+            .peers
+            .iter()
+            .find(|peer| peer.id == self.peer)
+            .unwrap()
+            .connection;
+        let hold = self
+            .view_rx
+            .borrow()
+            .device_network
+            .link_holds
+            .iter()
+            .find(|hold| hold.peer_id == self.peer)
+            .map(|hold| hold.kind);
+        (connection, hold)
+    }
+
+    async fn wait_inbound(&self, alive: bool) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while self.adapter.inbound_control_alive(self.peer) != Some(alive) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("inbound control session state");
+    }
+
+    async fn shutdown(self) {
+        self.adapter.shutdown().await.unwrap();
+        self.remote.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn one_sided_session_is_published_as_connecting_until_peer_dials_back() {
+    use deskfuse_transport::ControlTransport;
+    let mut pair = quic_pair(95).await;
+    let peer = pair.peer;
+    connect(&mut pair.actor, peer).await;
+    // 只有本机→对方一条会话：对方那边此时还不认为已连接，本机也不能宣布在线。
+    pair.actor.publish();
+    assert_eq!(
+        pair.published(),
+        (
+            ConnectionState::Connecting,
+            Some(PeerLinkHoldKind::AwaitingPeer)
+        )
+    );
+    // 对方回拨后两条会话都在，双方一致显示已连接。
+    pair.remote
+        .connect_with_route(pair.local_id, pair.local_endpoint.clone())
+        .await
+        .unwrap();
+    pair.wait_inbound(true).await;
+    pair.actor.recovery_tick().await;
+    assert_eq!(pair.published(), (ConnectionState::Connected, None));
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn remote_suspension_is_rejected_and_reported_without_failing_the_route() {
+    use deskfuse_transport::ControlTransport;
+    let mut pair = quic_pair(96).await;
+    let peer = pair.peer;
+    connect(&mut pair.actor, peer).await;
+    assert_eq!(pair.adapter.control_session_alive(peer), Some(true));
+    // 对方点"断开"：关闭本机拨入的会话，而不是让本机继续单方面显示已连接。
+    pair.remote.set_control_suspended(pair.local_id, true);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while pair.adapter.control_session_alive(peer) != Some(false) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    pair.actor.recovery_tick().await;
+    expire(&mut pair.actor, peer);
+    pair.actor.recovery_tick().await;
+    complete(&mut pair.actor).await;
+    let state = &pair.actor.peers[&peer];
+    assert_eq!(state.connection, ConnectionState::Failed);
+    assert_eq!(state.routes[&pair.route].failure_count, 0);
+    assert_ne!(state.routes[&pair.route].health, RouteHealth::Unavailable);
+    assert_eq!(
+        pair.published(),
+        (
+            ConnectionState::Failed,
+            Some(PeerLinkHoldKind::RemoteSuspended)
+        )
+    );
+    assert!(
+        pair.actor.recovery.retries[&peer].due > Instant::now() + Duration::from_secs(200),
+        "对方挂起时不应频繁重试"
+    );
+    // 对方恢复并拨入本机：立即回拨，双方恢复一致的已连接状态。
+    pair.remote.set_control_suspended(pair.local_id, false);
+    let mut incoming = pair.adapter.control_peers();
+    pair.remote
+        .connect_with_route(pair.local_id, pair.local_endpoint.clone())
+        .await
+        .unwrap();
+    let hint = tokio::time::timeout(Duration::from_secs(3), incoming.next())
+        .await
+        .unwrap()
+        .unwrap();
+    pair.actor.handle_control_peer(hint).await;
+    complete(&mut pair.actor).await;
+    pair.actor.publish();
+    assert_eq!(pair.published(), (ConnectionState::Connected, None));
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn local_disconnect_rejects_peer_dial_in_so_both_sides_agree() {
+    use deskfuse_transport::{ControlTransport, TransportError};
+    let mut pair = quic_pair(97).await;
+    let peer = pair.peer;
+    connect(&mut pair.actor, peer).await;
+    pair.remote
+        .connect_with_route(pair.local_id, pair.local_endpoint.clone())
+        .await
+        .unwrap();
+    pair.wait_inbound(true).await;
+    pair.actor
+        .handle_command(RuntimeCommand::Disconnect { peer_id: peer })
+        .await;
+    // 本机断开同时关闭对方拨入的会话，对方随后的重拨被明确拒绝。
+    pair.wait_inbound(false).await;
+    let rejected = pair
+        .remote
+        .connect_with_route(pair.local_id, pair.local_endpoint.clone())
+        .await;
+    assert!(matches!(rejected, Err(TransportError::PeerSuspended(id)) if id == pair.local_id));
+    assert_eq!(
+        pair.published(),
+        (
+            ConnectionState::Disconnected,
+            Some(PeerLinkHoldKind::LocalSuspended)
+        )
+    );
+    // 显式连接解除挂起，对方又可以拨入。
+    pair.actor
+        .handle_command(RuntimeCommand::Connect { peer_id: peer })
+        .await;
+    complete(&mut pair.actor).await;
+    pair.remote
+        .connect_with_route(pair.local_id, pair.local_endpoint.clone())
+        .await
+        .unwrap();
+    pair.wait_inbound(true).await;
+    pair.actor.recovery_tick().await;
+    assert_eq!(pair.published(), (ConnectionState::Connected, None));
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_refresh_retries_failed_peer_immediately() {
+    let transport = ProbeTransport::default();
+    let mut actor = actor(transport.clone());
+    let (peer, route) = add_peer(&mut actor, &transport, 98);
+    transport.inner.fail_route(route.id);
+    actor.connect_peer(peer).await;
+    complete(&mut actor).await;
+    assert_eq!(actor.peers[&peer].connection, ConnectionState::Failed);
+    // 失败会清空 preferred_route；刷新仍必须绕过退避立即重试。
+    assert!(actor.peers[&peer].preferred_route.is_none());
+    assert!(actor.recovery.retries[&peer].due > Instant::now());
+    transport.inner.failures.lock().unwrap().clear();
+    actor.handle_command(RuntimeCommand::RefreshPeers).await;
+    assert!(actor.recovery.attempts.contains_key(&peer));
+    complete(&mut actor).await;
+    assert_eq!(actor.peers[&peer].connection, ConnectionState::Connected);
+}
+
+#[tokio::test]
+async fn only_advertised_peers_stay_on_the_short_retry_ladder() {
+    let transport = ProbeTransport::default();
+    let mut actor = actor(transport.clone());
+    let (peer, _) = add_peer(&mut actor, &transport, 99);
+    // 持久化地址不再算"在场"，否则长期离线的设备永远每 30 秒全量探测。
+    assert!(!actor.peer_present(peer));
+    assert_eq!(retry_backoff_for(8, false), RETRY_MAX_DELAY);
+    actor.observe_peer_discovery(peer);
+    assert!(actor.peer_present(peer));
+    assert_eq!(retry_backoff_for(8, true), Duration::from_secs(30));
+}

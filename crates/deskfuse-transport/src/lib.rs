@@ -26,8 +26,8 @@ pub use network::{NetworkTransportRequest, NetworkTransportStream};
 pub mod lan;
 pub mod routes;
 pub use input::{
-    InputMotionDiagnostics, InputTransportEvent, InputTransportStream, UpdateTransportRequest,
-    UpdateTransportStream,
+    InputMotionDiagnostics, InputTransportEvent, InputTransportStream, UpdateReplyStream,
+    UpdateTransportRequest, UpdateTransportStream,
 };
 
 use std::{
@@ -54,6 +54,8 @@ use tokio::{task::JoinHandle, time};
 const HELLO_REQUEST_ID: [u8; protocol::REQUEST_ID_SIZE] = [0; protocol::REQUEST_ID_SIZE];
 const MAX_RPC_FRAME: usize = protocol::MAX_FRAME_SIZE;
 const QUIC_CLOSE_CODE: quinn::VarInt = quinn::VarInt::from_u32(0x100);
+/// 被本机主动断开的设备拨入时使用的关闭原因，拨号方据此识别"对方已断开"。
+const PEER_SUSPENDED_REASON: &[u8] = b"peer suspended";
 
 /// A stream of authenticated application messages received on control
 /// sessions. The `DeviceId` is the authenticated peer that sent the message.
@@ -67,6 +69,40 @@ pub struct ControlPeerConnected {
     pub endpoint: Endpoint,
 }
 pub type ControlPeerStream = Pin<Box<dyn Stream<Item = ControlPeerConnected> + Send + 'static>>;
+
+/// 控制会话准入状态。挂起集合与入站会话共用一把锁，保证"挂起并关闭入站"
+/// 与"登记新的入站"不会交错，避免挂起后仍漏进一条入站会话。
+#[derive(Default)]
+struct ControlAdmission {
+    /// 本机用户主动断开的设备：拒绝其入站控制会话，两端状态保持一致。
+    suspended: BTreeSet<DeviceId>,
+    /// 对端拨入本机的控制会话，用于判断对端是否也确认了与本机的连接。
+    inbound: BTreeMap<DeviceId, Vec<quinn::Connection>>,
+}
+
+impl ControlAdmission {
+    /// 登记一条入站会话；挂起的设备返回 false，由调用方关闭连接。
+    fn admit(&mut self, peer: DeviceId, connection: &quinn::Connection) -> bool {
+        if self.suspended.contains(&peer) {
+            return false;
+        }
+        self.inbound.retain(|_, list| {
+            list.retain(|session| session.close_reason().is_none());
+            !list.is_empty()
+        });
+        self.inbound
+            .entry(peer)
+            .or_default()
+            .push(connection.clone());
+        true
+    }
+
+    fn inbound_alive(&self, peer: DeviceId) -> bool {
+        self.inbound
+            .get(&peer)
+            .is_some_and(|list| list.iter().any(|session| session.close_reason().is_none()))
+    }
+}
 
 /// Defaults for control-session deadlines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -368,6 +404,9 @@ pub enum TransportError {
     /// Quinn/rustls setup or session operation failed without exposing its type.
     #[error("QUIC error: {0}")]
     Quic(String),
+    /// 对端用户主动断开了与本机的连接，对端拒绝本机的控制会话。
+    #[error("peer {0} has paused connections with this device")]
+    PeerSuspended(DeviceId),
 }
 
 /// An opaque control session.  No Quinn or rustls types appear in this API.
@@ -627,6 +666,15 @@ pub trait ControlTransport: Send + Sync {
         Ok(())
     }
 
+    /// 挂起或恢复某个设备的入站控制会话。挂起时实现必须立即关闭该设备已有的
+    /// 入站控制会话，并拒绝之后的入站，使对端不会误以为连接仍然可用。
+    fn set_control_suspended(&self, _peer: DeviceId, _suspended: bool) {}
+
+    /// 对端拨入本机的控制会话是否存活。`None` 表示实现无法区分入站会话。
+    fn inbound_control_alive(&self, _peer: DeviceId) -> Option<bool> {
+        None
+    }
+
     /// Lift a previous [`Self::revoke_peer`] so the peer can be re-admitted.
     ///
     /// Revocation is a trust decision, and lifting one is too: only the
@@ -667,6 +715,14 @@ pub trait ControlTransport: Send + Sync {
         _session: deskfuse_core::TransportSessionId,
         _message: Message,
     ) -> Result<Message, TransportError> {
+        Err(TransportError::Closed)
+    }
+    async fn exchange_update_stream(
+        &self,
+        _peer: DeviceId,
+        _session: deskfuse_core::TransportSessionId,
+        _message: Message,
+    ) -> Result<UpdateReplyStream, TransportError> {
         Err(TransportError::Closed)
     }
     fn input_contexts(&self, _peer: DeviceId) -> Vec<deskfuse_core::ConnectionContext> {
@@ -1486,6 +1542,7 @@ struct QuinnShared {
     shutdown: Arc<Notify>,
     inbound: broadcast::Sender<(DeviceId, Message)>,
     control_peers: broadcast::Sender<ControlPeerConnected>,
+    admission: Arc<Mutex<ControlAdmission>>,
 }
 
 impl QuinnShared {
@@ -1554,6 +1611,7 @@ pub struct QuinnTransport {
     shutdown_complete: Arc<Notify>,
     inbound: broadcast::Sender<(DeviceId, Message)>,
     control_peers: broadcast::Sender<ControlPeerConnected>,
+    admission: Arc<Mutex<ControlAdmission>>,
 }
 
 impl fmt::Debug for QuinnTransport {
@@ -1571,6 +1629,19 @@ impl fmt::Debug for QuinnTransport {
             .field("remote_addr", &self.config.remote_addr)
             .finish_non_exhaustive()
     }
+}
+
+/// 对端以"本机已被挂起"为由关闭了这条连接。只在握手已失败时调用：
+/// 流读写可能先于关闭帧报错，最多再等 200ms 让关闭原因到达。
+async fn suspended_by_peer(connection: &quinn::Connection) -> bool {
+    if connection.close_reason().is_none() {
+        let _ = time::timeout(Duration::from_millis(200), connection.closed()).await;
+    }
+    matches!(
+        connection.close_reason(),
+        Some(quinn::ConnectionError::ApplicationClosed(close))
+            if close.reason.as_ref() == PEER_SUSPENDED_REASON
+    )
 }
 
 struct PendingControlConnection(Option<quinn::Connection>);
@@ -1611,6 +1682,7 @@ impl QuinnTransport {
             shutdown: self.shutdown.clone(),
             inbound: self.inbound.clone(),
             control_peers: self.control_peers.clone(),
+            admission: self.admission.clone(),
         }
     }
     /// Build the explicit safe skeleton.  Calling [`ControlTransport::connect`]
@@ -1653,6 +1725,7 @@ impl QuinnTransport {
             shutdown_complete: Arc::new(Notify::new()),
             inbound,
             control_peers,
+            admission: Arc::default(),
         }
     }
 
@@ -1804,6 +1877,7 @@ impl QuinnTransport {
         let shutdown = Arc::new(Notify::new());
         let (inbound, _) = broadcast::channel(256);
         let (control_peers, _) = broadcast::channel(64);
+        let admission = Arc::new(Mutex::new(ControlAdmission::default()));
         let mut input = input::InputHub::with_lan_port(config.lan_port.clone());
         if config.input_service {
             input.disable_updates();
@@ -1870,6 +1944,7 @@ impl QuinnTransport {
             shutdown: Arc::clone(&shutdown),
             inbound: inbound.clone(),
             control_peers: control_peers.clone(),
+            admission: Arc::clone(&admission),
         };
         for (address, (interface, endpoint)) in lan_endpoints
             .lock()
@@ -1940,6 +2015,7 @@ impl QuinnTransport {
             shutdown_complete: Arc::new(Notify::new()),
             inbound,
             control_peers,
+            admission,
         })
     }
 
@@ -2132,6 +2208,34 @@ impl ControlTransport for QuinnTransport {
         }))
     }
 
+    fn set_control_suspended(&self, peer: DeviceId, suspended: bool) {
+        let closing = match self.admission.lock() {
+            Ok(mut admission) if suspended => {
+                admission.suspended.insert(peer);
+                admission.inbound.remove(&peer).unwrap_or_default()
+            }
+            Ok(mut admission) => {
+                admission.suspended.remove(&peer);
+                Vec::new()
+            }
+            Err(_) => return,
+        };
+        // 关闭对端拨入的会话：对端的心跳随即失败并重拨，重拨被拒后显示"对方已断开"。
+        for connection in closing {
+            connection.close(QUIC_CLOSE_CODE, PEER_SUSPENDED_REASON);
+        }
+    }
+
+    fn inbound_control_alive(&self, peer: DeviceId) -> Option<bool> {
+        if self.bound_interface.is_some() || self.config.input_service {
+            return None;
+        }
+        self.admission
+            .lock()
+            .ok()
+            .map(|admission| admission.inbound_alive(peer))
+    }
+
     fn configure_identity(&self, identity: Arc<LocalIdentity>) -> Result<(), TransportError> {
         if identity.device_id() != self.local_hello.device_id {
             return Err(TransportError::IdentityMismatch {
@@ -2313,6 +2417,19 @@ impl ControlTransport for QuinnTransport {
             return Err(TransportError::RevokedPeer(peer));
         }
         self.input.exchange_update(peer, session, message).await
+    }
+    async fn exchange_update_stream(
+        &self,
+        peer: DeviceId,
+        session: deskfuse_core::TransportSessionId,
+        message: Message,
+    ) -> Result<UpdateReplyStream, TransportError> {
+        if self.is_revoked(peer)? {
+            return Err(TransportError::RevokedPeer(peer));
+        }
+        self.input
+            .exchange_update_stream(peer, session, message)
+            .await
     }
     fn input_contexts(&self, peer: DeviceId) -> Vec<deskfuse_core::ConnectionContext> {
         self.input.contexts(peer)
@@ -2532,6 +2649,9 @@ impl QuinnTransport {
             }
             .await;
             if let Err(error) = ready {
+                if suspended_by_peer(&connection).await {
+                    return Err(TransportError::PeerSuspended(peer));
+                }
                 connection.close(
                     QUIC_CLOSE_CODE,
                     b"receiver has not admitted application session",
@@ -2699,7 +2819,7 @@ impl QuinnTransport {
             connection.close(QUIC_CLOSE_CODE, b"peer revoked");
             return Err(TransportError::RevokedPeer(peer));
         }
-        session_auth::client(
+        if let Err(error) = session_auth::client(
             &connection,
             &self.local_hello,
             &remote,
@@ -2707,7 +2827,14 @@ impl QuinnTransport {
             network_only,
             self.config.transport.handshake_timeout,
         )
-        .await?;
+        .await
+        {
+            // 对方认证后立即以"已挂起"关闭时，本端的认证收尾可能先失败；以关闭原因为准。
+            if suspended_by_peer(&connection).await {
+                return Err(TransportError::PeerSuspended(remote.device_id));
+            }
+            return Err(error);
+        }
         pending.0 = None;
         Ok((connection, remote))
     }
@@ -3093,6 +3220,17 @@ async fn handle_incoming(
         return Err(TransportError::RevokedPeer(remote.device_id));
     }
     if shared.bound_interface.is_none() {
+        // 本机主动断开的设备：身份认证后明确拒绝，而不是让它单方面连上。
+        // 拨号方据关闭原因显示"对方已断开"，两端都不会把这条连接当作在线。
+        let admitted = shared
+            .admission
+            .lock()
+            .map_err(|_| TransportError::Closed)?
+            .admit(remote.device_id, &connection);
+        if !admitted {
+            connection.close(QUIC_CLOSE_CODE, PEER_SUSPENDED_REASON);
+            return Err(TransportError::PeerSuspended(remote.device_id));
+        }
         shared.register_session(remote.device_id, &connection)?;
     }
     let negotiated = shared.local_hello.capabilities & remote.capabilities;
@@ -3379,8 +3517,39 @@ async fn read_frame_limited(
     timeout: Duration,
     max_frame: usize,
 ) -> Result<Envelope, TransportError> {
+    read_frame_or_eof(recv, timeout, max_frame)
+        .await?
+        .ok_or_else(|| {
+            TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "stream finished before a frame",
+            ))
+        })
+}
+
+/// 与 `read_frame_limited` 相同，但把"对端在帧边界正常结束流"返回为 `None`，
+/// 供一次请求对应多帧应答的流式读取判断终点。
+async fn read_frame_or_eof(
+    recv: &mut quinn::RecvStream,
+    timeout: Duration,
+    max_frame: usize,
+) -> Result<Option<Envelope>, TransportError> {
     let mut prefix = [0_u8; 4];
-    time::timeout(timeout, recv.read_exact(&mut prefix))
+    let first = time::timeout(timeout, recv.read(&mut prefix[..1]))
+        .await
+        .map_err(|_| TransportError::Timeout {
+            operation: "read frame",
+        })?
+        .map_err(|error| {
+            TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                error.to_string(),
+            ))
+        })?;
+    if first.is_none() {
+        return Ok(None);
+    }
+    time::timeout(timeout, recv.read_exact(&mut prefix[1..]))
         .await
         .map_err(|_| TransportError::Timeout {
             operation: "read frame",
@@ -3413,7 +3582,9 @@ async fn read_frame_limited(
     let mut frame = Vec::with_capacity(4 + length);
     frame.extend_from_slice(&prefix);
     frame.extend_from_slice(&payload);
-    protocol::decode_frame(&frame).map_err(TransportError::Protocol)
+    protocol::decode_frame(&frame)
+        .map(Some)
+        .map_err(TransportError::Protocol)
 }
 
 fn bytes_to_device_id(bytes: &[u8]) -> Result<DeviceId, TransportError> {

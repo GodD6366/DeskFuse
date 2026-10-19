@@ -53,7 +53,7 @@ done
 
 # Verify native microphone payload without loading/installing the HAL plugin.
 MICROPHONE="$CONTENTS_DIR/Resources/Microphone"
-for payload in '安装麦克风驱动.command' '卸载麦克风驱动.command' manage-driver.sh '双机测试说明.txt' compatibility.sh previous-installation.json THIRD_PARTY_MICROPHONE.txt source-archive.json; do
+for payload in '安装麦克风驱动.command' '卸载麦克风驱动.command' manage-driver.sh '双机测试说明.txt' compatibility.sh driver-identity.json previous-installation.json THIRD_PARTY_MICROPHONE.txt source-archive.json; do
   [[ -s "$MICROPHONE/$payload" ]] || { echo "error: missing microphone payload: $payload" >&2; exit 1; }
   cmp "$MICROPHONE/$payload" "$MOUNT_POINT/麦克风驱动/$payload"
 done

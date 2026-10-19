@@ -653,7 +653,9 @@ impl Engine {
         #[cfg(target_os = "macos")]
         self.lan_web.shutdown();
         self.workflows.shutdown();
-        self.bridge.pause_current_managed_activation();
+        // 退出不能走紧急收回：那会把主控当前的启用意图持久化为"用户已收回"，
+        // 重启后对方的自动激活一律得到 PausedByUser，只能手动点"重连"。
+        // 本机输入由协调器退出时的 reclaim 与输入服务退出后的指针恢复负责释放。
         let result = self.bridge.shutdown_and_wait().map_err(failure);
         let (tx, rx) = mpsc::channel();
         if self.control.unbounded_send(Control::Stop(tx)).is_ok() {

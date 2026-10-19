@@ -117,6 +117,9 @@ pub enum RuntimeError {
     UnknownPairingRequest(deskfuse_core::RequestId),
     #[error("peer {0} is revoked or blocked")]
     PeerBlocked(DeviceId),
+    /// 对端用户主动断开了与本机的连接；需要对端重新连接才能恢复。
+    #[error("peer {0} has paused connections with this device")]
+    RemoteSuspended(DeviceId),
     #[error("invalid command: {0}")]
     InvalidCommand(String),
 }
@@ -272,6 +275,14 @@ pub trait TransportProvider: Send + Sync {
         None
     }
 
+    /// 同步本机"主动断开"状态到传输层：挂起后拒绝该设备拨入的控制会话。
+    fn set_control_suspended(&self, _peer: DeviceId, _suspended: bool) {}
+
+    /// 对端拨入本机的控制会话是否存活。`None` 表示无法判断，此时不阻塞在线状态。
+    fn inbound_control_alive(&self, _peer: DeviceId) -> Option<bool> {
+        None
+    }
+
     fn configure_identity(&self, _identity: Arc<LocalIdentity>) -> Result<(), RuntimeError> {
         Ok(())
     }
@@ -307,6 +318,14 @@ pub trait TransportProvider: Send + Sync {
         _session: TransportSessionId,
         _message: deskfuse_protocol::Message,
     ) -> ProviderFuture<deskfuse_protocol::Message> {
+        Box::pin(async { Err(RuntimeError::Transport("LAN updates unavailable".into())) })
+    }
+    fn exchange_update_stream(
+        &self,
+        _peer: DeviceId,
+        _session: TransportSessionId,
+        _message: deskfuse_protocol::Message,
+    ) -> ProviderFuture<deskfuse_transport::UpdateReplyStream> {
         Box::pin(async { Err(RuntimeError::Transport("LAN updates unavailable".into())) })
     }
     fn input_contexts(&self, _peer: DeviceId) -> Vec<ConnectionContext> {
@@ -481,6 +500,12 @@ where
     fn control_session_alive(&self, peer: DeviceId) -> Option<bool> {
         (**self).control_session_alive(peer)
     }
+    fn set_control_suspended(&self, peer: DeviceId, suspended: bool) {
+        (**self).set_control_suspended(peer, suspended);
+    }
+    fn inbound_control_alive(&self, peer: DeviceId) -> Option<bool> {
+        (**self).inbound_control_alive(peer)
+    }
     fn configure_identity(&self, identity: Arc<LocalIdentity>) -> Result<(), RuntimeError> {
         (**self).configure_identity(identity)
     }
@@ -511,6 +536,14 @@ where
         message: deskfuse_protocol::Message,
     ) -> ProviderFuture<deskfuse_protocol::Message> {
         (**self).exchange_update(peer, session, message)
+    }
+    fn exchange_update_stream(
+        &self,
+        peer: DeviceId,
+        session: TransportSessionId,
+        message: deskfuse_protocol::Message,
+    ) -> ProviderFuture<deskfuse_transport::UpdateReplyStream> {
+        (**self).exchange_update_stream(peer, session, message)
     }
     fn input_contexts(&self, peer: DeviceId) -> Vec<ConnectionContext> {
         (**self).input_contexts(peer)
@@ -1301,6 +1334,27 @@ pub struct DeviceNetworkSnapshot {
     pub pending: Vec<NetworkPairingPending>,
     pub blocked_peer_ids: Vec<DeviceId>,
     pub pairing_recovery_peer_ids: Vec<DeviceId>,
+    /// 需要单独说明的连接状态（主动断开、对方断开、等待对方确认）。
+    #[serde(default)]
+    pub link_holds: Vec<PeerLinkHold>,
+}
+
+/// 两端连接状态不一致或被用户挂起时的原因，界面据此说明"为什么不在线"。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerLinkHoldKind {
+    /// 本机用户主动断开：不自动重连，并拒绝对方拨入。
+    LocalSuspended,
+    /// 对方用户主动断开了与本机的连接。
+    RemoteSuspended,
+    /// 本机已连上对方，但对方尚未回连确认；双方都不把它视为在线。
+    AwaitingPeer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PeerLinkHold {
+    pub peer_id: DeviceId,
+    pub kind: PeerLinkHoldKind,
 }
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NetworkPairingPending {
@@ -2570,9 +2624,9 @@ impl Actor {
                     }
                     self.collapse_peer_routes(*peer_id);
                 }
-                for peer_id in retry_peers {
-                    self.collapse_peer_routes(peer_id);
-                    self.reselect(peer_id);
+                for peer_id in &retry_peers {
+                    self.collapse_peer_routes(*peer_id);
+                    self.reselect(*peer_id);
                 }
                 self.refresh_provider(self.discovery.clone()).await;
                 // 组播被 AP 过滤时 Bonjour 看不到对端，显式刷新同时做一轮单播探测。
@@ -2581,6 +2635,12 @@ impl Actor {
                 // Ordinary mDNS updates keep failed routes suppressed; explicit
                 // scans grant them one new attempt without discarding history.
                 self.auto_connect_trusted_peers().await;
+                // 失败的拨号会清空 preferred_route，上面的自动连接会跳过这些设备；
+                // 显式刷新必须绕过退避立即重试一轮，否则用户点了刷新却要等几十秒。
+                for peer_id in retry_peers {
+                    self.recovery.clear_retry(peer_id);
+                    self.start_reconnect(peer_id).await;
+                }
                 for peer_id in connected_peers {
                     self.reevaluate_connected_route(peer_id).await;
                 }
@@ -3071,7 +3131,12 @@ impl Actor {
                     let no_active_or_fallback = self.peers.get(&peer_id).is_some_and(|peer| {
                         peer.active_route.is_none() && peer.preferred_route.is_none()
                     });
-                    if no_active_or_fallback && let Some(peer) = self.peers.get_mut(&peer_id) {
+                    // 正在进行的拨号由拨号结果决定状态，不能被 mDNS 消失覆盖成"未连接"。
+                    let dialing = self.recovery.dial_in_flight(peer_id);
+                    if no_active_or_fallback
+                        && !dialing
+                        && let Some(peer) = self.peers.get_mut(&peer_id)
+                    {
                         peer.liveness = LivenessState::Offline;
                         peer.connection = ConnectionState::Disconnected;
                     }
@@ -3794,11 +3859,24 @@ impl Actor {
     }
 
     fn publish(&mut self) {
+        self.refresh_return_paths();
         self.sequence = self.sequence.saturating_add(1);
         let snapshot = NetworkSnapshot {
             sequence: self.sequence,
             local_device_id: core_device_id(self.identity.device_id()),
-            peers: self.peers.values().map(PeerState::snapshot).collect(),
+            peers: self
+                .peers
+                .values()
+                .map(|peer| {
+                    let mut snapshot = peer.snapshot();
+                    // 只有双向会话都在才对外宣布"已连接"：对方没有拨回本机时，
+                    // 对方那边显示的是离线，本机也不能单方面显示在线或向它发键鼠。
+                    if self.recovery.return_pending(peer.id) {
+                        snapshot.connection = ConnectionState::Connecting;
+                    }
+                    snapshot
+                })
+                .collect(),
         };
         if let Err(error) = snapshot.validate() {
             self.emit_error(RuntimeError::InvalidCommand(error.to_string()));
@@ -3807,7 +3885,7 @@ impl Actor {
         let _ = self.snapshot_tx.send(snapshot.clone());
         let _ = self.event_tx.send(RuntimeEvent::Snapshot(snapshot.clone()));
         let _ = self.view_tx.send(SnapshotView {
-            device_network: self.device_network.view(&self.blocked),
+            device_network: self.device_network_view(),
             snapshot,
             discovered_peers: self.discovered_peer_hints(),
         });
@@ -3816,10 +3894,16 @@ impl Actor {
     fn publish_view(&mut self) {
         let snapshot = self.snapshot_tx.borrow().clone();
         let _ = self.view_tx.send(SnapshotView {
-            device_network: self.device_network.view(&self.blocked),
+            device_network: self.device_network_view(),
             snapshot,
             discovered_peers: self.discovered_peer_hints(),
         });
+    }
+
+    fn device_network_view(&self) -> DeviceNetworkSnapshot {
+        let mut view = self.device_network.view(&self.blocked);
+        view.link_holds = self.link_holds();
+        view
     }
 
     fn discovered_peer_hints(&self) -> Vec<DiscoveredPeerHint> {
@@ -4400,6 +4484,20 @@ where
                 .map_err(|e| RuntimeError::Transport(e.to_string()))
         })
     }
+    fn exchange_update_stream(
+        &self,
+        peer: DeviceId,
+        session: TransportSessionId,
+        message: deskfuse_protocol::Message,
+    ) -> ProviderFuture<deskfuse_transport::UpdateReplyStream> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            inner
+                .exchange_update_stream(peer, session, message)
+                .await
+                .map_err(|e| RuntimeError::Transport(e.to_string()))
+        })
+    }
     fn input_contexts(&self, peer: DeviceId) -> Vec<ConnectionContext> {
         self.inner.input_contexts(peer)
     }
@@ -4553,6 +4651,12 @@ where
                 .unwrap_or(false),
         )
     }
+    fn set_control_suspended(&self, peer: DeviceId, suspended: bool) {
+        self.inner.set_control_suspended(peer, suspended);
+    }
+    fn inbound_control_alive(&self, peer: DeviceId) -> Option<bool> {
+        self.inner.inbound_control_alive(peer)
+    }
 
     fn connect(
         &self,
@@ -4566,7 +4670,12 @@ where
             let connection = inner
                 .connect_with_route(peer_id, route.endpoint.clone())
                 .await
-                .map_err(|error| RuntimeError::Transport(error.to_string()))?;
+                .map_err(|error| match error {
+                    deskfuse_transport::TransportError::PeerSuspended(peer) => {
+                        RuntimeError::RemoteSuspended(peer)
+                    }
+                    error => RuntimeError::Transport(error.to_string()),
+                })?;
             let remote_hello = connection
                 .hello()
                 .await

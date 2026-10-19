@@ -141,6 +141,7 @@ impl DeviceNetworkState {
                 .filter(|(_, deadline)| **deadline > tokio::time::Instant::now())
                 .map(|(peer, _)| *peer)
                 .collect(),
+            link_holds: Vec::new(),
         }
     }
     pub fn stop(&mut self) {

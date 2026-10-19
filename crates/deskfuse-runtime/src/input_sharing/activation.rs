@@ -12,6 +12,8 @@ pub(super) struct Activation {
     pub ack_sequence: u64,
     pub suppressed: bool,
     sent: bool,
+    /// 连续多少轮激活请求没有得到对方任何应答，用于退避重发。
+    unanswered: u32,
     deadline: Instant,
     continuous_deadline_ms: u64,
     renew_at: Instant,
@@ -41,6 +43,7 @@ impl Activation {
             ack_sequence: 0,
             suppressed: false,
             sent: false,
+            unanswered: 0,
             deadline: Instant::now() + TTL,
             continuous_deadline_ms: lease_now_ms().checked_add(1500).unwrap_or(0),
             renew_at: Instant::now(),
@@ -59,6 +62,15 @@ impl Activation {
     fn extend(&mut self) {
         self.deadline = Instant::now() + TTL;
         self.continuous_deadline_ms = lease_now_ms().checked_add(1500).unwrap_or(0);
+    }
+}
+
+/// 对方一直不应答（例如它认为本机不在线而丢弃请求）时的重发间隔：
+/// 1、2、4、8 秒封顶，避免每 1.5 秒无限重建激活刷满日志。
+fn unanswered_backoff(unanswered: u32) -> Duration {
+    match unanswered {
+        0 => Duration::ZERO,
+        n => Duration::from_secs(1u64 << (n - 1).min(3)),
     }
 }
 
@@ -298,7 +310,13 @@ impl InputActor {
                     // A new context is already the slow part; do not add a fixed
                     // delay on top of it. The next tick sends immediately, and
                     // the renew interval still bounds every resend after that.
-                    retry.renew_at = Instant::now();
+                    // 只有对方从未应答过时才退避：那说明对方在丢弃请求，立即重发没有意义。
+                    retry.unanswered = if activation.sent && activation.ack_sequence == 0 {
+                        activation.unanswered.saturating_add(1)
+                    } else {
+                        0
+                    };
+                    retry.renew_at = Instant::now() + unanswered_backoff(retry.unanswered);
                     self.outgoing.insert(peer, retry);
                 }
             }
@@ -789,12 +807,12 @@ impl InputActor {
                         .as_ref()
                         .is_none_or(|c| !self.activation_capable(peer, c)))
             {
-                self.stop_outgoing(
-                    peer,
-                    "activation expired or LAN changed; reconnecting",
-                    true,
-                    false,
-                );
+                let reason = if activation.ack_sequence == 0 {
+                    "peer did not acknowledge activation; retrying"
+                } else {
+                    "activation expired or LAN changed; reconnecting"
+                };
+                self.stop_outgoing(peer, reason, true, false);
                 continue;
             }
             if !self.network_allowed(peer) {
@@ -1018,6 +1036,39 @@ mod tests {
         assert!(actor.activation_policy_error.is_some());
         assert!(actor.incoming.is_none());
         assert!(actor.leases.is_empty());
+    }
+
+    #[test]
+    fn unanswered_activation_backs_off_instead_of_spinning() {
+        let (mut actor, peer, _, _, _) = setup(true);
+        for expected in [1, 2, 4, 8, 8] {
+            let activation = actor.outgoing.get_mut(&peer).unwrap();
+            activation.sent = true;
+            activation.ack_sequence = 0;
+            activation.deadline = Instant::now() - Duration::from_millis(1);
+            actor.tick_activations();
+            let retry = &actor.outgoing[&peer];
+            let wait = retry.renew_at.saturating_duration_since(Instant::now());
+            assert!(
+                wait > Duration::from_secs(expected) - Duration::from_millis(200)
+                    && wait <= Duration::from_secs(expected),
+                "unanswered={} wait={wait:?}",
+                retry.unanswered
+            );
+            assert_eq!(
+                retry.reason.as_deref(),
+                Some("peer did not acknowledge activation; retrying")
+            );
+        }
+        // 对方应答过的激活过期（换网等）仍立即重建，不受退避影响。
+        let activation = actor.outgoing.get_mut(&peer).unwrap();
+        activation.sent = true;
+        activation.ack_sequence = 3;
+        activation.deadline = Instant::now() - Duration::from_millis(1);
+        actor.tick_activations();
+        let retry = &actor.outgoing[&peer];
+        assert_eq!(retry.unanswered, 0);
+        assert!(retry.renew_at <= Instant::now());
     }
 
     fn offer(

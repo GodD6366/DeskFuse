@@ -577,7 +577,7 @@ struct DevicesView: View {
                     .lineLimit(1)
                 HStack(spacing: 8) {
                     Circle().fill(device.connected ? DFPalette.success : Color.secondary.opacity(0.6)).frame(width: 10, height: 10)
-                    Text(device.connected ? "在线" : "离线")
+                    Text(statusLabel(for: device))
                         .font(DFType.detail)
                         .foregroundStyle(device.connected ? Color.primary : Color.secondary)
                     Text("· \(device.endpoint)")
@@ -755,8 +755,15 @@ struct DevicesView: View {
         .padding(.vertical, 15)
     }
 
+    /// 离线时优先说明原因，避免两端状态不一致时只看到笼统的“离线”。
+    private func statusLabel(for device: Device) -> String {
+        if device.connected { return "在线" }
+        if device.blocked { return "已阻止" }
+        return device.linkStatus.isEmpty ? "离线" : device.linkStatus
+    }
+
     private func listDetail(for device: Device) -> String {
-        let status = device.connected ? "在线" : (device.blocked ? "已阻止" : "离线")
+        let status = statusLabel(for: device)
         let endpoint = device.endpoint.isEmpty ? device.detail : device.endpoint
         return endpoint.isEmpty ? status : "\(status) · \(endpoint)"
     }

@@ -1,0 +1,5 @@
+{
+  "bundleName": "DeskFuseMicrophone",
+  "bundleIdentifier": "com.deskfuse.microphone.driver",
+  "deviceUID": "com.deskfuse.microphone.input"
+}

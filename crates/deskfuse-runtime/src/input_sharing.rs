@@ -100,6 +100,24 @@ fn lease_now_ms() -> u64 {
     }
 }
 
+/// 设备网络的身份。成员列表不在其中：成员变化按设备单独处理。
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NetworkIdentity {
+    network_id: Option<String>,
+    owner_id: Option<DeviceId>,
+    intact: bool,
+}
+
+impl NetworkIdentity {
+    fn of(network: &crate::DeviceNetworkSnapshot) -> Self {
+        Self {
+            network_id: network.network_id.clone(),
+            owner_id: network.owner_id,
+            intact: network.integrity_error.is_none(),
+        }
+    }
+}
+
 struct InputActor {
     diagnostic_states: BTreeMap<(DeviceId, &'static str), (String, Instant)>,
     links: recovery::Links,
@@ -115,7 +133,7 @@ struct InputActor {
     recent_managed_intent: Option<(DeviceId, InputActivationId)>,
     snapshot: InputSharingSnapshot,
     network: watch::Receiver<crate::SnapshotView>,
-    membership: Option<crate::DeviceNetworkSnapshot>,
+    membership: Option<NetworkIdentity>,
     transport: Arc<dyn TransportProvider>,
     store: Arc<dyn RuntimeStore>,
     events: broadcast::Sender<RuntimeEvent>,
@@ -1599,8 +1617,10 @@ impl InputActor {
     }
     fn tick(&mut self) {
         self.tick_links();
-        let mut membership = self.network.borrow().device_network.clone();
-        membership.pending.clear();
+        // 只有整个设备网络换了身份（换网、换主人、签名失效）才全部释放。
+        // 单个成员的增删、阻止或连接说明变化由 network_allowed 逐设备判定；
+        // 以前任何字段变化都会释放全部租约，鼠标在对端时会被无故弹回。
+        let membership = NetworkIdentity::of(&self.network.borrow().device_network);
         if self
             .membership
             .as_ref()
@@ -2620,6 +2640,30 @@ mod tests {
         let (_, network) = watch::channel(view);
         actor.network = network;
         assert!(!actor.network_allowed(peer));
+    }
+    #[test]
+    fn unrelated_network_change_keeps_lease_but_new_network_releases_it() {
+        let (mut actor, peer, context, _, _) = setup(false);
+        let (id, _) = receiver_grant(&mut actor, peer, &context);
+        actor.tick();
+        assert!(actor.leases.contains_key(&id));
+        // 其他设备的配对恢复、连接说明变化不能把当前设备的鼠标弹回。
+        let mut view = actor.network.borrow().clone();
+        let other = DeviceId::from_bytes([9; 32]);
+        view.device_network.pairing_recovery_peer_ids = vec![other];
+        view.device_network.link_holds = vec![crate::PeerLinkHold {
+            peer_id: other,
+            kind: crate::PeerLinkHoldKind::AwaitingPeer,
+        }];
+        let (_, network) = watch::channel(view.clone());
+        actor.network = network;
+        actor.tick();
+        assert!(actor.leases.contains_key(&id));
+        view.device_network.owner_id = Some(DeviceId::from_bytes([7; 32]));
+        let (_, network) = watch::channel(view);
+        actor.network = network;
+        actor.tick();
+        assert!(!actor.leases.contains_key(&id));
     }
     #[test]
     fn initial_controller_topology_arriving_after_enter_is_not_a_topology_change() {

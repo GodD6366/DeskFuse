@@ -35,6 +35,11 @@ const UPDATE_COMMAND_DOWNLOAD_AND_INSTALL: u32 = 1;
 const UPDATE_COMMAND_ACCEPTED: u32 = 1;
 const UPDATE_COMMAND_UNSUPPORTED: u32 = 2;
 const UPDATE_COMMAND_BUSY: u32 = 3;
+/// 单个更新流的发送速率上限。更新包与鼠标位置共用同一条 QUIC 连接，
+/// 不限速时大包会占满 Wi-Fi 队列，造成光标抖动；16 MiB/s 下 170 MB 约 11 秒。
+const UPDATE_STREAM_RATE_LIMIT: f64 = 16.0 * 1024.0 * 1024.0;
+/// 流式传输中每隔多少个块重新确认一次对端授权。
+const PEER_RECHECK_CHUNKS: u32 = 64;
 
 /// An install handoff that stopped short leaves the running version in place.
 const ABANDONED_INSTALL: &str = "更新未安装，当前版本保持可用；退出并重新启动 DeskFuse 后可重试";
@@ -588,6 +593,20 @@ impl RuntimeHandle {
         }
         Ok(reply)
     }
+    async fn update_exchange_stream(
+        &self,
+        peer: DeviceId,
+        context: &ConnectionContext,
+        message: Message,
+    ) -> Result<deskfuse_transport::UpdateReplyStream, String> {
+        if !self.update_peer_allowed(peer, context) {
+            return Err("更新源已离线或不在可信物理局域网中".into());
+        }
+        self.update_transport
+            .exchange_update_stream(peer, context.session_id, message)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 fn target_id(target: Target) -> u32 {
     match target {
@@ -674,7 +693,7 @@ async fn serve(
             }
             let response = Message::UpdateCommandAck(UpdateCommandAck { status });
             if runtime.update_peer_allowed(request.peer_id, &request.context) {
-                let _ = request.reply.send(response);
+                let _ = request.reply.send(response).await;
             }
             continue;
         }
@@ -699,6 +718,17 @@ async fn serve(
         let config = config.clone();
         let state = state.clone();
         let peer = request.peer_id;
+        // 更新包下发持续数秒到数分钟，放到独立阻塞任务里，不能卡住后续请求。
+        if let Message::UpdateRequest(query) = request.message {
+            let runtime = runtime.clone();
+            let context = request.context;
+            let reply = request.reply;
+            drop(tokio::task::spawn_blocking(move || {
+                let allowed = || runtime.update_peer_allowed(peer, &context);
+                respond_stream(&allowed, &config, &cache, &state, peer, query, &reply)
+            }));
+            continue;
+        }
         let response = tokio::task::spawn_blocking(move || {
             respond(&config, &cache, &state, peer, request.message)
         })
@@ -706,7 +736,50 @@ async fn serve(
         if runtime.update_peer_allowed(peer, &request.context)
             && let Ok(Ok(response)) = response
         {
-            let _ = request.reply.send(response);
+            let _ = request.reply.send(response).await;
+        }
+    }
+}
+/// 在同一条流上连续写出 `[offset, offset + max_bytes)` 的更新块，直到满足请求、
+/// 到达文件末尾或对端离开。每块仍经 `respond` 校验会话、偏移与哈希，
+/// 只是不再为每 64 KiB 往返一次；按 `UPDATE_STREAM_RATE_LIMIT` 限速。
+#[allow(clippy::too_many_arguments)]
+fn respond_stream(
+    allowed: &dyn Fn() -> bool,
+    config: &LanUpdateConfig,
+    cache: &Mutex<ReleaseCache>,
+    state: &Arc<Mutex<Shared>>,
+    peer: DeviceId,
+    mut query: UpdateRequest,
+    reply: &tokio::sync::mpsc::Sender<Message>,
+) {
+    let wanted = query.max_bytes.max(1);
+    let started = Instant::now();
+    let mut sent = 0u64;
+    let mut chunks = 0u32;
+    while sent < wanted {
+        if chunks.is_multiple_of(PEER_RECHECK_CHUNKS) && !allowed() {
+            return;
+        }
+        let Ok(Message::UpdateChunk(chunk)) = respond(
+            config,
+            cache,
+            state,
+            peer,
+            Message::UpdateRequest(query.clone()),
+        ) else {
+            return;
+        };
+        let len = chunk.data.len() as u64;
+        if reply.blocking_send(Message::UpdateChunk(chunk)).is_err() {
+            return;
+        }
+        sent += len;
+        chunks += 1;
+        query.offset += len;
+        let due = Duration::from_secs_f64(sent as f64 / UPDATE_STREAM_RATE_LIMIT);
+        if let Some(wait) = due.checked_sub(started.elapsed()) {
+            thread::sleep(wait);
         }
     }
 }
@@ -1568,27 +1641,44 @@ async fn download(
             target: target_id(artifact.target),
             sha256: hex::decode(&artifact.sha256).map_err(|e| e.to_string())?,
             offset,
+            max_bytes: artifact.size - offset,
         };
-        let Message::UpdateChunk(chunk) = runtime
-            .update_exchange(peer, context, Message::UpdateRequest(request))
-            .await?
-        else {
-            return Err("更新源返回了错误的数据类型".into());
-        };
-        if chunk.transaction_id != transaction.status().transaction_id.as_bytes()
-            || chunk.offset != offset
-            || chunk.data.len() > MAX_UPDATE_CHUNK
-        {
-            return Err("更新块与当前任务不匹配".into());
+        let mut replies = runtime
+            .update_exchange_stream(peer, context, Message::UpdateRequest(request))
+            .await?;
+        let mut received_chunks = 0u32;
+        while let Some(reply) = replies.next().await {
+            if stop.load(Ordering::Acquire) {
+                return Err("更新下载已中断".into());
+            }
+            if received_chunks.is_multiple_of(PEER_RECHECK_CHUNKS)
+                && !runtime.update_peer_allowed(peer, context)
+            {
+                return Err("更新连接已失效".into());
+            }
+            let Message::UpdateChunk(chunk) = reply.map_err(|e| e.to_string())? else {
+                return Err("更新源返回了错误的数据类型".into());
+            };
+            if chunk.transaction_id != transaction.status().transaction_id.as_bytes()
+                || chunk.offset != transaction.status().received_bytes
+                || chunk.data.len() > MAX_UPDATE_CHUNK
+            {
+                return Err("更新块与当前任务不匹配".into());
+            }
+            transaction
+                .received(chunk.offset, chunk.data.len() as u64)
+                .map_err(|e| e.to_string())?;
+            file.write_all(&chunk.data).map_err(|e| e.to_string())?;
+            received_chunks += 1;
+            let mut state = state.lock().unwrap();
+            state.view.status = Some(transaction.status().clone());
+            state.view.message = "正在从可信局域网设备下载更新".into();
+            state.view.error = None;
         }
-        transaction
-            .received(chunk.offset, chunk.data.len() as u64)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&chunk.data).map_err(|e| e.to_string())?;
-        let mut state = state.lock().unwrap();
-        state.view.status = Some(transaction.status().clone());
-        state.view.message = "正在从可信局域网设备下载更新".into();
-        state.view.error = None;
+        // 对端提前结束流时按新偏移重新请求；一个块都没收到说明源已无法继续供应。
+        if received_chunks == 0 {
+            return Err("更新源没有返回数据".into());
+        }
     }
     file.sync_all().map_err(|e| e.to_string())?;
     Ok(())
@@ -1723,6 +1813,7 @@ mod tests {
             target: 1,
             sha256: hex::decode(&descriptor.sha256).unwrap(),
             offset: 0,
+            max_bytes: 0,
         };
         let receipt = UpdateReceipt {
             transaction_id: query.transaction_id.clone(),
@@ -1859,6 +1950,46 @@ mod tests {
             )
             .is_err()
         );
+
+        // 流式分发：一次请求按块连续写出整个更新包，且字节与源文件一致。
+        let stream_query = UpdateRequest {
+            transaction_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+            release_id: release.release_id.as_bytes().to_vec(),
+            target: 1,
+            sha256: hex::decode(&descriptor.sha256).unwrap(),
+            offset: 0,
+            max_bytes: payload.len() as u64,
+        };
+        let (reply, mut chunks) = tokio::sync::mpsc::channel(8);
+        respond_stream(
+            &|| true,
+            &config,
+            &cache,
+            &state,
+            peer,
+            stream_query.clone(),
+            &reply,
+        );
+        drop(reply);
+        let mut streamed = Vec::new();
+        while let Ok(Message::UpdateChunk(chunk)) = chunks.try_recv() {
+            assert_eq!(chunk.offset, streamed.len() as u64);
+            streamed.extend_from_slice(&chunk.data);
+        }
+        assert_eq!(streamed, payload);
+        // 授权失效时一块都不发送。
+        let (reply, mut chunks) = tokio::sync::mpsc::channel(8);
+        respond_stream(
+            &|| false,
+            &config,
+            &cache,
+            &state,
+            peer,
+            stream_query,
+            &reply,
+        );
+        drop(reply);
+        assert!(chunks.try_recv().is_err());
     }
     #[test]
     fn github_self_packages_are_served_without_a_lan_manifest() {
@@ -1930,6 +2061,7 @@ mod tests {
             target: 1,
             sha256: hex::decode(&offer.artifact.sha256).unwrap(),
             offset: 0,
+            max_bytes: 0,
         };
         let Message::UpdateChunk(first) = respond(
             &config,

@@ -1,5 +1,5 @@
 #include "deskfuse_microphone.h"
-#include "driver_protocol.grpc.pb.h"
+#include "driver_connection.hpp"
 #include <roc/context.h>
 #include <roc/sender_encoder.h>
 #include <roc/frame.h>
@@ -15,11 +15,11 @@ namespace {
 thread_local std::string last_error;
 constexpr const char *uid = DESKFUSE_MICROPHONE_UID;
 int fail(const char *text) { last_error = text; return -1; }
-std::shared_ptr<rvpb::RvDriver::Stub> driver() {
-    static std::shared_ptr<rvpb::RvDriver::Stub> stub = rvpb::RvDriver::NewStub(
-        grpc::CreateChannel("127.0.0.1:19712", grpc::InsecureChannelCredentials()));
-    return stub;
+MicrophoneDriverConnection& driverConnection() {
+    static MicrophoneDriverConnection connection("127.0.0.1:19712");
+    return connection;
 }
+std::shared_ptr<rvpb::RvDriver::Stub> driver() { return driverConnection().stub(); }
 void deadline(grpc::ClientContext& c, int milliseconds = 350) {
     c.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(milliseconds));
 }
@@ -87,8 +87,7 @@ int ud_mic_sender_feedback(ud_mic_sender *s, const uint8_t *bytes, size_t length
 }
 void ud_mic_sender_destroy(ud_mic_sender *s) { delete s; }
 int ud_mic_driver_available() {
-    grpc::ClientContext c; deadline(c, 150); rvpb::RvNone in, out;
-    return status(driver()->ping(&c, in, &out)) == 0 ? 1 : -1;
+    return status(driverConnection().ping()) == 0 ? 1 : -1;
 }
 int ud_mic_driver_set_enabled(int enabled) {
     grpc::ClientContext c; deadline(c); rvpb::RvToggleRequest in; rvpb::RvNone out;

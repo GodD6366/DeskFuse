@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-echo '请先在 DeskFuse 设置中关闭麦克风共享。仅卸载 DeskFuse 自有驱动。'
+echo '请先在 DeskFuse 设置中关闭麦克风共享。仅卸载 DeskFuse 自有驱动（含旧版名称遗留的驱动）。'
 read -r -p '输入 UNINSTALL 确认卸载，或直接回车取消：' ANSWER
 [[ "$ANSWER" == UNINSTALL ]] || exit 0
 sudo /bin/bash "$HERE/manage-driver.sh" uninstall

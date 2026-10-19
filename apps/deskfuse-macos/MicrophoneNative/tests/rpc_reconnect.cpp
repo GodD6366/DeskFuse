@@ -1,5 +1,5 @@
 // Isolated control-service regression. Never loads HAL or opens a microphone.
-#include "driver_protocol.grpc.pb.h"
+#include "../driver_connection.hpp"
 #include <grpcpp/grpcpp.h>
 #include <atomic>
 #include <chrono>
@@ -36,7 +36,11 @@ int accept_with_reset(int fd, sockaddr* address, socklen_t* length) {
     return client;
 }
 class Service final : public rvpb::RvDriver::Service {
+public:
+    std::atomic<bool> timeout_next_ping{false};
     grpc::Status ping(grpc::ServerContext*, const rvpb::RvNone*, rvpb::RvNone*) override {
+        if (timeout_next_ping.exchange(false))
+            return grpc::Status(grpc::DEADLINE_EXCEEDED, "injected timeout");
         return grpc::Status::OK;
     }
 };
@@ -120,6 +124,22 @@ int main(int argc, char** argv) {
                 "independent client requests and exit");
         require(ping(endpoint), "RPC still works after established client process exits");
     }
+    MicrophoneDriverConnection persistent(endpoint);
+    require(persistent.ping().ok(), "production client initial ping");
+    service.timeout_next_ping = true;
+    require(persistent.ping().ok(), "production client retries a transient timeout");
+    require(!service.timeout_next_ping, "timeout injection was consumed");
     server->Shutdown();
+    server->Wait();
+    require(!persistent.ping().ok(), "offline driver is not reported ready");
+    server.reset();
+    grpc::ServerBuilder restarted;
+    restarted.AddListeningPort(endpoint, grpc::InsecureServerCredentials());
+    restarted.RegisterService(&service);
+    server = restarted.BuildAndStart();
+    require(server != nullptr, "restart isolated driver at same endpoint");
+    require(persistent.ping().ok(), "production client recovers without manual reconnect");
+    server->Shutdown();
+    std::puts("PASS: production client automatically reconnects after driver restart");
     std::puts("PASS: accept reset / empty address recovery, 40 abrupt TCP reconnects, 20 client process exits");
 }

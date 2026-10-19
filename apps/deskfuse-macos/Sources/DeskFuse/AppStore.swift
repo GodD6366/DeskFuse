@@ -395,6 +395,14 @@ enum Page: String, CaseIterable, Identifiable {
     static let primary: [Page] = [.devices, .clipboard, .input, .files]
     static let extended: [Page] = [.remoteApplications, .microphone, .mouse]
     var isBeta: Bool { Page.extended.contains(self) }
+    /// 侧栏分组名，同时作为页面顶栏面包屑的第一级。
+    var section: String {
+        switch self {
+        case .devices: "配置"
+        case .settings: "设置"
+        default: "功能"
+        }
+    }
     var symbol: String {
         switch self {
         case .devices: "laptopcomputer.and.iphone"

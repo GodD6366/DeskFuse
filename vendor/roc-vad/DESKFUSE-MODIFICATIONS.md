@@ -6,8 +6,9 @@ see LICENSE and AUTHORS.md. Original repository: https://github.com/roc-streamin
 
 DeskFuse modifications:
 
-- Private bundle and device identities are loaded from the microphone section of
-  `config/previous-installation.json` to preserve compatibility with installed drivers.
+- Private bundle and device identities (`DeskFuseMicrophone`) are loaded from
+  `resources/microphone/driver-identity.json`. The previous installation's driver identity in
+  `config/previous-installation.json` is only used to remove that driver on install/uninstall.
   UUID `E88452E3-1C2E-42C1-A1A4-7B496BC3D527` remains independent of upstream Roc VAD.
 - Control endpoint is fixed to loopback `127.0.0.1:19712`. Only the private
   receiver is accepted, with loopback RTP/RS8M/RTCP endpoints 19721–19723.

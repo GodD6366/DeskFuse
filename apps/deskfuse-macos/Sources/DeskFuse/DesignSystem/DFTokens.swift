@@ -72,11 +72,21 @@ enum DFMetrics {
     /// 导航与列表行。
     static let rowHeight: CGFloat = 32
     static let sidebarWidth: CGFloat = 212
+    /// 隐藏标题栏的高度与红绿灯右缘：品牌位与面包屑在这一行内与红绿灯垂直居中对齐。
+    static let titlebarHeight: CGFloat = 52
+    static let trafficLightsInset: CGFloat = 92
     /// 页面正文左右留白与表单最大宽度。
     static let pageInset: CGFloat = 24
     static let pageTopInset: CGFloat = 4
     static let pageBottomInset: CGFloat = 24
     static let formMaxWidth: CGFloat = 720
+    /// 自适应双栏：侧栏固定宽度，主栏低于最小宽度时改为上下堆叠。
+    static let sideColumnWidth: CGFloat = 340
+    static let mainColumnMinWidth: CGFloat = 480
+    /// 内容较多的侧栏（如麦克风设置步骤）。
+    static let wideSideColumnWidth: CGFloat = 400
+    /// 单任务聚焦页（身份选择、加载、故障）的最大宽度，水平居中。
+    static let focusMaxWidth: CGFloat = 880
     static let cardPadding: CGFloat = 16
     static let hairline: CGFloat = 0.5
     static let selectionStroke: CGFloat = 1.5
@@ -99,6 +109,10 @@ enum DFShadow {
     static let hoverColor = Color.black.opacity(0.12)
     static let hoverRadius: CGFloat = 12
     static let hoverY: CGFloat = 4
+    /// 侧栏选中行：浮起一层的贴边阴影，不靠放大字号表达选中。
+    static let rowColor = Color.black.opacity(0.07)
+    static let rowRadius: CGFloat = 2
+    static let rowY: CGFloat = 1
 }
 
 /// 语义色调：状态胶囊、提示条、徽标统一从这里取色。

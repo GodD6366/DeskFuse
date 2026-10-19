@@ -47,9 +47,10 @@ extension View {
     /// 主窗口工作区：画布底色、默认字体与按钮样式。
     func dfWorkspace() -> some View { modifier(DFWorkspaceStyle()) }
 
-    /// 浮动面板边界：不继承主窗口的实心表面，但共用控件规格。
-    func dfFloating() -> some View {
-        environment(\.dfOpaque, false)
+    /// 浮动面板边界：默认不继承主窗口的实心表面，但共用控件规格；
+    /// `opaque` 为 true 时面板内控件与卡片也使用实心表面。
+    func dfFloating(opaque: Bool = false) -> some View {
+        environment(\.dfOpaque, opaque)
             .font(DFType.body)
             .controlSize(.small)
             .buttonStyle(.dfSecondary)
@@ -107,51 +108,28 @@ struct DFDivider: View {
 
 // MARK: - 页面
 
-/// 每个页面唯一的标题行：标题、可选说明与右侧页面级操作。
-struct DFPageHeader<Trailing: View>: View {
+/// 页面顶栏：位于隐藏标题栏行内，与红绿灯对齐，用「分组 / 页面」面包屑代替大标题。
+struct DFTopBar: View {
+    let section: String
     let title: String
-    var subtitle: String? = nil
     var badge: String? = nil
-    @ViewBuilder var trailing: () -> Trailing
-
-    init(_ title: String, subtitle: String? = nil, badge: String? = nil,
-         @ViewBuilder trailing: @escaping () -> Trailing) {
-        self.title = title
-        self.subtitle = subtitle
-        self.badge = badge
-        self.trailing = trailing
-    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: DFSpace.m) {
-            VStack(alignment: .leading, spacing: DFSpace.xxs) {
-                HStack(spacing: DFSpace.s) {
-                    Text(title).font(DFType.pageTitle)
-                    if let badge { DFBadge(badge) }
-                }
-                if let subtitle {
-                    Text(subtitle)
-                        .font(DFType.detail)
-                        .dfSecondaryText()
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: DFSpace.m)
-            trailing()
+        HStack(spacing: DFSpace.s) {
+            Text(section).dfSecondaryText()
+            Text("/").dfSecondaryText().accessibilityHidden(true)
+            Text(title).font(DFType.bodyMedium)
+            if let badge { DFBadge(badge) }
+            Spacer(minLength: 0)
         }
+        .font(DFType.body)
+        .lineLimit(1)
         .padding(.horizontal, DFMetrics.pageInset)
-        .padding(.top, DFSpace.l)
-        .padding(.bottom, DFSpace.m)
-        .frame(minHeight: 64)
-    }
-}
-
-extension DFPageHeader where Trailing == EmptyView {
-    init(_ title: String, subtitle: String? = nil, badge: String? = nil) {
-        self.init(title, subtitle: subtitle, badge: badge) { EmptyView() }
+        .frame(height: DFMetrics.titlebarHeight)
+        .padding(.bottom, DFSpace.s)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(section)，\(title)")
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -176,6 +154,50 @@ struct DFScrollPage<Content: View>: View {
                 .padding(.horizontal, DFMetrics.pageInset)
                 .padding(.top, DFMetrics.pageTopInset)
                 .padding(.bottom, DFMetrics.pageBottomInset)
+        }
+    }
+}
+
+/// 自适应双栏：第一个子视图是主栏，第二个是固定宽度的侧栏；
+/// 主栏宽度不足 `mainMinWidth` 时改为上下堆叠。用 Layout 而不是 ViewThatFits，
+/// 断点切换时子视图身份不变，编辑中的状态不会被重建。
+struct DFAdaptiveColumns: Layout {
+    var sideWidth: CGFloat = DFMetrics.sideColumnWidth
+    var mainMinWidth: CGFloat = DFMetrics.mainColumnMinWidth
+    var spacing: CGFloat = DFSpace.xl
+    var equalHeight = false
+
+    private func mainWidth(for width: CGFloat?) -> CGFloat? {
+        guard let width else { return mainMinWidth }
+        let main = width - sideWidth - spacing
+        return main >= mainMinWidth ? main : nil
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width
+        if let main = mainWidth(for: width), subviews.count == 2 {
+            let mainSize = subviews[0].sizeThatFits(ProposedViewSize(width: main, height: nil))
+            let sideSize = subviews[1].sizeThatFits(ProposedViewSize(width: sideWidth, height: nil))
+            return CGSize(width: width ?? main + spacing + sideWidth, height: max(mainSize.height, sideSize.height))
+        }
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)) }
+        let height = sizes.map(\.height).reduce(0, +) + spacing * CGFloat(max(0, sizes.count - 1))
+        return CGSize(width: width ?? sizes.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        if let main = mainWidth(for: bounds.width), subviews.count == 2 {
+            subviews[0].place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: main, height: equalHeight ? bounds.height : nil))
+            subviews[1].place(at: CGPoint(x: bounds.minX + main + spacing, y: bounds.minY), anchor: .topLeading,
+                              proposal: ProposedViewSize(width: sideWidth, height: equalHeight ? bounds.height : nil))
+            return
+        }
+        var y = bounds.minY
+        for subview in subviews {
+            let proposal = ProposedViewSize(width: bounds.width, height: nil)
+            subview.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading, proposal: proposal)
+            y += subview.sizeThatFits(proposal).height + spacing
         }
     }
 }
@@ -434,7 +456,8 @@ struct DFSidebarRow: View {
                 .lineLimit(1)
             }
         }
-        .font(selected ? DFType.bodyMedium : DFType.body)
+        // 选中只换表面与阴影，字号字重保持不变，避免切换时文字跳动。
+        .font(DFType.body)
         .foregroundStyle(selected ? Color.primary : Color.primary.opacity(0.82))
         .padding(.horizontal, DFSpace.s + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -442,10 +465,10 @@ struct DFSidebarRow: View {
         .background(selected ? DFPalette.surface(scheme)
                     : hovering ? DFPalette.control(scheme) : .clear, in: shape)
         .overlay { shape.strokeBorder(selected ? DFPalette.line(scheme) : .clear, lineWidth: DFMetrics.hairline) }
+        .shadow(color: selected ? DFShadow.rowColor : .clear, radius: DFShadow.rowRadius, y: DFShadow.rowY)
         .contentShape(shape)
         .onHover { hovering = $0 }
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .background(NativeListSelection())
     }
 }
 

@@ -26,8 +26,9 @@ DeskFuse 跨设备麦克风共享 · macOS 测试版
 默认输入恢复：关闭 B 的共享时，若默认输入仍为 DeskFuse 虚拟设备，
 会尝试恢复点击按钮前的设备；该设备不存在时请在系统声音设置手动选择。
 
-驱动位于 /Library/Audio/Plug-Ins/HAL/ 下（文件名见 previous-installation.json），
-Bundle ID 见随包 previous-installation.json。卸载入口仅移除此驱动。
+驱动位于 /Library/Audio/Plug-Ins/HAL/DeskFuseMicrophone.driver，
+Bundle ID 为 com.deskfuse.microphone.driver（见随包 driver-identity.json）。
+安装和卸载入口只移除此驱动，以及 previous-installation.json 记录的旧版驱动。
 驱动仅监听回环地址。设备间音频走 DeskFuse 现有配对认证连接，不落盘。
 Roc VAD v0.0.4 / Roc Toolkit 的许可证/署名保留在应用内 THIRD_PARTY_MICROPHONE.txt。
 完整对应源码、修改及依赖源码不放入 DMG；维护者按构建号保存在构建缓存中。

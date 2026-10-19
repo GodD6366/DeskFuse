@@ -36,9 +36,13 @@ pub struct UpdateRequest {
     pub target: u32,
     #[prost(bytes = "vec", tag = "4")]
     pub sha256: Vec<u8>,
-    /// Pull one bounded chunk; a new transaction restarts at offset zero.
+    /// Pull starting at this offset; a new transaction restarts at offset zero.
     #[prost(uint64, tag = "5")]
     pub offset: u64,
+    /// 本次请求希望连续收到的最大字节数，应答在同一条流上按 `UpdateChunk`
+    /// 逐帧写出直到满足或到达文件末尾。`0` 表示只返回一个块。
+    #[prost(uint64, tag = "6")]
+    pub max_bytes: u64,
 }
 #[derive(Clone, PartialEq, Message)]
 #[prost(skip_debug)]
@@ -146,6 +150,7 @@ pub(crate) fn validate(message: &crate::Message) -> Result<(), ProtocolError> {
                 && target(v.target)
                 && v.sha256.len() == 32
                 && v.offset < MAX_ARTIFACT_SIZE
+                && v.max_bytes <= MAX_ARTIFACT_SIZE
         }
         M::UpdateChunk(v) => {
             id(&v.transaction_id)

@@ -33,6 +33,8 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     var managingDriver = false
     var driverOperation: MicrophoneDriverManager.Action?
     var driverInstalled = MicrophoneDriverManager.isInstalled
+    /// 旧版名称的驱动仍在 HAL 目录：需要提示用户安装新驱动或卸载以清理。
+    var legacyDriverInstalled = MicrophoneDriverManager.isLegacyInstalled
     var driverMessage: String?
     // Read-only UI observation, isolated from the latency-sensitive audio worker.
     var readerApps: [MicrophoneReader] = []
@@ -78,6 +80,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                     self.connectionError = "连接麦克风服务超时（5 秒）。" + (status.error.map { "\n原因：\($0)" } ?? "服务尚未响应，请重试。")
                 }
                 self.driverInstalled = MicrophoneDriverManager.isInstalled
+                self.legacyDriverInstalled = MicrophoneDriverManager.isLegacyInstalled
                 if self.snapshot?.role == "sender", AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined, !self.askedPermission {
                     self.askedPermission = true
                     _ = await AVCaptureDevice.requestAccess(for: .audio)
@@ -179,7 +182,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         guard !managingDriver, !saving, let engine, let resources = Bundle.main.resourceURL else { return }
         managingDriver = true; driverOperation = action; error = nil; driverMessage = nil
         Task {
-            defer { managingDriver = false; driverOperation = nil; driverInstalled = MicrophoneDriverManager.isInstalled; refreshInputs() }
+            defer { managingDriver = false; driverOperation = nil; driverInstalled = MicrophoneDriverManager.isInstalled; legacyDriverInstalled = MicrophoneDriverManager.isLegacyInstalled; refreshInputs() }
             do {
                 // Stop sharing before changing a loaded HAL plugin. Leave the explicit
                 // switch off so audio cannot resume unexpectedly after authorization.

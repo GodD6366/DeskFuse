@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
-pub use update::{UpdateTransportRequest, UpdateTransportStream};
+pub use update::{UpdateReplyStream, UpdateTransportRequest, UpdateTransportStream};
 
 #[derive(Clone, Debug)]
 pub enum InputTransportEvent {

@@ -16,6 +16,7 @@ fn all_update_messages_roundtrip_independently_of_clipboard() {
         }),
         Message::UpdateRequest(UpdateRequest {
             offset: 0,
+            max_bytes: 128 * 1024,
             transaction_id: vec![1; 16],
             release_id: vec![2; 16],
             target: 2,

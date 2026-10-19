@@ -29,12 +29,13 @@ PACKAGE_MODE=lan
 AUTO_INSTALL=0
 RELEASE_PAIR=0
 FAST_MODE=0
+FULL_MODE=0
 WITH_DMG=0
 REBUILD_RUST=0
 REBUILD_SWIFT=0
 EXPLICIT_LAN=0
 EXPLICIT_HOMEBREW=0
-usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] [--fast [--with-dmg]] [--rebuild-rust] [--rebuild-swift] (single target: DESKFUSE_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
+usage() { echo "usage: scripts/package-macos.sh [--lan|--homebrew|--manual|--release] [--auto] [--fast|--full] [--with-dmg] [--rebuild-rust] [--rebuild-swift] (--auto defaults to --fast; --full keeps distribution packaging; single target: DESKFUSE_MACOS_ARCH=arm64|x86_64)" >&2; exit 2; }
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --lan) EXPLICIT_LAN=1 ;;
@@ -43,6 +44,7 @@ while [[ "$#" -gt 0 ]]; do
     --release) RELEASE_PAIR=1 ;;
     --auto) AUTO_INSTALL=1 ;;
     --fast) FAST_MODE=1 ;;
+    --full) FULL_MODE=1 ;;
     --with-dmg) WITH_DMG=1 ;;
     --rebuild-rust) REBUILD_RUST=1 ;;
     --rebuild-swift) REBUILD_SWIFT=1 ;;
@@ -50,6 +52,15 @@ while [[ "$#" -gt 0 ]]; do
   esac
   shift
 done
+if [[ "$FAST_MODE" == 1 && "$FULL_MODE" == 1 ]]; then
+  echo "error: --fast and --full are mutually exclusive" >&2
+  exit 2
+fi
+# Local installation defaults to incremental Swift and an app-only delivery.
+# Keep explicit full packaging, CI and required notarization on the full path.
+if [[ "$AUTO_INSTALL" == 1 && "$FULL_MODE" == 0 && "${CI:-false}" != true && "${DESKFUSE_REQUIRE_NOTARIZE:-0}" != 1 ]]; then
+  FAST_MODE=1
+fi
 if [[ "$RELEASE_PAIR" == 1 ]]; then
   if [[ "$EXPLICIT_LAN" == 1 || "$EXPLICIT_HOMEBREW" == 1 || "$AUTO_INSTALL" == 1 || -n "${DESKFUSE_MACOS_ARCH:-}" || -n "${DMG_PATH:-}" ]]; then
     echo "error: --release selects both manual packages; do not combine with --lan, --homebrew, --auto, DESKFUSE_MACOS_ARCH or DMG_PATH" >&2
@@ -83,6 +94,7 @@ if [[ "$FAST_MODE" == 1 ]]; then
   SKIP_DMG=1
   [[ "$WITH_DMG" == 0 ]] || SKIP_DMG=0
   SKIP_NOTARIZE=1
+  echo "build mode: local-fast (incremental Swift, cached native builds; use --full for full packaging)"
 else
   SKIP_DMG=0
   SKIP_NOTARIZE=0
@@ -286,6 +298,7 @@ on_exit() {
     fi
     deskfuse_cache_note_failure "${DESKFUSE_STAGE_NAME:-unknown}" "${DESKFUSE_LAST_LOG:-}"
   fi
+  printf '\npackaging total: %ss (exit %s)\n' "$SECONDS" "$status"
   exit "$status"
 }
 trap on_exit EXIT
@@ -339,6 +352,8 @@ if [[ "$PACKAGE_MODE" != homebrew ]]; then
   DESKFUSE_RETRY_HINT="RELEASE_METADATA=\"$RELEASE_METADATA\" DESKFUSE_MACOS_ARCH=$MACOS_ARCH ./scripts/package-macos.sh --$PACKAGE_MODE"
   if [[ "$FAST_MODE" == 1 ]]; then
     DESKFUSE_RETRY_HINT="$DESKFUSE_RETRY_HINT --fast"
+  elif [[ "$FULL_MODE" == 1 ]]; then
+    DESKFUSE_RETRY_HINT="$DESKFUSE_RETRY_HINT --full"
   fi
   echo "retry: $DESKFUSE_RETRY_HINT"
 fi
@@ -484,7 +499,12 @@ deskfuse_stage_done
 # Preserve the exact signed bundle for later release signing and LAN forwarding.
 deskfuse_stage update-payload
 UPDATE_ZIP="$STAGING_DIR/$UPDATE_ASSET"
-ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
+if [[ "$FAST_MODE" == 1 ]]; then
+  # Local iteration favours latency over a slightly smaller update payload.
+  ditto -c -k --zlibCompressionLevel 1 --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
+else
+  ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
+fi
 
 # Release authorization is independent of pairing and platform code signing.
 # CI can ship a homebrew DMG without the private LAN release key; it cannot

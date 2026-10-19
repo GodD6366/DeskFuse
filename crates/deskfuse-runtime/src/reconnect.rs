@@ -14,6 +14,11 @@ pub(super) struct Recovery {
     return_endpoints: BTreeMap<DeviceId, Endpoint>,
     evaluations: BTreeMap<DeviceId, Evaluation>,
     next_evaluation: BTreeMap<DeviceId, Instant>,
+    /// 对方用户主动断开了与本机的连接（拨号被以挂起为由拒绝）。
+    remote_suspended: BTreeSet<DeviceId>,
+    /// 本机出站已连上、但对方尚未拨回本机的设备。双方都不把它当作在线，
+    /// 避免出现"A 显示已连接、B 显示离线"的单边状态。
+    awaiting_return: BTreeSet<DeviceId>,
 }
 struct Retry {
     failures: u32,
@@ -26,6 +31,14 @@ impl Recovery {
     /// this door instead of the raw map.
     pub(super) fn clear_retry(&mut self, peer: DeviceId) {
         self.retries.remove(&peer);
+    }
+    /// 是否有一轮拨号正在进行；进行中的连接状态由拨号结果决定。
+    pub(super) fn dial_in_flight(&self, peer: DeviceId) -> bool {
+        self.attempts.contains_key(&peer)
+    }
+    /// 已发布快照中是否把该设备标记为"等待对方确认"。
+    pub(super) fn return_pending(&self, peer: DeviceId) -> bool {
+        self.awaiting_return.contains(&peer)
     }
 }
 struct Attempt {
@@ -146,8 +159,19 @@ impl Actor {
     ) {
         let peer = incoming.hello.device_id;
         if !self.may_reconnect(peer) {
+            // 以前这里静默返回：对方连得上本机，本机却永远不回拨，排查时毫无线索。
+            let reason = if self.recovery.suspended.contains(&peer) {
+                "本机已主动断开该设备，忽略其连入"
+            } else {
+                "设备未受信任或已被阻止，忽略其连入"
+            };
+            if self.peers.contains_key(&peer) {
+                self.recovery_event(peer, "incoming_ignored", None, Some(reason.into()));
+            }
             return;
         }
+        // 对方能拨入，说明它已解除对本机的挂起。
+        self.recovery.remote_suspended.remove(&peer);
         if incoming.hello.verify().is_err()
             || self.peers[&peer].public_key != incoming.hello.public_key
         {
@@ -175,6 +199,10 @@ impl Actor {
             && self.transport.control_session_alive(peer) != Some(false)
             && self.delivery.control_probe_clean(peer);
         if !restarted && outgoing_healthy {
+            // 双向会话刚刚凑齐：立即发布，不必等下一个 tick。
+            if self.refresh_return_paths() {
+                self.publish();
+            }
             return;
         }
         // Discovery has no process nonce. A freshly authenticated incoming
@@ -252,18 +280,90 @@ impl Actor {
     }
 
     pub(super) fn restore_reconnect_suspended(&mut self, peers: BTreeSet<DeviceId>) {
+        for peer in self.recovery.suspended.difference(&peers) {
+            self.transport.set_control_suspended(*peer, false);
+        }
+        for peer in &peers {
+            self.transport.set_control_suspended(*peer, true);
+        }
         self.recovery.suspended = peers;
     }
     pub(super) async fn resume_reconnect(&mut self, peer: DeviceId) {
+        self.transport.set_control_suspended(peer, false);
         if self.recovery.suspended.remove(&peer) {
             self.persist_reconnect_suspended().await;
         }
     }
+    /// 主动断开必须对两端同时生效：只停本端重连而继续接受对方拨入，会让对方
+    /// 显示"已连接"、本机显示"离线"。传输层随即关闭并拒绝该设备的入站会话。
     pub(super) async fn suspend_reconnect(&mut self, peer: DeviceId) {
+        self.transport.set_control_suspended(peer, true);
         self.cancel_reconnect(peer).await;
         if self.recovery.suspended.insert(peer) {
             self.persist_reconnect_suspended().await;
         }
+    }
+
+    /// 本机出站已连上、但对方拨入本机的会话不存在：对方尚未确认这条连接。
+    fn awaiting_peer_return(&self, peer: DeviceId) -> bool {
+        self.peers
+            .get(&peer)
+            .is_some_and(|state| state.connection == ConnectionState::Connected)
+            && self.transport.inbound_control_alive(peer) == Some(false)
+    }
+
+    /// 重新计算"等待对方确认"集合并记录变化；返回是否需要重新发布快照。
+    pub(super) fn refresh_return_paths(&mut self) -> bool {
+        let awaiting = self
+            .peers
+            .keys()
+            .copied()
+            .filter(|peer| self.awaiting_peer_return(*peer))
+            .collect::<BTreeSet<_>>();
+        if awaiting == self.recovery.awaiting_return {
+            return false;
+        }
+        for peer in awaiting.difference(&self.recovery.awaiting_return) {
+            self.recovery_event(
+                *peer,
+                "awaiting_peer_return",
+                None,
+                Some("本机已连上对方，等待对方回连确认".into()),
+            );
+        }
+        for peer in self.recovery.awaiting_return.difference(&awaiting) {
+            if self
+                .peers
+                .get(peer)
+                .is_some_and(|state| state.connection == ConnectionState::Connected)
+            {
+                self.recovery_event(*peer, "peer_return_confirmed", None, None);
+            }
+        }
+        self.recovery.awaiting_return = awaiting;
+        true
+    }
+
+    /// 需要在界面上单独说明的连接状态，跟随快照一起发布。
+    pub(super) fn link_holds(&self) -> Vec<PeerLinkHold> {
+        self.peers
+            .keys()
+            .filter_map(|peer| {
+                let kind = if self.recovery.suspended.contains(peer) {
+                    PeerLinkHoldKind::LocalSuspended
+                } else if self.recovery.remote_suspended.contains(peer) {
+                    PeerLinkHoldKind::RemoteSuspended
+                } else if self.recovery.awaiting_return.contains(peer) {
+                    PeerLinkHoldKind::AwaitingPeer
+                } else {
+                    return None;
+                };
+                Some(PeerLinkHold {
+                    peer_id: *peer,
+                    kind,
+                })
+            })
+            .collect()
     }
     async fn persist_reconnect_suspended(&mut self) {
         let suspended = self.recovery.suspended.clone();
@@ -299,28 +399,16 @@ impl Actor {
         });
     }
 
-    /// Whether a peer is still somewhere we know about. Health is deliberately
-    /// ignored: a route suppressed by a failed dial still proves the address,
-    /// and Bonjour keeps advertising a sleeping device until its record
-    /// expires. Only a peer that is both undiscovered and address-less is
-    /// allowed to fall onto the long retry ladder.
+    /// Whether a peer is still advertised on the network. Bonjour keeps
+    /// advertising a sleeping device until its record expires, so a visible
+    /// peer stays on the 30 s ladder.
+    ///
+    /// 以前"有任何持久化地址"也算在场，而每台配对过的设备都有地址，导致长退避
+    /// 永远不生效：离开很久的设备也被每 30 秒全量探测一次，挤占输入链路。
+    /// 设备回来时会主动拨入本机（`handle_control_peer` 立即加速重连），
+    /// Bonjour 重新出现也会重置退避，所以长退避不会让用户久等。
     fn peer_present(&self, peer: DeviceId) -> bool {
-        if self.recovery.discovered.contains(&peer) {
-            return true;
-        }
-        let Some(state) = self.peers.get(&peer) else {
-            return false;
-        };
-        let routes = state
-            .routes
-            .values()
-            .cloned()
-            .map(|mut route| {
-                route.health = RouteHealth::Unknown;
-                route
-            })
-            .collect::<Vec<_>>();
-        !self.policy.eligible_routes(&routes).is_empty()
+        self.recovery.discovered.contains(&peer)
     }
 
     fn schedule_retry(&mut self, peer: DeviceId, failed: bool) {
@@ -544,6 +632,15 @@ impl Actor {
                         result = Ok((route, connection));
                         break;
                     }
+                    Err(error @ RuntimeError::RemoteSuspended(_)) => {
+                        // 线路是通的，是对方拒绝了本机：不惩罚路由，也不必再试其他路由。
+                        if let Some(generation) = socket_generation {
+                            let _ = transport.disconnect_control(peer, generation).await;
+                        }
+                        installed_task.store(0, Ordering::Release);
+                        result = Err(error);
+                        break;
+                    }
                     Err(error) => {
                         failed.push(route.id);
                         result = Err(error);
@@ -628,6 +725,7 @@ impl Actor {
                 }
                 self.recovery_event(peer, "connected", Some(route.id), None);
                 self.recovery.retries.remove(&peer);
+                self.recovery.remote_suspended.remove(&peer);
                 // The dial already measured every route; do not immediately duplicate it.
                 self.recovery
                     .next_evaluation
@@ -659,7 +757,21 @@ impl Actor {
                 state.preferred_route = None;
                 self.pending_app_messages.remove(&peer);
                 self.schedule_retry(peer, true);
-                self.recovery_event(peer, "failed", None, Some(error.to_string()));
+                if matches!(error, RuntimeError::RemoteSuspended(_)) {
+                    // 对方恢复连接时会主动拨入本机并立即触发重连，这里无需频繁重试。
+                    self.recovery.remote_suspended.insert(peer);
+                    if let Some(retry) = self.recovery.retries.get_mut(&peer) {
+                        retry.due = Instant::now() + RETRY_MAX_DELAY;
+                    }
+                    self.recovery_event(
+                        peer,
+                        "remote_suspended",
+                        None,
+                        Some("对方已断开与本机的连接，需在对方设备上重新连接".into()),
+                    );
+                } else {
+                    self.recovery_event(peer, "failed", None, Some(error.to_string()));
+                }
             }
         }
         self.publish();
@@ -735,6 +847,9 @@ impl Actor {
             {
                 self.start_reconnect(peer).await;
             }
+        }
+        if self.refresh_return_paths() {
+            self.publish();
         }
     }
 

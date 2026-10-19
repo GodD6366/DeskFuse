@@ -221,7 +221,7 @@ impl Library {
         let before = tx.total_changes();
         if settings_db(&tx)?.sync_index {
             for (_, raw, author) in &rows {
-                materialize_index(&tx, &serde_json::from_str(raw).map_err(err)?, author)?;
+                materialize_index(&tx, &serde_json::from_str(raw).map_err(err)?, author, false)?;
             }
         }
         let changed = tx.total_changes() > before;

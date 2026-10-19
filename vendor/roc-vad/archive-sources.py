@@ -34,7 +34,8 @@ with output.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw
             if 'bin' in path.parts or path.name.startswith('driver_protocol.') and path.suffix in {'.h', '.cc'} or path.name == 'compile_commands.json': continue
             add(path, path.relative_to(root))
     add(root / 'scripts/build-roc-microphone.sh', pathlib.Path('scripts/build-roc-microphone.sh'))
-    for name in ['config/previous-installation.json', 'resources/microphone/compatibility.sh', 'scripts/test-microphone-native.sh']:
+    add(root / 'scripts/roc-build-cache.py', pathlib.Path('scripts/roc-build-cache.py'))
+    for name in ['config/previous-installation.json', 'resources/microphone/compatibility.sh', 'resources/microphone/driver-identity.json', 'scripts/test-microphone-native.sh']:
         add(root / name, pathlib.Path(name))
     lock = json.loads((root / 'vendor/roc-vad/sources.lock.json').read_text())
     allowed_distfiles = {entry['path'] for entry in lock['roc_distfiles']}

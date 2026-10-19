@@ -44,7 +44,7 @@ DeskFuse 已移除独立语音快捷键（录制、捕获、按键保护、IPC �
 
 ## 驱动、许可与交包
 
-基于 Roc VAD v0.0.4。驱动 Bundle ID、HAL 文件名和设备 UID 由 `config/previous-installation.json` 统一提供；插件 UUID 为 `E88452E3-1C2E-42C1-A1A4-7B496BC3D527`，与原版共存。固定来源及校验见 `vendor/roc-vad/sources.lock.json`，本地修改、源码/依赖许可证保存在按构建号归档的 `roc-microphone-sources.tar.gz` 中，可向提供测试版的维护者索取。
+基于 Roc VAD v0.0.4。驱动 Bundle ID（`com.deskfuse.microphone.driver`）、HAL 文件名（`DeskFuseMicrophone.driver`）和设备 UID（`com.deskfuse.microphone.input`）由 `resources/microphone/driver-identity.json` 统一提供；旧安装的驱动身份只保存在 `config/previous-installation.json`，安装或卸载时校验 Bundle ID 后移除遗留的旧驱动（两者共用插件 UUID，不能并存）；插件 UUID 为 `E88452E3-1C2E-42C1-A1A4-7B496BC3D527`，与原版共存。固定来源及校验见 `vendor/roc-vad/sources.lock.json`，本地修改、源码/依赖许可证保存在按构建号归档的 `roc-microphone-sources.tar.gz` 中，可向提供测试版的维护者索取。
 
 `scripts/build-roc-microphone.sh` 只编译，不安装驱动。`scripts/package-macos.sh` 默认交付 arm64 本地 DMG，`--release` 构建 arm64 / x86_64 手动安装包，设置页直接提供安装/重装/卸载，使用系统管理员授权弹窗并展示进度、取消及失败结果，无需打开终端；接收端在缺少驱动时显示安装入口；已安装驱动的设备在折叠的“驱动维护”中提供重装和卸载，未加载时仍可卸载。安装或卸载前关闭共享，完成后由用户重新开启；独立重启音频服务保留共享设置。DMG 保留应用、Applications 链接和原有独立驱动入口；驱动也可从应用设置内管理。完整源码归档保存在 `target/package-macos/{version}-build{number}/{arch}/`，不进入 DMG、应用或 LAN 更新 ZIP；应用保留许可证/署名、源码 SHA-256 和索取方式。构建产物布局保持原样：DMG、更新 ZIP、发行描述、签名记录和校验清单仍输出到原交付目录，LAN 更新、公共发行与 CI 流程不变。安装器仅操作自有 HAL 目录，验证 Bundle ID 和签名；重启音频服务由用户主动确认。默认输入按钮由用户显式点击；关闭共享时只在默认输入仍为 DeskFuse 时尝试恢复此前设备。
 
@@ -92,7 +92,7 @@ macOS 14.2 及以上通过 Core Audio process object 的 `IsRunningInput` 与 in
 
 build 179 现场：本机独立进程加载随包 `libroc-microphone.dylib` 连续三次调用 `ud_mic_driver_available()`，均在 150–160 ms 返回 `Deadline Exceeded`；10.10.10.1 的同类探针在 1–4 ms 成功，更新到 build 179 后仍成功。说明故障不只存在于 UI 投影或应用内缓存。
 
-本机驱动运行在系统独立进程 `Core Audio Driver`（驱动 bundle 名称见 `config/previous-installation.json` 的 `microphone.bundleName`），当时 PID 87049、启动于 22:05:21。日志显示 HAL 设备创建和多次 StartIO/StopIO 正常；19712 端口由该进程监听，TCP 连接已建立，服务端接收队列保留 82 字节，多条旧连接处于 CLOSE_WAIT。控制服务尚未处理客户端握手/请求；这还不能证明具体死锁点。普通用户 `sample` 被 macOS 权限拒绝，`sudo -n` 没有缓存授权；已请用户手动执行只读的 `sudo /usr/bin/sample 87049 2 -file /tmp/deskfuse-driver-stall.sample.txt`。用户随后提供了堆栈，下面记录定位与修复。
+本机驱动运行在系统独立进程 `Core Audio Driver`（当时使用旧安装的驱动 bundle 名称，见 `config/previous-installation.json` 的 `microphone.bundleName`），当时 PID 87049、启动于 22:05:21。日志显示 HAL 设备创建和多次 StartIO/StopIO 正常；19712 端口由该进程监听，TCP 连接已建立，服务端接收队列保留 82 字节，多条旧连接处于 CLOSE_WAIT。控制服务尚未处理客户端握手/请求；这还不能证明具体死锁点。普通用户 `sample` 被 macOS 权限拒绝，`sudo -n` 没有缓存授权；已请用户手动执行只读的 `sudo /usr/bin/sample 87049 2 -file /tmp/deskfuse-driver-stall.sample.txt`。用户随后提供了堆栈，下面记录定位与修复。
 
 
 用户提供的 `sample` 显示音频、Roc 和 RPC 工作线程仍在等待事件，没有发现设备锁死锁。利用与安装版 `__text` 完全一致的本地目标文件还原符号后，继续检查固定版本 gRPC 1.63 的监听错误分支。

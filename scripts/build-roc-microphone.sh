@@ -20,6 +20,11 @@ export CXX="$(xcrun --sdk macosx --find clang++)"
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 export PATH="$(dirname "$CC"):/opt/homebrew/opt/libtool/libexec/gnubin:/usr/local/opt/libtool/libexec/gnubin:$PATH"
 mkdir -p "$BUILD" "$OUTPUT/include"
+CACHE_KEY="$("$PYTHON" "$ROOT/scripts/roc-build-cache.py" key "$ROOT" "$ARCH")"
+if "$PYTHON" "$ROOT/scripts/roc-build-cache.py" check "$ROOT" "$ARCH" "$CACHE_KEY"; then
+  echo "Roc microphone cache hit ($ARCH; binaries and source archive verified)"
+  exit 0
+fi
 "$PYTHON" "$ROOT/vendor/roc-vad/prepare-toolchain.py" "$BUILD"
 # Downloads are pinned both by git commit and by SHA256 of the upstream source
 # archive. Retain the verified archives in build cache, outside tracked sources.
@@ -60,4 +65,5 @@ lipo "$OUTPUT/libroc-microphone.dylib" -verify_arch "$ARCH"
 # and notices. No .git directories, audio recordings or compiled output.
 "$PYTHON" "$ROOT/vendor/roc-vad/archive-sources.py" "$ROOT" "$BUILD" "$OUTPUT/roc-microphone-sources.tar.gz"
 shasum -a 256 "$OUTPUT/libroc-microphone.dylib" "$OUTPUT/roc-microphone-sources.tar.gz" > "$OUTPUT/SHA256SUMS"
+"$PYTHON" "$ROOT/scripts/roc-build-cache.py" record "$ROOT" "$ARCH" "$CACHE_KEY"
 echo "Roc microphone build: $OUTPUT"
