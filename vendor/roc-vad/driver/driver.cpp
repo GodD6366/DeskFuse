@@ -7,6 +7,7 @@
  */
 
 #include "driver.hpp"
+#include "host_proxy.hpp"
 #include "plist_info.hpp"
 
 #include <spdlog/spdlog.h>
@@ -76,6 +77,9 @@ AudioServerPlugInDriverRef Driver::reference()
 OSStatus Driver::OnInitialize()
 {
     spdlog::info("received initialization request");
+
+    // 所有 libASPL 对象此后经代理访问 Host：属性变更通知异步投递，避免与 coreaudiod 互锁。
+    hal_context_->Host = make_async_host_proxy(hal_context_->Host.load());
 
     device_manager_ = std::make_shared<DeviceManager>(hal_plugin_, hal_storage_);
     driver_service_ = std::make_unique<DriverService>(log_manager_, device_manager_);

@@ -59,31 +59,33 @@ DeviceInfo DeviceManager::get_device(const std::string& uid)
 
 DeviceInfo DeviceManager::add_device(DeviceInfo info)
 {
-    std::lock_guard lock(mutex_);
+    {
+        std::lock_guard lock(mutex_);
 
-    if (info.index != 0 && device_by_index_.count(info.index)) {
-        throw std::invalid_argument(
-            fmt::format("device with index {} already exists", info.index));
+        if (info.index != 0 && device_by_index_.count(info.index)) {
+            throw std::invalid_argument(
+                fmt::format("device with index {} already exists", info.index));
+        }
+
+        if (!info.uid.empty() && device_by_uid_.count(info.uid)) {
+            throw std::invalid_argument(
+                fmt::format("device with uid \"{}\" already exists", info.uid));
+        }
+
+        auto device =
+            std::make_shared<Device>(hal_plugin_, index_allocator_, uid_generator_, info);
+
+        info = device->info();
+
+        assert(info.index != 0);
+        assert(!info.uid.empty());
+
+        assert(!device_by_index_.count(info.index));
+        assert(!device_by_uid_.count(info.uid));
+
+        device_by_index_[info.index] = device;
+        device_by_uid_[info.uid] = device;
     }
-
-    if (!info.uid.empty() && device_by_uid_.count(info.uid)) {
-        throw std::invalid_argument(
-            fmt::format("device with uid \"{}\" already exists", info.uid));
-    }
-
-    auto device =
-        std::make_shared<Device>(hal_plugin_, index_allocator_, uid_generator_, info);
-
-    info = device->info();
-
-    assert(info.index != 0);
-    assert(!info.uid.empty());
-
-    assert(!device_by_index_.count(info.index));
-    assert(!device_by_uid_.count(info.uid));
-
-    device_by_index_[info.index] = device;
-    device_by_uid_[info.uid] = device;
 
     save_devices_();
 
@@ -92,62 +94,73 @@ DeviceInfo DeviceManager::add_device(DeviceInfo info)
 
 void DeviceManager::delete_device(index_t index)
 {
-    std::lock_guard lock(mutex_);
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(index);
-    auto info = device->info();
+        auto device = find_device_(index);
+        auto info = device->info();
 
-    assert(device_by_index_.count(info.index));
-    assert(device_by_uid_.count(info.uid));
+        assert(device_by_index_.count(info.index));
+        assert(device_by_uid_.count(info.uid));
 
-    device_by_index_.erase(info.index);
-    device_by_uid_.erase(info.uid);
+        device_by_index_.erase(info.index);
+        device_by_uid_.erase(info.uid);
+    }
 
     save_devices_();
 }
 
 void DeviceManager::delete_device(const std::string& uid)
 {
-    std::lock_guard lock(mutex_);
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(uid);
-    auto info = device->info();
+        auto device = find_device_(uid);
+        auto info = device->info();
 
-    assert(device_by_index_.count(info.index));
-    assert(device_by_uid_.count(info.uid));
+        assert(device_by_index_.count(info.index));
+        assert(device_by_uid_.count(info.uid));
 
-    device_by_index_.erase(info.index);
-    device_by_uid_.erase(info.uid);
+        device_by_index_.erase(info.index);
+        device_by_uid_.erase(info.uid);
+    }
 
     save_devices_();
 }
 
 void DeviceManager::toggle_device(index_t index, bool enabled)
 {
-    std::lock_guard lock(mutex_);
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(index);
-    device->toggle(enabled);
+        auto device = find_device_(index);
+        device->toggle(enabled);
+    }
 
     save_devices_();
 }
 
 void DeviceManager::toggle_device(const std::string& uid, bool enabled)
 {
-    std::lock_guard lock(mutex_);
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(uid);
-    device->toggle(enabled);
+        auto device = find_device_(uid);
+        device->toggle(enabled);
+    }
 
     save_devices_();
 }
 
 DeviceEndpointInfo DeviceManager::bind_device(index_t index, DeviceEndpointInfo endpoint)
 {
-    std::lock_guard lock(mutex_);
+    DeviceEndpointInfo info;
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(index);
-    auto info = device->bind(endpoint);
+        auto device = find_device_(index);
+        info = device->bind(endpoint);
+    }
 
     save_devices_();
 
@@ -157,10 +170,13 @@ DeviceEndpointInfo DeviceManager::bind_device(index_t index, DeviceEndpointInfo 
 DeviceEndpointInfo DeviceManager::bind_device(const std::string& uid,
     DeviceEndpointInfo endpoint)
 {
-    std::lock_guard lock(mutex_);
+    DeviceEndpointInfo info;
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(uid);
-    auto info = device->bind(endpoint);
+        auto device = find_device_(uid);
+        info = device->bind(endpoint);
+    }
 
     save_devices_();
 
@@ -170,10 +186,13 @@ DeviceEndpointInfo DeviceManager::bind_device(const std::string& uid,
 DeviceEndpointInfo DeviceManager::connect_device(index_t index,
     DeviceEndpointInfo endpoint)
 {
-    std::lock_guard lock(mutex_);
+    DeviceEndpointInfo info;
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(index);
-    auto info = device->connect(endpoint);
+        auto device = find_device_(index);
+        info = device->connect(endpoint);
+    }
 
     save_devices_();
 
@@ -183,10 +202,13 @@ DeviceEndpointInfo DeviceManager::connect_device(index_t index,
 DeviceEndpointInfo DeviceManager::connect_device(const std::string& uid,
     DeviceEndpointInfo endpoint)
 {
-    std::lock_guard lock(mutex_);
+    DeviceEndpointInfo info;
+    {
+        std::lock_guard lock(mutex_);
 
-    auto device = find_device_(uid);
-    auto info = device->connect(endpoint);
+        auto device = find_device_(uid);
+        info = device->connect(endpoint);
+    }
 
     save_devices_();
 
@@ -241,6 +263,10 @@ void DeviceManager::load_devices_()
 
 void DeviceManager::save_devices_()
 {
+    // 持久化写入是发往 coreaudiod 的同步调用，不能持有 mutex_，否则 coreaudiod 繁忙时
+    // 所有设备查询 RPC 都会排队阻塞并持续占用 gRPC 线程。storage_mutex_ 串行化写入，
+    // 每次写入时取最新快照，保证最后一次写入反映最终状态。
+    std::lock_guard storage_lock(storage_mutex_);
     auto device_list = get_all_devices();
 
     device_storage_.save_devices(device_list);

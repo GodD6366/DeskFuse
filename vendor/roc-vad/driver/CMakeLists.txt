@@ -12,6 +12,7 @@ add_library(${DRIVER_LIB} STATIC
   device_storage.cpp
   driver.cpp
   driver_service.cpp
+  host_proxy.cpp
   index_allocator.cpp
   log_manager.cpp
   log_streamer.cpp

@@ -67,6 +67,8 @@ private:
     void save_devices_();
 
     std::recursive_mutex mutex_;
+    // 只保护持久化写入；获取顺序固定为 storage_mutex_ → mutex_。
+    std::mutex storage_mutex_;
 
     std::shared_ptr<aspl::Plugin> hal_plugin_;
 

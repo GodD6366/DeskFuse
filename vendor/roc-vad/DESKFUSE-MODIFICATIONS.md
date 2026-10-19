@@ -16,6 +16,13 @@ DeskFuse modifications:
   the device. Reader status reflects first StartIO through last StopIO.
 - Bound HAL history reads and handle full-ring copies, including requests larger
   than the history buffer; missed history returns silence.
+- HAL property-change notifications are posted asynchronously on a private serial
+  queue (`host_proxy.cpp`). The out-of-process driver host turns every Host call
+  into synchronous XPC; a synchronous `PropertiesChanged` from inside a
+  coreaudiod `set_property_data` request deadlocked with coreaudiod's device
+  arrival handling (`add_device_client`), hanging Core Audio system-wide.
+  Device storage writes run outside the device table lock so status RPCs never
+  queue behind a blocked coreaudiod call.
 - Errors read as silence, driver logging is metadata-only, 48 kHz mono RTP uses
   payload type 96. The application manages authenticated network transport.
 - Resolve C/C++ compilers and SDK from the same selected Xcode; invalidate
