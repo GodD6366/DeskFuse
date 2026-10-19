@@ -19,6 +19,8 @@ pub struct Settings {
     pub enabled: bool,
     /// Empty means this Mac supplies its physical microphone.
     pub source: String,
+    /// Legacy per-device allowlist. Kept for settings compatibility; trusted
+    /// paired devices may use this Mac without an explicit entry.
     pub allowed: Vec<String>,
     /// Empty means the current physical system default input.
     pub input_uid: String,
@@ -68,10 +70,10 @@ impl State {
             && self.native.error.is_empty()
     }
 
-    fn source_status(&self, peer: DeviceId, authorized: bool) -> u32 {
+    fn source_status(&self, authorized: bool) -> u32 {
         if !self.settings.enabled || !self.settings.source.is_empty() {
             2
-        } else if !authorized || !self.settings.allowed.contains(&peer.to_string()) {
+        } else if !authorized {
             3
         } else if !self.ready() {
             5
@@ -364,12 +366,6 @@ impl Service {
                 } else if active.sender {
                     if !s.settings.source.is_empty() {
                         Some("source_changed")
-                    } else if !s
-                        .settings
-                        .allowed
-                        .contains(&active.channel.peer.to_string())
-                    {
-                        Some("permission_revoked")
                     } else {
                         None
                     }
@@ -453,16 +449,11 @@ impl Service {
         while let Some(pending) = self.transport.take_microphone() {
             let (status, generation) = {
                 let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                (
-                    s.source_status(pending.peer, self.authorized(pending.peer)),
-                    s.generation,
-                )
+                (s.source_status(self.authorized(pending.peer)), s.generation)
             };
             if let Some(c) = pending.respond(status).await {
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if s.generation == generation
-                    && s.source_status(c.peer, self.authorized(c.peer)) == 1
-                {
+                if s.generation == generation && s.source_status(self.authorized(c.peer)) == 1 {
                     self.activate(&mut s, true, c);
                 } else {
                     c.close();
@@ -509,21 +500,22 @@ mod tests {
         let mut state = ready_state(peer, false);
         // Permission may still be prompting; admission authorizes a channel,
         // while native capture remains responsible for acquiring permission.
-        assert_eq!(state.source_status(peer, true), 1);
+        assert_eq!(state.source_status(true), 1);
         state.native.locked = true;
-        assert_eq!(state.source_status(peer, true), 5);
+        assert_eq!(state.source_status(true), 5);
         state.native.locked = false;
         state.native_at = Instant::now() - Duration::from_secs(3);
-        assert_eq!(state.source_status(peer, true), 5);
+        assert_eq!(state.source_status(true), 5);
         state.native_at = Instant::now();
         state.native.error = "capture stopped".into();
-        assert_eq!(state.source_status(peer, true), 5);
+        assert_eq!(state.source_status(true), 5);
         state.native.error.clear();
-        assert_eq!(state.source_status(peer, false), 3);
+        assert_eq!(state.source_status(false), 3);
         state.settings.allowed.clear();
-        assert_eq!(state.source_status(peer, true), 3);
+        // Trusted paired devices no longer need a legacy allowlist entry.
+        assert_eq!(state.source_status(true), 1);
         state.settings.enabled = false;
-        assert_eq!(state.source_status(peer, true), 2);
+        assert_eq!(state.source_status(true), 2);
     }
 
     #[test]
