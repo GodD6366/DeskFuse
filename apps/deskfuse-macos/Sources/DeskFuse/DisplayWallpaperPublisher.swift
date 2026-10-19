@@ -56,17 +56,13 @@ import DeskFuseEngine
                 $0.frame.intersection(bounds).area > $1.frame.intersection(bounds).area
             }
             let scale = min(1, 960 / max(bounds.width, bounds.height))
-            let configuration = SCStreamConfiguration()
-            configuration.width = max(1, Int(bounds.width * scale))
-            configuration.height = max(1, Int(bounds.height * scale))
-            configuration.showsCursor = false
+            let width = max(1, Int(bounds.width * scale))
+            let height = max(1, Int(bounds.height * scale))
             var capturedImage: NSImage?
             for window in candidates {
                 guard !Task.isCancelled else { return nil }
-                guard let captured = try? await SCScreenshotManager.captureImage(
-                    contentFilter: SCContentFilter(desktopIndependentWindow: window),
-                    configuration: configuration
-                ), !Self.isBlankCapture(captured) else { continue }
+                guard let captured = await Self.captureWindow(window, width: width, height: height),
+                      !Self.isBlankCapture(captured) else { continue }
                 capturedImage = NSImage(cgImage: captured, size: NSSize(width: captured.width, height: captured.height))
                 break
             }
@@ -85,6 +81,26 @@ import DeskFuseEngine
             changed[id] = preview
         }
         return RefreshResult(previews: changed, activeDisplayIDs: activeDisplayIDs)
+    }
+
+    /// ScreenCaptureKit 在调用线程上同步创建 SCStream 及其音频时钟（CMAudioDeviceClockCreate），
+    /// coreaudiod 无响应时会无限期阻塞调用方。因此放在专用串行队列执行：不冻结主线程，
+    /// 也不占用 Swift 协作线程池；即使阻塞，后续采集只在该队列排队，最多占用一个线程。
+    private nonisolated static let captureQueue = DispatchQueue(label: "com.deskfuse.wallpaper-capture", qos: .utility)
+
+    private nonisolated static func captureWindow(_ window: SCWindow, width: Int, height: Int) async -> CGImage? {
+        await withCheckedContinuation { continuation in
+            captureQueue.async {
+                let configuration = SCStreamConfiguration()
+                configuration.width = width
+                configuration.height = height
+                configuration.showsCursor = false
+                SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(desktopIndependentWindow: window),
+                    configuration: configuration
+                ) { image, _ in continuation.resume(returning: image) }
+            }
+        }
     }
 
     /// Reject the empty/black surfaces returned before a wallpaper window is
