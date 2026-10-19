@@ -154,7 +154,7 @@ struct PreviousInstallationPrompt: View {
         VStack(alignment: .leading, spacing: 18) {
             Label(controller.imported ? "历史数据已导入" : "发现\(controller.name)",
                   systemImage: controller.imported ? "checkmark.circle" : "tray.and.arrow.down")
-                .font(.title2.weight(.semibold))
+                .font(DFType.pageTitle)
             if let count = controller.importedCount {
                 Text("已新增 \(count) 条剪贴板记录，历史接收文件已迁移；DeskFuse 原有记录保持不变。")
             } else if controller.imported {
@@ -162,7 +162,7 @@ struct PreviousInstallationPrompt: View {
             } else if controller.hasHistory {
                 Text("将剪贴板历史、归档、列表和历史接收文件导入 DeskFuse。导入前会退出\(controller.name)并备份，旧数据不会删除。")
                 Text("未下载的远端内容仅保留索引，已清理的文件无法恢复；设备需要重新配对和授权。")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
             } else {
                 Text("检测到旧应用，但没有找到本机历史数据库。")
             }
@@ -170,7 +170,7 @@ struct PreviousInstallationPrompt: View {
                 Text("可以将\(controller.name)移到废纸篓。旧数据和备份会保留。")
             }
             if let error = controller.error {
-                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                Text(error).foregroundStyle(DFPalette.danger).textSelection(.enabled)
             }
             if controller.busy {
                 HStack { ProgressView().controlSize(.small); Text("正在处理，请稍候…") }

@@ -13,7 +13,7 @@ struct ShortcutSettingsPage: View {
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: "keyboard").font(DFType.pageTitle).foregroundStyle(.secondary)
                 Text("用一组按键，运行工作流或切换控制设备。")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
             }.padding(.horizontal, 26).padding(.top, 2).padding(.bottom, 12)
             DFScrollPage {
                 if store.workflowsEnabled {
@@ -67,11 +67,11 @@ struct ShortcutSettingsPage: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                Text(detail).font(DFType.caption).foregroundStyle(.secondary)
             }
             Spacer()
             ShortcutKeycaps(shortcut: Shortcut(keyCode: key, modifiers: modifiers))
-            Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.tertiary).padding(.leading, 6)
+            Image(systemName: "lock.fill").font(DFType.caption).foregroundStyle(.tertiary).padding(.leading, 6)
         }.padding(.vertical, 3)
     }
 }

@@ -98,7 +98,7 @@ struct ClipboardHistoryPane: View {
                     Text("历史记录").font(DFType.icon(.regular).weight(.semibold))
                     Spacer(minLength: 8)
                     if let total {
-                        Text("\(total) 条").font(.caption).monospacedDigit().dfSecondaryText()
+                        Text("\(total) 条").font(DFType.caption).monospacedDigit().dfSecondaryText()
                             .fixedSize()
                             .accessibilityLabel("共 \(total) 条历史")
                     }
@@ -115,7 +115,7 @@ struct ClipboardHistoryPane: View {
                     .accessibilityLabel("历史记录操作")
                 }
                 HStack(spacing: 8) {
-                    Text("自动同步剪贴板").font(.callout)
+                    Text("自动同步剪贴板").font(DFType.detail)
                     Spacer(minLength: 4)
                     Toggle("自动同步剪贴板", isOn: $syncEnabled)
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
@@ -146,7 +146,7 @@ struct ClipboardHistoryPane: View {
                         Spacer()
                         Button("删除所选", role: .destructive) { requestDelete(selection) }
                             .buttonStyle(.borderless)
-                    }.font(.caption)
+                    }.font(DFType.caption)
                 }
             }
         }
@@ -159,7 +159,7 @@ struct ClipboardHistoryPane: View {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if startsDayGroup(at: index) {
                         Text(dayTitle(item))
-                            .font(.headline)
+                            .font(DFType.section)
                             .dfSecondaryText()
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, index == 0 ? 4 : 14)
@@ -417,7 +417,7 @@ struct ClipboardHistoryPane: View {
                 .focused($searchFocused)
                 .onExitCommand { search = ""; searchFocused = false }
             if search.isEmpty {
-                Text("⌘ F").font(.caption).foregroundStyle(.tertiary)
+                Text("⌘ F").font(DFType.caption).foregroundStyle(.tertiary)
             } else {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").dfSecondaryText()
@@ -440,14 +440,14 @@ struct ClipboardHistoryPane: View {
         VStack(spacing: 10) {
             if searching {
                 ProgressView().controlSize(.small)
-                Text("正在搜索…").font(.callout).dfSecondaryText()
+                Text("正在搜索…").font(DFType.detail).dfSecondaryText()
             } else {
                 Image(systemName: historyIsEmpty ? "clipboard" : "magnifyingglass")
                     .font(DFType.metric).foregroundStyle(DFPalette.brandGradient)
                 Text(historyIsEmpty ? "还没有剪贴板历史" : "没有匹配的内容")
-                    .font(.callout.weight(.medium))
+                    .font(DFType.detail.weight(.medium))
                 Text(historyIsEmpty ? "复制文字、图片或文件后\n会显示在这里。" : "试试其他关键词或筛选条件。")
-                    .font(.caption).dfSecondaryText().multilineTextAlignment(.center)
+                    .font(DFType.caption).dfSecondaryText().multilineTextAlignment(.center)
             }
         }
         .padding(20)

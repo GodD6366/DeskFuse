@@ -285,7 +285,7 @@ struct ShelfView: View {
                         .foregroundStyle(.secondary)
                     Text("拖入文件").font(DFType.title)
                     Text("文件会暂存在这里，拖出即可取用")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if controller.expanded {
@@ -294,7 +294,7 @@ struct ShelfView: View {
                         ForEach(Array(controller.files.reversed()), id: \.self) { url in
                             VStack(spacing: 5) {
                                 NativeFileDrag(urls: [url], store: controller.store, onSuccess: { controller.remove($0) }, onClick: {}).frame(height: 60)
-                                Text(url.lastPathComponent).font(.caption).lineLimit(2)
+                                Text(url.lastPathComponent).font(DFType.caption).lineLimit(2)
                                 Button("移除", systemImage: "xmark.circle") { controller.remove([url]) }.labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
                             }
                         }
@@ -311,7 +311,7 @@ struct ShelfView: View {
                             .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(controller.files.count)))
                             .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: controller.files.count)
                         Text("拖出全部文件")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(DFType.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
                     Button("查看全部") { controller.toggleExpanded() }

@@ -5,7 +5,7 @@ import DeskFuseEngine
 
 /// 图表底部色条的卡顿来源颜色。建议由引擎侧生成，Swift 只负责呈现。
 private let hitchCaptureColor = DFPalette.warning
-private let hitchNetworkColor = Color.blue
+private let hitchNetworkColor = DFPalette.accent
 
 struct InputView: View {
     @Bindable var store: AppStore
@@ -43,7 +43,7 @@ struct InputView: View {
                             HStack { Spacer(minLength: 0); headerActions }
                         }
                     }
-                    if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(.orange) }
+                    if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(DFPalette.warning) }
                     layout
                         .frame(height: layoutHeight(in: geometry.size))
                     if chartVisible && snapshot.input.settings.controller && snapshot.input.settings.enabled && !snapshot.input.managed {
@@ -57,7 +57,6 @@ struct InputView: View {
             } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
                 FeatureGateView(
                     symbol: "rectangle.on.rectangle",
-                    symbolColor: .purple,
                     title: "键鼠共享",
                     message: "用一套键鼠控制多台电脑。",
                     bullets: [
@@ -158,7 +157,7 @@ struct InputView: View {
                     legendItem(hitchCaptureColor, "注入慢")
                     legendItem(hitchNetworkColor, "网络卡顿")
                 }
-                .font(.caption2)
+                .font(DFType.caption)
                 .dfSecondaryText()
             }
             if !compactQuality {
@@ -170,7 +169,7 @@ struct InputView: View {
                         qualityAdvice(quality)
                     }
                     if let blocked {
-                        Text(blocked).foregroundStyle(.orange)
+                        Text(blocked).foregroundStyle(DFPalette.warning)
                     }
                     Text("每秒更新；空闲时显示设备连接延迟，没有可用延迟时显示 0。")
                     Text("当前模式：\(pointerModeLabel)")
@@ -181,15 +180,15 @@ struct InputView: View {
                         Text(error)
                     }
                 }
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
             }
-            .font(.caption.weight(.medium))
+            .font(DFType.caption.weight(.medium))
             if !compactQuality {
                 Text("最近 60 秒 · 3 秒平滑趋势 · 指标与峰值为原始采样")
-                    .font(.caption2)
+                    .font(DFType.caption)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -204,14 +203,14 @@ struct InputView: View {
     private func qualityAdvice(_ quality: InputQuality) -> some View {
         if let fallback = pointerFallback {
             Label(fallback, systemImage: "info.circle")
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
         }
         if !quality.suggestions.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("优化建议")
-                    .font(.caption.weight(.semibold))
+                    .font(DFType.caption.weight(.semibold))
                 ForEach(quality.suggestions, id: \.id) { suggestion in
                     Button {
                         openSuggestionId = openSuggestionId == suggestion.id ? nil : suggestion.id
@@ -227,10 +226,10 @@ struct InputView: View {
                             }
                             Spacer(minLength: 0)
                             Image(systemName: "info.circle")
-                                .font(.caption2)
+                                .font(DFType.caption)
                                 .foregroundStyle(.tertiary)
                         }
-                        .font(.caption)
+                        .font(DFType.caption)
                         .dfSecondaryText()
                         .contentShape(Rectangle())
                     }
@@ -254,7 +253,7 @@ struct InputView: View {
                 .fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 8)
             Text(pointerModeLabel)
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
             datagramChannelBadge
             HStack(spacing: 5) {
@@ -289,7 +288,7 @@ struct InputView: View {
                 Text("已降级到可靠通道")
                     .font(DFType.caption.weight(.medium))
             }
-            .foregroundStyle(.orange)
+            .foregroundStyle(DFPalette.warning)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(DFPalette.warning.opacity(0.12), in: Capsule())
@@ -304,12 +303,12 @@ struct InputView: View {
                 .font(DFType.metric.weight(.semibold))
                 .monospacedDigit()
             Text("典型往返延迟")
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
             Spacer(minLength: 8)
             if let peak {
                 Text("峰值 \(milliseconds(peak))")
-                    .font(.caption.monospacedDigit())
+                    .font(DFType.caption.monospacedDigit())
                     .dfSecondaryText()
             }
         }
@@ -366,7 +365,7 @@ struct InputView: View {
                         overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .fit(to: .chart))
                     ) {
                         Text(milliseconds(point.rttMs))
-                            .font(.caption2.weight(.medium).monospacedDigit())
+                            .font(DFType.caption.weight(.medium).monospacedDigit())
                             .dfSecondaryText()
                     }
                 } else if points.count <= 8 || (runCount[point.series] ?? 0) == 1 || points.last?.second == point.second as Double? {
@@ -385,7 +384,7 @@ struct InputView: View {
             AxisMarks(values: [0.0, 30.0, 60.0]) { value in
                 AxisValueLabel {
                     Text(latencyTimeLabel(value.as(Double.self) ?? 0))
-                        .font(.caption2)
+                        .font(DFType.caption)
                         .dfSecondaryText()
                 }
             }
@@ -396,7 +395,7 @@ struct InputView: View {
                     .foregroundStyle(Color.primary.opacity(0.06))
                 AxisValueLabel {
                     Text(latencyAxisTick(value.as(Double.self) ?? 0, ceiling: ceiling))
-                        .font(.caption2.monospacedDigit())
+                        .font(DFType.caption.monospacedDigit())
                         .dfSecondaryText()
                         .frame(width: 64, alignment: .trailing)
                 }
@@ -447,7 +446,7 @@ struct InputView: View {
     private func suggestionDetail(_ suggestion: InputQualitySuggestion) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(suggestion.trigger)
-                .font(.caption.weight(.semibold))
+                .font(DFType.caption.weight(.semibold))
             suggestionDetailRow("做法", suggestion.action)
             suggestionDetailRow("预期", suggestion.expected)
             suggestionDetailRow("复测", suggestion.retest)
@@ -459,10 +458,10 @@ struct InputView: View {
     private func suggestionDetailRow(_ title: String, _ body: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.caption2)
+                .font(DFType.caption)
                 .foregroundStyle(.tertiary)
             Text(body)
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -479,8 +478,8 @@ struct InputView: View {
     private func suggestionTint(_ priority: String) -> Color {
         switch priority {
         case "info": return .secondary
-        case "ok": return .green
-        default: return .orange
+        case "ok": return DFPalette.success
+        default: return DFPalette.warning
         }
     }
 
@@ -490,7 +489,7 @@ struct InputView: View {
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 3))
         return layout {
             Text(title)
-                .font(.caption2)
+                .font(DFType.caption)
                 .foregroundStyle(.tertiary)
             Text(value)
                 .font(compactQuality ? DFType.body.weight(.semibold) : DFType.title)
@@ -515,10 +514,10 @@ struct InputView: View {
     }
 
     private func latencySeriesColor(_ p95: Double?) -> Color {
-        guard let p95 else { return .accentColor }
-        if p95 > 50 { return .red }
-        if p95 > 20 { return .orange }
-        return .accentColor
+        guard let p95 else { return DFPalette.accent }
+        if p95 > 50 { return DFPalette.danger }
+        if p95 > 20 { return DFPalette.warning }
+        return DFPalette.accent
     }
 
     private func latencyAxisTick(_ value: Double, ceiling: Double) -> String {
@@ -554,9 +553,9 @@ struct InputView: View {
 
     private func qualityStatus(_ quality: InputQuality, hasSignal: Bool) -> (title: String, color: Color) {
         switch quality.grade {
-        case "smooth": return ("流畅", .green)
-        case "fair": return ("一般", .orange)
-        case "poor": return ("较差", .red)
+        case "smooth": return ("流畅", DFPalette.success)
+        case "fair": return ("一般", DFPalette.warning)
+        case "poor": return ("较差", DFPalette.danger)
         default:
             return hasSignal ? ("采样较少", .secondary) : ("空闲", .secondary)
         }
@@ -609,7 +608,7 @@ struct InputView: View {
                 .accessibilityHidden(true)
             Text(snapshot.input.managedPaused ? "已停止被控" : snapshot.input.managed ? "被控状态" : snapshot.input.settings.controller ? "主控已自动暂停" : "等待主控")
                 .font(DFType.title)
-            Text(snapshot.input.summary).font(.callout).dfSecondaryText()
+            Text(snapshot.input.summary).font(DFType.detail).dfSecondaryText()
                 .multilineTextAlignment(.center)
             if snapshot.input.managed {
                 Button("停止被控") { store.reclaim() }
@@ -617,7 +616,7 @@ struct InputView: View {
                     .disabled(snapshot.input.managedPaused)
             } else {
                 if snapshot.input.settings.controller {
-                    Text(snapshot.input.environmentMessage).font(.callout).dfSecondaryText()
+                    Text(snapshot.input.environmentMessage).font(DFType.detail).dfSecondaryText()
                         .multilineTextAlignment(.center)
                 }
                 Button(snapshot.input.settings.controller ? "本次使用此 Mac 作为主控" : "在此 Mac 启用主控") { enableAsController() }
@@ -641,12 +640,12 @@ struct InputView: View {
                 get: { snapshot.input.settings.controller && snapshot.input.settings.enabled },
                 set: { setSharingEnabled($0) }
             ))
-            .font(.callout.weight(.medium))
+            .font(DFType.detail.weight(.medium))
             .toggleStyle(.switch)
             .controlSize(.small)
             .disabled(updatingSettings || snapshot.input.managed)
             Text("由这台 Mac 管理屏幕排布，并使用本机键鼠控制已添加的设备。")
-                .font(.caption)
+                .font(DFType.caption)
                 .dfSecondaryText()
         }
         .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
@@ -722,11 +721,11 @@ struct InputView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
                 Text("\(snapshot.input.displays.count) 个屏幕")
-                    .font(.callout.weight(.medium))
+                    .font(DFType.detail.weight(.medium))
                     .dfSecondaryText()
                 Spacer(minLength: 8)
                 Text("拖动屏幕以匹配实际摆放位置 · pt 为 macOS 逻辑尺寸")
-                    .font(.caption).dfSecondaryText()
+                    .font(DFType.caption).dfSecondaryText()
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 14)

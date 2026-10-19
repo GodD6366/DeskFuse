@@ -46,9 +46,9 @@ private struct WorkspaceLoadingView: View {
 
             VStack(spacing: 8) {
                 Text("正在启动 DeskFuse")
-                    .font(.title2.weight(.semibold))
+                    .font(DFType.pageTitle)
                 Text("正在连接本地引擎，准备你的工作区。")
-                    .font(.callout)
+                    .font(DFType.detail)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -84,15 +84,15 @@ struct WorkspaceErrorNotice: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.body)
-                .foregroundStyle(.orange)
+                .font(DFType.icon(.regular))
+                .foregroundStyle(DFPalette.warning)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("操作未完成")
-                    .font(.callout.weight(.semibold))
+                    .font(DFType.detail.weight(.semibold))
                 Text(message)
-                    .font(.callout)
+                    .font(DFType.detail)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -102,7 +102,7 @@ struct WorkspaceErrorNotice: View {
             if let dismiss {
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
-                        .font(.caption.weight(.semibold))
+                        .font(DFType.caption.weight(.semibold))
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }

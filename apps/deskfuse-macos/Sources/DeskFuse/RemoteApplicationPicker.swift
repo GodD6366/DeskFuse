@@ -32,7 +32,7 @@ struct RemoteApplicationDisplayModeToggle: View {
             }
                 .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
             Text("下次打开或重新连接时生效")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(DFType.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -111,7 +111,7 @@ struct RemoteApplicationPicker: View {
                 Spacer()
                 Text("\(opened.count) 个已打开")
             }
-            .font(.caption).foregroundStyle(.secondary)
+            .font(DFType.caption).foregroundStyle(.secondary)
             .padding(.horizontal, 20).padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

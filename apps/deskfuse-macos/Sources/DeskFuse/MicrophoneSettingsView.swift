@@ -1147,7 +1147,7 @@ private struct MicrophoneLevelView: View {
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<12) { index in
-                Capsule().fill(Double(index) / 12 < min(1, sqrt(Double(max(0, level)))) ? Color.green : Color.primary.opacity(0.08))
+                Capsule().fill(Double(index) / 12 < min(1, sqrt(Double(max(0, level)))) ? DFPalette.success : Color.primary.opacity(0.08))
                     .frame(width: 3, height: CGFloat(8 + (index % 4) * 4))
             }
         }.accessibilityElement(children: .ignore)

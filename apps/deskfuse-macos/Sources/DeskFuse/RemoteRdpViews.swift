@@ -137,7 +137,7 @@ struct RemoteRdpPicker: View {
                     credentials
                     HStack {
                         Text("选择应用")
-                            .font(.headline)
+                            .font(DFType.section)
                         Spacer()
                         Picker("应用范围", selection: $appScope) {
                             ForEach(AppScope.allCases, id: \.self) { scope in
@@ -154,7 +154,7 @@ struct RemoteRdpPicker: View {
                     .padding(.top, 4)
                     if !credentialsAreReady {
                         Label("请先填写 Windows 用户名和账户密码，之后才能打开应用。", systemImage: "lock.fill")
-                            .font(.callout)
+                            .font(DFType.detail)
                             .dfSecondaryText()
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -183,7 +183,7 @@ struct RemoteRdpPicker: View {
                                     Text("\(systemApps.count)")
                                         .dfSecondaryText()
                                 }
-                                .font(.callout.weight(.medium))
+                                .font(DFType.detail.weight(.medium))
                             }
                             .buttonStyle(.plain)
                             if systemSectionIsExpanded {
@@ -192,12 +192,12 @@ struct RemoteRdpPicker: View {
                         }
                     }
                     Text("Windows 主机需已启用远程桌面和相应防火墙规则。")
-                        .font(.caption)
+                        .font(DFType.caption)
                         .dfSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                     if let selected, session.launchedName == selected.name {
                         Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
-                            .font(.caption).dfSecondaryText()
+                            .font(DFType.caption).dfSecondaryText()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,7 +215,7 @@ struct RemoteRdpPicker: View {
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 6) {
                 Text("使用 Windows 账户密码，而不是 PIN。")
-                    .font(.caption)
+                    .font(DFType.caption)
                     .dfSecondaryText()
                 Button {
                     showsCredentialInfo.toggle()
@@ -226,7 +226,7 @@ struct RemoteRdpPicker: View {
                 .help("查看凭据安全说明")
                 .popover(isPresented: $showsCredentialInfo) {
                     Text("用户名和密码仅用于连接这台 Windows 设备，不会发送到 DeskFuse 服务端。启用记住凭据后，凭据仅保存在本机的 macOS 钥匙串中。")
-                        .font(.callout)
+                        .font(DFType.detail)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(width: 300, alignment: .leading)
                         .padding()
@@ -237,7 +237,7 @@ struct RemoteRdpPicker: View {
                     if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
                 }
             if let credentialsMessage {
-                Text(credentialsMessage).font(.caption).foregroundStyle(.orange)
+                Text(credentialsMessage).font(DFType.caption).foregroundStyle(DFPalette.warning)
             }
         }
     }
@@ -419,23 +419,23 @@ private struct RemoteRdpViewer: View {
     private func certificateNotice(_ fingerprint: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Windows RDP 服务器证书未获信任")
-                .font(.headline)
+                .font(DFType.section)
             Text("目标：\(session.peerHost):3389")
-                .font(.caption)
+                .font(DFType.caption)
             Text("请确认这是目标 Windows 主机的证书指纹。信任后会按此指纹固定，证书变化时连接会再次拒绝。")
                 .fixedSize(horizontal: false, vertical: true)
             Text(fingerprint)
-                .font(.caption.monospaced())
+                .font(DFType.caption.monospaced())
                 .textSelection(.enabled)
             if let saved = session.savedCertificateFingerprint, saved.caseInsensitiveCompare(fingerprint) != .orderedSame {
                 Text("已保存的指纹：\(saved)")
-                    .font(.caption.monospaced())
+                    .font(DFType.caption.monospaced())
                     .textSelection(.enabled)
                 Text("证书已变化；只有在确认 Windows 主机更换证书后，才替换已保存指纹。")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                    .font(DFType.caption)
+                    .foregroundStyle(DFPalette.warning)
             }
-            if let error = session.certificateTrustError { Text(error).foregroundStyle(.orange) }
+            if let error = session.certificateTrustError { Text(error).foregroundStyle(DFPalette.warning) }
             Button(session.savedCertificateFingerprint == nil ? "核对后信任并重试" : "核对后替换指纹并重试") { session.trustCurrentCertificate() }
                 .buttonStyle(.dfPrimary)
                 .disabled(session.certificateTrustInProgress)

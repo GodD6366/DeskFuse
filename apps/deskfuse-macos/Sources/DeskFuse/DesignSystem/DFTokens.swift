@@ -28,6 +28,11 @@ enum DFType {
     static func icon(_ size: DFIconSize, weight: Font.Weight = .regular) -> Font {
         .system(size: size.rawValue, weight: weight)
     }
+
+    /// 随容器缩放的图标（如设备型号图标），尺寸由调用方按容器计算。
+    static func scaledIcon(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
 }
 
 /// 图标尺寸档位：行内、导航、强调、空态插图。

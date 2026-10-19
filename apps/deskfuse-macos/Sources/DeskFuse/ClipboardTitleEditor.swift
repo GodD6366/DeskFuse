@@ -67,13 +67,13 @@ struct ClipboardTitleEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("编辑标题").font(.title2.bold())
+            Text("编辑标题").font(DFType.pageTitle.weight(.bold))
             TextField("标题", text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
                 .onSubmit(save)
             Text("留空并保存可移除自定义标题，不会修改剪贴板内容。")
-                .font(.caption)
+                .font(DFType.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {

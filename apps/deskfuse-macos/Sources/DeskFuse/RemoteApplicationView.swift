@@ -20,7 +20,7 @@ import DeskFuseRemoteApplication
     }
     var titlebarBackground: NSColor {
         guard let color = titlebarColor else { return .windowBackgroundColor }
-        return NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        return NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1) // ui-tokens: allow 组件字段名
     }
     var menuPresented = false {
         didSet { if !menuPresented { diagnosticsPresented = false } }
@@ -74,12 +74,12 @@ struct RemoteApplicationView: View {
                     if session.failure == nil {
                         ProgressView().controlSize(.regular)
                         Text("正在打开 \(session.applicationName)…")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(DFType.detail).foregroundStyle(.secondary)
                     } else {
                         Image(systemName: session.connected ? "exclamationmark.triangle" : "network.slash")
                             .font(DFType.metric.weight(.regular)).foregroundStyle(.secondary)
-                        Text(session.connected ? "无法打开应用" : "连接已中断").font(.headline)
-                        Text(session.failure ?? session.status).font(.callout).foregroundStyle(.secondary)
+                        Text(session.connected ? "无法打开应用" : "连接已中断").font(DFType.section)
+                        Text(session.failure ?? session.status).font(DFType.detail).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                         Button("重新连接") { session.reconnectApplication() }
@@ -93,7 +93,7 @@ struct RemoteApplicationView: View {
         .frame(minWidth: 1, minHeight: 1)
         .overlay(alignment: .bottom) {
             if session.running && !session.controlling {
-                Text(session.status).font(.caption)
+                Text(session.status).font(DFType.caption)
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
                     .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))

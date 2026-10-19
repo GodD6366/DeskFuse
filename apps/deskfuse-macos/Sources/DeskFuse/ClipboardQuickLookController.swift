@@ -312,12 +312,12 @@ private struct ClipboardQuickLook: View {
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(paths.count == 1 ? URL(fileURLWithPath: paths[0]).lastPathComponent : "\(paths.count) 个文件")
-                            .font(.headline)
+                            .font(DFType.section)
                             .lineLimit(2)
                             .truncationMode(.middle)
                         if paths.count > 1 {
                             Text(URL(fileURLWithPath: paths[0]).lastPathComponent)
-                                .font(.caption)
+                                .font(DFType.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)

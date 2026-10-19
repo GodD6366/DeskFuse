@@ -13,8 +13,8 @@ struct WorkflowRunStatusView: View {
                         if run.phase == "running" { ProgressView().controlSize(.small) }
                         else { Image(systemName: icon(run.phase)).foregroundStyle(run.phase == "failed" ? DFPalette.warning : Color.secondary) }
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(title(run)).font(.caption.bold()).lineLimit(1)
-                            if !run.message.isEmpty { Text(run.message).font(.caption).foregroundStyle(.secondary).lineLimit(compact ? 2 : 4) }
+                            Text(title(run)).font(DFType.caption.bold()).lineLimit(1)
+                            if !run.message.isEmpty { Text(run.message).font(DFType.caption).foregroundStyle(.secondary).lineLimit(compact ? 2 : 4) }
                             if run.phase == "completed", run.outputBytes > 0 {
                                 // Keep metadata in SwiftUI text rendering. Selectable Text
                                 // introduces an AppKit text view with inverted glyphs here.
@@ -27,7 +27,7 @@ struct WorkflowRunStatusView: View {
                                     Text(verbatim: "\(byteCount(run.inputBytes)) → \(byteCount(run.outputBytes))")
                                         .monospacedDigit()
                                 }
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(DFType.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -36,7 +36,7 @@ struct WorkflowRunStatusView: View {
                         }
                     }
                 }
-                if let error = workflows.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(compact ? 2 : 4) }
+                if let error = workflows.error { Text(error).font(DFType.caption).foregroundStyle(DFPalette.danger).lineLimit(compact ? 2 : 4) }
             }.padding(compact ? 4 : 12)
         }
     }

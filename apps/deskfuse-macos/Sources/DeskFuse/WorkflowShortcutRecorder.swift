@@ -15,7 +15,7 @@ struct WorkflowShortcutRecorder: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("全局快捷键").font(.headline)
+                Text("全局快捷键").font(DFType.section)
                 Spacer()
                 if recording {
                     Button("取消录制") { stop(); message = nil }
@@ -27,12 +27,12 @@ struct WorkflowShortcutRecorder: View {
             Button(action: begin) {
                 HStack(spacing: 12) {
                     Image(systemName: recording ? "record.circle" : "keyboard")
-                        .font(.title3).foregroundStyle(recording ? DFPalette.accent : .secondary)
+                        .font(DFType.icon(.medium)).foregroundStyle(recording ? DFPalette.accent : .secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(recording ? "现在按下组合键" : shortcut == nil ? "点击录制快捷键" : "已设置快捷键")
-                            .font(.body.weight(.medium))
+                            .font(DFType.bodyMedium)
                         Text(recording ? "按 Esc 取消，原绑定保持不变" : shortcut == nil ? "例如 ⌃ ⌥ V，运行整个工作流" : "点击此处重新录制")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(DFType.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
                     if !recording, let shortcut { ShortcutKeycaps(shortcut: shortcut.native) }
@@ -47,10 +47,10 @@ struct WorkflowShortcutRecorder: View {
             .accessibilityLabel(recording ? "正在录制快捷键，按 Esc 取消" : "录制全局快捷键")
             if let message {
                 Label(message, systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.red).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(DFPalette.danger).font(DFType.caption).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("包含 ⌘、⌥ 或 ⌃ 中至少一个修饰键。绑定在保存后生效。")
-                    .foregroundStyle(.secondary).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary).font(DFType.caption).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 4)
@@ -113,15 +113,15 @@ struct WorkflowShortcutSettings: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             Text(flow.name).fontWeight(.medium).lineLimit(1)
-                            if !flow.enabled { Text("已停用").font(.caption).foregroundStyle(.secondary) }
+                            if !flow.enabled { Text("已停用").font(DFType.caption).foregroundStyle(.secondary) }
                         }
                         Text(flow.steps.map { $0.kind.title }.joined(separator: " → "))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .font(DFType.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                     Spacer(minLength: 12)
                     Button { editing = flow } label: {
                         if let shortcut = flow.shortcut { ShortcutKeycaps(shortcut: shortcut.native) }
-                        else { Label("设置快捷键", systemImage: "plus").font(.callout) }
+                        else { Label("设置快捷键", systemImage: "plus").font(DFType.detail) }
                     }.buttonStyle(.borderless).help("编辑“\(flow.name)”的快捷键")
                 }.padding(.vertical, 5)
             }
@@ -129,7 +129,7 @@ struct WorkflowShortcutSettings: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("还没有工作流").fontWeight(.medium)
                     Text("先组合压缩、转格式和粘贴，再为整个流程设置快捷键。")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(DFType.detail).foregroundStyle(.secondary)
                 }.padding(.vertical, 6)
             }
             Button("管理工作流…", action: manageWorkflows)
@@ -147,14 +147,14 @@ private struct WorkflowShortcutSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("设置快捷键").font(.title2.bold())
-                Text(initial.name).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                Text("设置快捷键").font(DFType.pageTitle.weight(.bold))
+                Text(initial.name).font(DFType.detail).foregroundStyle(.secondary).lineLimit(2)
             }
             WorkflowShortcutRecorder(store: store, shortcut: $initial.shortcut,
                 workflowID: initial.id, onRecordingChange: { recording = $0 })
                 .disabled(saving)
-            if !initial.enabled { Label("流程已停用；保存绑定不会自动启用流程。", systemImage: "pause.circle").font(.caption).foregroundStyle(.secondary) }
-            if let failure { Label(failure, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if !initial.enabled { Label("流程已停用；保存绑定不会自动启用流程。", systemImage: "pause.circle").font(DFType.caption).foregroundStyle(.secondary) }
+            if let failure { Label(failure, systemImage: "exclamationmark.circle").font(DFType.caption).foregroundStyle(DFPalette.danger).fixedSize(horizontal: false, vertical: true) }
             Divider()
             HStack {
                 Spacer()

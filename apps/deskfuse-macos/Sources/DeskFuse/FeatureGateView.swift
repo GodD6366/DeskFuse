@@ -6,7 +6,8 @@ import SwiftUI
 /// 用玻璃圆形徽标区分"功能未启用"与"等待对端"两种语义。
 struct FeatureGateView: View {
     let symbol: String
-    let symbolColor: Color
+    /// 引导图标的语义色调；未启用功能用中性强调色，恢复入口用品牌色。
+    var tone: DFTone = .accent
     let title: String
     let message: String
     let bullets: [String]
@@ -29,21 +30,21 @@ struct FeatureGateView: View {
         VStack(spacing: 20) {
             Image(systemName: symbol)
                 .font(DFType.title)
-                .foregroundStyle(symbolColor)
+                .foregroundStyle(tone.color)
                 .frame(width: 56, height: 56)
                 .modifier(NativeGlassSurface(cornerRadius: DFRadius.panel))
                 .accessibilityHidden(true)
             Text(title)
                 .font(DFType.title)
             Text(message)
-                .font(.callout)
+                .font(DFType.detail)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(bullets, id: \.self) { bullet in
                     Label(bullet, systemImage: "checkmark")
-                        .font(.callout)
+                        .font(DFType.detail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -88,13 +89,13 @@ struct FeatureGateView: View {
                 .frame(width: 24)
                 .accessibilityHidden(true)
             Text(permission.title)
-                .font(.callout)
+                .font(DFType.detail)
             Spacer(minLength: 12)
             Button {
                 AppStore.shared.permissionPrompt.authorize(permission)
             } label: {
                 Label("前往授权", systemImage: "arrow.up.forward.app")
-                    .font(.callout)
+                    .font(DFType.detail)
             }
             .buttonStyle(.dfSecondary)
             .controlSize(.small)

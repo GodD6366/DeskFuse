@@ -64,10 +64,10 @@ struct PairingWindowView: View {
                     if let error = store.error {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(DFPalette.warning)
                             Text(error)
                                 .font(DFType.body)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(DFPalette.warning)
                         }
                         .padding(.horizontal, 20)
                         .padding(.vertical, 14)

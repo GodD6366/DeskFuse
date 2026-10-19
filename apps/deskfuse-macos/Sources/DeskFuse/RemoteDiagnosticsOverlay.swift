@@ -15,7 +15,7 @@ struct RemoteDiagnosticsView: View {
                 Button(action: close) { Image(systemName: "chevron.left").frame(width: 24, height: 24) }
                     .buttonStyle(.plain).help("返回远程应用菜单")
                 Label("远程应用诊断", systemImage: "waveform.path.ecg")
-                    .font(.headline)
+                    .font(DFType.section)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(12)
             Divider()
@@ -32,7 +32,7 @@ struct RemoteDiagnosticsView: View {
                     metric("在途帧数", remote?.media.inFlightFrames.map(String.init) ?? "—")
                     metric("当前目标码率", remote?.media.currentBitrate.map { String(format: "%.2f Mbps", Double($0) / 1_000_000) } ?? "—")
                     Text("丢包率：共享 QUIC 连接累计；耗时：最近最多 600 帧。")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Divider()
                     metric("编码前替换帧", remote.map { String($0.media.replacedBeforeEncode) } ?? "—")
@@ -44,14 +44,14 @@ struct RemoteDiagnosticsView: View {
                     metric("关键帧请求", String(local.keyFrameRequests ?? 0))
                     metric("码率调整失败", remote?.media.bitrateUpdateFailures.map(String.init) ?? "0")
                     if let address = remote?.remoteAddress {
-                        Text("远端连接到：\(address)").font(.caption).textSelection(.enabled)
+                        Text("远端连接到：\(address)").font(DFType.caption).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Text(session.actualDescription).font(.caption).foregroundStyle(.secondary)
+                    Text(session.actualDescription).font(DFType.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !session.connected || remote == nil {
                         Text(session.connected ? "等待远端统计" : "连接已断开")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(DFType.caption).foregroundStyle(.secondary)
                     }
                 }.padding(12)
             }

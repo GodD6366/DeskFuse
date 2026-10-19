@@ -20,10 +20,10 @@ struct ShortcutEditor: View {
             Button("恢复默认紧急收回快捷键") {
                 stop(); error = nil
                 shortcuts[5] = Shortcut(keyCode: 53, modifiers: 0x1c0000)
-            }.font(.caption)
+            }.font(DFType.caption)
         }
-        if let error { Text(error).font(.caption).foregroundStyle(.red) }
-        Text("紧急收回支持自定义；⌃⌥⌘ Esc 始终保留为保底快捷键，无需找到鼠标。").font(.caption).foregroundStyle(.secondary)
+        if let error { Text(error).font(DFType.caption).foregroundStyle(DFPalette.danger) }
+        Text("紧急收回支持自定义；⌃⌥⌘ Esc 始终保留为保底快捷键，无需找到鼠标。").font(DFType.caption).foregroundStyle(.secondary)
             .onDisappear(perform: stop)
     }
     private func begin(_ index: Int) {

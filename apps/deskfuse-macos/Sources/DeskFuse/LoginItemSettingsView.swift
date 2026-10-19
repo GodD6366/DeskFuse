@@ -27,7 +27,7 @@ struct LoginItemSettingsView: View {
             }
             if let errorMessage {
                 Text(errorMessage)
-                    .font(.callout).foregroundStyle(.red)
+                    .font(DFType.detail).foregroundStyle(DFPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

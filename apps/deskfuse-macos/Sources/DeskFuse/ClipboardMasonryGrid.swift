@@ -593,7 +593,7 @@ struct ClipboardCardImage: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(unavailable, systemImage: "photo.badge.exclamationmark")
-                            .font(.caption).dfSecondaryText()
+                            .font(DFType.caption).dfSecondaryText()
                     }
                 }
                 .aspectRatio(Self.placeholderAspect, contentMode: .fit)

@@ -44,7 +44,7 @@ struct SettingsPermissionsView: View {
                 .dfCard()
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("状态来自 macOS。仅展示 DeskFuse 实际使用的系统权限。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
@@ -69,17 +69,17 @@ struct SettingsPermissionsView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
-                Text("屏幕录制").font(.body.weight(.medium))
+                Text("屏幕录制").font(DFType.bodyMedium)
                 Text("远程应用访问本机窗口时捕获屏幕内容")
-                    .font(.caption)
+                    .font(DFType.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Label(screenRecordingGranted ? "已授权" : "未授权或需要操作",
                   systemImage: screenRecordingGranted ? "checkmark.circle.fill" : "circle.dashed")
-                .font(.caption)
-                .foregroundStyle(screenRecordingGranted ? Color.green : Color.secondary)
+                .font(DFType.caption)
+                .foregroundStyle(screenRecordingGranted ? DFPalette.success : Color.secondary)
                 .frame(width: 120, alignment: .leading)
             Button(screenRecordingGranted ? "查看设置" : "前往授权") {
                 if screenRecordingGranted {
@@ -102,13 +102,13 @@ struct SettingsPermissionsView: View {
         return HStack(spacing: 16) {
             Image(systemName: "wifi").font(DFType.pageTitle).foregroundStyle(.secondary).frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Wi-Fi 名称（定位）").font(.body.weight(.medium))
+                Text("Wi-Fi 名称（定位）").font(DFType.bodyMedium)
                 Text("按 Wi-Fi 自动切换主控电脑时读取网络名称；不会获取位置。")
                     .fixedSize(horizontal: false, vertical: true)
             }.frame(maxWidth: .infinity, alignment: .leading)
                 Label(granted ? "已授权" : "未授权或需要操作",
                       systemImage: granted ? "checkmark.circle.fill" : "circle.dashed")
-                .font(.caption).foregroundStyle(granted ? Color.green : Color.secondary)
+                .font(DFType.caption).foregroundStyle(granted ? DFPalette.success : Color.secondary)
                 .frame(width: 120, alignment: .leading)
             Button(granted ? "查看设置" : "前往授权") { store.permissionPrompt.authorize(.wifi) }
                 .buttonStyle(.dfSecondary).frame(width: 88)
@@ -135,16 +135,16 @@ struct SettingsPermissionsView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
-                Text(permission.name).font(.body.weight(.medium))
-                Text(purpose(permission.kind)).font(.caption).foregroundStyle(.secondary)
+                Text(permission.name).font(DFType.bodyMedium)
+                Text(purpose(permission.kind)).font(DFType.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Label(permission.status,
                   systemImage: permission.granted ? "checkmark.circle.fill" : "circle.dashed")
-                .font(.caption)
+                .font(DFType.caption)
                 .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(permission.granted ? Color.green : Color.secondary)
+                .foregroundStyle(permission.granted ? DFPalette.success : Color.secondary)
                 .frame(width: 120, alignment: .leading)
                 .help(permission.status)
                 .accessibilityLabel(permission.status)

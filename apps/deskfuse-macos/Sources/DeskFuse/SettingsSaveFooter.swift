@@ -16,11 +16,11 @@ struct SettingsSaveFooter: View {
             HStack {
                 if saving {
                     ProgressView().controlSize(.small)
-                    Text("保存中…").font(.caption).foregroundStyle(.secondary)
+                    Text("保存中…").font(DFType.caption).foregroundStyle(.secondary)
                 } else if dirty {
-                    Text("未保存").font(.caption).foregroundStyle(.secondary)
+                    Text("未保存").font(DFType.caption).foregroundStyle(.secondary)
                 } else if let status {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
+                    Text(status).font(DFType.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("撤销修改", action: revert).disabled(!canRevert || saving)
@@ -29,7 +29,7 @@ struct SettingsSaveFooter: View {
             }.padding(.horizontal, 12)
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.red)
+                    .font(DFType.caption).foregroundStyle(DFPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 12)
             }

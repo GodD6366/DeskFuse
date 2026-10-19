@@ -214,7 +214,7 @@ struct DisplayLayout: View {
                 }
                 if dragging != nil {
                     Label(pendingMove != nil ? "正在保存布局…" : snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
-                        .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
+                        .font(DFType.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                         .allowsHitTesting(false)
                 }
             }
@@ -353,9 +353,9 @@ private enum DisplayStatus {
 
     var color: Color {
         switch self {
-        case .local: .blue
-        case .connected: .green
-        case .offline: .gray
+        case .local: DFPalette.accent
+        case .connected: DFPalette.success
+        case .offline: Color.secondary
         }
     }
 
@@ -468,7 +468,7 @@ private struct DisplayReconnectButtonStyle: ButtonStyle {
 
 /// Deterministic across machines; local identity is a label, not a different color.
 enum DisplayPalette {
-    private static let colors: [Color] = [.blue, .teal, .purple, .orange, .pink, .green, .indigo, .brown]
+    private static let colors: [Color] = DFPalette.identity
     static func color(for device: String, displays: [Display]) -> Color {
         let ids = Set(displays.map(\.deviceId)).sorted()
         let slots = max(colors.count, ids.count)

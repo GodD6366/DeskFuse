@@ -56,20 +56,20 @@ struct MouseSettingsView: View {
                     Divider()
                     HStack {
                         Label("需要辅助功能与输入监控权限", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(DFPalette.warning)
                         Spacer()
                         Button("检查权限") { controller.openInputMonitoringSettings() }
                     }.padding(.top, 6)
                 }
                 if let error = controller.error {
-                    Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red)
+                    Label(error, systemImage: "exclamationmark.circle").font(DFType.caption).foregroundStyle(DFPalette.danger)
                 }
             }
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("按键分配").font(DFType.title.weight(.semibold))
-                    Text("已设置 \(mappedCount) 项").font(.caption).foregroundStyle(.secondary)
+                    Text("已设置 \(mappedCount) 项").font(DFType.caption).foregroundStyle(.secondary)
                     Spacer()
                     Picker("鼠标类型", selection: $source) {
                         Text("G502 LIGHTSPEED").tag(1)
@@ -82,10 +82,10 @@ struct MouseSettingsView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             actionMenu(button)
                             Text(controller.saveStatus)
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text(controller.lastExecution).font(.caption).foregroundStyle(.secondary)
+                                .font(DFType.caption).foregroundStyle(.secondary)
+                            Text(controller.lastExecution).font(DFType.caption).foregroundStyle(.secondary)
                             Text("自动清除该位置的通用按键映射，避免重复执行动作。")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(DFType.caption).foregroundStyle(.secondary)
                         }
                     }
                 } else if source == 2 {
@@ -100,7 +100,7 @@ struct MouseSettingsView: View {
                         }
                     }
                     Text("支持左键、右键、中键及前进、后退键。侧键需鼠标具备对应按键并发送标准鼠标事件。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(DFType.caption).foregroundStyle(.secondary)
                 }
                 if source == 0 {
                     DisclosureGroup("组合键设置") {
@@ -110,8 +110,8 @@ struct MouseSettingsView: View {
                             modifier("⌘", 0x100000); modifier("⇧", 0x20000)
                             modifier("⌥", 0x80000); modifier("⌃", 0x40000)
                         }.padding(.vertical, 8)
-                        Text("未设置的组合沿用默认映射。").font(.caption).foregroundStyle(.secondary)
-                    }.font(.callout)
+                        Text("未设置的组合沿用默认映射。").font(DFType.caption).foregroundStyle(.secondary)
+                    }.font(DFType.detail)
                 }
             }
 
@@ -122,19 +122,19 @@ struct MouseSettingsView: View {
                         Text("G502 的原有 DPI、配置切换或 G HUB 动作会继续执行。实体键编号按实际识别为准；不要同时绑定同一按键的通用事件和实体事件。机械滚轮解锁键无法识别。")
                         Text("切换桌面需要对应方向存在桌面，且系统键盘快捷键已启用。MX 与 G502 原生按键暂不支持修饰键分层。")
                         Button("打开输入监控设置") { controller.openInputMonitoringSettings() }
-                    }.font(.caption).foregroundStyle(.secondary).padding(.top, 10)
+                    }.font(DFType.caption).foregroundStyle(.secondary).padding(.top, 10)
                 }
                 Divider().padding(.vertical, 4)
                 DisclosureGroup("Mac 间自动同步") {
                     Text("配置自动同步到已配对、已连接且支持此功能的 Mac。离线修改在重连后按逻辑版本同步整套配置，不逐个合并按键；权限需在每台 Mac 单独授予。Windows 不参与。")
-                        .font(.caption).foregroundStyle(.secondary).padding(.top, 8)
+                        .font(DFType.caption).foregroundStyle(.secondary).padding(.top, 8)
                 }
             }
             HStack {
                 Label("更改自动保存", systemImage: "checkmark.circle").foregroundStyle(.secondary)
                 Spacer()
                 Button("恢复默认…", role: .destructive) { reset = true }.buttonStyle(.borderless)
-            }.font(.caption).padding(.horizontal, 4)
+            }.font(DFType.caption).padding(.horizontal, 4)
         }
         .disabled(engine == nil)
         .onChange(of: source) { _, _ in stopRecording(); modifiers = 0 }

@@ -27,7 +27,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Label("点击按键，直接分配功能", systemImage: "cursorarrow")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
                 Spacer()
                 MousePhotoAnglePicker(side: $side)
             }.padding(18).zIndex(1)
@@ -38,7 +38,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 Text("保留原生功能，只附加快捷键")
                 Spacer()
                 Text("\(locations.buttons.count) / 11 个位置已确认")
-            }.font(.caption).foregroundStyle(.secondary).padding(16)
+            }.font(DFType.caption).foregroundStyle(.secondary).padding(16)
         }
         .background(.background, in: RoundedRectangle(cornerRadius: DFRadius.panel))
         .overlay(RoundedRectangle(cornerRadius: DFRadius.panel).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
@@ -98,7 +98,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 VStack {
                     Spacer()
                     Text(side ? "拇指侧 · 3 个按键" : "滚轮支持按下、左拨与右拨")
-                        .font(.caption).foregroundStyle(.secondary).padding(10)
+                        .font(DFType.caption).foregroundStyle(.secondary).padding(10)
                         .background(.regularMaterial, in: Capsule()).padding(.bottom, 12).allowsHitTesting(false)
                 }
             }.contentShape(Rectangle()).clipped()
@@ -116,7 +116,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                     } label: { Image(systemName: "xmark") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("关闭按键设置")
                 }
-                Text(selection.detail).font(.caption).foregroundStyle(.secondary)
+                Text(selection.detail).font(DFType.caption).foregroundStyle(.secondary)
             }
             if wheelSelected {
                 Picker("滚轮动作", selection: Binding(get: { selection }, set: { select($0) })) {
@@ -127,14 +127,14 @@ struct G502MouseEditor<ActionEditor: View>: View {
             }
             Divider()
             if let button = locations.button(at: selection), locating == nil {
-                Text("附加动作").font(.caption).foregroundStyle(.secondary)
+                Text("附加动作").font(DFType.caption).foregroundStyle(.secondary)
                 actionEditor(button)
                     .padding(10).background(DFPalette.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: DFRadius.control))
-                Button("重新确认位置") { startCapture() }.buttonStyle(.link).font(.caption)
+                Button("重新确认位置") { startCapture() }.buttonStyle(.link).font(DFType.caption)
             } else if let candidate, let position = locating {
                 Label("已收到按键", systemImage: "checkmark.circle").foregroundStyle(DFPalette.accent)
                 Text("刚才按下的是「\(position.title)」吗？确认后才会记住位置。")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
                 Button("确认这个位置") {
                     var updated = locations
                     updated.locate(candidate, at: position)
@@ -147,7 +147,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 Label(controller.captureReleased ? "请重试识别" : controller.detecting ? "正在监听…" : controller.lastButton != nil ? "请松开按键" : "未收到按键", systemImage: "waveform")
                     .foregroundStyle(DFPalette.accent)
                 Text("按下并松开「\(selection.title)」。只确认位置，不改变鼠标原有设置。")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
                 HStack {
                     Button("重新监听") { startCapture() }
                     Button("取消") { cancelCapture() }
@@ -156,7 +156,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 Text("第一次，确认一下位置")
                     .font(DFType.bodyMedium)
                 Text("按一下对应的实体键，让 DeskFuse 记住它。已有快捷键不会丢失。")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(DFType.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button("识别这个位置", systemImage: "cursorarrow.click") { startCapture() }
                     .buttonStyle(.dfPrimary)
             }

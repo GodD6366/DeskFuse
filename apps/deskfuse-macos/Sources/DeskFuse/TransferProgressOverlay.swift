@@ -140,9 +140,9 @@ private struct TransferProgressPill: View {
     /// only for failure, keeping status color rare per the material rules.
     private var tint: Color {
         switch task.phase {
-        case .failed: .orange
+        case .failed: DFPalette.warning
         case .cancelled: .secondary
-        default: task.outgoing ? .accentColor : .green
+        default: task.outgoing ? DFPalette.accent : DFPalette.success
         }
     }
 

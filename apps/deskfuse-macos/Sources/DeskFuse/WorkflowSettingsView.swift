@@ -19,9 +19,9 @@ struct WorkflowSettingsView: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("工作流").font(.headline)
+                    Text("工作流").font(DFType.section)
                     Spacer()
-                    Text(String(workflows.count)).font(.caption).foregroundStyle(.secondary)
+                    Text(String(workflows.count)).font(DFType.caption).foregroundStyle(.secondary)
                 }.padding(12)
                 ScrollView { WorkflowSyncView(store: store).padding(.horizontal, 12) }.frame(maxHeight: 115).padding(.bottom, 8)
                 Divider()
@@ -31,12 +31,12 @@ struct WorkflowSettingsView: View {
                             Image(systemName: "square.stack.3d.up")
                             VStack(alignment: .leading) {
                                 Text(flow.name).lineLimit(1)
-                                Text(flow.enabled ? "\(flow.steps.count) 个步骤 · \(flow.input_type.title)" : "已停用").font(.caption).foregroundStyle(.secondary)
+                                Text(flow.enabled ? "\(flow.steps.count) 个步骤 · \(flow.input_type.title)" : "已停用").font(DFType.caption).foregroundStyle(.secondary)
                                 if let issue = WorkflowStore.shared.catalog.issues?.first(where: { $0.workflow_id == flow.id }) {
-                                    Label(issue.message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                                    Label(issue.message, systemImage: "exclamationmark.triangle").font(DFType.caption).foregroundStyle(DFPalette.warning)
                                 }
                                 if flow.steps.contains(where: { $0.kind == .systemShortcut && $0.local_shortcut_id?.isEmpty != false }) {
-                                    Label("本机快捷指令待绑定", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                                    Label("本机快捷指令待绑定", systemImage: "exclamationmark.triangle").font(DFType.caption).foregroundStyle(DFPalette.warning)
                                 }
                             }
                         }.tag(flow.id)
@@ -46,7 +46,7 @@ struct WorkflowSettingsView: View {
                 .overlay {
                     if workflows.isEmpty {
                         Text("尚未保存流程")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(DFType.detail).foregroundStyle(.secondary)
                             .allowsHitTesting(false)
                     }
                 }
@@ -96,9 +96,9 @@ struct WorkflowSettingsView: View {
                         .font(DFType.icon(.hero).weight(.light))
                         .foregroundStyle(.secondary)
                     VStack(spacing: 8) {
-                        Text("组合你的内容处理动作").font(.title3.bold())
+                        Text("组合你的内容处理动作").font(DFType.title.weight(.bold))
                         Text("整理文字、重命名文件、打包或处理图片，\n也可在共享给其他设备时自动运行。")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(DFType.detail).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -132,7 +132,7 @@ struct WorkflowSettingsView: View {
                 if let original, workflows.first(where: { $0.id == original.id }) != original {
                     DFSection {
                         Text("其他设备已更新或删除此工作流。当前草稿已保留；保存会创建新修订。")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(DFPalette.warning)
                             .fixedSize(horizontal: false, vertical: true)
                         Button("放弃草稿并载入最新版本") { load(selectedID) }
                     }
@@ -166,7 +166,7 @@ struct WorkflowSettingsView: View {
                         }
                     }.disabled((draft?.steps.count ?? 0) >= 32)
                     ForEach(draft?.incompatibilities ?? [], id: \.self) { issue in
-                        Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(DFPalette.warning)
                     }
                 }
             }
@@ -178,7 +178,7 @@ struct WorkflowSettingsView: View {
             }
             Divider()
             HStack {
-                if dirty { Text("未保存").font(.caption).foregroundStyle(.secondary) }
+                if dirty { Text("未保存").font(DFType.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button("撤销修改") { draft = original }.disabled(!dirty || original == nil)
                 Button("保存流程") {
@@ -186,7 +186,7 @@ struct WorkflowSettingsView: View {
                     store.saveWorkflow(draft) { load(draft.id) }
                 }.buttonStyle(.dfPrimary).disabled(!dirty || !(draft?.incompatibilities.isEmpty ?? true) || draft?.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
             }.padding(12)
-            if let error = store.error { Text(error).foregroundStyle(.red).font(.caption).padding([.horizontal, .bottom], 12) }
+            if let error = store.error { Text(error).foregroundStyle(DFPalette.danger).font(DFType.caption).padding([.horizontal, .bottom], 12) }
         }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
     }
     private func value<T>(_ key: WritableKeyPath<WorkflowDefinition, T>, fallback: T) -> Binding<T> {

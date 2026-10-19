@@ -100,13 +100,18 @@ DeskFuse
 
 ### 防止回退
 
-`scripts/check-design-system.sh` 在 `scripts/check.sh` 中执行。`DesignSystem/` 之外禁止出现：
+`scripts/check-ui-tokens.sh` 在 `scripts/check.sh` 中执行。`DesignSystem/` 之外禁止出现：
 
 - `.font(.system(size: <数字>` 写死字号
+- `.font(.caption)` 等系统语义字号，统一走 `DFType`
 - `cornerRadius: <数字>` 写死圆角
-- `Color.orange`、`.teal`、`.purple`、`.indigo`
+- `Color.red`、`.orange`、`.teal`、`.purple` 等非语义调色，统一走 `DFPalette` / `DFTone`
 - `.borderedProminent`
-- `Color.accentColor`
+- `Color.accentColor`、`.accentColor`
+- `.foregroundColor(`（已废弃，改用 `.foregroundStyle`）
+
+单行确需例外的（例如色板结构体字段名本身叫 `red`/`green`/`blue`）在该行末尾标注
+`// ui-tokens: allow <原因>`。
 
 ## 删除与隐藏
 

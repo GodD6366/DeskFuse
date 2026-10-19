@@ -56,7 +56,7 @@ struct ClipboardPreviewPane: View, Equatable {
                     VStack(alignment: .leading, spacing: 12) {
                         if let stagingHint {
                             Text(stagingHint)
-                                .font(.caption).dfSecondaryText()
+                                .font(DFType.caption).dfSecondaryText()
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         NativeGlassGroup {
@@ -92,13 +92,13 @@ struct ClipboardPreviewPane: View, Equatable {
 
     private var sourceLabel: some View {
         Text("来自 \(item.source) · \(item.fileCount > 0 ? "\(item.fileCount) 项" : byteCount(item.length))")
-            .font(.callout).dfSecondaryText().lineLimit(1)
+            .font(DFType.detail).dfSecondaryText().lineLimit(1)
             .help(item.copiedDate.map { "复制于 \($0.formatted(date: .abbreviated, time: .standard))" } ?? item.source)
     }
 
     private var availabilityBadge: some View {
         Label(availability, systemImage: availabilitySymbol)
-            .font(.caption)
+            .font(DFType.caption)
             .foregroundStyle(hasMissingFiles ? DFPalette.warning : DFPalette.accent)
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background((hasMissingFiles ? DFPalette.warning : DFPalette.accent).opacity(0.1), in: RoundedRectangle(cornerRadius: DFRadius.control))
@@ -134,7 +134,7 @@ struct ClipboardPreviewPane: View, Equatable {
             }
             .frame(maxHeight: 140)
         } label: {
-            Label("识别文字", systemImage: "text.viewfinder").font(.callout)
+            Label("识别文字", systemImage: "text.viewfinder").font(DFType.detail)
         }
         .padding(12)
     }
@@ -161,7 +161,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 .frame(height: min(300, CGFloat(document.text.components(separatedBy: "\n").count) * 22 + 80))
             if content.truncated {
                 Text("预览已截断；复制会恢复完整内容。")
-                    .font(.caption).dfSecondaryText().padding(8)
+                    .font(DFType.caption).dfSecondaryText().padding(8)
             }
         } else {
             VStack(alignment: .leading, spacing: 16) {
@@ -172,7 +172,7 @@ struct ClipboardPreviewPane: View, Equatable {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if content.truncated {
                     Label("预览已截断；复制会恢复完整内容。", systemImage: "info.circle")
-                        .font(.caption).dfSecondaryText()
+                        .font(DFType.caption).dfSecondaryText()
                 }
             }
             .padding(.vertical, 12)
@@ -192,8 +192,8 @@ struct ClipboardPreviewPane: View, Equatable {
                                 .font(DFType.icon(.regular).weight(.medium))
                                 .lineLimit(2).truncationMode(.middle)
                             Text(media.localPaths.contains(path) ? "本地可用" : "文件已不可用，请重新获取")
-                                .font(.caption)
-                                .foregroundStyle(media.localPaths.contains(path) ? Color.secondary : .orange)
+                                .font(DFType.caption)
+                                .foregroundStyle(media.localPaths.contains(path) ? Color.secondary : DFPalette.warning)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -319,7 +319,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 else { finderButton }
             }
         }
-        .font(.caption).dfSecondaryText()
+        .font(DFType.caption).dfSecondaryText()
     }
 
     private var metadataCard: some View {
@@ -337,7 +337,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 metadataRow("添加时间", value: date.formatted(date: .abbreviated, time: .shortened))
             }
         }
-        .font(.callout)
+        .font(DFType.detail)
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

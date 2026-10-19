@@ -17,7 +17,7 @@ struct ClipboardPaginationTrigger: View {
                 Button("加载未完成，重试") { attemptedCursor = nil; requestIfNeeded() }
                     .buttonStyle(.plain)
             } else {
-                Text("继续滚动以加载历史").font(.caption).foregroundStyle(.secondary)
+                Text("继续滚动以加载历史").font(DFType.caption).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 36)

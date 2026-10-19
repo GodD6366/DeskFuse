@@ -111,7 +111,7 @@ struct DevicesView: View {
                                 .font(DFType.title)
                         }
                         Text(showsApplications ? "选择设备，打开远端应用" : "发现并管理附近设备")
-                            .font(.callout)
+                            .font(DFType.detail)
                             .dfSecondaryText()
                     }
                     Spacer(minLength: 0)
@@ -216,7 +216,7 @@ struct DevicesView: View {
                 deviceSection("已阻止", count: blocked.count, devices: blocked)
                 if paired.isEmpty && nearby.isEmpty && blocked.isEmpty {
                     Text(search.isEmpty ? "尚未发现其他设备" : "没有匹配的设备")
-                        .font(.callout)
+                        .font(DFType.detail)
                         .dfSecondaryText()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .listRowSeparator(.hidden)
@@ -345,9 +345,9 @@ struct DevicesView: View {
     private var manualPairPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("手动输入 IPv4 地址")
-                .font(.headline)
+                .font(DFType.section)
             Text("配对仍需对方确认。")
-                .font(.callout)
+                .font(DFType.detail)
                 .dfSecondaryText()
             HStack(spacing: 8) {
                 TextField("192.168.1.10", text: $ip)
@@ -375,10 +375,10 @@ struct DevicesView: View {
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(device.connected ? Color.green : Color.secondary.opacity(0.5))
+                        .fill(device.connected ? DFPalette.success : Color.secondary.opacity(0.5))
                         .frame(width: 7, height: 7)
                     Text(listDetail(for: device))
-                        .font(.caption)
+                        .font(DFType.caption)
                         .dfSecondaryText()
                         .lineLimit(1)
                 }
@@ -426,7 +426,7 @@ struct DevicesView: View {
                     .font(DFType.icon(.regular).weight(.semibold))
                     .lineLimit(1)
                 Text(snapshot.runtimeStatus)
-                    .font(.caption)
+                    .font(DFType.caption)
                     .dfSecondaryText()
                     .lineLimit(1)
             }
@@ -450,8 +450,7 @@ struct DevicesView: View {
             if !RemoteApplicationManager.shared.enabled {
                 FeatureGateView(
                     symbol: "square.grid.2x2",
-                    symbolColor: .teal,
-                    title: "远程应用",
+                                        title: "远程应用",
                     message: "在这台 Mac 上打开另一台电脑的应用窗口。",
                     bullets: [
                         "应用窗口像本地窗口一样显示与操作",
@@ -496,7 +495,7 @@ struct DevicesView: View {
             VStack(alignment: .leading, spacing: 22) {
                 if let message = snapshot.pairingMessage {
                     Text(message)
-                        .font(.caption)
+                        .font(DFType.caption)
                         .dfSecondaryText()
                         .textSelection(.enabled)
                 }
@@ -539,8 +538,8 @@ struct DevicesView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(snapshot.localName).font(DFType.title)
                     Label(snapshot.runtimeStatus, systemImage: "circle.fill")
-                        .font(.callout)
-                        .foregroundStyle(snapshot.error == nil ? Color.green : DFPalette.warning)
+                        .font(DFType.detail)
+                        .foregroundStyle(snapshot.error == nil ? DFPalette.success : DFPalette.warning)
                 }
                 Spacer(minLength: 0)
             }
@@ -555,9 +554,9 @@ struct DevicesView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("退出设备网络", systemImage: "rectangle.portrait.and.arrow.right") { confirmLeave = true }
                         .buttonStyle(.dfDestructive)
-                        .tint(.red)
+                        .tint(DFPalette.danger)
                     Text("退出后解除本机与所有已配对设备的网络关系，不是断开某一台设备。")
-                        .font(.caption).dfSecondaryText()
+                        .font(DFType.caption).dfSecondaryText()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
@@ -577,17 +576,17 @@ struct DevicesView: View {
                     .font(DFType.title)
                     .lineLimit(1)
                 HStack(spacing: 8) {
-                    Circle().fill(device.connected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 10, height: 10)
+                    Circle().fill(device.connected ? DFPalette.success : Color.secondary.opacity(0.6)).frame(width: 10, height: 10)
                     Text(device.connected ? "在线" : "离线")
-                        .font(.callout)
+                        .font(DFType.detail)
                         .foregroundStyle(device.connected ? Color.primary : Color.secondary)
                     Text("· \(device.endpoint)")
-                        .font(.callout)
+                        .font(DFType.detail)
                         .dfSecondaryText()
                         .lineLimit(1)
                 }
                 Text(device.detail)
-                    .font(.callout)
+                    .font(DFType.detail)
                     .dfSecondaryText()
                     .lineLimit(1)
             }
@@ -615,16 +614,16 @@ struct DevicesView: View {
     private var transferActivity: some View {
         deviceCard {
             HStack {
-                Text("传输活动").font(.headline)
+                Text("传输活动").font(DFType.section)
                 Spacer()
                 Button("查看全部") { store.selectedPage = .files }
                     .buttonStyle(.link)
-                    .font(.callout)
+                    .font(DFType.detail)
             }
             let recent = Array(snapshot.transfers.prefix(3))
             if recent.isEmpty {
                 Text("暂无传输任务")
-                    .font(.callout).dfSecondaryText()
+                    .font(DFType.detail).dfSecondaryText()
                     .padding(.vertical, 8)
             } else {
                 VStack(spacing: 0) {
@@ -641,11 +640,11 @@ struct DevicesView: View {
         HStack(spacing: 10) {
             Image(systemName: task.outgoing ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
                 .font(DFType.pageTitle)
-                .foregroundStyle(task.outgoing ? DFPalette.accent : Color.green)
+                .foregroundStyle(task.outgoing ? DFPalette.accent : DFPalette.success)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 5) {
-                Text(task.name).font(.callout.weight(.medium)).lineLimit(1)
-                Text(task.detail).font(.caption).dfSecondaryText().lineLimit(1)
+                Text(task.name).font(DFType.detail.weight(.medium)).lineLimit(1)
+                Text(task.detail).font(DFType.caption).dfSecondaryText().lineLimit(1)
             }
             .frame(minWidth: 90, maxWidth: 180, alignment: .leading)
             if task.total > 0 {
@@ -655,8 +654,8 @@ struct DevicesView: View {
             }
             Spacer(minLength: 4)
             Text(task.phaseTitle)
-                .font(.caption)
-                .foregroundStyle(task.phase == .completed ? Color.green : Color.secondary)
+                .font(DFType.caption)
+                .foregroundStyle(task.phase == .completed ? DFPalette.success : Color.secondary)
                 .lineLimit(1)
             if task.phase == .completed {
                 Image(systemName: "magnifyingglass")
@@ -681,7 +680,7 @@ struct DevicesView: View {
 
     private func operations(for device: Device) -> some View {
         deviceCard {
-            Text("操作").font(.headline)
+            Text("操作").font(DFType.section)
             HStack(spacing: 12) {
                 if device.blocked {
                     Button("允许重新配对", systemImage: "checkmark.shield") {
@@ -718,7 +717,7 @@ struct DevicesView: View {
                         confirmBlock = true
                     }
                     .buttonStyle(.dfSecondary)
-                    .tint(.red)
+                    .tint(DFPalette.danger)
                 }
                 Spacer(minLength: 0)
             }
@@ -752,7 +751,7 @@ struct DevicesView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.callout)
+        .font(DFType.detail)
         .padding(.vertical, 15)
     }
 

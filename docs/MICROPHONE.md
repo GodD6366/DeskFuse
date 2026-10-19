@@ -134,4 +134,4 @@ gRPC 错误转发到驱动已有系统日志，弥补系统服务标准错误输
 - 切换身份会关闭共享；切到提供端时清空 `source`，保留已安装驱动，便于再次切回。提供端不显示驱动维护。旧 `allowed` 配置继续可读，但不再限制连接。
 - 页面统一加载卡、故障卡与状态行：首次连接显示准备说明；服务错误显示中文摘要，原始错误收进“技术详情”；驱动异常只在驱动步骤保留一个可操作状态；未完成步骤标记“待完成”，已完成步骤标记“已完成”；仅在设置完成且尚未开启时显示一次“开启共享”提示。
 
-验证：`git diff --check`、`./scripts/check-design-system.sh`、`xcrun swiftc -parse apps/deskfuse-macos/Sources/DeskFuse/MicrophoneSettingsView.swift`、`cargo fmt --all -- --check`、`cargo test -p deskfuse-engine microphone --locked`、`cargo check --locked`、`./scripts/build_and_run.sh --build` 通过。开发版应用实际打开身份选择、接收端和提供端页面；确认接收端驱动未就绪时只显示一处可操作状态，提供端不再出现逐台允许开关，设备列表为只读并显示已配对数量。未触发真实的设备占用中会话，也未完成新的双机音频、微信输入法或驱动加载实测；本次调整设置交互与状态呈现。
+验证：`git diff --check`、`./scripts/check-ui-tokens.sh`（当时名为 check-design-system.sh）、`xcrun swiftc -parse apps/deskfuse-macos/Sources/DeskFuse/MicrophoneSettingsView.swift`、`cargo fmt --all -- --check`、`cargo test -p deskfuse-engine microphone --locked`、`cargo check --locked`、`./scripts/build_and_run.sh --build` 通过。开发版应用实际打开身份选择、接收端和提供端页面；确认接收端驱动未就绪时只显示一处可操作状态，提供端不再出现逐台允许开关，设备列表为只读并显示已配对数量。未触发真实的设备占用中会话，也未完成新的双机音频、微信输入法或驱动加载实测；本次调整设置交互与状态呈现。

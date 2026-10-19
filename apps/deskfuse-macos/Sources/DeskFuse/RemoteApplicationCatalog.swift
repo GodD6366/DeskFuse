@@ -15,7 +15,7 @@ struct RemoteApplicationCatalog: View {
                 DeviceProductIconView(displayName: device.name, size: 42)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(device.name).font(DFType.title)
-                    Text("应用列表").font(.callout).foregroundStyle(.secondary)
+                    Text("应用列表").font(DFType.detail).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {

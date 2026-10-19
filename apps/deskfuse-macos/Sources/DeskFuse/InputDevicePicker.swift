@@ -13,15 +13,15 @@ struct InputDevicePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text("添加设备屏幕").font(.title2.bold())
+                Text("添加设备屏幕").font(DFType.pageTitle.weight(.bold))
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
             }
             Text("选择已配对的电脑，添加它的全部屏幕。屏幕尺寸由对端提供，连接就绪后才能跨屏操作。")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(DFType.detail).foregroundStyle(.secondary)
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(DFType.detail).foregroundStyle(DFPalette.warning)
             }
             ScrollView {
                 VStack(spacing: 0) {
@@ -32,14 +32,14 @@ struct InputDevicePicker: View {
                     }
                     ForEach(candidates, id: \.id) { device in
                         HStack(spacing: 12) {
-                            Image(systemName: "display").font(.title2).foregroundStyle(.secondary)
+                            Image(systemName: "display").font(DFType.icon(.medium)).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(device.name).font(.callout.weight(.semibold))
-                                Text(device.inputReason).font(.caption).foregroundStyle(.secondary)
+                                Text(device.name).font(DFType.detail.weight(.semibold))
+                                Text(device.inputReason).font(DFType.caption).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 12)
                             if snapshot.input.settings.participants.contains(device.id) {
-                                Label("已添加", systemImage: "checkmark").font(.callout).foregroundStyle(.secondary)
+                                Label("已添加", systemImage: "checkmark").font(DFType.detail).foregroundStyle(.secondary)
                             } else {
                                 Button("添加") { onAdd(device.id) }.disabled(adding)
                             }

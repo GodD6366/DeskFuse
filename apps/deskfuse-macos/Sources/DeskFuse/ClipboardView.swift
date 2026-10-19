@@ -96,7 +96,7 @@ struct ClipboardView: View {
                     VStack(spacing: 0) {
                         if let error = copyError ?? library.error ?? snapshot.clipboardError {
                             Label(error, systemImage: "exclamationmark.triangle")
-                                .font(.callout).foregroundStyle(.orange)
+                                .font(DFType.detail).foregroundStyle(DFPalette.warning)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(16)
                         }

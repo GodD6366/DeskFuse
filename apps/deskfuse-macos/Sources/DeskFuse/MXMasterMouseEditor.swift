@@ -11,7 +11,7 @@ struct MousePhotoAnglePicker: View {
     }
     private func angle(_ title: String, side value: Bool) -> some View {
         Button { side = value } label: {
-            Text(title).font(.callout.weight(.medium))
+            Text(title).font(DFType.detail.weight(.medium))
                 .foregroundStyle(side == value ? Color.white : Color.primary)
                 .padding(.horizontal, 15).padding(.vertical, 7)
                 .background(side == value ? DFPalette.accent : Color.clear, in: Capsule())
@@ -41,14 +41,14 @@ struct MXMasterMouseEditor<Editor: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Label("点击按键，直接分配功能", systemImage: "cursorarrow")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(DFType.detail).foregroundStyle(.secondary)
                 Spacer()
                 MousePhotoAnglePicker(side: $side)
             }.padding(18).zIndex(1)
             canvas
             Divider()
             Text("普通按键直接设置 · 手势键与模式键需检测到 HID++ 支持 · 横向滚轮保留原功能")
-                .font(.caption).foregroundStyle(.secondary).padding(16)
+                .font(DFType.caption).foregroundStyle(.secondary).padding(16)
         }
         .background(.background, in: RoundedRectangle(cornerRadius: DFRadius.panel))
         .overlay(RoundedRectangle(cornerRadius: DFRadius.panel).strokeBorder(.primary.opacity(0.06)).allowsHitTesting(false))
@@ -83,23 +83,23 @@ struct MXMasterMouseEditor<Editor: View>: View {
                         .popover(isPresented: Binding(get: { editing == button }, set: { if !$0 && editing == button { close() } })) {
                             VStack(alignment: .leading, spacing: 14) {
                                 HStack {
-                                    Text(MouseSettings.buttonName(button)).font(.headline)
+                                    Text(MouseSettings.buttonName(button)).font(DFType.section)
                                     Spacer()
                                     Button { close() } label: { Image(systemName: "xmark") }
                                         .buttonStyle(.plain).accessibilityLabel("关闭按键设置")
                                 }
                                 if button < 195 || controller.availableNativeButtons.contains(button) {
                                     actionEditor(button)
-                                    Text(controller.saveStatus).font(.caption).foregroundStyle(.secondary)
+                                    Text(controller.saveStatus).font(DFType.caption).foregroundStyle(.secondary)
                                     if button >= 195 {
                                         Text("设置动作会接管此扩展键；选择保持原始功能可恢复原行为。")
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(DFType.caption).foregroundStyle(.secondary)
                                     }
                                 } else {
                                     Text("尚未检测到此扩展键。请连接 MX Master 3，并允许输入监控权限。")
-                                        .font(.callout).foregroundStyle(.secondary)
+                                        .font(DFType.detail).foregroundStyle(.secondary)
                                     Button("检测扩展键") { controller.beginDetection() }
-                                    Text(controller.hidStatus).font(.caption).foregroundStyle(.secondary)
+                                    Text(controller.hidStatus).font(DFType.caption).foregroundStyle(.secondary)
                                 }
                             }.padding(20).frame(width: 300)
                         }

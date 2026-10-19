@@ -27,7 +27,7 @@ struct DeviceProductIconView: View {
                     .frame(width: size, height: size)
             } else {
                 Image(systemName: DeviceProductIconResolver.fallbackSymbol(for: displayName))
-                    .font(.system(size: size * 0.66, weight: .light))
+                    .font(DFType.scaledIcon(size * 0.66, weight: .light))
                     .foregroundStyle(.secondary)
                     .frame(width: size, height: size)
             }

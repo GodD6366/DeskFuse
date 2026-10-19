@@ -50,9 +50,9 @@ struct ClipboardCodeDocument {
             guard let range = Range(match.range, in: text),
                   let lower = AttributedString.Index(range.lowerBound, within: result),
                   let upper = AttributedString.Index(range.upperBound, within: result) else { continue }
-            let color: Color = match.range(at: 1).location != NSNotFound ? .green
-                : match.range(at: 2).location != NSNotFound ? .secondary
-                : match.range(at: 3).location != NSNotFound ? .purple : .orange
+            let color: Color = match.range(at: 1).location != NSNotFound ? DFPalette.success
+                : match.range(at: 2).location != NSNotFound ? Color.secondary
+                : match.range(at: 3).location != NSNotFound ? DFPalette.accent : DFPalette.warning
             result[lower..<upper].foregroundColor = color
         }
         return result

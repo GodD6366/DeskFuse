@@ -73,7 +73,7 @@ struct ClipboardLibrarySettingsView: View {
                     }
                 }
                 Text("本页修改统一在点击底部“保存”后生效。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(DFType.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
             }
             .disabled(original == nil || saving)

@@ -60,7 +60,7 @@ struct ClipboardLibraryTabs: View {
         }
     }
     private func sectionLabel(_ title: String) -> some View {
-        Text(title).font(.caption.weight(.medium)).dfSecondaryText()
+        Text(title).font(DFType.caption.weight(.medium)).dfSecondaryText()
             .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
     }
@@ -82,8 +82,8 @@ struct ClipboardLibraryTabs: View {
     private func tab(_ name: String, id: String?, count: Int? = nil) -> some View {
         Button { selectedListID = id } label: {
             HStack(spacing: 6) {
-                Text(name).lineLimit(1).font(.callout)
-                if let count { Text("\(count)").font(.caption).monospacedDigit() }
+                Text(name).lineLimit(1).font(DFType.detail)
+                if let count { Text("\(count)").font(DFType.caption).monospacedDigit() }
             }
                 .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 9)
                 .frame(minHeight: spacious ? DFMetrics.controlHeight : 34)
@@ -106,7 +106,7 @@ struct ClipboardLibraryTabs: View {
                 Text(name).lineLimit(1)
                 Spacer(minLength: 0)
                 if let count {
-                    Text("\(count)").font(.caption).monospacedDigit()
+                    Text("\(count)").font(DFType.caption).monospacedDigit()
                         .foregroundStyle(selected && !quiet ? Color.white.opacity(0.8) : DFPalette.secondaryText(scheme))
                 }
             }
@@ -142,7 +142,7 @@ struct ClipboardLibraryTabs: View {
                 Text(label ?? "")
                 if label == nil { EmptyView() }
             }
-            .font(.callout)
+            .font(DFType.detail)
             .frame(maxWidth: vertical ? .infinity : nil, alignment: .leading)
             .padding(.horizontal, vertical ? 10 : 6)
             .frame(minWidth: vertical ? nil : 32, minHeight: vertical ? 34 : (spacious ? DFMetrics.controlHeight : 32))
@@ -175,7 +175,7 @@ private struct ClipboardLibraryEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(draft.kind == "smart" ? "编辑智能列表" : "编辑手动列表").font(.title2.bold())
+            Text(draft.kind == "smart" ? "编辑智能列表" : "编辑手动列表").font(DFType.pageTitle.weight(.bold))
             TextField("列表名称", text: $draft.name)
             if draft.kind == "smart" {
                 Picker("包含匹配下列条件的内容", selection: $draft.match_mode) {
@@ -194,9 +194,9 @@ private struct ClipboardLibraryEditor: View {
                 }.frame(minHeight: 160, maxHeight: 300)
                 Button("增加条件", systemImage: "plus") { draft.rules.append(ClipboardLibraryRule()) }
             } else {
-                Text("加入此列表的内容会长期保留，并在已配对设备间同步。删除列表不会删除其他列表的成员。").font(.callout).foregroundStyle(.secondary)
+                Text("加入此列表的内容会长期保留，并在已配对设备间同步。删除列表不会删除其他列表的成员。").font(DFType.detail).foregroundStyle(.secondary)
             }
-            if let error { Text(error).foregroundStyle(.red).font(.callout) }
+            if let error { Text(error).foregroundStyle(DFPalette.danger).font(DFType.detail) }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
