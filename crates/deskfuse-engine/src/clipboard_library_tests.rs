@@ -1290,8 +1290,8 @@ fn legacy_operation_log_is_compacted_once_without_losing_records() {
         db.execute("INSERT INTO cl_records VALUES(?1,9,'z',0,'{}')", [orphan])
             .unwrap();
         db.execute(
-            "DELETE FROM cl_meta WHERE key='operations_compacted_v1'",
-            [],
+            "DELETE FROM cl_meta WHERE key=?1",
+            ["operations_compacted_v1"],
         )
         .unwrap();
     }
@@ -1314,8 +1314,8 @@ fn legacy_operation_log_is_compacted_once_without_losing_records() {
         .reader()
         .unwrap()
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='operations_compacted_v1')",
-            [],
+            "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key=?1)",
+            ["operations_compacted_v1"],
             |r| r.get(0),
         )
         .unwrap();

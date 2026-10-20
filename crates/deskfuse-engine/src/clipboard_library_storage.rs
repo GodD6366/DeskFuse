@@ -507,8 +507,8 @@ impl Library {
         };
         let done: bool = db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='operations_compacted_v1')",
-                [],
+                "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key=?1)",
+                ["operations_compacted_v1"],
                 |r| r.get(0),
             )
             .map_err(err)?;
