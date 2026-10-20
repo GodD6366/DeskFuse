@@ -2,45 +2,194 @@
   x:Class="DeskFuse.Windows.App"
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Design tokens mirrored from the macOS DFTokens design system (palette,
+       type ramp, metrics, component styles). They live inline because this
+       unpackaged self-contained WinUI 3 app cannot resolve merged-dictionary
+       Source URIs at startup (fail-fast before any handler runs). -->
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
-        <ResourceDictionary Source="Design/DFColors.xaml" />
-        <ResourceDictionary Source="Design/DFMetrics.xaml" />
-        <ResourceDictionary Source="Design/DFType.xaml" />
-        <ResourceDictionary Source="Design/DFStyles.xaml" />
       </ResourceDictionary.MergedDictionaries>
 
-      <!-- Design tokens live in Design/DF*.xaml, mirrored from the macOS
-           DFTokens design system. Light/dark surfaces, text colors and control
-           visuals resolve through DF* brushes so both themes stay coherent. -->
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="DFAccentBrush" Color="#FF3276F3" />
+          <SolidColorBrush x:Key="DFAccentForegroundBrush" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="DFCanvasBrush" Color="#FFF4F4F5" />
+          <SolidColorBrush x:Key="DFSurfaceBrush" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="DFControlBrush" Color="#0A000000" />
+          <SolidColorBrush x:Key="DFControlStrongBrush" Color="#14000000" />
+          <SolidColorBrush x:Key="DFLineBrush" Color="#17000000" />
+          <SolidColorBrush x:Key="DFBorderBrush" Color="#14000000" />
+          <SolidColorBrush x:Key="DFMutedBrush" Color="#FF64748B" />
+          <SolidColorBrush x:Key="DFOnAccentMutedBrush" Color="#CCFFFFFF" />
+          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF16A34A" />
+          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFEA8A00" />
+          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFDC2626" />
+          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#143276F3" />
+          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#1416A34A" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="DFAccentBrush" Color="#FF4E89FF" />
+          <SolidColorBrush x:Key="DFAccentForegroundBrush" Color="#FF0B1220" />
+          <SolidColorBrush x:Key="DFCanvasBrush" Color="#FF1A1A1E" />
+          <SolidColorBrush x:Key="DFSurfaceBrush" Color="#FF232327" />
+          <SolidColorBrush x:Key="DFControlBrush" Color="#12FFFFFF" />
+          <SolidColorBrush x:Key="DFControlStrongBrush" Color="#24FFFFFF" />
+          <SolidColorBrush x:Key="DFLineBrush" Color="#24FFFFFF" />
+          <SolidColorBrush x:Key="DFBorderBrush" Color="#1AFFFFFF" />
+          <SolidColorBrush x:Key="DFMutedBrush" Color="#FF94A3B8" />
+          <SolidColorBrush x:Key="DFOnAccentMutedBrush" Color="#B30B1220" />
+          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF4ADE80" />
+          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFFBBF24" />
+          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFF87171" />
+          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#264E89FF" />
+          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#264ADE80" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+      <SolidColorBrush x:Key="DFBrandCyanBrush" Color="#FF22C9EA" />
+      <SolidColorBrush x:Key="DFBrandVioletBrush" Color="#FF9B5CFF" />
+
+      <CornerRadius x:Key="DFRadiusSmall">4</CornerRadius>
+      <CornerRadius x:Key="DFRadiusControl">8</CornerRadius>
+      <CornerRadius x:Key="DFRadiusCard">12</CornerRadius>
+      <CornerRadius x:Key="DFRadiusPanel">16</CornerRadius>
+      <x:Double x:Key="DFSpace2">2</x:Double>
+      <x:Double x:Key="DFSpace4">4</x:Double>
+      <x:Double x:Key="DFSpace8">8</x:Double>
+      <x:Double x:Key="DFSpace12">12</x:Double>
+      <x:Double x:Key="DFSpace16">16</x:Double>
+      <x:Double x:Key="DFSpace24">24</x:Double>
+      <x:Double x:Key="DFSpace32">32</x:Double>
+      <x:Double x:Key="DFControlHeight">32</x:Double>
+      <x:Double x:Key="DFCompactHeight">28</x:Double>
+      <x:Double x:Key="DFRowHeight">32</x:Double>
+      <GridLength x:Key="DFSidebarWidth">212</GridLength>
+      <GridLength x:Key="DFTopBarHeight">52</GridLength>
+      <x:Double x:Key="DFPagePadding">24</x:Double>
+      <x:Double x:Key="DFFormMaxWidth">720</x:Double>
+      <x:Double x:Key="DFPaneWidth">340</x:Double>
+      <x:Double x:Key="DFPaneMinWidth">480</x:Double>
+
+      <!-- Typography ramp. The legacy five sizes stay because existing pages
+           reference them; the DF* ramp mirrors DFType (pageTitle 20/sb,
+           title 15/sb, section 13/sb, body 13, detail 12, caption 11). -->
+      <x:Double x:Key="DisplayFontSize">28</x:Double>
+      <x:Double x:Key="TitleFontSize">20</x:Double>
+      <x:Double x:Key="SubtitleFontSize">16</x:Double>
+      <x:Double x:Key="BodyFontSize">14</x:Double>
+      <x:Double x:Key="CaptionFontSize">12</x:Double>
+      <x:Double x:Key="DFPageTitleFontSize">20</x:Double>
+      <x:Double x:Key="DFTitleFontSize">15</x:Double>
+      <x:Double x:Key="DFSectionFontSize">13</x:Double>
+      <x:Double x:Key="DFBodyFontSize">13</x:Double>
+      <x:Double x:Key="DFDetailFontSize">12</x:Double>
+      <x:Double x:Key="DFCaptionFontSize">11</x:Double>
+      <x:Double x:Key="DFMetricFontSize">24</x:Double>
+      <Style x:Key="DFPageTitleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFPageTitleFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFTitleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFTitleFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFSectionTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFSectionFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFBodyTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFDetailTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFDetailFontSize}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFCaptionTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFCaptionFontSize}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+      </Style>
+      <Style x:Key="DFMetricTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource DFMetricFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+      </Style>
+
+      <!-- Shared surfaces; CardBorder keeps its legacy key because pages use it. -->
+      <Style x:Key="CardBorder" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource DFSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource DFLineBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusCard}" />
+        <Setter Property="Padding" Value="16" />
+      </Style>
+      <Style x:Key="DividerBorder" TargetType="Border">
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Background" Value="{ThemeResource DFLineBrush}" />
+        <Setter Property="Margin" Value="0,16" />
+      </Style>
+      <Style x:Key="DFControlSurface" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource DFControlBrush}" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+      </Style>
+      <Style x:Key="DFButtonPrimaryStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
+        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+      </Style>
+      <Style x:Key="DFButtonSecondaryStyle" TargetType="Button">
+        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="Background" Value="{ThemeResource DFControlBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource DFBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+      </Style>
+      <Style x:Key="DFButtonPlainStyle" TargetType="Button">
+        <Setter Property="MinHeight" Value="{StaticResource DFCompactHeight}" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource DFAccentBrush}" />
+      </Style>
+      <Style x:Key="DFSidebarRowStyle" TargetType="ListBoxItem">
+        <Setter Property="MinHeight" Value="{StaticResource DFRowHeight}" />
+        <Setter Property="Padding" Value="10,0" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+      </Style>
+      <Style x:Key="DFSettingRowStyle" TargetType="ListBoxItem">
+        <Setter Property="MinHeight" Value="{StaticResource DFRowHeight}" />
+        <Setter Property="Padding" Value="10,0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+      </Style>
 
       <Style TargetType="TextBlock">
         <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
         <Setter Property="TextWrapping" Value="Wrap" />
       </Style>
-
-      <!-- Buttons keep the stock Fluent template; only comfortable metrics. -->
       <Style TargetType="Button">
         <Setter Property="Padding" Value="16,8" />
         <Setter Property="MinHeight" Value="36" />
         <Setter Property="Margin" Value="0,0,8,8" />
       </Style>
-
       <Style TargetType="TextBox">
         <Setter Property="Padding" Value="10,7" />
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="Margin" Value="0,0,0,10" />
       </Style>
-
       <Style TargetType="ComboBox">
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="MinWidth" Value="180" />
         <Setter Property="Margin" Value="0,0,8,10" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
       </Style>
-
       <Style TargetType="CheckBox">
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />

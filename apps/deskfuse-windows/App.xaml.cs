@@ -135,11 +135,14 @@ public partial class App : Application
     private void ShowOnboardingIfNeeded()
     {
         if (window is null || clipboard is null) return;
-        var settings = global::Windows.Storage.ApplicationData.Current.LocalSettings.Values;
-        if (settings["OnboardingVersion"] is int completed && completed >= OnboardingVersion) return;
+        // Unpackaged apps have no package identity, so ApplicationData is
+        // unavailable; the registry keeps the per-user onboarding marker.
+        using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
+        if (key.GetValue("OnboardingVersion") is int completed && completed >= OnboardingVersion) return;
         window.ShowOnboarding(new OnboardingPage(clipboard, () =>
         {
-            settings["OnboardingVersion"] = OnboardingVersion;
+            using var completedKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
+            completedKey.SetValue("OnboardingVersion", OnboardingVersion);
             window?.HideOnboarding();
         }));
     }

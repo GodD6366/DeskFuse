@@ -46,12 +46,16 @@
                   <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
                 </Style>
               </ListBox.Resources>
-              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="功能" Style="{StaticResource DFSectionTextStyle}" MinHeight="28" Margin="10,0,0,4" />
+              <ListBoxItem IsEnabled="False" IsTabStop="False" MinHeight="28" Margin="10,0,0,4">
+                <TextBlock Text="功能" Style="{StaticResource DFSectionTextStyle}" />
+              </ListBoxItem>
               <ListBoxItem Tag="Devices"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE772;" FontSize="16" /><TextBlock Text="设备" /></StackPanel></ListBoxItem>
               <ListBoxItem Tag="Clipboard"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8C8;" FontSize="16" /><TextBlock Text="剪贴板" /></StackPanel></ListBoxItem>
               <ListBoxItem Tag="Input"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE962;" FontSize="16" /><TextBlock Text="键鼠共享" /></StackPanel></ListBoxItem>
               <ListBoxItem Tag="ShareAndTransfer"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8AB;" FontSize="16" /><TextBlock Text="局域网传输" /></StackPanel></ListBoxItem>
-              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="进阶" Style="{StaticResource DFSectionTextStyle}" MinHeight="28" Margin="10,12,0,4" />
+              <ListBoxItem IsEnabled="False" IsTabStop="False" MinHeight="28" Margin="10,12,0,4">
+                <TextBlock Text="进阶" Style="{StaticResource DFSectionTextStyle}" />
+              </ListBoxItem>
               <ListBoxItem Tag="RemoteApplications"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8A7;" FontSize="16" /><TextBlock Text="远程应用" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
               <ListBoxItem Tag="Microphone"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE720;" FontSize="16" /><TextBlock Text="麦克风共享" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
               <ListBoxItem Tag="MouseButtons"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8B1;" FontSize="16" /><TextBlock Text="鼠标按键" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
@@ -63,12 +67,7 @@
             <TextBlock x:Name="LocalStatus" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="正在连接服务…" Margin="0,6,0,0" TextWrapping="Wrap" />
             <TextBlock x:Name="LocalVersion" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Margin="0,6,0,8" />
             <Button Content="设置" Click="SettingsClick" HorizontalAlignment="Stretch" />
-            <StackPanel Orientation="Horizontal" Spacing="8" Margin="2,12,0,0" Tapped="HealthTapped">
-              <FlyoutBase.AttachedFlyout>
-                <Flyout>
-                  <StackPanel x:Name="HealthIssuesList" MaxWidth="320" MinWidth="240" Spacing="10" />
-                </Flyout>
-              </FlyoutBase.AttachedFlyout>
+            <StackPanel x:Name="HealthRow" Orientation="Horizontal" Spacing="8" Margin="2,12,0,0" Tapped="HealthTapped">
               <Ellipse x:Name="HealthDot" Width="7" Height="7" Fill="{ThemeResource DFSuccessBrush}" VerticalAlignment="Center" />
               <TextBlock x:Name="HealthSummary" Text="运行正常" Style="{StaticResource DFCaptionTextStyle}" VerticalAlignment="Center" />
             </StackPanel>

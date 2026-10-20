@@ -367,7 +367,7 @@ public sealed partial class MainWindow : Window
     {
         var issues = new List<(string Tone, string Title, string Detail)>();
         if (!connected) issues.Add(("danger", "服务未连接", "无法连接 DeskFuseService；本机剪贴板历史仍可用。"));
-        if (clipboard.StorageError.Length > 0) issues.Add(("warning", "剪贴板存储异常", clipboard.StorageError));
+        if (!string.IsNullOrEmpty(clipboard.StorageError)) issues.Add(("warning", "剪贴板存储异常", clipboard.StorageError));
         string dot = issues.Any(issue => issue.Tone == "danger") ? "DFDangerBrush"
             : issues.Any(issue => issue.Tone == "warning") ? "DFWarningBrush"
             : "DFSuccessBrush";
@@ -380,10 +380,10 @@ public sealed partial class MainWindow : Window
 
     private void HealthTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs args)
     {
-        HealthIssuesList.Children.Clear();
+        var list = new StackPanel { MaxWidth = 320, MinWidth = 240, Spacing = 10 };
         if (healthIssues.Count == 0)
         {
-            HealthIssuesList.Children.Add(new TextBlock { Text = "暂无待处理问题。", Style = (Style)Application.Current.Resources["DFDetailTextStyle"] });
+            list.Children.Add(new TextBlock { Text = "暂无待处理问题。", Style = (Style)Application.Current.Resources["DFDetailTextStyle"] });
         }
         else
         {
@@ -396,10 +396,10 @@ public sealed partial class MainWindow : Window
                 text.Children.Add(new TextBlock { Text = title, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Style = (Style)Application.Current.Resources["DFBodyTextStyle"] });
                 text.Children.Add(new TextBlock { Text = detail, Style = (Style)Application.Current.Resources["DFCaptionTextStyle"] });
                 row.Children.Add(text);
-                HealthIssuesList.Children.Add(row);
+                list.Children.Add(row);
             }
         }
-        FlyoutBase.ShowAttachedFlyout((FrameworkElement)sender);
+        new Flyout { Content = list }.ShowAt((FrameworkElement)sender);
     }
 
     public void ShowOnboarding(UIElement view)
