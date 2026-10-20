@@ -73,6 +73,7 @@ jobs:
   macos-arm64:
     permissions:
       contents: write
+      actions: write
     needs: [preflight, checks]
     env:
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
@@ -120,15 +121,21 @@ jobs:
       - name: Remove signing material
         if: always()
         run: ./scripts/cleanup-developer-id.sh
-      - name: Store release-macos-arm64 in private draft
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci-artifacts.py upload --name release-macos-arm64 "dist/$ARM64_ASSET" dist/release.json dist/signing-arm64.txt
+      - name: Store release-macos-arm64 for publish
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-macos-arm64
+          path: |
+            dist/${{ env.ARM64_ASSET }}
+            dist/release.json
+            dist/signing-arm64.txt
+          if-no-files-found: error
+          retention-days: 1
 
   macos-x86_64:
     permissions:
       contents: write
+      actions: write
     needs: [preflight, checks]
     env:
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
@@ -176,15 +183,21 @@ jobs:
       - name: Remove signing material
         if: always()
         run: ./scripts/cleanup-developer-id.sh
-      - name: Store release-macos-x86_64 in private draft
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci-artifacts.py upload --name release-macos-x86_64 "dist/$X86_64_ASSET" dist/release.json dist/signing-x86_64.txt
+      - name: Store release-macos-x86_64 for publish
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-macos-x86_64
+          path: |
+            dist/${{ env.X86_64_ASSET }}
+            dist/release.json
+            dist/signing-x86_64.txt
+          if-no-files-found: error
+          retention-days: 1
 
   windows-x64:
     permissions:
       contents: write
+      actions: write
     needs: [preflight, checks]
     if: needs.preflight.outputs.exists != 'true' && needs.preflight.outputs.include_windows == 'true'
     name: Windows x64 installer
@@ -277,11 +290,16 @@ jobs:
           if ($manifest.authenticode -ne 'Valid') { throw "Windows installer is not Authenticode-signed (status: $($manifest.authenticode)); refusing to publish." }
           if ($manifest.release_signed -ne $true) { throw 'Windows installer payload is not fully Authenticode-signed; refusing to publish.' }
           if ($manifest.installer_sha256 -ne $targetHash) { throw 'Windows installer manifest hash does not match the renamed release asset.' }
-      - name: Store release-windows-x64 in private draft
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci-artifacts.py upload --name release-windows-x64 "dist/windows/$WINDOWS_ASSET" "dist/windows/$WINDOWS_ASSET.manifest.json" "dist/windows/$WINDOWS_ASSET.sha256"
+      - name: Store release-windows-x64 for publish
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows-x64
+          path: |
+            dist/windows/${{ env.WINDOWS_ASSET }}
+            dist/windows/${{ env.WINDOWS_ASSET }}.manifest.json
+            dist/windows/${{ env.WINDOWS_ASSET }}.sha256
+          if-no-files-found: error
+          retention-days: 1
       - name: Remove Authenticode certificate
         if: always()
         shell: pwsh
@@ -315,22 +333,26 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Download complete release archives
-        env:
-          GH_TOKEN: ${{ github.token }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-macos-arm64
+          path: dist/arm64
+      - name: Download Intel release archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-macos-x86_64
+          path: dist/x86_64
+      - name: Download Windows release archive
+        if: env.INCLUDE_WINDOWS == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows-x64
+          path: dist/windows
+      - name: Check downloaded archives
         run: |
-          set -euo pipefail
-          python3 scripts/ci-artifacts.py download --name release-macos-arm64 --directory dist/arm64 &
-          arm64_download_pid=$!
-          python3 scripts/ci-artifacts.py download --name release-macos-x86_64 --directory dist/x86_64 &
-          intel_download_pid=$!
-          download_failed=0
-          wait "$arm64_download_pid" || download_failed=1
-          wait "$intel_download_pid" || download_failed=1
-          test "$download_failed" = 0
-          if [[ "$INCLUDE_WINDOWS" == "true" ]]; then
-            python3 scripts/ci-artifacts.py download --name release-windows-x64 --directory dist/windows
-          fi
+          test -s "dist/arm64/$ARM64_ASSET"
           test -s dist/arm64/signing-arm64.txt
+          test -s "dist/x86_64/$X86_64_ASSET"
           test -s dist/x86_64/signing-x86_64.txt
       - name: Verify downloaded macOS DMGs
         env:
@@ -429,16 +451,3 @@ jobs:
           git add "$CASK_PATH" web/src/config/distribution.json
           git commit -m "chore(cask): pin $RELEASE_TAG DMG checksum"
           git push origin "HEAD:$DEFAULT_BRANCH"
-
-  cleanup-artifacts:
-    needs: [cask]
-    if: always() && needs.cask.result == 'success'
-    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Remove temporary private release packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci-artifacts.py cleanup
