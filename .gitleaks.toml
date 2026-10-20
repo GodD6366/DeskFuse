@@ -14,3 +14,10 @@ condition = "AND"
 paths = ['''(?:^|/)crates/deskfuse-engine/src/clipboard_library\.rs$''']
 regexTarget = "line"
 regexes = ['''"SELECT EXISTS\(SELECT 1 FROM cl_meta WHERE key='placeholder_purge_v1'\)",''']
+
+[[allowlists]]
+description = "Clipboard compaction marker is a database metadata key, not a credential"
+condition = "AND"
+paths = ['''(?:^|/)crates/deskfuse-engine/src/clipboard_library_(?:storage|tests)\.rs$''']
+regexTarget = "line"
+regexes = ['''key='operations_compacted_v1'''']
