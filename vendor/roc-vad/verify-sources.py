@@ -13,7 +13,8 @@ lock = json.loads((root / 'sources.lock.json').read_text())
 paths = ['roc', 'aspl', 'boringssl', 'grpc', 'fmt', 'spdlog', 'cli11']
 for name, source in zip(paths, lock['dependencies'], strict=True):
     checkout = build / '3rdparty' / name / 'src' / (name + '_lib')
-    if partial and not (checkout / '.git').exists():
+    # CMake may leave an empty checkout skeleton before the download step runs.
+    if partial and not (checkout / '.git' / 'HEAD').is_file():
         continue
     head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
     if head != source['commit']:
@@ -28,7 +29,7 @@ for name, source in zip(paths, lock['dependencies'], strict=True):
         raise SystemExit('Transitive dependency commit mismatch: ' + name)
 for entry in lock.get('submodules', []):
     checkout = build / '3rdparty' / entry['parent'] / 'src' / (entry['parent'] + '_lib') / entry['path']
-    if partial and not (checkout / '.git').exists(): continue
+    if partial and not (checkout / '.git' / 'HEAD').is_file(): continue
     head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
     tree = subprocess.check_output(['git', '-C', str(checkout), 'ls-tree', '-rz', '--full-tree', 'HEAD'])
     if head != entry['commit'] or hashlib.sha256(tree).hexdigest() != entry['git_tree_sha256']:
