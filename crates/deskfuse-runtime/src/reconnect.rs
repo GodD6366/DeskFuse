@@ -46,6 +46,7 @@ struct Attempt {
     installed: Arc<std::sync::atomic::AtomicU64>,
     routes: Vec<RouteCandidate>,
     task: task::JoinHandle<()>,
+    deadline: Instant,
 }
 pub(super) struct DialResult {
     peer: DeviceId,
@@ -63,6 +64,9 @@ const ROUTE_PROBE_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 /// Interval cap for a peer that never comes back. Retries continue forever,
 /// just far apart enough to stop crowding live input sessions.
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
+/// A dial task that neither reports nor panics would otherwise pin the peer in
+/// `Connecting` forever and block both automatic and manual reconnects.
+const DIAL_ATTEMPT_DEADLINE: Duration = Duration::from_secs(90);
 
 struct RouteMeasurement {
     route: RouteId,
@@ -672,6 +676,7 @@ impl Actor {
                 installed,
                 routes,
                 task,
+                deadline: Instant::now() + DIAL_ATTEMPT_DEADLINE,
             },
         );
         if let Some(state) = self.peers.get_mut(&peer) {
@@ -793,6 +798,31 @@ impl Actor {
         for peer in peers {
             if !self.may_reconnect(peer) {
                 self.cancel_reconnect(peer).await;
+                continue;
+            }
+            if self
+                .recovery
+                .attempts
+                .get(&peer)
+                .is_some_and(|attempt| Instant::now() >= attempt.deadline)
+            {
+                // A panic or lost completion would otherwise block every future
+                // dial for this peer, including an explicit user reconnect.
+                self.recovery_event(
+                    peer,
+                    "dial_timeout",
+                    None,
+                    Some("拨号任务超时未返回，已重新排队".into()),
+                );
+                self.cancel_reconnect(peer).await;
+                let state = self.peers.get_mut(&peer).expect("known peer");
+                state.connection = ConnectionState::Failed;
+                state.liveness = LivenessState::Offline;
+                state.active_route = None;
+                state.active_capabilities = None;
+                self.pending_app_messages.remove(&peer);
+                self.schedule_retry(peer, true);
+                self.publish();
                 continue;
             }
             // Changes to discovery/policy invalidate in-flight route snapshots.
@@ -1061,6 +1091,10 @@ impl Actor {
         self.delivery_tick().await;
         self.recovery_tick().await;
         self.refresh_provider(self.discovery.clone()).await;
+        // 合盖带走再打开往往意味着物理网络已经换了。企业 Wi-Fi 常过滤
+        // mDNS，必须重新做一轮单播探测，否则旧网络缓存的路由会让设备看似
+        // 已连接，但独立键鼠服务找不到新网段上的对端。
+        self.start_lan_probe();
         // Sleep is not a failure. Everything learned before the machine slept
         // is stale, so every peer starts a fresh round at the first ladder step
         // instead of inheriting the pre-sleep interval. One attempt that races

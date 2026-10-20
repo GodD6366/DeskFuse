@@ -330,13 +330,6 @@ pub struct Settings {
     pub retention_days: u32,
     pub excluded_apps: Vec<App>,
     pub shortcut: Shortcut,
-    /// Publish and accept the search index (titles, recognized text, metadata)
-    /// across paired devices. Payloads stay on demand either way.
-    #[serde(default = "yes")]
-    pub sync_index: bool,
-}
-fn yes() -> bool {
-    true
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -348,7 +341,6 @@ impl Default for Settings {
                 key_code: 9,
                 modifiers: 0x180000,
             },
-            sync_index: true,
         }
     }
 }
@@ -1313,9 +1305,6 @@ END;").map_err(err)?;
         if self.device.lock().map_err(err)?.is_empty() {
             return Ok(());
         }
-        if !self.settings()?.sync_index {
-            return Ok(());
-        }
         let row = {
             let db = self.reader()?;
             let sql = self.metadata_sql("SELECT i.global_id,i.digest,i.summary,COALESCE(i.blob_hash,''),i.title,i.ocr_text,COALESCE(i.search_text,'') FROM cl_items i WHERE i.id=?1");
@@ -1355,12 +1344,8 @@ END;").map_err(err)?;
     }
 
     /// Materialize remote index rows for every stored `index:` record. Used at
-    /// startup and when index sync is re-enabled, so previously received
-    /// records become searchable again.
+    /// startup so previously received records become searchable again.
     fn reconcile_index(&self) -> Result<()> {
-        if !self.settings()?.sync_index {
-            return Ok(());
-        }
         if self.work.is_running() {
             self.writer()?.execute_batch("INSERT OR REPLACE INTO cl_meta VALUES('index_reconcile_cursor',''); INSERT OR REPLACE INTO cl_meta VALUES('publish_backfill_cursor','0');").map_err(err)?;
             self.work.wake();
@@ -2053,7 +2038,6 @@ END;").map_err(err)?;
         let q: Value = serde_json::from_str(request).map_err(err)?;
         match q["op"].as_str().unwrap_or("") {
             "settings" => {
-                let was_syncing = self.settings()?.sync_index;
                 let mut current = serde_json::to_value(self.settings()?).map_err(err)?;
                 for (k, v) in q["settings"].as_object().ok_or("设置无效")? {
                     current[k] = v.clone()
@@ -2067,10 +2051,6 @@ END;").map_err(err)?;
                 s.excluded_apps.dedup_by(|a, b| a.bundle_id == b.bundle_id);
                 self.writer()?.execute("INSERT INTO cl_meta VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(&s).map_err(err)?]).map_err(err)?;
                 self.changed();
-                // Re-enabling index sync re-materializes already-stored records.
-                if s.sync_index && !was_syncing {
-                    self.reconcile_index()?;
-                }
             }
             "save_list" => {
                 let mut value = q["list"].clone();
@@ -2704,7 +2684,6 @@ END;").map_err(err)?;
     ) -> Result<()> {
         let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
-        let sync_index = settings_db(&tx)?.sync_index;
         let mut changed = false;
         let mut reconcile_items = HashSet::new();
         for mut op in ops {
@@ -2836,7 +2815,7 @@ END;").map_err(err)?;
                 if key.starts_with("item:") && !deleted {
                     materialize(&tx, &self.blob_dir, value)?;
                 }
-                if key.starts_with("index:") && !deleted && sync_index {
+                if key.starts_with("index:") && !deleted {
                     let before = tx.total_changes();
                     materialize_index(&tx, value, author, true)?;
                     changed |= tx.total_changes() > before;

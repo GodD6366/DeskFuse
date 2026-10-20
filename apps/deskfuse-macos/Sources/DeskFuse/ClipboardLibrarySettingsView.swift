@@ -38,10 +38,8 @@ struct ClipboardLibrarySettingsView: View {
                     }
                 }
                 DFSection("跨设备搜索") {
-                    DFToggleRow("同步标题与识别文字到其他设备",
-                        detail: "只同步标题、识别文字和元数据，方便在其他设备搜索；图片和文件正文按需获取。关闭后不再发布或接收远端索引。", isOn: Binding(
-                        get: { draft.sync_index ?? true },
-                        set: { draft.sync_index = $0 }))
+                    DFSettingRow(title: "同步标题与识别文字到其他设备",
+                        detail: "始终开启：只同步标题、识别文字和元数据，方便在其他设备搜索；图片和文件正文按需获取。") { EmptyView() }
                     Divider()
                     DFSettingRow(title: "已同步的远端索引",
                         detail: "清除其他设备同步过来的索引行，不影响本机历史、手动列表或已获取的正文。") {
@@ -104,7 +102,6 @@ struct ClipboardLibrarySettingsView: View {
         do {
             var settings = try await library.loadSettings()
             settings.shortcut = settings.shortcut ?? ClipboardLibraryShortcut()
-            settings.sync_index = settings.sync_index ?? true
             draft = settings; original = settings
             draftAutomaticOCR = automaticOCR; originalAutomaticOCR = automaticOCR
         } catch { failure = error.userFacingMessage }

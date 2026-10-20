@@ -214,6 +214,7 @@ pub struct Transfer {
 #[derive(Clone, Debug, uniffi::Record)]
 #[allow(clippy::struct_excessive_bools)] // Independent file policy switches.
 pub struct FileSettings {
+    pub enabled: bool,
     pub prefetch: bool,
     pub threshold: u64,
     pub maximum: u64,
@@ -222,6 +223,7 @@ pub struct FileSettings {
 impl From<FileSettings> for core::FileTransferSettings {
     fn from(s: FileSettings) -> Self {
         Self {
+            enabled: s.enabled,
             small_file_prefetch_enabled: s.prefetch,
             small_file_threshold_bytes: s.threshold,
             cache_max_bytes: s.maximum,
@@ -281,6 +283,7 @@ pub struct Placement {
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct InputSettings {
+    pub feature_enabled: bool,
     pub enabled: bool,
     pub controller: bool,
     pub participants: Vec<String>,
@@ -298,6 +301,7 @@ impl InputSettings {
         previous: &core::InputSharingSettings,
     ) -> Result<core::InputSharingSettings, EngineError> {
         let mut s = previous.clone();
+        s.feature_enabled = self.feature_enabled;
         s.enabled = self.enabled;
         s.role = if self.controller {
             core::InputShareRole::Controller
@@ -379,6 +383,7 @@ mod input_shortcut_tests {
 impl From<&core::InputSharingSettings> for InputSettings {
     fn from(s: &core::InputSharingSettings) -> Self {
         Self {
+            feature_enabled: s.feature_enabled,
             enabled: s.enabled,
             controller: s.role == core::InputShareRole::Controller,
             participants: s.participants.iter().map(ToString::to_string).collect(),
@@ -1011,6 +1016,7 @@ impl From<&EngineState> for EngineSnapshot {
                 })
                 .collect(),
             files: FileSettings {
+                enabled: s.file_settings.enabled,
                 prefetch: s.file_settings.small_file_prefetch_enabled,
                 threshold: s.file_settings.small_file_threshold_bytes,
                 maximum: s.file_settings.cache_max_bytes,

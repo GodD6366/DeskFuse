@@ -10,8 +10,8 @@ A macOS-first native desktop collaboration app (Rust 2024 + SwiftUI): sync clipb
 
 ## What it does
 
-- A three-step first-run guide: connect a second Mac first, then choose features; the add button sits directly on discovered devices.
-- Discover or manually pair trusted devices over IPv4; connection state and blockers stay visible. Permissions are requested on demand instead of all at launch.
+- A two-step first-run setup: guided system permissions first, then feature defaults. Clipboard, keyboard/mouse sharing and remote applications start on; mouse buttons and microphone stay off, and every feature has a demo animation. It also runs on an existing installation until that Mac completes the current setup.
+- Discover or manually pair trusted devices over IPv4; connection state and blockers stay visible. Permissions are requested on demand after setup.
 - Sync text, images and native clipboard formats; history groups by type and supports manual lists.
 - One file transfer page with a send area, the transfer queue and phone QR sharing; files transfer on demand, names and folder structure are preserved, and the history cache has a size limit and cleanup receipts.
 - A file shelf: drag files in to stage them, drag them out in batches, or send them to another device.

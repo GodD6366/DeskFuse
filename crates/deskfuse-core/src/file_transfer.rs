@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileTransferSettings {
+    /// Master switch for file send, receive and web sharing.
+    pub enabled: bool,
     /// Request small clipboard files before the user pastes them.
     pub small_file_prefetch_enabled: bool,
     /// Largest complete transfer eligible for prefetch, inclusive.
@@ -18,6 +20,7 @@ pub struct FileTransferSettings {
 impl Default for FileTransferSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             small_file_prefetch_enabled: false,
             small_file_threshold_bytes: 10 * 1024 * 1024,
             cache_max_bytes: 1024 * 1024 * 1024,
@@ -44,7 +47,8 @@ impl FileTransferSettings {
     }
     /// Whether a metadata offer can be requested without a user paste.
     pub fn should_prefetch(&self, total_bytes: u64) -> bool {
-        self.small_file_prefetch_enabled
+        self.enabled
+            && self.small_file_prefetch_enabled
             && total_bytes <= self.small_file_threshold_bytes
             && total_bytes <= self.cache_max_bytes
     }
@@ -73,6 +77,8 @@ mod tests {
         settings.small_file_prefetch_enabled = true;
         assert!(settings.should_prefetch(settings.small_file_threshold_bytes));
         assert!(!settings.should_prefetch(settings.small_file_threshold_bytes + 1));
+        settings.enabled = false;
+        assert!(!settings.should_prefetch(1));
         settings.cache_max_bytes = 1024 * 1024;
         assert!(settings.validate().is_err());
     }

@@ -39,6 +39,9 @@ struct MicrophoneSignalStage: View {
     /// 0...1 的真实采样电平，仅在传输中使用。
     let level: Float
     var sourceMenu: AnyView? = nil
+    var sourcePickerTitle = "选择麦克风"
+    var sourceSelection = ""
+    var destinationControls: AnyView? = nil
     @State private var showingSourcePicker = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -54,20 +57,20 @@ struct MicrophoneSignalStage: View {
                         showingSourcePicker = true
                     } label: {
                         MicrophoneSignalNode(endpoint: source, emits: true, mode: mode, tone: tone,
-                                             level: level, time: time)
+                                             level: level, time: time, selectable: true)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .popover(isPresented: $showingSourcePicker, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: DFSpace.m) {
-                            Text("选择麦克风").font(DFType.title)
+                            Text(sourcePickerTitle).font(DFType.title)
                             sourceMenu
                         }
                         .padding(DFSpace.l)
                         .frame(minWidth: 240)
                     }
-                    .help("点击选择麦克风")
-                    .accessibilityLabel("选择麦克风，当前为\(source.title)")
+                    .help("点击\(sourcePickerTitle)")
+                    .accessibilityLabel("\(sourcePickerTitle)，当前为\(source.title)")
                 } else {
                     MicrophoneSignalNode(endpoint: source, emits: true, mode: mode, tone: tone,
                                          level: level, time: time)
@@ -78,10 +81,15 @@ struct MicrophoneSignalStage: View {
                     statusPill
                 }
                 .frame(maxWidth: .infinity)
-                MicrophoneSignalNode(endpoint: destination, emits: false, mode: mode, tone: tone,
-                                     level: level, time: time)
+                VStack(spacing: DFSpace.s) {
+                    MicrophoneSignalNode(endpoint: destination, emits: false, mode: mode, tone: tone,
+                                         level: level, time: time)
+                    destinationControls
+                }
+                .frame(width: MicrophoneSignalNode.width)
             }
         }
+        .onChange(of: sourceSelection) { _, _ in showingSourcePicker = false }
         .animation(DFMotion.settle, value: mode)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(source.title) 到 \(destination.title)，\(label)")
@@ -113,6 +121,7 @@ private struct MicrophoneSignalNode: View {
     let tone: DFTone
     let level: Float
     let time: TimeInterval
+    var selectable = false
     @Environment(\.colorScheme) private var scheme
 
     private var active: Bool { mode == .streaming || mode == .ready }
@@ -135,7 +144,13 @@ private struct MicrophoneSignalNode: View {
             .background { rings }
             .scaleEffect(breathing)
             VStack(spacing: DFSpace.xxs) {
-                Text(endpoint.subtitle).font(DFType.caption).dfSecondaryText()
+                HStack(spacing: DFSpace.xs) {
+                    Text(endpoint.subtitle)
+                    if selectable {
+                        Image(systemName: "chevron.down").accessibilityHidden(true)
+                    }
+                }
+                .font(DFType.caption).dfSecondaryText()
                 Text(endpoint.title).font(DFType.bodyMedium)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)

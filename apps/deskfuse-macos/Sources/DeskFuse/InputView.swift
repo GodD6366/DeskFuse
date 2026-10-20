@@ -636,7 +636,7 @@ struct InputView: View {
 
     private var sharingSetting: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Toggle("共享键鼠", isOn: Binding(
+            Toggle("使用此 Mac 作为主控", isOn: Binding(
                 get: { snapshot.input.settings.controller && snapshot.input.settings.enabled },
                 set: { setSharingEnabled($0) }
             ))
@@ -710,8 +710,10 @@ struct InputView: View {
             guard current.devices.contains(where: { $0.id == id && $0.member && !$0.blocked }),
                   !settings.participants.contains(id) else { return }
             settings.participants.append(id)
+            store.allowAutoJoin(id)
         } else {
             settings.participants.removeAll { $0 == id }
+            store.suppressAutoJoin(id)
         }
         // Keep saved placement and pairing so adding this device again restores its position.
         applySettings(settings)

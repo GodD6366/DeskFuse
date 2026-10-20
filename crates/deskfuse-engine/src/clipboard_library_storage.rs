@@ -234,10 +234,8 @@ impl Library {
         let rows = db.prepare("SELECT key,value,author FROM cl_records WHERE key GLOB 'index:*' AND key>?1 AND deleted=0 ORDER BY key LIMIT 16").map_err(err)?.query_map([cursor], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(err)?.collect::<std::result::Result<Vec<_>,_>>().map_err(err)?;
         let tx = db.transaction().map_err(err)?;
         let before = tx.total_changes();
-        if settings_db(&tx)?.sync_index {
-            for (_, raw, author) in &rows {
-                materialize_index(&tx, &serde_json::from_str(raw).map_err(err)?, author, false)?;
-            }
+        for (_, raw, author) in &rows {
+            materialize_index(&tx, &serde_json::from_str(raw).map_err(err)?, author, false)?;
         }
         let changed = tx.total_changes() > before;
         if let Some((key, _, _)) = rows.last() {
@@ -274,10 +272,8 @@ impl Library {
         let next: Option<u64> = db.query_row("SELECT MAX(id) FROM (SELECT id FROM cl_item_metadata WHERE id>?1 ORDER BY id LIMIT 256)", [cursor], |r| r.get(0)).map_err(err)?;
         let tx = db.transaction().map_err(err)?;
         if let Some(next) = next {
-            if settings_db(&tx)?.sync_index {
-                let revision: u64 = tx.query_row("INSERT INTO cl_meta VALUES('publication_counter','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) RETURNING CAST(value AS INTEGER)", [], |r|r.get(0)).map_err(err)?;
-                tx.execute("INSERT INTO cl_pending_publications SELECT i.id,?3 FROM cl_item_metadata i LEFT JOIN cl_records r ON r.key='index:' || i.global_id WHERE i.id>?1 AND i.id<=?2 AND i.ordinary=1 AND i.remote=0 AND ((r.key IS NULL AND i.digest LIKE 'image-v1:%') OR (r.key IS NOT NULL AND (COALESCE(json_extract(r.value,'$.digest'),'')<>i.digest OR COALESCE(json_extract(r.value,'$.title'),'')<>COALESCE(i.title,'') OR COALESCE(json_extract(r.value,'$.ocr_text'),'')<>COALESCE(i.ocr_text,'') OR COALESCE(json_extract(r.value,'$.blob_hash'),'')<>COALESCE(i.blob_hash,'')))) ON CONFLICT(id) DO NOTHING", params![cursor,next,revision]).map_err(err)?;
-            }
+            let revision: u64 = tx.query_row("INSERT INTO cl_meta VALUES('publication_counter','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) RETURNING CAST(value AS INTEGER)", [], |r|r.get(0)).map_err(err)?;
+            tx.execute("INSERT INTO cl_pending_publications SELECT i.id,?3 FROM cl_item_metadata i LEFT JOIN cl_records r ON r.key='index:' || i.global_id WHERE i.id>?1 AND i.id<=?2 AND i.ordinary=1 AND i.remote=0 AND ((r.key IS NULL AND i.digest LIKE 'image-v1:%') OR (r.key IS NOT NULL AND (COALESCE(json_extract(r.value,'$.digest'),'')<>i.digest OR COALESCE(json_extract(r.value,'$.title'),'')<>COALESCE(i.title,'') OR COALESCE(json_extract(r.value,'$.ocr_text'),'')<>COALESCE(i.ocr_text,'') OR COALESCE(json_extract(r.value,'$.blob_hash'),'')<>COALESCE(i.blob_hash,'')))) ON CONFLICT(id) DO NOTHING", params![cursor,next,revision]).map_err(err)?;
             tx.execute(
                 "UPDATE cl_meta SET value=?1 WHERE key='publish_backfill_cursor'",
                 [next.to_string()],

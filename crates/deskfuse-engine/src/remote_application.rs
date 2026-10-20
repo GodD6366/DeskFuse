@@ -35,6 +35,7 @@ pub fn service() -> Result<Arc<Service>, String> {
 impl Service {
     pub fn enable(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
+        self.transport.set_remote_application_enabled(enabled);
     }
     pub fn authorized(&self, peer: DeviceId) -> bool {
         let view = self.runtime.snapshot_view();
@@ -48,6 +49,9 @@ impl Service {
                 .any(|p| p.id == peer && p.trust == TrustState::Trusted)
     }
     pub fn require_viewer_allowed(&self) -> Result<(), String> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return Err("远程应用已关闭".into());
+        }
         if self
             .runtime
             .input_snapshot()

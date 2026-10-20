@@ -410,6 +410,10 @@ if otool -L "$BINARY_PATH" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/System
   exit 1
 fi
 cp "$BINARY_PATH" "$CONTENTS_DIR/MacOS/$BINARY_NAME"
+# Swift Build adds PackageFrameworks and Xcode toolchain search paths even when
+# the app already has @executable_path/../Frameworks. Strip them in staging,
+# before signing; checking only otool -L misses these LC_RPATH entries.
+python3 "$ROOT_DIR/scripts/macos-rpaths.py" --fix "$CONTENTS_DIR/MacOS/$BINARY_NAME"
 
 # The driver is shipped, never installed on the build machine. The native shim
 # is signed before the containing application, with the existing identity.
@@ -449,6 +453,7 @@ ditto "$(dirname "$BINARY_PATH")/Metadata.appintents" "$CONTENTS_DIR/Resources/M
 cp "$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-input-service"
 deskfuse_codesign --identifier com.deskfuse.app.input-service "$CONTENTS_DIR/MacOS/deskfuse-input-service"
 cp "$OCR_HELPER" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
+python3 "$ROOT_DIR/scripts/macos-rpaths.py" --fix "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
@@ -476,7 +481,7 @@ cp "$ASSET_DIR/DeskFuse-icon-1024.png" "$CONTENTS_DIR/Resources/DeskFuse-icon-10
 cp "$ASSET_DIR/DeskFuse-icon-light-1024.png" "$CONTENTS_DIR/Resources/DeskFuse-icon-light-1024.png"
 cp "$ASSET_DIR/deskfuse-status-icon.png" "$CONTENTS_DIR/Resources/deskfuse-status-icon.png"
 ditto "$ROOT_DIR/resources/mice" "$CONTENTS_DIR/Resources/Mice"
-cp "$ASSET_DIR/dmg-background.png" "$DMG_SOURCE_DIR/.background/installer-background.png"
+cp "$ASSET_DIR/dmg-background.tiff" "$DMG_SOURCE_DIR/.background/installer-background.tiff"
 ln -s /Applications "$DMG_SOURCE_DIR/Applications"
 
 sed \
@@ -585,7 +590,7 @@ ATTACHED=1
 # Headless/agent packaging can avoid controlling Finder. The app and
 # Applications link still work; only the custom Finder layout is omitted.
 if [[ "${DESKFUSE_DMG_FINDER_LAYOUT:-1}" != "0" ]]; then
-if ! osascript - "$MOUNT_POINT" "$MOUNT_POINT/.background/installer-background.png" <<'APPLESCRIPT'
+if ! osascript - "$MOUNT_POINT" "$MOUNT_POINT/.background/installer-background.tiff" <<'APPLESCRIPT'
 on run argv
   set mounted_folder to POSIX file (item 1 of argv) as alias
   set background_file to POSIX file (item 2 of argv) as alias
@@ -599,14 +604,15 @@ on run argv
     set current view of installer_window to icon view
     set toolbar visible of installer_window to false
     set statusbar visible of installer_window to false
-    set bounds of installer_window to {120, 120, 1040, 680}
+    -- 920×560 content plus the title bar; matches resources/dmg-background.svg.
+    set bounds of installer_window to {120, 120, 1040, 708}
     set viewOptions to the icon view options of installer_window
     set arrangement of viewOptions to not arranged
-    set icon size of viewOptions to 116
-    set text size of viewOptions to 14
+    set icon size of viewOptions to 128
+    set text size of viewOptions to 13
     set background picture of viewOptions to background_file
-    set position of item "DeskFuse.app" of installer_window to {250, 280}
-    set position of item "Applications" of installer_window to {670, 280}
+    set position of item "DeskFuse.app" of installer_window to {250, 262}
+    set position of item "Applications" of installer_window to {670, 262}
     update mounted_folder without registering applications
     delay 1.5
     close installer_window

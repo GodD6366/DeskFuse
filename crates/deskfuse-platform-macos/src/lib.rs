@@ -13,6 +13,8 @@ pub use workflow_execution::MacOSWorkflowExecutionPort;
 
 mod display;
 mod error;
+mod hostname;
+pub use hostname::hostname;
 mod finder_paste;
 mod finder_script;
 mod input;

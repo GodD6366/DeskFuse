@@ -15,7 +15,6 @@ struct ClipboardHistoryPane: View {
     @FocusState private var historyFocused: Bool
     let searching: Bool
     let historyIsEmpty: Bool
-    @Binding var syncEnabled: Bool
     let selectedImage: NSImage?
     let client: EngineClient?
     let appIDs: [UInt64: String]
@@ -113,13 +112,6 @@ struct ClipboardHistoryPane: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .modifier(NativeGlassBackdrop(cornerRadius: DFRadius.card))
                     .accessibilityLabel("历史记录操作")
-                }
-                HStack(spacing: 8) {
-                    Text("自动同步剪贴板").font(DFType.detail)
-                    Spacer(minLength: 4)
-                    Toggle("自动同步剪贴板", isOn: $syncEnabled)
-                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                        .help(syncEnabled ? "自动同步已开启" : "自动同步已关闭")
                 }
                 searchField
                 HStack(spacing: 10) {

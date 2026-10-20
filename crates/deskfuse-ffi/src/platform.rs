@@ -129,15 +129,7 @@ impl HostRuntimePort for MacRuntime {
         std::env::var(name).ok()
     }
     fn hostname(&self) -> Option<String> {
-        std::process::Command::new("/bin/hostname")
-            .output()
-            .ok()
-            .and_then(|output| {
-                output
-                    .status
-                    .success()
-                    .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            })
+        deskfuse_platform_macos::hostname()
     }
     fn current_executable(&self) -> PlatformResult<PathBuf> {
         std::env::current_exe().map_err(|error| deskfuse_platform::PlatformError::InvalidRequest {

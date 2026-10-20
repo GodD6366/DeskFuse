@@ -26,6 +26,7 @@ import DeskFuseRemoteApplication
     @ObservationIgnored private var pickers: [String: RemoteApplicationPickerWindow] = [:]
     @ObservationIgnored private var rdpPickers: [String: RemoteRdpPickerWindow] = [:]
     @ObservationIgnored private var rdpWindows: [String: RemoteRdpWindow] = [:]
+    @ObservationIgnored private var rdpCatalogs = NSHashTable<RemoteRdpSession>.weakObjects()
     @ObservationIgnored private var catalogs: [UUID: RemoteApplicationSession] = [:]
     @ObservationIgnored private var viewerOwner: UUID?
     @ObservationIgnored private var hostOwner: UUID?
@@ -35,7 +36,7 @@ import DeskFuseRemoteApplication
     private init() {}
 
     static let viewerRestriction = "当前键鼠共享角色不允许操作远程应用，请在主控电脑操作，或结束被控并关闭键鼠共享。"
-    static let disabledMessage = "远程应用已在设置中停用。前往「设置 → 通用 → 功能」重新开启。"
+    static let disabledMessage = "远程应用已关闭，请使用右上角总开关重新开启。"
     var canOperateApplications: Bool { AppStore.shared.snapshot?.input.canOperateRemoteApplications == true }
 
     @discardableResult private func allowViewer() -> Bool {
@@ -51,22 +52,32 @@ import DeskFuseRemoteApplication
     }
 
     func start(engine: Engine) {
-        self.engine = engine; incoming?.cancel()
+        self.engine = engine; incoming?.cancel(); incoming = nil
+        error = nil
+        guard enabled else { return }
         incoming = Task { [weak self] in
+            // Engine() returns before the network worker installs its service.
+            // Await that boundary without publishing a transient global error.
+            for attempt in 0..<100 {
+                guard !Task.isCancelled, let self, self.enabled else { return }
+                do {
+                    try engine.setRemoteApplicationHosting(enabled: true)
+                    self.error = nil
+                    break
+                } catch {
+                    let message = error.userFacingMessage
+                    guard message == "远程应用引擎尚未就绪", attempt < 99 else {
+                        self.error = message
+                        return
+                    }
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                }
+            }
             while !Task.isCancelled {
                 guard let self else { return }
-                // 总开关关闭时保持 hosting 关闭，不接入新的对端会话。
-                guard self.enabled else {
-                    do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
-                    continue
-                }
-                let channel = await Task.detached { () -> RemoteApplicationChannel? in
-                    // Entering the authenticated device network enables remote
-                    // application hosting automatically. There is no separate
-                    // per-device switch in the product surface anymore.
-                    try? engine.setRemoteApplicationHosting(enabled: true)
-                    return try? engine.takeRemoteApplication()
-                }.value
+                guard self.enabled else { return }
+                let channel = await Task.detached { try? engine.takeRemoteApplication() }.value
+                guard !Task.isCancelled, self.enabled else { channel?.close(); return }
                 self.hosts = self.hosts.filter { $0.value.active || $0.value.busy }
                 if let channel {
                     // Each application uses its own bounded media stream on the
@@ -85,16 +96,16 @@ import DeskFuseRemoteApplication
         }
     }
 
-    /// 总开关实时生效：关闭立即让出既有 hosting 会话并通知引擎停止监听；
-    /// 开启由 hosting 循环的下一轮自动恢复。
+    func retry() {
+        guard let engine else { return }
+        start(engine: engine)
+    }
+
+    /// Stop the complete feature, including outgoing viewers and catalog connections.
     private func applyEnabled() {
         guard let engine else { return }
-        if enabled {
-            Task.detached { try? engine.setRemoteApplicationHosting(enabled: true) }
-        } else {
-            stopHosting()
-            Task.detached { try? engine.setRemoteApplicationHosting(enabled: false) }
-        }
+        if enabled { start(engine: engine) }
+        else { stop() }
     }
     func stopHosting() {
         let sessions = Array(hosts.values)
@@ -136,11 +147,14 @@ import DeskFuseRemoteApplication
     }
     func makeWindowsCatalog(for device: Device) -> RemoteRdpSession? {
         guard enabled, let engine, device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
-        return RemoteRdpSession(engine: engine, peerID: device.id,
+        let session = RemoteRdpSession(engine: engine, peerID: device.id,
             peerHost: windowsHost(device.routes.first(where: \.active)?.endpoint ?? device.endpoint))
+        rdpCatalogs.add(session)
+        return session
     }
     func openWindowsApplication(_ app: RemoteRdpApp, session: RemoteRdpSession,
                                 username: String?, password: String?) {
+        guard allowViewer() else { return }
         let key = "\(session.peerID):\(app.name)"
         if let existing = rdpWindows[key] {
             existing.showWindow(nil); existing.window?.deminiaturize(nil); existing.window?.makeKeyAndOrderFront(nil)
@@ -280,6 +294,7 @@ import DeskFuseRemoteApplication
         }
     }
     func claimHostControl(_ session: RemoteApplicationSession) async throws -> Bool {
+        guard enabled else { return false }
         if let owner = hostOwner, owner != session.id, let previous = hosts[owner] {
             guard previous.peerID == session.peerID else { return false }
             previous.yieldHostControl()
@@ -310,17 +325,32 @@ import DeskFuseRemoteApplication
     }
     func stop() {
         incoming?.cancel(); incoming = nil
-        try? engine?.setRemoteApplicationHosting(enabled: false)
-        let rdpSessions = rdpPickers.values.map(\.session)
+        do { try engine?.setRemoteApplicationHosting(enabled: false) }
+        catch {
+            // Before installation the transport is already disabled by default.
+            if error.userFacingMessage != "远程应用引擎尚未就绪" {
+                self.error = error.userFacingMessage
+            }
+        }
+        hostOwner = nil; hostClaim = UUID()
+        hostPreparation?.cancel(); hostPreparation = nil
+        let rdpSessions = rdpPickers.values.map(\.session) + rdpCatalogs.allObjects
+        rdpCatalogs.removeAllObjects()
         for window in Array(rdpWindows.values) { window.close() }
         rdpWindows.removeAll()
         for session in rdpSessions { session.stop() }
+        for picker in Array(rdpPickers.values) { picker.close() }
         rdpPickers.removeAll()
         let sessions = Array(hosts.values) + Array(viewers.values) + pickers.values.map(\.session) + Array(catalogs.values)
         for session in sessions {
             session.releaseControl(resumeSharing: true); session.yieldHostControl()
             session.restoreHostDesktopBeforeExit()
         }
+        for window in Array(windows.values) { window.close() }
+        for picker in Array(pickers.values) { picker.close() }
+        hosts.removeAll(); viewers.removeAll(); windows.removeAll(); pickers.removeAll(); catalogs.removeAll()
+        viewerOwner = nil
+        try? engine?.remoteApplicationViewerControl(active: false)
         focusedViewerID = nil
         RemoteApplicationDockController.shared.reset()
         Task { for session in sessions { await session.stop() } }

@@ -198,8 +198,13 @@ impl Drop for RemoteSession {
     }
 }
 
+struct RemoteHubState {
+    enabled: bool,
+    sessions: Vec<std::sync::Weak<RemoteSession>>,
+}
 #[derive(Clone)]
 pub(super) struct RemoteHub {
+    state: Arc<Mutex<RemoteHubState>>,
     tx: sync::SyncSender<Arc<RemoteSession>>,
     rx: Arc<Mutex<sync::Receiver<Arc<RemoteSession>>>>,
 }
@@ -209,8 +214,24 @@ impl RemoteHub {
         // This is still bounded; the native host enforces the same session cap.
         let (tx, rx) = sync::sync_channel(16);
         Self {
+            state: Arc::new(Mutex::new(RemoteHubState {
+                enabled: false,
+                sessions: Vec::new(),
+            })),
             tx,
             rx: Arc::new(Mutex::new(rx)),
+        }
+    }
+    fn set_enabled(&self, enabled: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.enabled = enabled;
+        if !enabled {
+            for session in state.sessions.drain(..).filter_map(|s| s.upgrade()) {
+                session.close();
+            }
+            while let Some(session) = self.take() {
+                session.close();
+            }
         }
     }
     pub fn take(&self) -> Option<Arc<RemoteSession>> {
@@ -221,8 +242,13 @@ impl RemoteHub {
         peer: DeviceId,
         connection: quinn::Connection,
         mut send: quinn::SendStream,
-        recv: quinn::RecvStream,
+        mut recv: quinn::RecvStream,
     ) {
+        if !self.state.lock().unwrap_or_else(|e| e.into_inner()).enabled {
+            let _ = send.reset(1u32.into());
+            let _ = recv.stop(1u32.into());
+            return;
+        }
         let ack = Envelope::new(
             [0; 16],
             Message::RemoteApplicationOpen(protocol::RemoteApplicationOpen { version: 1 }),
@@ -234,6 +260,13 @@ impl RemoteHub {
             return;
         }
         let session = RemoteSession::new(peer, connection, send, recv);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.enabled {
+            session.close();
+            return;
+        }
+        state.sessions.retain(|s| s.strong_count() > 0);
+        state.sessions.push(Arc::downgrade(&session));
         if let Err(sync::TrySendError::Full(session) | sync::TrySendError::Disconnected(session)) =
             self.tx.try_send(session)
         {
@@ -242,6 +275,9 @@ impl RemoteHub {
     }
 }
 impl QuinnTransport {
+    pub fn set_remote_application_enabled(&self, enabled: bool) {
+        self.remote_app.set_enabled(enabled);
+    }
     pub fn take_remote_application(&self) -> Option<Arc<RemoteSession>> {
         self.remote_app.take()
     }
@@ -319,6 +355,8 @@ mod tests {
             )
             .await
             .unwrap();
+        a.set_remote_application_enabled(true);
+        b.set_remote_application_enabled(true);
         let outbound = a.open_remote_application(hello_b.device_id).await.unwrap();
         let inbound = time::timeout(Duration::from_secs(2), async {
             loop {
@@ -339,6 +377,21 @@ mod tests {
             "media stream must not occupy the control dispatcher"
         );
         assert!(outbound.try_send(vec![0; MAX_PACKET + 1]).is_err());
+        b.set_remote_application_enabled(false);
+        assert!(
+            inbound.is_closed(),
+            "disabling must close existing media sessions"
+        );
+        assert!(
+            control.ping().await.is_ok(),
+            "disabling media must preserve the device connection"
+        );
+        assert!(
+            a.open_remote_application(hello_b.device_id).await.is_err(),
+            "disabled hosts must reject new media streams"
+        );
+        b.set_remote_application_enabled(true);
+        let outbound = a.open_remote_application(hello_b.device_id).await.unwrap();
         b.revoke_peer(hello_a.device_id).await.unwrap();
         time::sleep(Duration::from_millis(50)).await;
         assert!(outbound.receive(250).is_err());

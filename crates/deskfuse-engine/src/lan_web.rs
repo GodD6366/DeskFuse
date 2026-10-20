@@ -119,7 +119,7 @@ impl LanWebService {
         let path = deskfuse_store::SQLiteStore::default_path()
             .map_err(|e| e.to_string())?
             .with_file_name("lan-web.json");
-        let (settings, error) = match std::fs::read(&path) {
+        let (mut settings, error) = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(s) => (s, None),
                 Err(_) => (
@@ -130,6 +130,14 @@ impl LanWebService {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Settings::default(), None),
             Err(_) => (Settings::default(), Some("局域网设置无法读取".into())),
         };
+        let store = deskfuse_store::SQLiteStore::new().map_err(|e| e.to_string())?;
+        if !store
+            .file_transfer_settings()
+            .map_err(|e| e.to_string())?
+            .enabled
+        {
+            settings.enabled = false;
+        }
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 settings,
@@ -303,6 +311,18 @@ impl Shared {
 async fn serve(shared: Arc<Shared>) {
     let mut live: Option<LiveServer> = None;
     loop {
+        if shared.stop.is_cancelled() && live.is_none() {
+            break;
+        }
+        let enabled = shared
+            .inner
+            .lock()
+            .map(|i| i.settings.enabled)
+            .unwrap_or(false);
+        if !enabled && live.is_none() {
+            tokio::select! { _ = shared.stop.cancelled() => {}, _ = shared.changed.notified() => {} }
+            continue;
+        }
         let mut seen_interfaces = std::collections::BTreeSet::new();
         let interfaces = deskfuse_platform_macos::lan_web::interfaces()
             .unwrap_or_default()

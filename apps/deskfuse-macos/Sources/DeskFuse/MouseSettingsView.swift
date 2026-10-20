@@ -9,7 +9,8 @@ struct MouseSettingsView: View {
     @State private var recording: Int?
     @State private var monitor: Any?
     @State private var reset = false
-    @State private var source = 1
+    @State private var selection = ""
+    @State private var contribution = false
     private let choices: [(String, MouseAction?)] = [
         ("保持原始功能", nil), ("停用此按键", .disabled),
         ("主键点击", .mouse(0)), ("副键点击", .mouse(1)), ("中键点击", .mouse(2)),
@@ -20,58 +21,115 @@ struct MouseSettingsView: View {
         ("复制", .shortcut(8, 0x100000)), ("粘贴", .shortcut(9, 0x100000)),
         ("撤销", .shortcut(6, 0x100000)), ("关闭窗口", .shortcut(13, 0x100000))
     ]
+
+    private struct DeviceOption: Identifiable {
+        enum Kind {
+            case supported(LogitechHIDProtocol.Model)
+            case generic
+        }
+        let id: String
+        let title: String
+        let kind: Kind
+        let devices: [DetectedMouseDevice]
+
+        var model: LogitechHIDProtocol.Model? {
+            if case .supported(let model) = kind { return model }
+            return nil
+        }
+        var isSupported: Bool { model != nil }
+    }
+
+    private var deviceOptions: [DeviceOption] {
+        var options: [DeviceOption] = []
+        var seen = Set<LogitechHIDProtocol.Model>()
+        var generic: [DetectedMouseDevice] = []
+        for device in controller.detectedMice {
+            if let model = device.model {
+                if seen.insert(model).inserted {
+                    options.append(DeviceOption(id: "model:\(model.id)", title: model.displayName,
+                                                kind: .supported(model), devices: [device]))
+                }
+            } else {
+                generic.append(device)
+            }
+        }
+        if !generic.isEmpty {
+            options.append(DeviceOption(id: "generic", title: "通用鼠标", kind: .generic, devices: generic))
+        } else if options.isEmpty {
+            options.append(DeviceOption(id: "generic", title: "通用鼠标", kind: .generic, devices: []))
+        }
+        return options
+    }
+    private var selectedOption: DeviceOption {
+        deviceOptions.first { $0.id == selection } ?? deviceOptions[0]
+    }
+    private var profile: LogitechHIDProtocol.Model? { selectedOption.model }
     private var buttons: [Int] {
-        Set(0...4).union(controller.availableNativeButtons)
+        let base: Set<Int>
+        switch profile {
+        case .g502Lightspeed: base = LogitechHIDProtocol.g502Buttons
+        case .mxMaster3: base = Set(0...4).union(LogitechHIDProtocol.mxButtons)
+        case nil: base = Set(0...4)
+        }
+        return base
             .union(controller.settings.bindings.map(\.button))
             .filter {
-                switch source {
-                case 1: LogitechHIDProtocol.g502Buttons.contains($0)
-                case 2: (0...4).contains($0) || LogitechHIDProtocol.mxButtons.contains($0)
-                default: (0...4).contains($0)
+                switch profile {
+                case .g502Lightspeed: LogitechHIDProtocol.g502Buttons.contains($0)
+                case .mxMaster3: (0...4).contains($0) || LogitechHIDProtocol.mxButtons.contains($0)
+                case nil: (0...4).contains($0)
                 }
             }.sorted()
     }
     private var mappedCount: Int { buttons.filter { selected($0) != nil }.count }
+    private var contributionDevice: DetectedMouseDevice? { selectedOption.devices.first }
 
     var body: some View {
         DFScrollPage(maxWidth: nil) {
-            // 宽窗口：左侧设备与按键编辑，右侧说明与同步；窄窗口自动上下堆叠。
+            // 宽窗口：左侧设备与按键编辑，右侧已支持列表与说明；窄窗口自动上下堆叠。
             DFAdaptiveColumns {
                 VStack(alignment: .leading, spacing: DFSpace.xl) {
                     deviceCard
                     assignments
                 }
                 VStack(alignment: .leading, spacing: DFSpace.l) {
+                    supportedMice
                     notes
                     footer
                 }
             }
         }
         .disabled(engine == nil)
-        .onChange(of: source) { _, _ in stopRecording(); modifiers = 0 }
-        .onDisappear { stopRecording(); controller.endDetection() }
+        .onAppear { controller.beginDeviceScan() }
+        .onChange(of: selectedOption.id) { _, _ in stopRecording(); modifiers = 0 }
+        .onDisappear { stopRecording(); controller.endDeviceScan() }
         .confirmationDialog("恢复默认并同步到其他 Mac？", isPresented: $reset) {
-            Button("恢复默认", role: .destructive) { controller.update(MouseSettings()) }
+            Button("恢复默认", role: .destructive) {
+                var defaults = MouseSettings()
+                defaults.enabled = controller.isFeatureEnabled
+                controller.update(defaults)
+            }
+        }
+        .sheet(isPresented: $contribution) {
+            MouseDataContributionView(controller: controller, initialDevice: contributionDevice)
         }
     }
 
     private var deviceCard: some View {
         DFSection {
             HStack(spacing: 16) {
-                Image(systemName: "computermouse.fill")
+                Image(systemName: selectedOption.isSupported ? "computermouse.fill" : "computermouse")
                     .font(DFType.metric.weight(.light))
                     .frame(width: 52, height: 56)
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(source == 1 ? "G502 LIGHTSPEED" : source == 2 ? "MX Master 3" : "通用鼠标").font(DFType.title.weight(.semibold))
-                    Text(controller.settings.enabled ? "自定义已启用 · 修改自动保存" : "先配置按键，再开启自定义")
+                    Text(selectedOption.title).font(DFType.title.weight(.semibold))
+                    Text(deviceDetail)
                         .font(DFType.detail).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
-                Toggle("启用鼠标自定义", isOn: Binding(get: { controller.settings.enabled }, set: {
-                    var value = controller.settings; value.enabled = $0; controller.update(value)
-                })).toggleStyle(.switch).labelsHidden()
-                    .accessibilityLabel("启用鼠标按键自定义")
+                Spacer(minLength: DFSpace.s)
+                DFStatusPill(text: deviceStatus.0, tone: deviceStatus.1)
             }
             if controller.settings.enabled && !controller.tapReady {
                 Divider()
@@ -88,19 +146,43 @@ struct MouseSettingsView: View {
         }
     }
 
+    private var deviceDetail: String {
+        let save = controller.settings.enabled ? "自定义已启用 · 修改自动保存" : "先配置按键，再开启自定义"
+        if selectedOption.isSupported {
+            let name = selectedOption.devices.first?.name ?? selectedOption.title
+            return "\(name) · 已连接 · \(save)"
+        }
+        if !selectedOption.devices.isEmpty {
+            let names = selectedOption.devices.map(\.name).joined(separator: "、")
+            return "\(names) · 尚未适配 · 使用通用映射"
+        }
+        return "未检测到鼠标 · 使用标准 5 键映射"
+    }
+
+    private var deviceStatus: (String, DFTone) {
+        if selectedOption.isSupported { return ("已连接", .success) }
+        return selectedOption.devices.isEmpty ? ("未检测到", .neutral) : ("未适配", .warning)
+    }
+
     private var assignments: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("按键分配").font(DFType.title.weight(.semibold))
                 Text("已设置 \(mappedCount) 项").font(DFType.caption).foregroundStyle(.secondary)
                 Spacer()
-                Picker("鼠标类型", selection: $source) {
-                    Text("G502 LIGHTSPEED").tag(1)
-                    Text("通用鼠标").tag(0)
-                    Text("MX Master 3").tag(2)
-                }.labelsHidden().frame(width: 180)
+                Picker("鼠标类型", selection: Binding(
+                    get: { selectedOption.id },
+                    set: { selection = $0 })) {
+                    ForEach(deviceOptions) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 200)
+                .help("只显示当前识别到的鼠标；未适配型号使用通用映射")
             }
-            if source == 1 {
+            switch selectedOption.kind {
+            case .supported(.g502Lightspeed):
                 G502MouseEditor(controller: controller, onSelection: stopRecording) { button in
                     VStack(alignment: .leading, spacing: 10) {
                         actionMenu(button)
@@ -111,30 +193,66 @@ struct MouseSettingsView: View {
                             .font(DFType.caption).foregroundStyle(.secondary)
                     }
                 }
-            } else if source == 2 {
+            case .supported(.mxMaster3):
                 MXMasterMouseEditor(controller: controller, onSelection: stopRecording) { button in
                     actionMenu(button)
                 }
-            } else {
-                DFSection {
-                    ForEach(buttons, id: \.self) { button in
-                        if button != buttons.first { Divider() }
-                        mappingRow(button)
-                    }
-                }
-                Text("支持左键、右键、中键及前进、后退键。侧键需鼠标具备对应按键并发送标准鼠标事件。")
-                    .font(DFType.caption).foregroundStyle(.secondary)
+            case .generic:
+                genericAssignments
             }
-            if source == 0 {
-                DisclosureGroup("组合键设置") {
-                    HStack {
-                        Text("按住这些键时使用独立映射").foregroundStyle(.secondary)
-                        Spacer()
-                        modifier("⌘", 0x100000); modifier("⇧", 0x20000)
-                        modifier("⌥", 0x80000); modifier("⌃", 0x40000)
-                    }.padding(.vertical, 8)
-                    Text("未设置的组合沿用默认映射。").font(DFType.caption).foregroundStyle(.secondary)
-                }.font(DFType.detail)
+        }
+    }
+
+    private var genericAssignments: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DFSection {
+                ForEach(buttons, id: \.self) { button in
+                    if button != buttons.first { Divider() }
+                    mappingRow(button)
+                }
+            }
+            Text("支持左键、右键、中键及前进、后退键。侧键需鼠标具备对应按键并发送标准鼠标事件。")
+                .font(DFType.caption).foregroundStyle(.secondary)
+            DisclosureGroup("组合键设置") {
+                HStack {
+                    Text("按住这些键时使用独立映射").foregroundStyle(.secondary)
+                    Spacer()
+                    modifier("⌘", 0x100000); modifier("⇧", 0x20000)
+                    modifier("⌥", 0x80000); modifier("⌃", 0x40000)
+                }.padding(.vertical, 8)
+                Text("未设置的组合沿用默认映射。").font(DFType.caption).foregroundStyle(.secondary)
+            }.font(DFType.detail)
+        }
+    }
+
+    private var supportedMice: some View {
+        DFSection("已支持鼠标", symbol: "checkmark.seal") {
+            ForEach(Array(LogitechHIDProtocol.Model.allCases.enumerated()), id: \.offset) { index, model in
+                if index > 0 { Divider() }
+                HStack(spacing: DFSpace.m) {
+                    Image(systemName: "computermouse.fill")
+                        .font(DFType.icon(.regular))
+                        .dfSecondaryText()
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: DFSpace.xxs) {
+                        Text(model.displayName).font(DFType.bodyMedium)
+                        Text(model.supportSummary).font(DFType.caption).dfSecondaryText()
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: DFSpace.s)
+                    DFStatusPill(text: isConnected(model) ? "已连接" : "未连接",
+                                 tone: isConnected(model) ? .success : .neutral)
+                }
+                .frame(minHeight: 38)
+            }
+            Divider().padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: DFSpace.s) {
+                Text("没有找到你的鼠标？").font(DFType.bodyMedium)
+                Text("记录型号和按键编号，生成 Markdown 数据；后续可直接用于适配 Issue。")
+                    .font(DFType.caption).dfSecondaryText()
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("我要提供鼠标数据…") { contribution = true }
+                    .buttonStyle(.dfPrimary)
             }
         }
     }
@@ -144,6 +262,7 @@ struct MouseSettingsView: View {
             DisclosureGroup("设备状态与使用说明") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(controller.hidStatus)
+                    Text("列表只展示当前识别到的鼠标；未适配型号自动使用通用映射。如已连接但未显示，请检查输入监控权限。")
                     Text("G502 的原有 DPI、配置切换或 G HUB 动作会继续执行。实体键编号按实际识别为准；不要同时绑定同一按键的通用事件和实体事件。机械滚轮解锁键无法识别。")
                     Text("切换桌面需要对应方向存在桌面，且系统键盘快捷键已启用。MX 与 G502 原生按键暂不支持修饰键分层。")
                     Button("打开输入监控设置") { controller.openInputMonitoringSettings() }
@@ -164,6 +283,11 @@ struct MouseSettingsView: View {
             Button("恢复默认…", role: .destructive) { reset = true }.buttonStyle(.borderless)
         }.font(DFType.caption).padding(.horizontal, 4)
     }
+
+    private func isConnected(_ model: LogitechHIDProtocol.Model) -> Bool {
+        controller.detectedMice.contains { $0.model == model }
+    }
+
     private func mappingRow(_ button: Int) -> some View {
         HStack(spacing: 12) {
             Image(systemName: selected(button) == nil ? "computermouse" : "cursorarrow.click")
@@ -218,7 +342,7 @@ struct MouseSettingsView: View {
     private func set(_ button: Int, _ action: MouseAction?) {
         var value = controller.settings
         value.set(button: button, modifiers: modifiers, action: action)
-        if source == 1 {
+        if profile == .g502Lightspeed {
             let locations = G502ButtonLocations(json: UserDefaults.standard.string(forKey: "mouse.g502.physicalLocations.v1") ?? "{}")
             if let generic = locations.position(for: button)?.genericButton {
                 value.bindings.removeAll { $0.button == generic }

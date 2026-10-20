@@ -92,6 +92,26 @@ class MicrophoneLegacyDriverTests(unittest.TestCase):
             self.assertFalse(legacy.exists())
             self.assertIn('已移除旧版麦克风驱动', result.stdout)
 
+    def test_install_makes_private_source_readable_by_audio_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = MicrophoneDriverSandbox(Path(directory))
+            source = make_driver(sandbox.root / 'payload' / 'testMicrophone.driver', 'test.microphone')
+            binary = source / 'Contents/MacOS/testMicrophone'
+            binary.parent.mkdir()
+            binary.write_text('binary')
+            for path, mode in ((source, 0o700), (source / 'Contents', 0o700), (binary.parent, 0o700),
+                               (binary, 0o700), (source / 'Contents/Info.plist', 0o600)):
+                path.chmod(mode)
+            result = sandbox.run('install', str(source))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = sandbox.hal / 'testMicrophone.driver'
+            modes = {path.relative_to(installed).as_posix(): path.stat().st_mode & 0o777
+                     for path in [installed, *installed.rglob('*')]}
+            self.assertEqual(modes, {
+                '.': 0o755, 'Contents': 0o755, 'Contents/Info.plist': 0o644,
+                'Contents/MacOS': 0o755, 'Contents/MacOS/testMicrophone': 0o755,
+            })
+
     def test_uninstall_removes_current_and_legacy_drivers(self):
         with tempfile.TemporaryDirectory() as directory:
             sandbox = MicrophoneDriverSandbox(Path(directory))

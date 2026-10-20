@@ -556,6 +556,20 @@ fn process_recovery_required(control: &ServiceControl) -> bool {
         .is_ok_and(|status| status.observer_recovery_required)
 }
 
+/// The input service is the only component that can capture and inject input.
+/// Giving up after a few crashes leaves sharing dead until the user restarts
+/// the app, so keep retrying at a capped interval instead.
+fn input_service_retry_delay(attempts: u32) -> Duration {
+    match attempts {
+        0 | 1 => Duration::from_secs(1),
+        2 => Duration::from_secs(2),
+        3 => Duration::from_secs(4),
+        4 => Duration::from_secs(8),
+        5 => Duration::from_secs(16),
+        _ => Duration::from_secs(30),
+    }
+}
+
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -610,7 +624,7 @@ pub(super) async fn run_host(
         if error.is_some() {
             attempts += 1;
             if attempts > 3 {
-                error = Some("输入服务自动恢复未成功，请点击重试；若仍失败，请检查系统权限".into());
+                error = Some("输入服务自动恢复未成功，正在后台重试；可点击重试立即恢复".into());
             }
         }
         let status = NativeStatus {
@@ -636,11 +650,15 @@ pub(super) async fn run_host(
         if error.is_none() {
             break;
         }
-        if attempts > 3 {
-            // No hidden fallback into the application's process. Explicit retry stays available.
-            loop {
-                match commands.recv().await {
-                    Some(RuntimeCommand::Shutdown) | None => return,
+        // No hidden fallback into the application's process. Retry forever at a
+        // capped interval; explicit restart commands below relaunch immediately.
+        let delay = tokio::time::sleep(input_service_retry_delay(attempts));
+        tokio::pin!(delay);
+        loop {
+            tokio::select! {
+                _ = &mut delay => break,
+                c = commands.recv() => match c {
+                    None | Some(RuntimeCommand::Shutdown) => return,
                     Some(value @ RuntimeCommand::RefreshNativeObserver)
                     | Some(value @ RuntimeCommand::RestartInputActivation { .. })
                     | Some(value @ RuntimeCommand::SetInputSharingSettings(_)) => {
@@ -648,24 +666,8 @@ pub(super) async fn run_host(
                         attempts = 0;
                         break;
                     }
-                    Some(_) => {
-                        let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand(
-                            "输入服务暂不可用，请在键鼠共享页面点击重试".into(),
-                        )));
-                    }
-                }
-            }
-        } else {
-            let delay = tokio::time::sleep(Duration::from_secs(1 << (attempts - 1)));
-            tokio::pin!(delay);
-            loop {
-                tokio::select! {
-                    _ = &mut delay => break,
-                    c = commands.recv() => match c {
-                        None | Some(RuntimeCommand::Shutdown) => return,
-                        Some(value) if host_command_allowed(&value) && pending.len() < 128 => pending.push_back(value),
-                        Some(_) => { let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand("输入命令未应用，请重试".into()))); },
-                    }
+                    Some(value) if host_command_allowed(&value) && pending.len() < 128 => pending.push_back(value),
+                    Some(_) => { let _ = events.send(RuntimeEvent::Error(RuntimeError::InvalidCommand("输入命令未应用，请重试".into()))); },
                 }
             }
         }

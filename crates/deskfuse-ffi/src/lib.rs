@@ -428,6 +428,10 @@ impl Engine {
             EngineCommand::SetFiles { settings } => {
                 let settings: deskfuse_core::FileTransferSettings = settings.into();
                 settings.validate().map_err(failure)?;
+                #[cfg(target_os = "macos")]
+                if !settings.enabled {
+                    self.lan_web.configure(false, None, 0).map_err(failure)?;
+                }
                 TokioCommand::SetFileTransferSettings(settings)
             }
             EngineCommand::ClearCache => TokioCommand::ClearTransferCache,

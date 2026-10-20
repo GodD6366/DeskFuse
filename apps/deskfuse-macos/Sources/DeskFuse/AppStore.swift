@@ -104,8 +104,10 @@ import DeskFuseEngine
     private var errorHandlers: [UInt64: (String) -> Void] = [:]
     private var failureHandlers: [UInt64: () -> Void] = [:]
     private var requestPairings: [UInt64: String] = [:]
-    /// 已自动加入键鼠共享的设备，避免授权失败时每次快照都重复提交。
-    private var autoJoinedInputPeers: Set<String> = []
+    /// 用户主动移除过的屏幕，本次运行内不要自动加回。
+    private var autoJoinSuppressedPeers: Set<String> = []
+    /// 自动加入的退避时间：设置命令可能被输入服务静默拒绝，失败回调不会触发。
+    private var autoJoinRetryAt: [String: TimeInterval] = [:]
     private var quitting = false
 
     func start() {
@@ -192,28 +194,45 @@ import DeskFuseEngine
     /// 不必再到键鼠页里手动添加。只在本机是主控且功能已开启时执行。
     private func autoJoinInputParticipants(_ value: EngineSnapshot) {
         let input = value.input
-        guard input.canConfigure, input.settings.enabled, input.settings.controller else { return }
+        for id in input.settings.participants { autoJoinRetryAt[id] = nil }
+        guard input.settings.featureEnabled, input.canConfigure, input.settings.enabled, input.settings.controller else { return }
         let candidates = value.devices
             .filter { $0.id != value.localId && $0.member && $0.trusted && $0.connected && !$0.blocked }
             .map(\.id)
+        let now = ProcessInfo.processInfo.systemUptime
         let additions = candidates.filter { id in
-            !input.settings.participants.contains(id) && !autoJoinedInputPeers.contains(id)
+            !input.settings.participants.contains(id)
+                && !autoJoinSuppressedPeers.contains(id)
+                && (autoJoinRetryAt[id] ?? 0) <= now
         }
         guard !additions.isEmpty else { return }
-        autoJoinedInputPeers.formUnion(additions)
+        // 命令回执只代表主进程已转发；输入服务仍可能拒绝或未应用设置。
+        // 5 秒后若快照里仍没有该参与者就重试，避免必须重启应用才能恢复。
+        for id in additions { autoJoinRetryAt[id] = now + 5 }
         var settings = input.settings
         settings.participants.append(contentsOf: additions)
-        send(.setInput(settings: settings), failed: { [weak self] _ in
-            self?.autoJoinedInputPeers.subtract(additions)
-        })
+        send(.setInput(settings: settings))
+    }
+
+    /// 用户手动移除屏幕后，本次运行内不再自动加回。
+    func suppressAutoJoin(_ id: String) {
+        autoJoinSuppressedPeers.insert(id)
+        autoJoinRetryAt[id] = nil
+    }
+
+    /// 用户手动添加屏幕后，恢复该设备的自动加入规则。
+    func allowAutoJoin(_ id: String) {
+        autoJoinSuppressedPeers.remove(id)
+        autoJoinRetryAt[id] = nil
     }
 
     /// Capture local wallpaper previews for the layout UI and publish them to
     /// peers. The page refreshes its temporary images when it is opened; the
     /// launch-time call keeps remote cards populated before that page is shown.
     func refreshDisplayWallpapers() async {
-        guard !Task.isCancelled, let result = await displayWallpaperPublisher.refresh() else { return }
-        guard !Task.isCancelled else { return }
+        guard snapshot?.input.settings.featureEnabled == true, !Task.isCancelled,
+              let result = await displayWallpaperPublisher.refresh() else { return }
+        guard snapshot?.input.settings.featureEnabled == true, !Task.isCancelled else { return }
         localDisplayWallpapers = localDisplayWallpapers.filter { result.activeDisplayIDs.contains($0.key) }
         for (id, preview) in result.previews {
             localDisplayWallpapers[id] = preview.image
@@ -227,6 +246,11 @@ import DeskFuseEngine
 
     private func publishDisplayWallpapers() {
         wallpaperPublicationTask?.cancel()
+        guard snapshot?.input.settings.featureEnabled == true else {
+            wallpaperPublicationTask = nil
+            clearDisplayWallpapers()
+            return
+        }
         wallpaperPublicationTask = Task { [weak self] in
             guard let self else { return }
             // Coalesce discovery/activation snapshots into one capture.
@@ -252,7 +276,10 @@ import DeskFuseEngine
                 let previousConnected = Set(snapshot?.devices.filter { $0.member && $0.connected }.map(\.id) ?? [])
                 let shouldPublishWallpaper = !connected.subtracting(previousConnected).isEmpty
                     || (value.input.managed && snapshot?.input.managed != true)
+                    || value.input.settings.featureEnabled != snapshot?.input.settings.featureEnabled
                 snapshot = value
+                ClipboardPanelController.shared.setFeatureEnabled(value.clipboardEnabled)
+                ClipboardOCRIndexer.shared.setFeatureEnabled(value.clipboardEnabled)
                 if shouldPublishWallpaper { publishDisplayWallpapers() }
                 if #available(macOS 14.2, *), !value.input.canOperateRemoteApplications {
                     RemoteApplicationManager.shared.reconcileViewerRole()
@@ -396,21 +423,24 @@ import DeskFuseEngine
         if #available(macOS 14.2, *) { RemoteApplicationManager.shared.stop() }
         caffeineController.disable()
         if quitting || client == nil { return .terminateNow }
-        quitting = true; reclaim(); shelf?.stop(); transferWindow?.stop()
+        quitting = true; shelf?.stop(); transferWindow?.stop()
         wallpaperPublicationTask?.cancel()
+        // 退出时不能走紧急收回：它会把本机作为被控方的启用意图持久化为
+        // "用户已收回"，重启后主控的自动激活只会收到 PausedByUser，必须手动
+        // 点“重连”才能恢复。输入由引擎关闭与输入服务退出时的 reclaim 释放。
         // AppKit already holds the main run loop inside applicationShouldTerminate,
         // and the native teardown can wait on a peer or on an install handoff. Input
-        // control is released above, the update journal is durable, and the helper
-        // only replaces the bundle once this process is gone — so exit never waits
-        // on that teardown. A stalled shutdown must not keep the app (or an update
-        // that is waiting for it) alive.
+        // control is released by the engine teardown, the update journal is durable,
+        // and the helper only replaces the bundle once this process is gone — so exit
+        // never waits on that teardown. A stalled shutdown must not keep the app (or
+        // an update that is waiting for it) alive.
         if let client { Task { try? await client.shutdown() } }
         return .terminateNow
     }
 }
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
-    case devices = "设备", clipboard = "剪贴板", input = "键鼠共享", files = "文件传输"
+    case devices = "设备", clipboard = "剪贴板", input = "键鼠共享", files = "局域网传输"
     case remoteApplications = "远程应用", microphone = "麦克风共享", mouse = "鼠标按键"
     case settings = "设置"
     var id: Self { self }

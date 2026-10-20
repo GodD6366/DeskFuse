@@ -73,7 +73,6 @@ struct ClipboardView: View {
                         displayMode: displayModeBinding,
                         searchRequest: searchRequest, searching: searching,
                         historyIsEmpty: items.isEmpty && !searching && search.isEmpty && listID == nil,
-                        syncEnabled: Binding(get: { snapshot.clipboardEnabled }, set: { store.send(.setClipboard(enabled: $0)) }),
                         selectedImage: content?.id == selected ? previewImage : nil,
                         client: store.client,
                         appIDs: presentation.appIDs,

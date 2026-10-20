@@ -94,7 +94,7 @@ impl Envelope {
 fn validate_message(message: &Message) -> Result<(), ProtocolError> {
     match message {
         Message::MicrophoneOpen(open) => {
-            if open.version == 1 && open.status <= 5 {
+            if (open.version == 1 && open.status <= 5) || (open.version == 2 && open.status <= 2) {
                 Ok(())
             } else {
                 Err(ProtocolError::InvalidPayload("microphone version/status"))

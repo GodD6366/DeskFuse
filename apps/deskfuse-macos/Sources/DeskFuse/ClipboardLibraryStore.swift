@@ -43,7 +43,7 @@ struct ClipboardLibraryList: Codable, Equatable, Identifiable {
 struct ClipboardLibraryChoice: Codable, Equatable, Identifiable { var id: String; var name: String }
 struct ClipboardLibraryApp: Codable, Equatable, Identifiable { var bundle_id: String; var name: String; var id: String { bundle_id } }
 struct ClipboardLibraryShortcut: Codable, Equatable { var enabled = true; var key_code: UInt16 = 9; var modifiers: UInt64 = 0x180000 }
-struct ClipboardLibrarySettings: Codable, Equatable { var retention_days = 30; var excluded_apps: [ClipboardLibraryApp] = []; var shortcut: ClipboardLibraryShortcut?; var sync_index: Bool? }
+struct ClipboardLibrarySettings: Codable, Equatable { var retention_days = 30; var excluded_apps: [ClipboardLibraryApp] = []; var shortcut: ClipboardLibraryShortcut? }
 struct ClipboardLibraryItem: Codable {
     var id: UInt64
     /// Ordinary history and its frozen manual-list archive share one action.
@@ -579,10 +579,6 @@ struct ClipboardLibraryState: Codable {
     /// Ask paired devices for a remote index row's payload on demand.
     func wantPayload(_ id: UInt64) {
         perform(["op": "want_item_payload", "id": id])
-    }
-    /// Publish/accept the cross-device search index.
-    func setIndexSync(_ enabled: Bool) {
-        perform(["op": "settings", "settings": ["sync_index": enabled]])
     }
     /// Drop already-received remote index rows (payloads are unaffected).
     func clearRemoteIndex() {

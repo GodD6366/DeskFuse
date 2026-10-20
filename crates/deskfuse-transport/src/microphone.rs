@@ -204,6 +204,8 @@ impl PendingMicrophone {
 }
 #[derive(Clone)]
 pub(super) struct MicrophoneHub {
+    enabled: Arc<Mutex<bool>>,
+    pub(super) source_enabled: Arc<AtomicBool>,
     tx: sync::SyncSender<PendingMicrophone>,
     rx: Arc<Mutex<sync::Receiver<PendingMicrophone>>>,
     // Signed Hello capabilities for the exact live connection, not discovery
@@ -214,6 +216,8 @@ impl MicrophoneHub {
     pub fn new() -> Self {
         let (tx, rx) = sync::sync_channel(4);
         Self {
+            enabled: Arc::new(Mutex::new(false)),
+            source_enabled: Arc::new(AtomicBool::new(false)),
             tx,
             rx: Arc::new(Mutex::new(rx)),
             capabilities: Arc::default(),
@@ -249,6 +253,13 @@ impl MicrophoneHub {
             recv,
             created: std::time::Instant::now(),
         };
+        let enabled = self.enabled.lock().unwrap_or_else(|e| e.into_inner());
+        if !*enabled {
+            tokio::spawn(async move {
+                pending.respond(2).await;
+            });
+            return;
+        }
         if let Err(sync::TrySendError::Full(pending) | sync::TrySendError::Disconnected(pending)) =
             self.tx.try_send(pending)
         {
@@ -259,6 +270,55 @@ impl MicrophoneHub {
     }
 }
 impl QuinnTransport {
+    pub fn set_microphone_source_enabled(&self, enabled: bool) {
+        self.microphone
+            .source_enabled
+            .store(enabled, Ordering::Release);
+    }
+
+    /// Query the current provider setting without admitting an audio stream.
+    pub async fn microphone_source_enabled(&self, peer: DeviceId) -> Result<bool, String> {
+        if self.is_revoked(peer).unwrap_or(true) {
+            return Err("设备信任已撤销".into());
+        }
+        let connection = self
+            .sessions
+            .lock()
+            .map_err(|_| "连接状态不可用")?
+            .get(&peer)
+            .and_then(|sessions| sessions.iter().rev().find(|s| s.close_reason().is_none()))
+            .cloned()
+            .ok_or("等待来源设备上线")?;
+        if self
+            .microphone
+            .supports(&connection, Capabilities::MICROPHONE)
+            != Some(true)
+        {
+            return Ok(false);
+        }
+        time::timeout(Duration::from_secs(1), async {
+            let (mut send, mut recv) = connection.open_bi().await.map_err(|e| e.to_string())?;
+            let request = Envelope::new([0; 16], Message::MicrophoneOpen(protocol::MicrophoneOpen {
+                version: 2, status: 0,
+            }));
+            write_frame(&mut send, &request).await.map_err(|e| e.to_string())?;
+            let _ = send.finish();
+            let reply = read_frame(&mut recv, Duration::from_secs(1)).await.map_err(|e| e.to_string())?;
+            Ok(matches!(reply.message, Some(Message::MicrophoneOpen(open)) if open.version == 2 && open.status == 1))
+        }).await.map_err(|_| "麦克风状态查询超时".to_string())?
+    }
+
+    pub fn set_microphone_enabled(&self, enabled: bool) {
+        let mut gate = self
+            .microphone
+            .enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *gate = enabled;
+        if !enabled {
+            while self.take_microphone().is_some() {}
+        }
+    }
     pub fn take_microphone(&self) -> Option<PendingMicrophone> {
         self.microphone.rx.lock().ok()?.try_recv().ok()
     }

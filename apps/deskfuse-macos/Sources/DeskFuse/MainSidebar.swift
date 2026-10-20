@@ -165,20 +165,23 @@ struct KeyboardIssueList: View {
             } else {
                 ForEach(issues) { issue in
                     VStack(alignment: .leading, spacing: DFSpace.xs) {
-                        HStack(spacing: DFSpace.s) {
-                            Circle().fill(issue.tone.color).frame(width: 6, height: 6)
-                            Text(issue.title).font(DFType.bodyMedium)
+                        // 动作紧跟标题，右边距内联显示；标题过长时才回退成上下两行。
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: DFSpace.s) {
+                                title(for: issue)
+                                Spacer(minLength: DFSpace.s)
+                                action(for: issue)
+                            }
+                            VStack(alignment: .leading, spacing: DFSpace.xs) {
+                                title(for: issue)
+                                action(for: issue)
+                            }
                         }
                         if let detail = issue.detail {
                             Text(detail)
                                 .font(DFType.detail)
                                 .dfSecondaryText()
                                 .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let actionTitle = issue.actionTitle, let action = issue.action {
-                            Button(actionTitle, action: action)
-                                .buttonStyle(.dfSecondary)
-                                .controlSize(.small)
                         }
                     }
                     if issue.id != issues.last?.id { Divider() }
@@ -192,6 +195,23 @@ struct KeyboardIssueList: View {
         }
         .padding(DFSpace.l)
         .frame(width: 320, alignment: .leading)
+    }
+
+    private func title(for issue: HealthIssue) -> some View {
+        HStack(spacing: DFSpace.s) {
+            Circle().fill(issue.tone.color).frame(width: 6, height: 6)
+            Text(issue.title).font(DFType.bodyMedium)
+        }
+    }
+
+    @ViewBuilder
+    private func action(for issue: HealthIssue) -> some View {
+        if let actionTitle = issue.actionTitle, let action = issue.action {
+            Button(actionTitle, action: action)
+                .buttonStyle(.dfSecondary)
+                .controlSize(.small)
+                .fixedSize()
+        }
     }
 }
 

@@ -565,6 +565,8 @@ pub struct RemoteApplicationOpen {
 
 /// A dedicated microphone stream. Status: 0=request, 1=accepted, 2=disabled,
 /// 3=unauthorized, 4=busy, 5=locked or native bridge unavailable.
+/// Version 2 is a status-only probe: 0=query, 1=source enabled, 2=disabled.
+/// It never opens an audio session or requests microphone permission.
 #[derive(Clone, PartialEq, Message)]
 pub struct MicrophoneOpen {
     #[prost(uint32, tag = "1")]

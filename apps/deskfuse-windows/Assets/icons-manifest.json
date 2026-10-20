@@ -1,8 +1,8 @@
 {
   "source": "resources/generated/DeskFuse-icon-1024.png",
-  "source_sha256": "9baf50362296a14bcdbd9dc973b894f4129e0f88533801c557e0949e91a7748d",
+  "source_sha256": "24b88e22cf83623b2daa856dd61757f19d345bd3f7c4bfad4589fe9ad5b1b71d",
   "output": "apps/deskfuse-windows/Assets/DeskFuse.ico",
-  "output_sha256": "668bbf033529c9451ded7569e0a798626ebd702e9332920dd88af36e3643e0da",
+  "output_sha256": "1a3b1bcc62535e8ea3b42e304261e143ccf80fa194837cd63353359151babefa",
   "sizes": [
     16,
     20,

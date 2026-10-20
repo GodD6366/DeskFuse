@@ -249,6 +249,10 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     }
     @ObservationIgnored private var roleRestrictionPending = false
     @discardableResult private func viewerRoleAllowed() -> Bool {
+        guard RemoteApplicationManager.shared.enabled else {
+            status = RemoteApplicationManager.disabledMessage; failure = status
+            return false
+        }
         guard role == .viewer else { return true }
         guard !roleRestrictionPending, RemoteApplicationManager.shared.canOperateApplications else {
             status = RemoteApplicationManager.viewerRestriction; failure = status
@@ -390,7 +394,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
     func start(channel incoming: RemoteApplicationChannel? = nil) async {
         guard !busy, viewerRoleAllowed() else { return }
         busy = true; defer { busy = false }
-        await stop(); failure = nil; viewerPaused = false; awaitingResumeSurface = false
+        await stop()
+        guard RemoteApplicationManager.shared.enabled else { incoming?.close(); return }
+        failure = nil; viewerPaused = false; awaitingResumeSurface = false
         hasPresentedFrame = false
         capturePaused = false; resumePending = false; encoderRateLimit = nil
         operation = UUID(); let token = operation; plane.begin(token)
@@ -410,7 +416,7 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 let engine = engine, peerID = peerID
                 channel = try await Task.detached { try engine.openRemoteApplication(peerId: peerID) }.value
             }
-            guard operation == token else { channel.close(); return }
+            guard operation == token, RemoteApplicationManager.shared.enabled else { channel.close(); return }
             active = true; attach(channel, token: token)
             monitor = Task { [weak self] in
                 var previous: UInt64 = 0, ticks = 0

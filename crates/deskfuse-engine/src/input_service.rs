@@ -121,14 +121,27 @@ async fn run(
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-    let discovery_events = discovery.start().map_err(|e| e.to_string())?;
+    let mut sharing_enabled = child.bootstrap.stored.settings.feature_enabled;
+    let mut discovery_events = if sharing_enabled {
+        Some(discovery.start().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
     let mut authority = child.authority.borrow().clone();
     let mut routes = BTreeMap::new();
     merge_locator_hints(&authority, &mut routes);
     let mut authorized = BTreeSet::new();
+    let mut last_participants = child
+        .bootstrap
+        .stored
+        .settings
+        .participants
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let mut sequence = 0;
     let initial = view(&authority, &routes, sequence);
-    for p in &initial.snapshot.peers {
+    for p in initial.snapshot.peers.iter().filter(|_| sharing_enabled) {
         transport
             .register_peer_identity(p.id, p.public_key)
             .await
@@ -168,6 +181,16 @@ async fn run(
                     "timestamp_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
                     "enabled":input.settings.enabled, "role":input.settings.role,
                     "local_suspended":input.environment.local_suspended,
+                    "environment":input.environment,
+                    "placements":input.settings.placements,
+                    "participants":input.settings.participants,
+                    "local_topology":input.local_topology,
+                    "remote_topologies":input.remote_topologies,
+                    "scenes":input.scenes.iter().map(|scene|serde_json::json!({
+                        "id":scene.id, "ssid":scene.ssid,
+                        "placements":scene.settings.placements,
+                        "layout_profile_count":scene.settings.layout_profiles.len(),
+                    })).collect::<Vec<_>>(),
                     "activations":input.activations,
                     "managed_control":input.managed_control,
                     "links":input.links.iter().map(|link|serde_json::json!({
@@ -209,9 +232,45 @@ async fn run(
                 let remote_active = matches!(child.pause.load(Ordering::Acquire), 4 | 5);
                 let emergency = remote_active && child.emergency.swap(false, Ordering::AcqRel);
                 remote_input.tick(&authority, emergency);
-                let mut changed = false;
+                let input_snapshot = runtime.handle.input_snapshot();
+                let next_enabled = input_snapshot.settings.feature_enabled;
+                let participants = input_snapshot
+                    .settings
+                    .participants
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let mut changed = next_enabled != sharing_enabled;
+                if next_enabled != sharing_enabled {
+                    sharing_enabled = next_enabled;
+                    if sharing_enabled {
+                        discovery_events = Some(discovery.start().map_err(|e| e.to_string())?);
+                    } else {
+                        discovery.shutdown().map_err(|e| e.to_string())?;
+                        discovery_events = None;
+                    }
+                }
+                if sharing_enabled && !participants.is_subset(&last_participants) {
+                    // 新加入的屏幕可能就在刚切换到的网络上；主控发现结果不能
+                    // 代替独立输入服务的 42425 Bonjour 路由，立即重扫一次。
+                    crate::diagnostics::record!(
+                        input_records,
+                        crate::diagnostics::DiagnosticLevel::Info,
+                        "input_discovery",
+                        "refresh_after_participant_added",
+                        Some(format!(
+                            "participants={} previous={}",
+                            participants.len(),
+                            last_participants.len()
+                        )),
+                        None,
+                    );
+                    let _ = discovery.refresh();
+                }
+                last_participants = participants;
                 // Bound discovery processing so a discovery burst cannot starve lifetime checks.
                 for _ in 0..32 {
+                    let Some(discovery_events) = discovery_events.as_ref() else { break; };
                     match discovery_events.try_recv() {
                         Ok(Some(DiscoveryEvent::Found(service) | DiscoveryEvent::Updated(service))) => {
                             let id = service.device_id();
@@ -228,13 +287,37 @@ async fn run(
                         _ => break,
                     }
                 }
-                if child.authority.has_changed().unwrap_or(false) { authority = child.authority.borrow_and_update().clone(); merge_locator_hints(&authority, &mut routes); changed = true; }
+                if child.authority.has_changed().unwrap_or(false) {
+                    authority = child.authority.borrow_and_update().clone();
+                    let before = input_route_endpoints(&routes);
+                    merge_locator_hints(&authority, &mut routes);
+                    let after = input_route_endpoints(&routes);
+                    if sharing_enabled && after != before {
+                        // 主连接在新网络发现了对端地址。独立输入服务使用
+                        // _deskfuse-input 命名空间，必须重新浏览，否则仍会
+                        // 拿旧网络地址去连 42425。
+                        crate::diagnostics::record!(
+                            input_records,
+                            crate::diagnostics::DiagnosticLevel::Info,
+                            "input_discovery",
+                            "refresh_after_authority_routes_changed",
+                            Some(format!(
+                                "routes_before={} routes_after={}",
+                                before.len(),
+                                after.len()
+                            )),
+                            None,
+                        );
+                        let _ = discovery.refresh();
+                    }
+                    changed = true;
+                }
                 if changed {
                     sequence += 1;
                     let next = view(&authority,&routes,sequence);
-                    let allowed: BTreeSet<_> = next.snapshot.peers.iter().map(|p|p.id).collect();
+                    let allowed: BTreeSet<_> = next.snapshot.peers.iter().filter(|_| sharing_enabled).map(|p|p.id).collect();
                     for id in authorized.difference(&allowed) { transport.revoke_peer(*id).await.map_err(|e|e.to_string())?; }
-                    for p in &next.snapshot.peers {
+                    for p in next.snapshot.peers.iter().filter(|_| sharing_enabled) {
                         if !authorized.contains(&p.id) { transport.restore_peer(p.id).await.map_err(|e|e.to_string())?; transport.register_peer_identity(p.id,p.public_key).await.map_err(|e|e.to_string())?; }
                     }
                     authorized = allowed; runtime.update_view(next);
@@ -359,4 +442,19 @@ fn merge_locator_hints(
             .iter()
             .any(|p| p.id == *peer && p.trust == TrustState::Trusted)
     });
+}
+
+/// 独立输入服务当前可用于连接的对端地址集合，用来判断主连接是否刚刚
+/// 发现了新网络上的地址，需要重新浏览自己的 Bonjour 命名空间。
+fn input_route_endpoints(
+    routes: &BTreeMap<DeviceId, Vec<RouteCandidate>>,
+) -> BTreeSet<(DeviceId, Endpoint)> {
+    routes
+        .iter()
+        .flat_map(|(peer, entries)| {
+            entries
+                .iter()
+                .map(move |route| (*peer, route.endpoint.clone()))
+        })
+        .collect()
 }

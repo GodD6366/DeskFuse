@@ -9,6 +9,33 @@ struct Pair {
     a_id: DeviceId,
     b_id: DeviceId,
 }
+
+#[tokio::test]
+async fn microphone_source_probe_tracks_setting_without_opening_audio() {
+    let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
+    // An enabled receiver is not a provider.
+    assert!(!pair.a.microphone_source_enabled(pair.b_id).await.unwrap());
+    pair.b.set_microphone_source_enabled(true);
+    assert!(pair.a.microphone_source_enabled(pair.b_id).await.unwrap());
+    assert!(pair.b.take_microphone().is_none());
+    pair.b.set_microphone_source_enabled(false);
+    assert!(!pair.a.microphone_source_enabled(pair.b_id).await.unwrap());
+    assert!(pair.b.take_microphone().is_none());
+    // Probing must leave the normal audio path intact.
+    let (reader, source) = pair.audio().await;
+    reader.close();
+    source.close();
+    pair.close().await;
+}
+
+#[tokio::test]
+async fn microphone_source_probe_requires_negotiated_capability() {
+    let pair = Pair::new(Capabilities::NETWORK).await;
+    pair.b.set_microphone_source_enabled(true);
+    assert!(!pair.a.microphone_source_enabled(pair.b_id).await.unwrap());
+    assert!(pair.b.take_microphone().is_none());
+    pair.close().await;
+}
 impl Pair {
     async fn new(caps: Capabilities) -> Self {
         let identity_a = LocalIdentity::from_bytes(&[81; 32]).unwrap();
@@ -69,6 +96,8 @@ impl Pair {
         })
         .await
         .unwrap();
+        a.set_microphone_enabled(true);
+        b.set_microphone_enabled(true);
         Self {
             a,
             b,
@@ -297,5 +326,19 @@ async fn microphone_capture_burst_survives_without_consumer_interleaving() {
         assert_eq!(received(&reader).await, vec![1, n]);
     }
     assert!(!source.is_closed());
+    pair.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_microphone_rejects_without_polling_and_can_resume() {
+    let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
+    pair.b.set_microphone_enabled(false);
+    let error = pair.a.open_microphone(pair.b_id).await.err().unwrap();
+    assert!(error.contains("未开启"), "{error}");
+    assert!(pair.b.take_microphone().is_none());
+    pair.b.set_microphone_enabled(true);
+    let (reader, source) = pair.audio().await;
+    reader.close();
+    source.close();
     pair.close().await;
 }

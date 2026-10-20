@@ -2203,6 +2203,7 @@ mod network_config_tests {
             deskfuse_core::FileTransferSettings::default()
         );
         let settings = deskfuse_core::FileTransferSettings {
+            enabled: false,
             small_file_prefetch_enabled: true,
             small_file_threshold_bytes: 20 * 1024 * 1024,
             cache_max_bytes: 64 * 1024 * 1024,

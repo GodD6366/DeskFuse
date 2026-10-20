@@ -39,6 +39,7 @@ import DeskFuseRemoteApplication
     }
 
     func connect() async {
+        guard RemoteApplicationManager.shared.enabled else { return }
         stop()
         let token = generation
         phase = .connecting

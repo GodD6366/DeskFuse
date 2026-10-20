@@ -384,6 +384,9 @@ impl InputActor {
         )));
     }
     fn network_allowed(&self, peer: DeviceId) -> bool {
+        if !self.snapshot.settings.feature_enabled {
+            return false;
+        }
         let view = self.network.borrow();
         view.device_network
             .allows(view.snapshot.local_device_id, peer)
@@ -678,7 +681,9 @@ impl InputActor {
                     self.settings_error("Unknown input scene");
                     return;
                 };
-                RuntimeCommand::SetInputSharingSettings(scene.settings.clone())
+                let mut settings = scene.settings.clone();
+                settings.feature_enabled = self.snapshot.settings.feature_enabled;
+                RuntimeCommand::SetInputSharingSettings(settings)
             }
             command => command,
         };
@@ -799,6 +804,11 @@ impl InputActor {
                             self.end_incoming("local controller enabled", true);
                         }
                         self.layout_persistence.dirty = false;
+                        if !settings.feature_enabled {
+                            self.deactivate_all("input sharing disabled locally");
+                            self.outgoing.clear();
+                            self.stop_links().await;
+                        }
                         self.snapshot.settings = settings.clone();
                         self.published_topologies.clear();
                         self.published_wallpapers.clear();
@@ -1616,6 +1626,11 @@ impl InputActor {
         }
     }
     fn tick(&mut self) {
+        if !self.snapshot.settings.feature_enabled {
+            self.snapshot.remote_topologies.clear();
+            self.snapshot.remote_wallpapers.clear();
+            return;
+        }
         self.tick_links();
         // 只有整个设备网络换了身份（换网、换主人、签名失效）才全部释放。
         // 单个成员的增删、阻止或连接说明变化由 network_allowed 逐设备判定；
@@ -2595,6 +2610,24 @@ mod tests {
             },
         );
         assert!(!actor.leases.contains_key(&id));
+    }
+    #[tokio::test]
+    async fn scene_apply_preserves_the_local_master_switch() {
+        for enabled in [false, true] {
+            let (mut actor, _, _, _, _) = setup(false);
+            actor.snapshot.settings.feature_enabled = !enabled;
+            actor
+                .command(RuntimeCommand::SaveInputSharingScene {
+                    name: "Desk".into(),
+                })
+                .await;
+            let scene_id = actor.snapshot.scenes[0].id.clone();
+            actor.snapshot.settings.feature_enabled = enabled;
+            actor
+                .command(RuntimeCommand::ApplyInputSharingScene { scene_id })
+                .await;
+            assert_eq!(actor.snapshot.settings.feature_enabled, enabled);
+        }
     }
     #[tokio::test]
     async fn scene_apply_reclaims_and_current_membership_cannot_be_bypassed() {

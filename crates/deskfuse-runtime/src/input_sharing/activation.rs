@@ -127,7 +127,10 @@ impl InputActor {
             controller_intents: self.controller_intents.clone(),
             paused_intents: self.paused_intents.clone(),
         };
-        let desired = if settings.enabled && settings.role == InputShareRole::Controller {
+        let desired = if settings.feature_enabled
+            && settings.enabled
+            && settings.role == InputShareRole::Controller
+        {
             &settings.participants[..]
         } else {
             &[]
@@ -184,7 +187,16 @@ impl InputActor {
         };
         let store = self.store.clone();
         match tokio::task::spawn_blocking(move || store.set_input_activation_policy(policy)).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                if self.activation_policy_error.take().is_some() {
+                    // A transient store failure must not disable automatic
+                    // activation until the whole app restarts.
+                    let local = self.network.borrow().snapshot.local_device_id;
+                    self.activation_diagnostic(local, "activation_policy_recovered", || {
+                        "policy store is writable again".to_string()
+                    });
+                }
+            }
             Ok(Err(error)) => self.policy_failed(error.to_string()),
             Err(error) => self.policy_failed(error.to_string()),
         }
@@ -1146,6 +1158,64 @@ mod tests {
         receiver.tick_environment();
         assert_eq!(receiver.incoming.as_ref().unwrap().peer, receiver_peer);
         assert_eq!(controller.outgoing[&peer].id, id);
+    }
+
+    #[tokio::test]
+    async fn master_gate_releases_receiver_and_rejects_remote_reactivation_until_reenabled() {
+        let (mut actor, peer, context, _, _) = setup(false);
+        let mut settings = actor.snapshot.settings.clone();
+        settings.feature_enabled = false;
+        actor
+            .command(RuntimeCommand::SetInputSharingSettings(settings.clone()))
+            .await;
+        assert!(actor.incoming.is_none());
+        assert!(actor.leases.is_empty());
+        offer(
+            &mut actor,
+            peer,
+            &context,
+            InputActivationId::new(),
+            InputActivationId::new(),
+            1,
+        );
+        actor.tick();
+        assert!(actor.incoming.is_none());
+        assert!(!actor.snapshot.effective_settings().enabled);
+        settings.feature_enabled = true;
+        actor
+            .command(RuntimeCommand::SetInputSharingSettings(settings))
+            .await;
+        offer(
+            &mut actor,
+            peer,
+            &context,
+            InputActivationId::new(),
+            InputActivationId::new(),
+            1,
+        );
+        assert!(actor.incoming.is_some());
+    }
+
+    #[tokio::test]
+    async fn master_gate_preserves_controller_configuration_and_resumes() {
+        let (mut actor, peer, _, _, _) = setup(true);
+        let original = actor.snapshot.settings.clone();
+        let mut settings = original.clone();
+        settings.feature_enabled = false;
+        actor
+            .command(RuntimeCommand::SetInputSharingSettings(settings))
+            .await;
+        assert!(actor.outgoing.is_empty());
+        assert!(actor.leases.is_empty());
+        assert_eq!(actor.snapshot.settings.participants, original.participants);
+        assert_eq!(actor.snapshot.settings.role, original.role);
+        assert!(actor.snapshot.settings.enabled);
+        actor.tick();
+        assert!(actor.outgoing.is_empty());
+        actor
+            .command(RuntimeCommand::SetInputSharingSettings(original))
+            .await;
+        assert!(actor.outgoing.contains_key(&peer));
     }
 
     #[tokio::test]

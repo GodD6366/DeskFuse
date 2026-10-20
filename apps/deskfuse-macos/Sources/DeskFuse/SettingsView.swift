@@ -90,14 +90,16 @@ struct SettingsView: View, Equatable {
 
     private var clipboardSettings: some View {
         VStack(spacing: 0) {
-            Picker("", selection: clipboardSegment) {
-                Text("历史").tag("history")
-                if store.workflowsEnabled { Text("工作流").tag("workflows") }
+            if store.workflowsEnabled {
+                Picker("", selection: clipboardSegment) {
+                    Text("历史").tag("history")
+                    Text("工作流").tag("workflows")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 320)
+                .padding(.horizontal, DFMetrics.pageInset)
+                .padding(.bottom, DFSpace.m)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
-            .padding(.horizontal, DFMetrics.pageInset)
-            .padding(.bottom, DFSpace.m)
             SettingsPageContainer(selection: store.workflowsEnabled ? destination.clipboardSegment : "history", pages: [
                 .init(id: "history", content: AnyView(ClipboardLibrarySettingsView())),
                 .init(id: "workflows", content: AnyView(WorkflowSettingsView(store: store)))
@@ -226,7 +228,8 @@ struct SettingsView: View, Equatable {
         guard cacheLimit.isFinite, cacheLimit >= 1, cacheLimit <= 16_777_216 else {
             fileSaveFailure = "请输入有效的缓存上限（1–16 777 216 MiB）"; return
         }
-        let submitted = FileSettings(prefetch: savedFiles.prefetch, threshold: savedFiles.threshold,
+        let submitted = FileSettings(enabled: store.snapshot?.files.enabled ?? savedFiles.enabled,
+            prefetch: savedFiles.prefetch, threshold: savedFiles.threshold,
             maximum: UInt64(cacheLimit * 1_048_576), downloadDirectory: downloadDirectory)
         savingFiles = true; fileSaveFailure = nil; fileSaveStatus = nil
         store.send(.setFiles(settings: submitted), applied: {

@@ -35,6 +35,14 @@ impl MicrophoneChannel {
 }
 #[uniffi::export]
 impl Engine {
+    pub fn microphone_source_enabled(&self, peer_id: String) -> Result<bool, EngineError> {
+        self.active()?;
+        service()
+            .map_err(failure)?
+            .source_enabled(peer_id.parse().map_err(failure)?)
+            .map_err(failure)
+    }
+
     pub fn microphone_snapshot(&self) -> Result<String, EngineError> {
         self.active()?;
         serde_json::to_string(&service().map_err(failure)?.snapshot())

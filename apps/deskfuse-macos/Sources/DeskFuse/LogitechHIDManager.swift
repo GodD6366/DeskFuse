@@ -15,14 +15,22 @@ final class LogitechHIDManager {
     private var openFailures = 0
     private var openResult: IOReturn?
     private var inventory: [ObjectIdentifier: [String: Any]] = [:]
+    private var lastIdentities: Set<String> = []
     var desired: Set<Int> = [] {
         didSet { if desired != oldValue { wakes.values.forEach { $0.yield(()) } } }
     }
     var onButton: ((String, Int, Bool) -> Void)?
     var onStatus: ((String) -> Void)?
     var onControlsChanged: ((Set<Int>) -> Void)?
+    var onIdentitiesChanged: (([String]) -> Void)?
     private func publishControls() {
         onControlsChanged?(Set(devices.values.flatMap { $0.mice.values.flatMap { $0.available } }))
+    }
+    private func publishIdentities() {
+        let names = Set(devices.values.flatMap { $0.identities.values.map(\.name) })
+        guard names != lastIdentities else { return }
+        lastIdentities = names
+        onIdentitiesChanged?(names.sorted())
     }
 
     // Only the explicit capture/permission action may ask macOS for a grant.
@@ -107,6 +115,7 @@ final class LogitechHIDManager {
         }
         endpoint.onStatus = { [weak self] in self?.onStatus?($0) }
         endpoint.onControlsChanged = { [weak self] in self?.publishControls() }
+        endpoint.onIdentitiesChanged = { [weak self] in self?.publishIdentities() }
         let (events, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         wakes[id] = wake
         wake.yield(())
@@ -134,6 +143,7 @@ final class LogitechHIDManager {
         tasks.removeValue(forKey: id)?.cancel()
         devices.removeValue(forKey: id)?.close()
         publishControls()
+        publishIdentities()
         if devices.isEmpty { onStatus?("未连接可用的 Logitech HID++ 设备") }
     }
     func stop() {
@@ -146,6 +156,7 @@ final class LogitechHIDManager {
         tasks.values.forEach { $0.cancel() }; tasks.removeAll()
         devices.values.forEach { $0.close() }; devices.removeAll()
         publishControls()
+        publishIdentities()
         if let manager {
             IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
             IOHIDManagerRegisterDeviceMatchingCallback(manager, nil, nil)

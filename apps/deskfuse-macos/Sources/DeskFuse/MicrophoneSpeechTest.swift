@@ -56,11 +56,23 @@ private final class SpeechCaptureSession: @unchecked Sendable {
     }
 }
 
-/// 语音输入测试的状态机：空闲 → 请求权限 → 聆听 → 空闲。
+/// Constructed exclusively on a background task, then handed to the main actor.
+/// The recognizer is only used on the main actor after this ownership transfer.
+struct MicrophoneSpeechPreparation: @unchecked Sendable {
+    let recognizer: SFSpeechRecognizer?
+    let inputName: String?
+
+    static func load() -> Self {
+        Self(recognizer: SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")),
+             inputName: AVCaptureDevice.default(for: .audio)?.localizedName)
+    }
+}
+
+/// 语音输入测试的状态机：后台加载 → 空闲 → 请求权限 → 聆听 → 空闲。
 @MainActor
 @Observable
 final class MicrophoneSpeechTester {
-    enum Phase: Equatable { case idle, authorizing, listening }
+    enum Phase: Equatable { case loading, idle, authorizing, listening }
 
     /// 需要用户处理的问题；`settingsURL` 非空时提供“打开系统设置”。
     struct Problem: Equatable {
@@ -70,14 +82,16 @@ final class MicrophoneSpeechTester {
     }
 
     var text = ""
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .loading
     private(set) var level: Float = 0
     var problem: Problem?
     /// 本次识别使用的输入设备名称，便于确认确实读取的是 DeskFuse 麦克风。
     private(set) var inputName: String?
     private(set) var onDevice = false
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+    private var recognizer: SFSpeechRecognizer?
+    private var preparation: Task<MicrophoneSpeechPreparation, Never>?
+    private var prepared = false
     private var engine: AVAudioEngine?
     private var session: SpeechCaptureSession?
     private var task: SFSpeechRecognitionTask?
@@ -90,11 +104,40 @@ final class MicrophoneSpeechTester {
 
     var listening: Bool { phase == .listening }
 
+    /// No Speech/Core Audio calls during init or view evaluation. Coalesce
+    /// reappearances while a slow, non-cancellable system query is in flight.
+    func prepare(load: @escaping @Sendable () -> MicrophoneSpeechPreparation = MicrophoneSpeechPreparation.load) async {
+        guard !prepared else { return }
+        let work: Task<MicrophoneSpeechPreparation, Never>
+        if let preparation {
+            work = preparation
+        } else {
+            work = Task.detached(priority: .utility) { load() }
+            preparation = work
+        }
+        let result = await work.value
+        guard !Task.isCancelled, !prepared else { return }
+        recognizer = result.recognizer
+        inputName = result.inputName
+        prepared = true
+        preparation = nil
+        phase = .idle
+    }
+
+    func refreshInputName() async {
+        let current = generation
+        let name = await Task.detached(priority: .utility) {
+            AVCaptureDevice.default(for: .audio)?.localizedName
+        }.value
+        guard !Task.isCancelled, current == generation else { return }
+        inputName = name
+    }
+
     func toggle() {
         switch phase {
         case .idle: Task { await start() }
         case .listening: finish()
-        case .authorizing: break
+        case .loading, .authorizing: break
         }
     }
 
@@ -108,7 +151,10 @@ final class MicrophoneSpeechTester {
     private func start() async {
         problem = nil
         phase = .authorizing
+        let current = generation
         guard await authorize() else { phase = .idle; return }
+        await refreshInputName()
+        guard current == generation else { return }
         guard let recognizer, recognizer.isAvailable else {
             phase = .idle
             problem = Problem(title: "语音识别暂不可用",
@@ -176,7 +222,6 @@ final class MicrophoneSpeechTester {
 
         self.engine = engine
         self.session = session
-        inputName = AVCaptureDevice.default(for: .audio)?.localizedName
         prefix = text.isEmpty || text.hasSuffix("\n") ? text : text + "\n"
 
         engine.prepare()
@@ -241,7 +286,7 @@ final class MicrophoneSpeechTester {
     /// 离开页面或出错：立即停止录音、取消识别并释放 audio engine。
     func teardown() {
         generation += 1
-        phase = .idle
+        phase = prepared ? .idle : .loading
         stopAudio()
         task?.cancel()
         task = nil
@@ -308,6 +353,12 @@ struct MicrophoneSpeechTestCard: View {
         .dfCard()
         .animation(DFMotion.snappy, value: tester.problem)
         .animation(DFMotion.snappy, value: tester.phase)
+        .task { await tester.prepare() }
+        .task(id: MicrophoneSharing.shared.isDefaultInput) {
+            // The default can change after the user completes receiver setup.
+            // Keep that refresh off the view-rendering path too.
+            if tester.phase != .loading { await tester.refreshInputName() }
+        }
         .onDisappear { tester.teardown() }
     }
 
@@ -360,6 +411,7 @@ struct MicrophoneSpeechTestCard: View {
 
     private var statusTitle: String {
         switch tester.phase {
+        case .loading: "正在加载语音测试…"
         case .idle: "点击麦克风开始说话"
         case .authorizing: "正在确认权限…"
         case .listening: "正在聆听，再次点击停止"
@@ -367,7 +419,8 @@ struct MicrophoneSpeechTestCard: View {
     }
 
     private var statusDetail: String {
-        let input = tester.inputName ?? AVCaptureDevice.default(for: .audio)?.localizedName ?? "系统默认输入"
+        if tester.phase == .loading { return "正在读取音频设备与识别服务，可继续操作页面。" }
+        let input = tester.inputName ?? "系统默认输入"
         let engine = tester.listening ? (tester.onDevice ? "本机识别" : "Apple 语音识别") : "中文识别"
         return "输入设备：\(input) · \(engine) · 文字不保存"
     }
@@ -398,7 +451,7 @@ private struct MicrophoneSpeechButton: View {
                     .fill(listening ? DFPalette.accent : DFPalette.control(scheme))
                 Circle()
                     .strokeBorder(listening ? .clear : DFPalette.line(scheme), lineWidth: DFMetrics.hairline)
-                if phase == .authorizing {
+                if phase == .loading || phase == .authorizing {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: listening ? "stop.fill" : "mic.fill")
@@ -411,7 +464,7 @@ private struct MicrophoneSpeechButton: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(phase == .authorizing)
+        .disabled(phase == .loading || phase == .authorizing)
         .help(listening ? "停止语音输入" : "开始语音输入")
         .accessibilityLabel(listening ? "停止语音输入" : "开始语音输入")
     }

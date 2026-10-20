@@ -50,6 +50,10 @@ final class LogitechHIDDevice {
         var owned: Set<Int> = []
         var pressed: Set<Int> = []
     }
+    struct Identity: Equatable {
+        var name: String
+        var supported: Bool
+    }
     let device: IOHIDDevice
     private let writer: LogitechHIDWriter
     private let buffer: UnsafeMutablePointer<UInt8>
@@ -83,6 +87,10 @@ final class LogitechHIDDevice {
          "probe_backoff": probes.map { ["slot": Int($0.key), "failures": $0.value.failures,
              "retry_in_seconds": max(0, $0.value.nextAttempt - ProcessInfo.processInfo.systemUptime)] as [String: Any] },
          "last_request": lastRequest as Any? ?? NSNull(), "last_error": lastError as Any? ?? NSNull(), "recent_events": events,
+         "identities": identities.keys.sorted().compactMap { slot -> [String: Any]? in
+             guard let identity = identities[slot] else { return nil }
+             return ["slot": Int(slot), "name": identity.name, "supported": identity.supported]
+         },
          "mice": mice.keys.sorted().compactMap { slot -> [String: Any]? in
              guard let mouse = mice[slot] else { return nil }
              return ["slot": Int(slot), "name": mouse.name, "feature": Int(mouse.feature),
@@ -91,10 +99,12 @@ final class LogitechHIDDevice {
          }]
     }
     private(set) var mice: [UInt8: Mouse] = [:]
+    private(set) var identities: [UInt8: Identity] = [:]
     private(set) var closed = false
     var onButton: ((UInt8, Int, Bool) -> Void)?
     var onStatus: ((String) -> Void)?
     var onControlsChanged: (() -> Void)?
+    var onIdentitiesChanged: (() -> Void)?
 
     init?(_ device: IOHIDDevice) {
         guard IOHIDDeviceOpen(device, 0) == kIOReturnSuccess else { return nil }
@@ -127,13 +137,13 @@ final class LogitechHIDDevice {
         // Direct Bluetooth HID++ devices use either ff or 00. Do not probe both
         // after finding the mouse: they may be aliases of the same endpoint.
         let slots: [UInt8] = receiver ? [1, 2, 3, 4, 5, 6] : [0xff, 0]
-        if !receiver && !mice.isEmpty { return }
-        for slot in slots where mice[slot] == nil {
+        if !receiver && !identities.isEmpty { return }
+        for slot in slots where mice[slot] == nil && identities[slot] == nil {
             guard !closed, !Task.isCancelled else { return }
             let now = ProcessInfo.processInfo.systemUptime
             guard now >= (probes[slot]?.nextAttempt ?? 0) else { continue }
             defer {
-                if mice[slot] == nil {
+                if mice[slot] == nil && identities[slot] == nil {
                     probes[slot, default: LogitechProbeBackoff()].failed(at: ProcessInfo.processInfo.systemUptime)
                 } else { probes.removeValue(forKey: slot) }
             }
@@ -146,12 +156,19 @@ final class LogitechHIDDevice {
             }
             guard nameBytes.count == Int(size) else { continue }
             let name = String(decoding: nameBytes, as: UTF8.self)
-            guard let model = LogitechHIDProtocol.model(name) else { continue }
+            guard let model = LogitechHIDProtocol.model(name) else {
+                identify(slot, name: name, supported: false)
+                record("identified unsupported slot=\(slot)")
+                onStatus?("\(name)：暂未适配，可使用通用鼠标映射。")
+                if !receiver { break }
+                continue
+            }
             if model == .g502Lightspeed {
                 guard let feature = await request(slot, 0, 0, [0x81, 0x10]), let index = feature.first, index != 0,
                       let count = await request(slot, index, 0, []), let n = count.first,
                       let controls = LogitechHIDProtocol.spyButtons(count: Int(n)), !closed else { continue }
                 mice[slot] = Mouse(name: name, feature: index, available: controls, backend: .buttonSpy)
+                identify(slot, name: name, supported: true)
                 record("discovered slot=\(slot) button_spy count=\(n)")
                 onControlsChanged?()
                 onStatus?("\(name)：已识别 \(n) 个实体键；可采集并附加快捷键，原有功能保留。")
@@ -169,14 +186,22 @@ final class LogitechHIDDevice {
             guard !closed else { return }
             guard complete else { continue }
             mice[slot] = Mouse(name: name, feature: index, available: controls)
+            identify(slot, name: name, supported: true)
             onControlsChanged?()
             record("discovered slot=\(slot) controls=\(controls.sorted())")
             onStatus?("\(name)：发现 \(controls.count) 个可接管的扩展按键")
             if !receiver { break }
         }
-        if mice.isEmpty {
-            onStatus?("HID++ 接口已连接，但未识别到在线的 MX Master 3 / 3S 或 G502 LIGHTSPEED。\(lastError ?? "请唤醒鼠标后重新采集。")")
+        if mice.isEmpty && identities.isEmpty {
+            onStatus?("HID++ 接口已连接，但未识别到在线鼠标。\(lastError ?? "请唤醒鼠标后重新采集。")")
         }
+    }
+
+    private func identify(_ slot: UInt8, name: String, supported: Bool) {
+        let identity = Identity(name: name, supported: supported)
+        guard identities[slot] != identity else { return }
+        identities[slot] = identity
+        onIdentitiesChanged?()
     }
 
     func configure(_ desired: Set<Int>) async {
@@ -263,6 +288,8 @@ final class LogitechHIDDevice {
         buffer.deallocate()
         writer.close()
         mice.removeAll()
+        identities.removeAll()
+        onIdentitiesChanged?()
     }
     private func packet(_ slot: UInt8, _ feature: UInt8, _ function: UInt8, _ parameters: [UInt8]) -> [UInt8] {
         serial &+= 1

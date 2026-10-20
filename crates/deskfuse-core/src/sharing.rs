@@ -226,6 +226,8 @@ pub struct DisplayLayoutProfile {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InputSharingSettings {
+    /// Local master gate, independent from the saved controller role.
+    pub feature_enabled: bool,
     pub shortcuts: InputShortcutBindings,
     pub disabled_corners: u8,
     pub corner_size: u16,
@@ -240,6 +242,7 @@ pub struct InputSharingSettings {
 impl Default for InputSharingSettings {
     fn default() -> Self {
         Self {
+            feature_enabled: true,
             shortcuts: InputShortcutBindings::default(),
             disabled_corners: 0,
             corner_size: 16,
@@ -1057,7 +1060,11 @@ impl InputSharingSnapshot {
 
     pub fn effective_settings(&self) -> InputSharingSettings {
         let mut settings = self.settings.clone();
-        if let Some(managed) = &self.managed_control {
+        if !settings.feature_enabled {
+            settings.enabled = false;
+            settings.role = InputShareRole::Disabled;
+            settings.authorized_controller = None;
+        } else if let Some(managed) = &self.managed_control {
             settings.enabled = managed.status != InputActivationStatus::PausedByUser;
             settings.role = if settings.enabled {
                 InputShareRole::Controlled
@@ -1379,6 +1386,21 @@ mod tests {
         assert_eq!(settings.shortcuts.left.key_code, 123);
         assert_eq!(settings.shortcuts.left.modifiers, 0x1C0000);
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn master_gate_defaults_on_for_legacy_settings_and_preserves_controller_configuration() {
+        let legacy: InputSharingSettings = serde_json::from_str("{}").unwrap();
+        assert!(legacy.feature_enabled);
+        let mut snapshot = InputSharingSnapshot::default();
+        snapshot.settings.feature_enabled = false;
+        snapshot.settings.enabled = true;
+        snapshot.settings.role = InputShareRole::Controller;
+        let effective = snapshot.effective_settings();
+        assert!(!effective.enabled);
+        assert_eq!(effective.role, InputShareRole::Disabled);
+        assert!(snapshot.settings.enabled);
+        assert_eq!(snapshot.settings.role, InputShareRole::Controller);
     }
 
     #[test]

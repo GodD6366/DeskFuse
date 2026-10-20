@@ -150,6 +150,10 @@ impl InputActor {
             }
             match done.result {
                 Ok(()) => {
+                    let contexts = self.transport.input_contexts(done.peer);
+                    self.activation_diagnostic(done.peer, "input_link_recovery_result", || {
+                        format!("generation={} contexts={contexts:?}", done.generation)
+                    });
                     if self
                         .transport
                         .input_contexts(done.peer)
@@ -180,6 +184,12 @@ impl InputActor {
                     let delay = (1u64 << retry.failures.min(5)).min(30);
                     retry.failures = retry.failures.saturating_add(1);
                     retry.due = Instant::now() + Duration::from_secs(delay);
+                    self.activation_diagnostic(done.peer, "input_link_recovery_failed", || {
+                        format!(
+                            "generation={} retry_after_secs={delay} error={error}",
+                            done.generation
+                        )
+                    });
                     if !self
                         .transport
                         .input_contexts(done.peer)
@@ -206,6 +216,10 @@ impl InputActor {
             return;
         }
         let generation = self.transport.control_generation(peer).unwrap_or(0);
+        let diagnostic_endpoints = endpoints.clone();
+        self.activation_diagnostic(peer, "input_link_recovery_started", || {
+            format!("generation={generation} endpoints={diagnostic_endpoints:?}")
+        });
         self.links.next += 1;
         let id = self.links.next;
         let tx = self.links.tx.clone();

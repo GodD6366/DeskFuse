@@ -385,6 +385,15 @@ async fn wake_refreshes_addresses_and_expedites_offline_peer() {
 }
 
 #[tokio::test]
+async fn wake_starts_a_lan_probe_for_the_network_it_woke_into() {
+    let transport = ProbeTransport::default();
+    let mut actor = actor(transport);
+    actor.lan_networks = Arc::new(|| vec![(std::net::Ipv4Addr::new(10, 0, 0, 1), 24)]);
+    actor.system_woke().await;
+    assert!(actor.lan_probe.is_some());
+}
+
+#[tokio::test]
 async fn new_address_expedites_retry_but_same_address_does_not() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());

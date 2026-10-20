@@ -1815,6 +1815,7 @@ async fn run_worker(
             // not the independently signed input helper. The command is routed
             // to the helper when one is installed.
             let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_ssid: Option<Option<String>> = None;
             loop {
                 interval.tick().await;
                 let ssid = tokio::task::spawn_blocking({
@@ -1823,11 +1824,19 @@ async fn run_worker(
                 })
                 .await
                 .unwrap_or_default();
+                // 换到另一个 Wi-Fi（例如从家里带到公司）后，mDNS 结果和缓存
+                // 地址都属于旧网段；企业网络常过滤组播，必须重新刷新发现并
+                // 做一轮单播探测，否则键鼠输入链路不会跟随主连接重建。
+                let network_changed = last_ssid.as_ref().is_some_and(|last| last != &ssid);
+                last_ssid = Some(ssid.clone());
                 if runtime
                     .send(RuntimeCommand::ObserveWifiEnvironment { ssid })
                     .await
                     .is_err()
                 {
+                    break;
+                }
+                if network_changed && runtime.send(RuntimeCommand::RefreshPeers).await.is_err() {
                     break;
                 }
             }
@@ -2176,11 +2185,19 @@ async fn run_worker(
                             clipboard_enabled: enabled,
                             ..persisted_settings
                         }) {
-                            command_error = Some(format!("剪贴板同步设置保存失败：{error}"));
+                            let error = format!("剪贴板同步设置保存失败：{error}");
+                            if let Some(request_id) = request_id { let _ = ui_sender.unbounded_send(UiEvent::CommandResult { request_id, error: Some(error) }); }
+                            else { let _ = ui_sender.unbounded_send(UiEvent::BridgeError(error)); }
+                            continue;
                         } else {
                             persisted_settings.clipboard_enabled = enabled;
                         }
-                        if !enabled {file_policy.cancel_pending(&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;}
+                        if !enabled {
+                            library_sync.stop();
+                            crate::library_files::cancel_all();
+                            for job in preparations.jobs.values_mut() { job.cancel.store(true, Ordering::Release); }
+                            for source in workflow_sources.drain(..) { source.cancel.store(true, Ordering::Release); let _ = source.reply.send(Err("剪贴板已关闭".into())); }
+                            file_policy.cancel_pending(&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;}
                         clipboard_enabled = enabled;
                         clipboard_sync.reset(&ui_sender);
                         clipboard_last_change_count = pasteboard.change_count().ok();
@@ -2199,6 +2216,26 @@ async fn run_worker(
                             None,
                         );
                     }
+                    Some(TokioCommand::PushClipboard | TokioCommand::RestoreClipboardHistory(_)) if !clipboard_enabled => {
+                        command_error = Some("剪贴板已关闭".into());
+                    }
+                    Some(TokioCommand::RestoreClipboardForPaste { reply, .. }) if !clipboard_enabled => {
+                        let _ = reply.send(Err("剪贴板已关闭".into()));
+                        command_error = Some("剪贴板已关闭".into());
+                    }
+                    Some(TokioCommand::WorkflowSource { reply, .. }) if !clipboard_enabled => {
+                        let _ = reply.send(Err("剪贴板已关闭".into()));
+                        command_error = Some("剪贴板已关闭".into());
+                    }
+                    Some(TokioCommand::SendFiles { .. } | TokioCommand::RetryFileTransfer(_)) if !file_policy.settings.enabled => {
+                        command_error = Some("文件传输已关闭".into());
+                    }
+                    Some(TokioCommand::ShareSnapshot { ref snapshot, transfer_id, .. })
+                        if (snapshot.file_urls.is_empty() && !clipboard_enabled) || (!snapshot.file_urls.is_empty() && !file_policy.settings.enabled) => {
+                        if let Some(cancel) = outgoing_file_cancellations.remove(&transfer_id) { cancel.store(true, Ordering::Release); }
+                        emit_transfer_status(&ui_sender,transfer_id,"工作流共享".into(),"共享功能已关闭".into(),TransferState::Cancelled,0,0);
+                        command_error = Some("共享功能已关闭".into());
+                    }
                     Some(TokioCommand::PushClipboard) => {
                         command_error = push_local_clipboard(
                             pasteboard.as_ref(),
@@ -2206,6 +2243,7 @@ async fn run_worker(
                                 runtime: &runtime,
                                 sync: &mut clipboard_sync,
                                 force: true,
+                                files_enabled: file_policy.settings.enabled,
                                 last_change_count: &mut clipboard_last_change_count,
                                 loop_guard: &mut clipboard_loop_guard,
                                 history: &mut clipboard_history,
@@ -2219,7 +2257,10 @@ async fn run_worker(
                         emit_transfer_status(&ui_sender,id,"工作流共享".into(),if cancelled {"共享已取消".into()} else {error},if cancelled {TransferState::Cancelled} else {TransferState::Failed},0,0);
                     }
                     Some(TokioCommand::ReleaseShareSource(id)) => {outgoing_file_cancellations.remove(&id);}
-                    Some(TokioCommand::RegisterShareSource {id,cancel}) => {outgoing_file_cancellations.insert(id,cancel);}
+                    Some(TokioCommand::RegisterShareSource {id,cancel}) => {
+                        if !clipboard_enabled && !file_policy.settings.enabled { cancel.store(true, Ordering::Release); }
+                        else { outgoing_file_cancellations.insert(id,cancel); }
+                    }
                     Some(TokioCommand::ShareSnapshot { snapshot, peer_id, selection, transfer_id }) => {
                         let shared_cancel=outgoing_file_cancellations.entry(transfer_id).or_insert_with(||Arc::new(AtomicBool::new(false))).clone();
                         if shared_cancel.load(Ordering::Acquire) {emit_transfer_status(&ui_sender,transfer_id,"工作流共享".into(),"共享已取消".into(),TransferState::Cancelled,0,0);outgoing_file_cancellations.remove(&transfer_id);continue;}
@@ -2330,6 +2371,7 @@ async fn run_worker(
                     #[cfg(target_os = "macos")]
                     Some(TokioCommand::LanWebContext { reply }) => {
                         let view = runtime.snapshot_view();
+                        if !file_policy.settings.enabled { let _ = reply.send(Err("文件传输已关闭".into())); continue; }
                         let result = pasteboard.change_count().map(|change_count| crate::lan_web::LanContext {
                             change_count,
                             local_id: view.snapshot.local_device_id.to_hex(),
@@ -2340,6 +2382,7 @@ async fn run_worker(
                     #[cfg(target_os = "macos")]
                     Some(TokioCommand::LanWebCommit { mut snapshot, native_items, expected_change_count, cancel, reply }) => {
                         let result = (|| -> Result<crate::lan_web::LanCommitResult, String> {
+                            if !file_policy.settings.enabled { return Err("文件传输已关闭".into()); }
                             if cancel.load(Ordering::Acquire) { return Err("上传已取消".into()); }
                             clipboard_bundle::attach_source_metadata(&mut snapshot, &clipboard_bundle::SourceMetadata {
                                 app_bundle_id: Some("com.deskfuse.lan-web".into()),
@@ -2355,7 +2398,9 @@ async fn run_worker(
                             // pasteboard operation fails. The HTTP owner must retain these files.
                             let mut written = false;
                             let mut message: String;
-                            if cancel.load(Ordering::Acquire) || pasteboard.change_count().ok() != Some(expected_change_count) {
+                            if !clipboard_enabled {
+                                message = "已加入列表；剪贴板已关闭，未复制到 Mac".into();
+                            } else if cancel.load(Ordering::Acquire) || pasteboard.change_count().ok() != Some(expected_change_count) {
                                 message = "已加入列表；Mac 剪贴板已变化或请求已取消，未覆盖".into();
                             } else {
                                 let write = if !native_items.is_empty() { pasteboard.write_items(&native_items) }
@@ -2442,6 +2487,7 @@ async fn run_worker(
                     }
                     Some(TokioCommand::WorkflowCommit { mut snapshot, expected_change_count, cancel, target_pid, reply }) => {
                         let result = (|| -> Result<i64, String> {
+                            if !clipboard_enabled { return Err("剪贴板已关闭".into()); }
                             if cancel.load(Ordering::Acquire) { return Err("工作流已取消".into()); }
                             if pasteboard.change_count().map_err(|e| e.to_string())? != expected_change_count {
                                 return Err("剪贴板已更新，已丢弃过期图片处理结果".into());
@@ -2492,9 +2538,23 @@ async fn run_worker(
                     }
                     Some(TokioCommand::SetFileTransferSettings(settings)) => {
                         file_policy.protect_clipboard(pasteboard.as_ref());
+                        let disabling = !settings.enabled;
                         match file_policy.update(settings) {
                             Ok(cleanup) => { let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender); file_policy.emit(&ui_sender,Some(message)); },
                             Err(error) => {command_error = Some(error.clone()); let cleanup=file_policy.cache.take_partial_cleanup();let message=file_policy::apply_cleanup(cleanup,&mut clipboard_history,pasteboard.as_ref(),&mut clipboard_last_change_count,&ui_sender);file_policy.emit(&ui_sender,Some(format!("{error}；{message}")));}
+                        }
+                        if disabling && !file_policy.settings.enabled {
+                            clipboard_sync.reset(&ui_sender);
+                            clipboard_last_change_count = pasteboard.change_count().ok();
+                            for job in preparations.jobs.values_mut() { job.cancel.store(true, Ordering::Release); }
+                            for cancel in outgoing_file_cancellations.values() { cancel.store(true, Ordering::Release); }
+                            for state in incoming_file_clipboards.values_mut() { state.cancel(); }
+                            file_policy.outgoing.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                            file_policy.cancel_pending(&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&mut incoming_file_clipboards).await;
+                            finder_pastes.cancel_all(&ui_sender);
+                            finder_path_requests.clear();
+                            file_paste_capture.update(None);
+                            crate::library_files::cancel_all();
                         }
                     }
                     Some(TokioCommand::ClearTransferCache) => {
@@ -2564,10 +2624,12 @@ async fn run_worker(
                             continue;
                         }
                         if payload.mime == crate::library_files::MIME {
+                            if !clipboard_enabled || !file_policy.settings.enabled { continue; }
                             if trusted_connected_peer_ids(&runtime.snapshot_view()).contains(&peer_id) { crate::library_files::receive(peer_id, &payload.data, &runtime); }
                             continue;
                         }
                         if payload.mime == library_sync::MIME {
+                            if !clipboard_enabled { continue; }
                             library_sync.refresh(&runtime, &ui_sender);
                             library_sync.receive(peer_id, &payload.data);
                             continue;
@@ -2589,7 +2651,7 @@ async fn run_worker(
                             continue;
                         }
 
-                        if let Ok(count)=pasteboard.change_count() {
+                        if clipboard_enabled && let Ok(count)=pasteboard.change_count() {
                             clipboard_sync.refresh(&runtime,count,clipboard_enabled,&ui_sender);
                             if clipboard_last_change_count.is_some_and(|old|old!=count) {clipboard_sync.invalidate_copy(&ui_sender);}
                             if payload.mime==deskfuse_protocol::clipboard_sync::MIME {
@@ -2598,7 +2660,7 @@ async fn run_worker(
                             }
                         }
                         // Native content and deferred references require the acknowledged protocol.
-                        if payload.mime != CLIPBOARD_FILE_MIME { continue; }
+                        if payload.mime != CLIPBOARD_FILE_MIME || !file_policy.settings.enabled { continue; }
                         // Decode the potentially large compressed manifest exactly once.
                         let frame = match ClipboardFileFrame::decode(&payload.data) {
                             Ok(frame) => frame,
@@ -2709,7 +2771,7 @@ async fn run_worker(
                     }
                 }
             }
-            _ = library_prune_tick.tick() => {
+            _ = library_prune_tick.tick(), if clipboard_enabled => {
                 if library_prune_task.as_ref().is_none_or(|task| task.is_finished()) {
                     library_prune_task = Some(tokio::task::spawn_blocking(|| {
                         if let Err(error) = crate::clipboard_library::global().and_then(|library| library.prune()) {
@@ -2718,7 +2780,7 @@ async fn run_worker(
                     }));
                 }
             }
-            _ = clipboard_tick.tick() => {
+            _ = clipboard_tick.tick(), if clipboard_enabled => {
                 library_sync.refresh(&runtime, &ui_sender);
                 if let Ok(count)=pasteboard.change_count() {
                     clipboard_sync.refresh(&runtime,count,clipboard_enabled,&ui_sender);
@@ -2747,7 +2809,7 @@ async fn run_worker(
                             continue;
                         }
                         let applied=if ready.payload.mime==CLIPBOARD_FILE_MIME {
-                            if let Ok(frame @ ClipboardFileFrame::Deferred {..})=ClipboardFileFrame::decode(&ready.payload.data) {
+                            if file_policy.settings.enabled && let Ok(frame @ ClipboardFileFrame::Deferred {..})=ClipboardFileFrame::decode(&ready.payload.data) {
                                 let id=frame.transfer_id();
                                 remember_file_source(ready.peer, id, ready.metadata.clone());
                                 file_policy.control(&frame,ready.peer,pasteboard.as_ref(),&mut clipboard_last_change_count,&pending_incoming_file,&paste_requested,&paste_target_pid,&runtime,&clipboard_sequence,&ui_sender,&diagnostics,&mut outgoing_file_cancellations,&mut outgoing_file_sources,&file_clipboard_acknowledgements,&transfer_task_tx).await;
@@ -2842,6 +2904,7 @@ async fn run_worker(
                                     runtime: &runtime,
                                     sync: &mut clipboard_sync,
                                     force: false,
+                                    files_enabled: file_policy.settings.enabled,
                                     last_change_count: &mut clipboard_last_change_count,
                                     loop_guard: &mut clipboard_loop_guard,
                                     history: &mut clipboard_history,
@@ -3161,6 +3224,7 @@ async fn run_worker(
                 emit_permission_snapshot(&ui_sender, permission_service.as_ref(), &diagnostics, input_service.as_ref(), &mut last_permission);
             }
             captured = file_paste_requests.recv() => {
+                if !file_policy.settings.enabled { continue; }
                 if let Some(captured) = captured {
                     if platform.finder().is_finder_pid(captured.target_pid) {
                         // Repeated presses during one lookup reuse its visible task.
@@ -3566,6 +3630,7 @@ fn clipboard_snapshot_metadata(snapshot: &PasteboardSnapshot) -> Option<String> 
 struct ClipboardPushContext<'a> {
     sync: &'a mut clipboard_sync::Sync,
     force: bool,
+    files_enabled: bool,
     runtime: &'a RuntimeHandle,
     last_change_count: &'a mut Option<i64>,
     loop_guard: &'a mut ClipboardLoopGuard,
@@ -3613,6 +3678,9 @@ async fn push_local_clipboard(
         }
     };
     *context.last_change_count = Some(snapshot.change_count);
+    if !context.files_enabled && !snapshot.file_urls.is_empty() {
+        return Ok(());
+    }
     // 单次分析解码图像一次，同时供回声抑制、源信息 image_digest 和历史入库复用。
     let image_facts = crate::clipboard_image::analyze_snapshot(&snapshot);
     if !context.force
@@ -5075,8 +5143,8 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
 fn local_display_name(_runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> String {
     #[cfg(not(test))]
     {
-        // `hostname` is a stable macOS baseline utility; never use its output
-        // as identity, only as the display label.
+        // The platform reads the kernel hostname directly, without a child
+        // process. This is a display label, never the device identity.
         let name = _runtime.hostname().map(|name| {
             let trimmed = name.trim();
             trimmed.strip_suffix(".local").unwrap_or(trimmed).to_owned()

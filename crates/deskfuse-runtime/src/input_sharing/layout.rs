@@ -12,6 +12,28 @@ pub(super) struct LayoutPersistence {
 }
 
 impl InputActor {
+    fn layout_restore_diagnostic(&mut self, ssid: Option<&str>, outcome: &str) {
+        if !deskfuse_core::debug_logging::enabled() {
+            return;
+        }
+        let local = self.network.borrow().snapshot.local_device_id;
+        let scene = ssid.and_then(|ssid| {
+            self.snapshot
+                .scenes
+                .iter()
+                .find(|s| s.ssid.as_deref() == Some(ssid))
+        });
+        let detail = format!(
+            "ssid={ssid:?} outcome={outcome} scene_id={:?} placements={} profiles={} suspended={} managed={}",
+            scene.map(|s| s.id.as_str()),
+            self.snapshot.settings.placements.len(),
+            self.snapshot.settings.layout_profiles.len(),
+            self.snapshot.environment.local_suspended,
+            self.snapshot.managed_control.is_some(),
+        );
+        self.activation_diagnostic(local, "wifi_layout_restore", || detail);
+    }
+
     /// Return the Wi-Fi-bound scene after replacing its layout with `settings`.
     /// A first layout change on a network creates the scene, so the UI does not
     /// need a separate save action just to establish the binding.
@@ -19,6 +41,11 @@ impl InputActor {
         &self,
         settings: &InputSharingSettings,
     ) -> Option<Vec<InputSharingScene>> {
+        // During a network transition the visible geometry can still belong to
+        // the previous scene. Never overwrite a saved scene before restoring it.
+        if self.environment_layout_pending() {
+            return None;
+        }
         let ssid = self.snapshot.environment.ssid.clone()?;
         let mut scenes = self.snapshot.scenes.clone();
         if let Some(scene) = scenes
@@ -57,6 +84,7 @@ impl InputActor {
     /// consent stay with the device, so a network change never turns input on.
     pub(super) fn apply_environment_layout(&mut self, ssid: Option<&str>) -> bool {
         if !self.snapshot.can_configure_layout() {
+            self.layout_restore_diagnostic(ssid, "deferred_not_local_controller");
             return false;
         }
         let Some(scene) = ssid.and_then(|ssid| {
@@ -65,18 +93,25 @@ impl InputActor {
                 .iter()
                 .find(|scene| scene.ssid.as_deref() == Some(ssid))
         }) else {
+            self.layout_restore_diagnostic(ssid, "no_saved_scene");
             return false;
         };
         let mut settings = self.snapshot.settings.clone();
         settings.placements = scene.settings.placements.clone();
         settings.layout_profiles = scene.settings.layout_profiles.clone();
-        if settings == self.snapshot.settings || settings.validate().is_err() {
+        if settings == self.snapshot.settings {
+            self.layout_restore_diagnostic(ssid, "already_current");
+            return false;
+        }
+        if let Err(error) = settings.validate() {
+            self.layout_restore_diagnostic(ssid, &format!("invalid_settings:{error}"));
             return false;
         }
         self.release_all("Wi-Fi environment layout changed");
         self.snapshot.settings = settings.clone();
         self.layout_persistence.dirty = true;
         self.emit(RuntimeEvent::InputSharingSettingsChanged(settings));
+        self.layout_restore_diagnostic(ssid, "applied");
         true
     }
     // Capture before replacing native topology, and on idle for newly seen setups.

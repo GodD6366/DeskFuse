@@ -28,6 +28,8 @@ import DeskFuseEngine
     @ObservationIgnored private var pasteTask: Task<Void, Never>?
     @ObservationIgnored private var closingForPaste = false
     @ObservationIgnored private var suspended = false
+    @ObservationIgnored private var featureEnabled = false
+    @ObservationIgnored private var shortcutLoaded = false
     /// 状态栏点击若把策略临时改成 accessory，关闭面板后恢复 Dock 图标。
     @ObservationIgnored private var restoreRegularPolicy = false
 
@@ -35,6 +37,7 @@ import DeskFuseEngine
         guard item == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.item = item
+        item.isVisible = featureEnabled
         let image = Bundle.main.url(forResource: "deskfuse-status-icon", withExtension: "png")
             .flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: "DeskFuse")
@@ -72,6 +75,42 @@ import DeskFuseEngine
             pointerPanel.standardWindowButton(button)?.isHidden = true
         }
         self.pointerPanel = pointerPanel
+        if featureEnabled { installEventListeners() }
+        // Do not register the default before persisted disabled/custom settings
+        // have loaded: that would briefly hijack a user's disabled shortcut.
+        Task { @MainActor in
+            while store.client == nil {
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return }
+            }
+            await self.reloadShortcut()
+        }
+    }
+
+    /// The feature switch owns every clipboard-specific input listener.
+    func setFeatureEnabled(_ enabled: Bool) {
+        guard featureEnabled != enabled else { return }
+        featureEnabled = enabled
+        item?.isVisible = enabled
+        if enabled {
+            if item != nil { installEventListeners() }
+            applyShortcut()
+        } else {
+            close()
+            applyShortcut()
+            if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
+            outsideMonitor = nil
+            if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
+            localMouseMonitor = nil
+            if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+            resignObserver = nil
+            if let handler { RemoveEventHandler(handler) }
+            handler = nil
+        }
+    }
+
+    private func installEventListeners() {
+        guard featureEnabled, handler == nil else { return }
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { _ in
             Task { @MainActor in
                 // Any click outside the app collapses the popup, whichever
@@ -122,15 +161,6 @@ import DeskFuseEngine
             Task { @MainActor in ClipboardPanelController.shared.toggleAtPointer() }
             return noErr
         }, 1, &spec, nil, &handler)
-        // Do not register the default before persisted disabled/custom settings
-        // have loaded: that would briefly hijack a user's disabled shortcut.
-        Task { @MainActor in
-            while store.client == nil {
-                try? await Task.sleep(for: .milliseconds(100))
-                if Task.isCancelled { return }
-            }
-            await self.reloadShortcut()
-        }
     }
 
     func reloadShortcut() async {
@@ -151,11 +181,16 @@ import DeskFuseEngine
 
     /// Call after loading/saving the Rust-owned local clipboard shortcut setting.
     func configure(_ shortcut: WorkflowKey?) {
+        self.shortcut = shortcut
+        shortcutLoaded = true
+        applyShortcut()
+    }
+
+    private func applyShortcut() {
         if let hotKey { UnregisterEventHotKey(hotKey) }
         hotKey = nil
-        self.shortcut = shortcut
         error = nil
-        guard let shortcut, !suspended else { return }
+        guard featureEnabled, shortcutLoaded, let shortcut, !suspended else { return }
         var modifiers: UInt32 = 0
         if shortcut.modifiers & 0x100000 != 0 { modifiers |= UInt32(cmdKey) }
         if shortcut.modifiers & 0x80000 != 0 { modifiers |= UInt32(optionKey) }
@@ -168,7 +203,7 @@ import DeskFuseEngine
 
     func suspendShortcut(_ value: Bool) {
         suspended = value
-        configure(shortcut)
+        applyShortcut()
     }
 
     @objc func toggle() { present(atPointer: false) }
@@ -209,7 +244,7 @@ import DeskFuseEngine
     }
 
     private func present(atPointer: Bool) {
-        guard !suspended else { return }
+        guard featureEnabled, !suspended else { return }
         // A status-item popover otherwise inherits the menu bar anchor's
         // appearance rather than an app-wide appearance override.
         popover.appearance = NSApp.appearance

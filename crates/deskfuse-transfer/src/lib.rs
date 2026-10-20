@@ -1848,6 +1848,15 @@ mod secure_fs {
         open_dir_at(root, name)
     }
 
+    /// 通过不跟随符号链接的目录 fd 设置目录权限。
+    pub(crate) fn set_directory_mode(root: &Dir, path: &RelativePath, mode: u32) -> io::Result<()> {
+        let directory = open_dir_path(root, path)?;
+        io_result(rustix::fs::fchmod(
+            directory.as_ref(),
+            Mode::from_raw_mode(mode as _),
+        ))
+    }
+
     /// Ensure a directory path exists, returning the paths created by this call.
     /// If a later component fails, undo directories created by this call before
     /// returning so callers never lose track of partial work.
@@ -2788,6 +2797,29 @@ fn commit_secure(
             report
                 .written
                 .push(destination_path(&destination_path_buf, &target));
+        }
+
+        // 目录在提交过程中一律以 0700 创建；内容全部就位后再恢复发送端记录的目录权限，
+        // 否则 .app/.driver 等包内目录会变成仅属主可读（例如 HAL 插件无法被 _coreaudiod 加载）。
+        // 只作用于本次新建的目录，不改动目标位置原有目录；始终保留属主 rwx，便于管理和回滚。
+        let created_directories: BTreeSet<&str> = journal
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CreatedDirectory(path) => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        for entry in staging.manifest.directories() {
+            let Some(mode) = entry.mode else { continue };
+            let original_path = RelativePath::new(entry.path())?;
+            if is_skipped_path(&original_path, &skipped_directories) {
+                continue;
+            }
+            let target = remap_renamed_path(&original_path, &renamed_prefixes)?;
+            if created_directories.contains(target.as_str()) {
+                secure_fs::set_directory_mode(&destination, &target, (mode & 0o777) | 0o700)
+                    .map_err(TransferError::Io)?;
+            }
         }
 
         staging.cleanup()?;

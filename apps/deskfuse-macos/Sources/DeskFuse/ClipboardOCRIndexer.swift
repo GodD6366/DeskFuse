@@ -19,16 +19,23 @@ final class ClipboardOCRIndexer {
     static let automaticIndexingKey = "deskfuse.clipboard.ocr.helperAutomaticIndexing"
     static let defaultAutomaticIndexing = true
 
+    private var featureEnabled = false
     private var pending: [UInt64] = []
     private var queued = Set<UInt64>()
     private var running = false
     private var generation: UInt64 = 0
     private var helper: OCRHelperClient?
 
+    func setFeatureEnabled(_ enabled: Bool) {
+        guard featureEnabled != enabled else { return }
+        featureEnabled = enabled
+        if !enabled { cancelPending() }
+    }
+
     /// Queue a record for recognition. The engine's `ocr_version` keeps this
     /// idempotent across launches; `queued` avoids duplicate work in one run.
     func schedule(_ id: UInt64, client: EngineClient?) {
-        guard let client, !queued.contains(id) else { return }
+        guard featureEnabled, let client, !queued.contains(id) else { return }
         queued.insert(id)
         pending.append(id)
         guard !running else { return }
@@ -59,17 +66,17 @@ final class ClipboardOCRIndexer {
 
     private func drain(client: EngineClient) async {
         defer { running = false }
-        while !pending.isEmpty {
+        while featureEnabled, !pending.isEmpty {
             let id = pending.removeFirst()
             queued.remove(id)
             let currentGeneration = generation
             guard let path = await stageImage(for: id, client: client) else { continue }
-            guard currentGeneration == generation else {
+            guard featureEnabled, currentGeneration == generation else {
                 try? FileManager.default.removeItem(at: path)
                 continue
             }
             let text = await recognize(id: id, path: path)
-            guard currentGeneration == generation else { continue }
+            guard featureEnabled, currentGeneration == generation else { continue }
             // Empty text is still a finished result: record it so the record is
             // not re-recognized, while keeping the search index clean.
             ClipboardLibraryStore.shared.setOCR(id, text: text ?? "", version: Self.version)
@@ -77,6 +84,8 @@ final class ClipboardOCRIndexer {
     }
 
     private func recognize(id: UInt64, path: URL) async -> String? {
+        defer { try? FileManager.default.removeItem(at: path) }
+        guard featureEnabled else { return nil }
         if helper == nil || helper?.isRunning != true {
             helper?.stop()
             guard let executableURL = Self.helperExecutableURL() else { return nil }
@@ -89,7 +98,9 @@ final class ClipboardOCRIndexer {
     }
 
     private func stageImage(for id: UInt64, client: EngineClient) async -> URL? {
-        guard let content = try? await client.content(id) else { return nil }
+        let currentGeneration = generation
+        guard featureEnabled, let content = try? await client.content(id),
+              featureEnabled, currentGeneration == generation else { return nil }
         let data: Data
         if !content.imagePng.isEmpty {
             data = content.imagePng

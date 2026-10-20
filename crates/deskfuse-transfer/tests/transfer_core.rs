@@ -295,3 +295,78 @@ fn receiver_rejects_symlink_components_for_staging_and_destination() {
     );
     assert!(!outside.path().join("file.txt").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn received_directories_restore_sender_modes_without_touching_existing_ones() {
+    use std::os::unix::fs::PermissionsExt;
+    let source = tempdir().expect("source");
+    let mode_of =
+        |path: &std::path::Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    for (path, mode) in [
+        ("Plugin.driver", 0o755),
+        ("Plugin.driver/Contents", 0o755),
+        ("Plugin.driver/Contents/MacOS", 0o750),
+        ("Shared", 0o755),
+    ] {
+        fs::create_dir(source.path().join(path)).expect("directory");
+        fs::set_permissions(source.path().join(path), fs::Permissions::from_mode(mode))
+            .expect("mode");
+    }
+    fs::write(
+        source.path().join("Plugin.driver/Contents/MacOS/Plugin"),
+        b"binary",
+    )
+    .expect("file");
+    fs::write(source.path().join("Shared/file.txt"), b"shared").expect("file");
+    // 只读目录也必须保留属主写权限，否则回滚和后续清理会失败。
+    fs::create_dir(source.path().join("ReadOnly")).expect("directory");
+    fs::set_permissions(
+        source.path().join("ReadOnly"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .expect("mode");
+
+    let manifest = TransferManifest::from_directory(source.path()).expect("manifest");
+    let destination = tempdir().expect("destination");
+    fs::create_dir(destination.path().join("Shared")).expect("existing");
+    fs::set_permissions(
+        destination.path().join("Shared"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .expect("mode");
+    let receiver = FileReceiver::new(destination.path()).expect("receiver");
+    let mut staging = receiver
+        .begin(TransferId::new(), &manifest)
+        .expect("staging");
+    for entry in manifest.files() {
+        let payload = fs::read(source.path().join(entry.path().as_str())).expect("payload");
+        let path = RelativePath::new(entry.path().as_str()).expect("path");
+        for descriptor in chunk_descriptors_for_data(&payload, 4).expect("chunks") {
+            let start = descriptor.offset as usize;
+            let end = start + descriptor.length as usize;
+            staging
+                .write_chunk(&path, descriptor, &payload[start..end])
+                .expect("chunk");
+        }
+        staging.complete_file(entry).expect("hash");
+    }
+    receiver
+        .commit_staging(staging, ConflictStrategy::Overwrite)
+        .expect("commit");
+
+    let root = destination.path();
+    assert_eq!(mode_of(&root.join("Plugin.driver")), 0o755);
+    assert_eq!(mode_of(&root.join("Plugin.driver/Contents")), 0o755);
+    assert_eq!(mode_of(&root.join("Plugin.driver/Contents/MacOS")), 0o750);
+    assert_eq!(mode_of(&root.join("ReadOnly")), 0o755);
+    assert_eq!(
+        mode_of(&root.join("Shared")),
+        0o700,
+        "已有目录的权限不应被改动"
+    );
+    assert_eq!(
+        fs::read(root.join("Shared/file.txt")).expect("read"),
+        b"shared"
+    );
+}

@@ -81,6 +81,7 @@ impl Network {
         // Remote-app sessions arrive on the control transport; keep a shared
         // handle so the service can serve them without the runtime's mediation.
         let remote_app_transport = control_transport.clone();
+        remote_app_transport.set_remote_application_enabled(true);
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(

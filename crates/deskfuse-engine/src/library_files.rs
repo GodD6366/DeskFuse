@@ -269,6 +269,12 @@ async fn next(
 }
 /// Bridge must invoke this only for authenticated trusted_connected_peer_ids.
 /// Non-request frames are accepted only for a locally registered session mailbox.
+pub fn cancel_all() {
+    if let Ok(mut boxes) = mailboxes().lock() {
+        boxes.clear();
+    }
+}
+
 pub fn receive(peer: DeviceId, bytes: &[u8], runtime: &RuntimeHandle) {
     if bytes.len() > 3 * 1024 * 1024 {
         return;

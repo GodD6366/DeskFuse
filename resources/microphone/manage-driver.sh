@@ -43,7 +43,9 @@ case "${1:-}" in
     trap '/bin/rm -rf "$STAGE"' EXIT
     /usr/bin/ditto "$SOURCE" "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver"
     /usr/sbin/chown -R root:wheel "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver"
-    /bin/chmod -R go-w "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver"
+    # HAL 宿主以 _coreaudiod 身份加载插件；ditto 会照搬源目录权限，源为 700 时插件被静默跳过。
+    # 统一为目录 755、文件 644（可执行位保留为 755），不依赖应用包内的权限。
+    /bin/chmod -R u=rwX,go=rX "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver"
     /usr/bin/codesign --verify --deep --strict "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver"
     if [[ -e "$DEST" ]]; then /bin/mv "$DEST" "$STAGE/previous.driver"; fi
     if ! /bin/mv "$STAGE/${MICROPHONE_BUNDLE_NAME}.driver" "$DEST"; then

@@ -8,16 +8,27 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        HStack(spacing: 0) {
-            MainSidebar(store: store)
-                .frame(width: DFMetrics.sidebarWidth)
-            workspace
+        Group {
+            if store.onboarding.isPresented {
+                OnboardingFlow(store: store)
+            } else {
+                HStack(spacing: 0) {
+                    MainSidebar(store: store)
+                        .frame(width: DFMetrics.sidebarWidth)
+                    workspace
+                }
+            }
         }
         .ignoresSafeArea(.container, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .tint(DFPalette.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading, optimizingData: store.optimizingLocalData))
+        .overlay(alignment: .bottomTrailing) {
+            ErrorNoticeView(notice: store.errorNotice)
+                .frame(maxWidth: 380)
+                .padding(DFMetrics.pageInset)
+        }
         .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
         .focusedSceneValue(\.searchDevices, (store.selectedPage == .devices || store.selectedPage == .remoteApplications) ? { deviceSearchRequest += 1 } : nil)
         .onAppear {
@@ -29,16 +40,6 @@ struct RootView: View {
         )) {
             PreviousInstallationPrompt(controller: store.previousInstallation).dfFloating()
         }
-        .sheet(isPresented: onboardingBinding) {
-            OnboardingFlow(store: store).dfFloating()
-        }
-    }
-
-    private var onboardingBinding: Binding<Bool> {
-        Binding(
-            get: { store.onboarding.isPresented },
-            set: { show in if !show { store.onboarding.complete() } }
-        )
     }
 
 
@@ -55,12 +56,6 @@ struct RootView: View {
                 destination: store.settingsDestination
             ).equatable().ignoresSafeArea(.container, edges: .top)))
         ])
-        .overlay(alignment: .bottomLeading) {
-            if store.selectedPage == .settings {
-                ErrorNoticeView(notice: store.errorNotice)
-                    .frame(width: 320).padding(14)
-            }
-        }
         .dfCanvas()
         .ignoresSafeArea(.container, edges: .top)
     }

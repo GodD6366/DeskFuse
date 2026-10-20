@@ -29,6 +29,14 @@ private actor MouseSettingsRepository {
 final class MouseButtonController {
     static let shared = MouseButtonController()
     private(set) var settings = MouseSettings()
+    private(set) var hasLoadedSettings = false
+    var isFeatureEnabled: Bool { settings.enabled }
+    func setFeatureEnabled(_ enabled: Bool) {
+        guard hasLoadedSettings else { return }
+        var updated = settings
+        updated.enabled = enabled
+        applySettings(updated)
+    }
     private(set) var error: String?
     private(set) var lastExecution = "等待实体按键"
     private(set) var saving = false
@@ -39,7 +47,12 @@ final class MouseButtonController {
     private(set) var hidStatus = "未启动 HID++ 检测"
     private(set) var availableNativeButtons: Set<Int> = []
     private(set) var detectingG502 = false
+    private(set) var detectedMice: [DetectedMouseDevice] = []
     private let hid = LogitechHIDManager()
+    private let inventory = MouseDeviceInventory()
+    private var hardwareMice: [DetectedMouseDevice] = []
+    private var logitechNames: [String] = []
+    private var scanning = false
     private var shortcutState = MouseShortcutState()
     private let keyboardSource = CGEventSource(stateID: .privateState)
     private var observedButtons: [Int: Int] = [:]
@@ -83,6 +96,70 @@ final class MouseButtonController {
             self.availableNativeButtons = value
         }
         hid.onButton = { [weak self] id, button, down in self?.nativeButton(id, button: button, down: down) }
+        hid.onIdentitiesChanged = { [weak self] names in
+            guard let self else { return }
+            self.logitechNames = names
+            self.rebuildDetectedMice()
+        }
+        inventory.onChange = { [weak self] devices in
+            guard let self else { return }
+            self.hardwareMice = devices
+            self.rebuildDetectedMice()
+        }
+        startPolling()
+    }
+
+    func beginDeviceScan() {
+        scanning = true
+        inventory.start()
+        hid.start()
+        configureHID()
+        startPolling()
+    }
+
+    func endDeviceScan() {
+        guard scanning else { return }
+        scanning = false
+        inventory.stop()
+        hardwareMice = []
+        rebuildDetectedMice()
+        if settings.enabled { configureHID() } else { stop() }
+    }
+
+    private func rebuildDetectedMice() {
+        var merged: [DetectedMouseDevice] = []
+        var seenNames = Set<String>()
+        for name in logitechNames where !name.isEmpty {
+            let key = name.lowercased()
+            guard seenNames.insert(key).inserted else { continue }
+            let hardware = hardwareMice.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            merged.append(DetectedMouseDevice(
+                id: "hidpp:\(key)",
+                name: name,
+                vendorID: hardware?.vendorID ?? 0x046D,
+                productID: hardware?.productID ?? 0,
+                transport: hardware?.transport ?? "HID++"))
+        }
+        for device in hardwareMice {
+            guard !seenNames.contains(device.name.lowercased()) else { continue }
+            if device.vendorID == 0x046D, !logitechNames.isEmpty, Self.isReceiverAlias(device.name) { continue }
+            guard !merged.contains(where: { $0.id == device.id }) else { continue }
+            merged.append(device)
+        }
+        merged.sort {
+            if ($0.model != nil) != ($1.model != nil) { return $0.model != nil }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        guard merged != detectedMice else { return }
+        detectedMice = merged
+    }
+
+    private static func isReceiverAlias(_ name: String) -> Bool {
+        let value = name.lowercased()
+        return value == "receiver" || value.contains("receiver")
+    }
+    private func startPolling() {
+        guard poll == nil else { return }
         poll = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
@@ -104,6 +181,7 @@ final class MouseButtonController {
             let incoming = try await repository.read()
             guard generation == editGeneration, saveTask == nil else { return }
             lastRefreshError = nil
+            hasLoadedSettings = true
             let changed = settings != incoming
             if changed {
                 settings = incoming
@@ -112,6 +190,7 @@ final class MouseButtonController {
             let needsTap = (settings.enabled || detecting) && !tapReady
             if settings.enabled || detecting { installTap() }
             if changed || needsTap { configureHID() }
+            if !settings.enabled && !scanning { stop() }
         } catch {
             refreshFailures += 1
             if lastRefreshError != error.localizedDescription {
@@ -122,14 +201,20 @@ final class MouseButtonController {
         }
     }
     func update(_ settings: MouseSettings) {
+        var settings = settings
+        settings.enabled = isFeatureEnabled
+        applySettings(settings)
+    }
+    private func applySettings(_ settings: MouseSettings) {
         guard let repository else { return }
+        let previousSettings = self.settings
         self.settings = settings
         saving = true; saveStatus = "正在保存…"
         editGeneration += 1
         let generation = editGeneration
         error = nil
-        if settings.enabled { installTap() }
-        configureHID()
+        if settings.enabled { installTap(); configureHID(); startPolling() }
+        else { stop() }
         // Serialize writes. A newer edit never cancels an already submitted save.
         let previous = saveTask
         saveTask = Task { [weak self] in
@@ -143,6 +228,9 @@ final class MouseButtonController {
                 if self?.editGeneration == generation {
                     self?.error = error.localizedDescription
                     self?.saveStatus = "保存失败，请重试"
+                    self?.settings = previousSettings
+                    if previousSettings.enabled { self?.installTap(); self?.configureHID(); self?.startPolling() }
+                    else { self?.stop() }
                 }
             }
             if self?.editGeneration == generation { self?.saveTask = nil; self?.saving = false }
@@ -150,11 +238,17 @@ final class MouseButtonController {
     }
     func stop() {
         endDetection()
-        hid.stop()
-        poll?.cancel(); poll = nil
+        if !scanning {
+            hid.stop()
+            poll?.cancel(); poll = nil
+        }
         let location = CGEvent(source: nil)?.location ?? .zero
         for action in held.values { emit(action, down: false, proxy: nil, location: location) }
         held.removeAll()
+        for action in nativeHeld.values { emit(action, down: false, proxy: nil, location: location, native: true) }
+        nativeHeld.removeAll(); nativeCaptured.removeAll(); activeNativeCapture = nil
+        passthrough.removeAll(); detectedHeld.removeAll()
+        availableNativeButtons.removeAll()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         source = nil; tap = nil; tapReady = false
@@ -172,6 +266,7 @@ final class MouseButtonController {
         }
     }
     func beginDetection(g502: Bool = false) {
+        guard settings.enabled else { return }
         hid.prepareCapture()
         lastButton = nil
         activeNativeCapture = nil
@@ -196,12 +291,13 @@ final class MouseButtonController {
     }
 
     private func configureHID() {
-        if settings.enabled || detecting { hid.start() }
+        if settings.enabled || detecting || scanning { hid.start() }
         hid.desired = detecting ? (detectingG502 ? LogitechHIDProtocol.g502Buttons : LogitechHIDProtocol.mxButtons) : settings.enabled && tapReady
             ? Set(settings.bindings.map(\.button)).intersection(LogitechHIDProtocol.buttons) : []
-        if !settings.enabled && !detecting && nativeCaptured.isEmpty { hid.stop() }
+        if !settings.enabled && !detecting && !scanning && nativeCaptured.isEmpty { hid.stop() }
     }
     private func nativeButton(_ id: String, button: Int, down: Bool) {
+        guard settings.enabled else { return }
         record("button", fields: ["source": "hidpp", "button": button, "down": down])
         if down {
             observedButtons[button, default: 0] += 1
@@ -372,6 +468,11 @@ final class MouseButtonController {
             "app_build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as Any? ?? NSNull(),
             "enabled": settings.enabled, "tap_ready": tapReady, "detecting": detecting,
             "detecting_g502": detectingG502, "native_buttons": availableNativeButtons.sorted(),
+            "detected_mice": detectedMice.map {
+                ["id": $0.id, "name": $0.name, "vendor_id": $0.vendorID, "product_id": $0.productID,
+                 "transport": $0.transport, "supported": $0.isSupported] as [String: Any]
+            },
+            "inventory_permission_denied": inventory.permissionDenied, "scanning": scanning,
             "tap_enabled": tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false,
             "settings": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(settings))) ?? NSNull(),
             "recent_events": recentEvents,

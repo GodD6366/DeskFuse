@@ -1752,7 +1752,27 @@ impl QuinnTransport {
             .lock()
             .map_err(|_| TransportError::Closed)?
             .clone();
+        // Keep the reason each physical path was rejected instead of returning
+        // only "closed". Bound details even when many stale addresses exist.
+        let mut failures = std::collections::VecDeque::new();
+        let mut failure_count = 0;
+        let mut record_failure = |mut detail: String| {
+            failure_count += 1;
+            // Leave room for the runtime's prefix in its 1024-byte log field.
+            if detail.len() > 256 {
+                let mut end = 256;
+                while !detail.is_char_boundary(end) {
+                    end -= 1;
+                }
+                detail.truncate(end);
+            }
+            if failures.len() == 2 {
+                failures.pop_front();
+            }
+            failures.push_back(detail);
+        };
         let mut candidates = Vec::new();
+        let endpoint_count = endpoints.len();
         for remote in endpoints.into_iter().filter_map(|e| {
             e.host
                 .parse::<std::net::IpAddr>()
@@ -1769,7 +1789,7 @@ impl QuinnTransport {
                 let local = *local;
                 let lan_port = self.config.lan_port.clone();
                 let context = input_executor::inspect_blocking(move || {
-                    lan::inspect(
+                    lan::inspect_with_error(
                         lan_port.as_deref(),
                         deskfuse_core::TransportSessionId::new(),
                         local,
@@ -1777,10 +1797,17 @@ impl QuinnTransport {
                     )
                 })
                 .await;
-                let Ok(context) = context else {
+                let Ok((context, inspection_error)) = context else {
+                    record_failure(format!(
+                        "local={local} remote={remote} inspection_worker_unavailable"
+                    ));
                     continue;
                 };
                 if !context.input_eligible() || context.interface_name.as_ref() != Some(interface) {
+                    record_failure(format!(
+                        "local={local} remote={remote} bound_interface={interface} route_interface={:?} kind={:?} scope={:?} inspection_error={inspection_error:?}",
+                        context.interface_name, context.interface_kind, context.scope,
+                    ));
                     continue;
                 }
                 let rank = routes::input_path_rank(context.interface_kind);
@@ -1796,6 +1823,7 @@ impl QuinnTransport {
             }
         }
         candidates.sort_by_key(|(rank, local, remote, _, _)| (*rank, *local, *remote));
+        let candidate_count = candidates.len();
         for (rank, local, remote, interface, endpoint) in candidates {
             // An inbound dial may have won while inspection was in flight.
             if self
@@ -1808,32 +1836,63 @@ impl QuinnTransport {
             }
             // A disposable signed identity probe is never promoted into a live connection.
             let Some(probe_endpoint) = input_dialer(&self.config, local) else {
+                record_failure(format!(
+                    "local={local} remote={remote} stage=create_probe failed"
+                ));
                 continue;
             };
             let mut probe = self.clone();
             probe.endpoint = Some(probe_endpoint);
             probe.bound_addr = local;
             probe.bound_interface = Some(interface.clone());
-            if !matches!(time::timeout(Duration::from_secs(1), probe.connect_and_hello_mode(peer, remote, Some(expected), true)).await, Ok(Ok((ref connection, _))) if { connection.close(QUIC_CLOSE_CODE, b"input probe complete"); true })
+            match time::timeout(
+                Duration::from_secs(1),
+                probe.connect_and_hello_mode(peer, remote, Some(expected), true),
+            )
+            .await
             {
-                continue;
+                Ok(Ok((connection, _))) => {
+                    connection.close(QUIC_CLOSE_CODE, b"input probe complete")
+                }
+                result => {
+                    let error = match result {
+                        Ok(Err(error)) => error.to_string(),
+                        Err(_) => "timeout (1s)".into(),
+                        _ => unreachable!(),
+                    };
+                    record_failure(format!(
+                        "local={local} remote={remote} interface={interface} stage=identity_probe error={error}"
+                    ));
+                    continue;
+                }
             }
             let mut live = self.clone();
             live.endpoint = Some(endpoint.clone());
             live.bound_addr = local;
             live.bound_interface = Some(interface.clone());
-            if matches!(
-                time::timeout(Duration::from_secs(3), live.connect_at(peer, remote)).await,
-                Ok(Ok(_))
-            ) {
-                return Ok(());
+            match time::timeout(Duration::from_secs(3), live.connect_at(peer, remote)).await {
+                Ok(Ok(_)) => return Ok(()),
+                result => {
+                    let error = match result {
+                        Ok(Err(error)) => error.to_string(),
+                        Err(_) => "timeout (3s)".into(),
+                        _ => unreachable!(),
+                    };
+                    record_failure(format!(
+                        "local={local} remote={remote} interface={interface} stage=connect error={error}"
+                    ));
+                }
             }
         }
         // An unreachable upgrade must never tear down a working fallback.
         if self.input.contexts(peer).iter().any(|c| c.input_eligible()) {
             Ok(())
         } else {
-            Err(TransportError::Closed)
+            Err(TransportError::Quic(format!(
+                "input link unavailable: endpoints={endpoint_count} listeners={} eligible_candidates={candidate_count} failures_total={failure_count} last_failures={:?}",
+                listeners.len(),
+                failures,
+            )))
         }
     }
 
@@ -3313,6 +3372,16 @@ async fn serve_connection(
                             pending.insert(ordinal, None);
                             if shared.is_revoked(peer).unwrap_or(true) {
                                 let _ = send.reset(1u32.into());
+                            } else if open.version == 2 && open.status == 0 && negotiated.contains(Capabilities::MICROPHONE) {
+                                let enabled = shared.microphone.source_enabled.load(Ordering::Acquire);
+                                tokio::spawn(async move {
+                                    let reply = Envelope::new(request_id, Message::MicrophoneOpen(protocol::MicrophoneOpen {
+                                        version: 2, status: if enabled { 1 } else { 2 },
+                                    }));
+                                    if time::timeout(Duration::from_millis(500), write_frame(&mut send, &reply)).await.is_ok_and(|r| r.is_ok()) {
+                                        let _ = send.finish();
+                                    }
+                                });
                             } else if open.version == 1 && open.status == 0 && negotiated.contains(Capabilities::MICROPHONE) {
                                 shared.microphone.accept(peer, send, recv);
                             } else {

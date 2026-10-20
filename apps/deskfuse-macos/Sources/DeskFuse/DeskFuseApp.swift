@@ -3,7 +3,7 @@ import AppKit
 import Darwin
 import DeskFuseEngine
 
-@main @MainActor struct DeskFuseApp: App {
+@MainActor struct DeskFuseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store = AppStore.shared
     var body: some SwiftUI.Scene {
@@ -99,16 +99,12 @@ import DeskFuseEngine
         // The system controls activation; background App Intents must not steal focus.
         // This also applies the persisted Dock visibility choice before windows show.
         AppStore.shared.applyDockIconPolicy()
-        // 引擎启动前判断：已有状态库的是升级老用户，不进新手引导。
-        let support = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/DeskFuse/state.sqlite3")
-        let hasExistingState = FileManager.default.fileExists(atPath: support.path)
         AppStore.shared.previousInstallation.evaluate { [weak self] in
-            self?.startEngine(isFreshInstall: !hasExistingState)
+            self?.startEngine()
         }
     }
 
-    private func startEngine(isFreshInstall: Bool) {
+    private func startEngine() {
         AppStore.shared.start()
         let store = AppStore.shared
         // 自检流程随即退出，不弹任何引导窗口。
@@ -116,9 +112,8 @@ import DeskFuseEngine
             ClipboardPanelController.shared.install(store: store)
             return
         }
-        let onboardingCompleted = UserDefaults.standard.bool(forKey: OnboardingController.completedKey)
-        if isFreshInstall, !store.previousInstallation.wasPresented, !onboardingCompleted {
-            // 全新安装：先弹功能引导，本次启动不再重复弹权限提醒。
+        if store.onboarding.shouldPresent(), !store.previousInstallation.wasPresented {
+            // 本机尚未完成当前引导：即使应用已经安装过，也运行一次。
             store.onboarding.present()
         } else {
             // 权限按需申请：功能页或设置页会在确有需要时提示。

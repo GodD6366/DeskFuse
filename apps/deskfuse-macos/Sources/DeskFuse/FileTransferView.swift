@@ -45,7 +45,7 @@ private struct LanWebProjection: Decodable {
     }
 }
 
-/// 文件传输：发送区、传输队列、手机扫码三块，共用引擎的同一份暂存与传输状态。
+/// 局域网传输：中列扫码与发送，右列任务，共用引擎的同一份暂存与传输状态。
 struct FileTransferView: View {
     @Bindable var store: AppStore
     let snapshot: EngineSnapshot
@@ -74,22 +74,34 @@ struct FileTransferView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: DFSpace.xl) {
-                    if let message = actionError ?? readError ?? state?.error {
-                        DFNotice(tone: .warning, title: "文件传输", message: message)
+            HStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: DFSpace.l) {
+                        if let message = actionError ?? readError ?? state?.error {
+                            DFNotice(tone: .warning, title: "局域网传输", message: message)
+                        }
+                        shareSection
+                        sendSection
                     }
-                    sendSection
-                    transferSection(compact: geometry.size.width < 860)
-                    shareSection(compact: geometry.size.width < 650)
-                    if let state, !state.tasks.isEmpty {
-                        receiveTaskSection(state)
-                    }
+                    .padding(DFSpace.l)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(.horizontal, DFMetrics.pageInset)
-                .padding(.top, DFMetrics.pageTopInset)
-                .padding(.bottom, DFMetrics.pageBottomInset)
-                .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: DFSpace.xl) {
+                        transferSection(compact: true)
+                        if let state, !state.tasks.isEmpty {
+                            receiveTaskSection(state)
+                        }
+                    }
+                    .padding(DFSpace.l)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .frame(width: min(380, geometry.size.width * 0.38))
+                .frame(maxHeight: .infinity)
             }
         }
         .task {
@@ -126,9 +138,6 @@ struct FileTransferView: View {
                             .font(DFType.detail)
                             .dfSecondaryText()
                     }
-                    Spacer(minLength: DFSpace.m)
-                    Button("选择文件…", action: chooseFiles)
-                        .buttonStyle(.dfSecondary)
                 }
                 .padding(DFSpace.l)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -141,7 +150,7 @@ struct FileTransferView: View {
                     loadFiles(from: providers)
                     return true
                 }
-                HStack(spacing: DFSpace.m) {
+                VStack(alignment: .leading, spacing: DFSpace.m) {
                     if connectedPeers.isEmpty {
                         Text("还没有已连接的电脑；先到设备页添加。")
                             .font(DFType.detail)
@@ -155,17 +164,21 @@ struct FileTransferView: View {
                         .pickerStyle(.menu)
                         .frame(maxWidth: 260)
                     }
-                    Spacer(minLength: DFSpace.s)
-                    if !stagedFiles.isEmpty {
-                        Button("加入暂存区") {
-                            store.shelf?.append(stagedFiles)
-                            stagedFiles = []
+                    HStack(spacing: DFSpace.s) {
+                        Button("选择文件…", action: chooseFiles)
+                            .buttonStyle(.dfSecondary)
+                        Spacer(minLength: 0)
+                        if !stagedFiles.isEmpty {
+                            Button("加入暂存区") {
+                                store.shelf?.append(stagedFiles)
+                                stagedFiles = []
+                            }
+                            .buttonStyle(.dfPlain)
                         }
-                        .buttonStyle(.dfPlain)
+                        Button("发送") { send() }
+                            .buttonStyle(.dfPrimary)
+                            .disabled(stagedFiles.isEmpty || targetPeer.isEmpty)
                     }
-                    Button("发送") { send() }
-                        .buttonStyle(.dfPrimary)
-                        .disabled(stagedFiles.isEmpty || targetPeer.isEmpty)
                 }
             }
         }
@@ -208,7 +221,7 @@ struct FileTransferView: View {
     // MARK: - 传输队列
 
     private func transferSection(compact: Bool) -> some View {
-        DFSection("传输队列",
+        DFSection("传输任务",
                   footer: snapshot.transfers.isEmpty ? "在另一台电脑粘贴文件时会自动开始传输，也可以从暂存区立即发送。" : nil) {
             if snapshot.transfers.isEmpty {
                 DFEmptyState(symbol: "arrow.up.arrow.down",
@@ -230,7 +243,7 @@ struct FileTransferView: View {
 
     // MARK: - 手机扫码
 
-    private func shareSection(compact: Bool) -> some View {
+    private var shareSection: some View {
         DFSection("手机扫码传输", footer: "离开此页仍保持可用；重启后自动恢复上次的开关。") {
             HStack(alignment: .center, spacing: DFSpace.m) {
                 VStack(alignment: .leading, spacing: DFSpace.xxs) {
@@ -253,16 +266,9 @@ struct FileTransferView: View {
             }
             Divider()
             if let address = liveAddress {
-                if compact {
-                    VStack(alignment: .leading, spacing: DFSpace.l) {
-                        qrCode.frame(maxWidth: .infinity)
-                        addressDetails(address)
-                    }
-                } else {
-                    HStack(alignment: .center, spacing: DFSpace.xl) {
-                        qrCode
-                        addressDetails(address)
-                    }
+                HStack(alignment: .center, spacing: DFSpace.m) {
+                    qrCode
+                    addressDetails(address)
                 }
             } else {
                 DFEmptyState(symbol: "qrcode",
@@ -281,27 +287,23 @@ struct FileTransferView: View {
         if let qrImage {
             Image(nsImage: qrImage)
                 .interpolation(.none).resizable().scaledToFit()
-                .frame(width: 176, height: 176).padding(DFSpace.m)
+                .frame(width: 144, height: 144).padding(DFSpace.s)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: DFRadius.card))
                 .accessibilityLabel("用手机相机扫描二维码打开局域网传输网页")
         } else {
             DFEmptyState(symbol: "qrcode", title: "二维码不可用",
-                         message: "仍可使用右侧地址访问。")
-                .frame(width: 208, height: 208)
+                         message: "仍可使用访问地址打开网页。")
+                .frame(width: 160, height: 160)
         }
     }
 
     private func addressDetails(_ address: String) -> some View {
-        VStack(alignment: .leading, spacing: DFSpace.m) {
+        VStack(alignment: .leading, spacing: DFSpace.s) {
             Text("用手机相机扫码")
                 .font(DFType.bodyMedium)
-            Text("发送文字、上传照片，或浏览并取用这台 Mac 上的列表内容。")
+            Text("发送照片或文字，也可取用 Mac 列表内容。")
                 .font(DFType.detail)
                 .dfSecondaryText()
-                .fixedSize(horizontal: false, vertical: true)
-            Text(address)
-                .font(DFType.mono)
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if let state, state.addresses.count > 1 {
                 Picker("访问地址", selection: Binding(
@@ -311,7 +313,13 @@ struct FileTransferView: View {
                     ForEach(state.addresses, id: \.self) { Text($0).tag($0) }
                 }
                 .pickerStyle(.menu)
-                .frame(maxWidth: 320)
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(address)
+                    .font(DFType.mono)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: DFSpace.s) {
                 Button(addressCopied ? "已复制地址" : "复制地址", systemImage: "doc.on.doc") {
@@ -455,22 +463,28 @@ private struct TransferQueueRow: View {
                 Text(task.detail)
                     .font(DFType.detail)
                     .dfSecondaryText()
-                if compact { progress }
+                if compact {
+                    progress
+                    actions
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if !compact { progress.frame(width: 260, alignment: .leading) }
-            Group {
-                if task.phase == .failed || task.phase == .cancelled {
-                    if task.canRetry { Button("重试") { store.send(.retryTransfer(id: task.id)) } }
-                } else if task.phase != .completed {
-                    Button("取消") { store.send(.cancelTransfer(id: task.id)) }
-                }
-            }
-            .buttonStyle(.dfPlain)
-            .controlSize(.small)
-            .frame(width: 72)
+            if !compact { actions.frame(width: 72) }
         }
         .padding(.vertical, DFSpace.m)
+    }
+
+    private var actions: some View {
+        Group {
+            if task.phase == .failed || task.phase == .cancelled {
+                if task.canRetry { Button("重试") { store.send(.retryTransfer(id: task.id)) } }
+            } else if task.phase != .completed {
+                Button("取消") { store.send(.cancelTransfer(id: task.id)) }
+            }
+        }
+        .buttonStyle(.dfPlain)
+        .controlSize(.small)
     }
 
     private var progressBytes: UInt64 { task.phase == .delivering ? task.saved : task.transferred }

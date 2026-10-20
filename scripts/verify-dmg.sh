@@ -46,6 +46,7 @@ ATTACHED=1
 APP_BUNDLE="$MOUNT_POINT/DeskFuse.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 BINARY_PATH="$CONTENTS_DIR/MacOS/deskfuse-app"
+python3 "$ROOT_DIR/scripts/macos-rpaths.py" "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
 for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
@@ -150,7 +151,7 @@ PYICONS
   echo "error: Applications shortcut has wrong target" >&2
   exit 1
 }
-[[ -f "$MOUNT_POINT/.background/installer-background.png" ]] || {
+[[ -f "$MOUNT_POINT/.background/installer-background.tiff" ]] || {
   echo "error: installer background missing" >&2
   exit 1
 }

@@ -26,6 +26,12 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
 @MainActor @Observable final class MicrophoneSharing {
     static let shared = MicrophoneSharing()
     var snapshot: MicrophoneSharingSnapshot?
+    var isFeatureEnabled: Bool { snapshot?.settings.enabled == true }
+    func setFeatureEnabled(_ enabled: Bool) {
+        guard var settings = snapshot?.settings else { return }
+        settings.enabled = enabled
+        applyConfiguration(settings)
+    }
     var inputs: [MicrophoneInput] = []
     var error: String?
     private(set) var connectionError: String?
@@ -41,6 +47,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     var isDefaultInput: Bool?
     private var engine: Engine?
     private var worker: MicrophoneWorker?
+    private var initialization: Task<Void, Never>?
     private var polling: Task<Void, Never>?
     private var inputRefresh: Task<Void, Never>?
     private var usagePolling: Task<Void, Never>?
@@ -49,8 +56,26 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     private var connectionDeadline: ContinuousClock.Instant?
     private static let connectionTimeout: Duration = .seconds(5)
     func start(engine: Engine) {
-        guard worker == nil else { return }
+        guard self.engine == nil else { return }
         self.engine = engine
+        initialization = Task { [weak self] in
+            do {
+                let state = try await Task.detached {
+                    try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
+                }.value
+                guard !Task.isCancelled, let self else { return }
+                self.snapshot = state
+                self.initialization = nil
+                if state.settings.enabled { self.startRuntime(engine: engine) }
+            } catch {
+                self?.connectionError = error.localizedDescription
+                self?.initialization = nil
+                self?.engine = nil
+            }
+        }
+    }
+    private func startRuntime(engine: Engine) {
+        guard worker == nil, isFeatureEnabled, !managingDriver else { return }
         let worker = MicrophoneWorker(engine: engine)
         self.worker = worker
         connectionError = nil
@@ -65,7 +90,13 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         observers.append(DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in worker.setLocked(false) })
         // Do not enumerate HAL devices on the main actor during app launch.
         // The settings page requests the list asynchronously when it is opened.
-        worker.start()
+        worker.start { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.worker = nil
+                if self.isFeatureEnabled, let engine = self.engine { self.startRuntime(engine: engine) }
+            }
+        }
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
@@ -74,6 +105,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                     self.snapshot = snapshot
                     self.connectionError = status.error
                     self.connectionDeadline = nil
+                    if !snapshot.settings.enabled { self.suspendRuntime(); return }
                 } else if let deadline = self.connectionDeadline, ContinuousClock.now >= deadline {
                     worker.expireInitialization()
                     self.connectionDeadline = nil
@@ -126,18 +158,28 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
             ensureStarted(engine: engine)
         }
     }
-    func stop() {
+    private func suspendRuntime() {
         connectionDeadline = nil
         polling?.cancel(); polling = nil
         inputRefresh?.cancel(); inputRefresh = nil
         usagePolling?.cancel(); usagePolling = nil
         readerApps = []; isDefaultInput = nil
-        worker?.stop(); worker = nil
-        snapshot = nil; engine = nil; askedPermission = false
+        worker?.stop()
+        askedPermission = false
         for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); DistributedNotificationCenter.default().removeObserver(token) }
         observers.removeAll()
     }
+    func stop() {
+        initialization?.cancel(); initialization = nil
+        engine = nil; snapshot = nil
+        suspendRuntime()
+    }
     func configure(_ settings: MicrophoneSettings) {
+        var settings = settings
+        settings.enabled = isFeatureEnabled
+        applyConfiguration(settings)
+    }
+    private func applyConfiguration(_ settings: MicrophoneSettings) {
         guard let engine, !saving else { return }
         saving = true; error = nil
         Task {
@@ -146,12 +188,14 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
                 let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
                 try await Task.detached { try engine.configureMicrophone(settingsJson: json) }.value
                 snapshot = try await Task.detached { try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8)) }.value
+                if settings.enabled { startRuntime(engine: engine) }
+                else { suspendRuntime() }
             } catch { self.error = error.localizedDescription }
         }
     }
     func refreshInputs() {
         // Coalesce refreshes: a slow HAL call must not accumulate more queries.
-        guard inputRefresh == nil else { return }
+        guard isFeatureEnabled, inputRefresh == nil else { return }
         let engine = self.engine
         inputRefresh = Task { [weak self] in
             let values = await Task.detached(priority: .utility) {
@@ -182,27 +226,39 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         guard !managingDriver, !saving, let engine, let resources = Bundle.main.resourceURL else { return }
         managingDriver = true; driverOperation = action; error = nil; driverMessage = nil
         Task {
-            defer { managingDriver = false; driverOperation = nil; driverInstalled = MicrophoneDriverManager.isInstalled; legacyDriverInstalled = MicrophoneDriverManager.isLegacyInstalled; refreshInputs() }
+            defer {
+                managingDriver = false
+                driverOperation = nil
+                driverInstalled = MicrophoneDriverManager.isInstalled
+                legacyDriverInstalled = MicrophoneDriverManager.isLegacyInstalled
+                // Respect the current user choice, including changes made while
+                // administrator authorization was pending. Never rewrite settings.
+                if isFeatureEnabled { startRuntime(engine: engine) }
+                refreshInputs()
+            }
             do {
-                // Stop sharing before changing a loaded HAL plugin. Leave the explicit
-                // switch off so audio cannot resume unexpectedly after authorization.
-                if action != .restartAudio, var settings = snapshot?.settings, settings.enabled {
-                    settings.enabled = false
-                    let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
-                    try await Task.detached { try engine.configureMicrophone(settingsJson: json) }.value
+                // Maintenance pauses native audio only; the persisted master
+                // switch belongs exclusively to the user's explicit action.
+                suspendRuntime()
+                let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+                while worker != nil {
+                    guard ContinuousClock.now < deadline else {
+                        throw NSError(domain: "DeskFuse.Microphone", code: 1,
+                                      userInfo: [NSLocalizedDescriptionKey: "音频会话尚未停止，请稍后重试驱动操作。共享开关未更改。"])
+                    }
+                    try await Task.sleep(for: .milliseconds(20))
                 }
                 let completed = try await Task.detached {
                     try MicrophoneDriverManager.run(action, resources: resources, restartAudio: restartAudio)
                 }.value
                 if completed && action == .restartAudio {
-                    worker?.refreshDriver()
                     driverMessage = "已请求重启音频服务，连接状态会自动刷新。语音应用可能需要重新开始录音。"
                 } else if completed {
                     driverMessage = action == .install ? "驱动安装完成。" : "驱动卸载完成。"
                     driverMessage! += restartAudio ? "已请求重启音频服务，请等待系统重新加载音频设备。" : "请重启 Mac 后生效。"
-                    if action == .install { driverMessage! += "准备就绪后可重新开启麦克风共享。" }
+                    if action == .install { driverMessage! += "驱动就绪后将按当前共享开关恢复运行。" }
                 } else {
-                    driverMessage = action == .restartAudio ? "已取消重启，未更改共享设置。" : "已取消驱动操作。若共享原先已开启，请按需重新开启。"
+                    driverMessage = action == .restartAudio ? "已取消重启，未更改共享设置。" : "已取消驱动操作，共享开关保持不变。"
                 }
             } catch { self.error = error.localizedDescription }
         }
@@ -284,7 +340,9 @@ private final class MicrophoneWorker: @unchecked Sendable {
         let onConsole = session?[kCGSessionOnConsoleKey as String] as? Bool ?? false
         lock.lock(); systemLocked = screenLocked || !onConsole; lock.unlock()
     }
-    func start() { Thread.detachNewThread { [self] in run() } }
+    func start(onStopped: @escaping @Sendable () -> Void) {
+        Thread.detachNewThread { [self] in run(); onStopped() }
+    }
     private func run() {
         var channel: MicrophoneChannel?
         var sender: OpaquePointer?

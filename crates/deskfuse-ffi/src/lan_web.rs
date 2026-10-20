@@ -12,6 +12,9 @@ impl Engine {
         port: u16,
     ) -> Result<String, EngineError> {
         self.active()?;
+        if enabled && !self.snapshot()?.files.enabled {
+            return Err(failure("文件传输已关闭"));
+        }
         self.lan_web
             .configure(enabled, interface_name, port)
             .map_err(failure)

@@ -10,6 +10,63 @@ fn settle(actor: &mut InputActor, ssid: Option<&str>) {
     actor.tick_environment();
 }
 
+fn bind_layout(
+    actor: &mut InputActor,
+    peer: DeviceId,
+    ssid: &str,
+    x: f64,
+) -> Vec<DisplayPlacementSetting> {
+    let mut scene = InputSharingScene::new(ssid.into(), actor.snapshot.settings.clone()).unwrap();
+    scene.ssid = Some(ssid.into());
+    scene.settings.placements = vec![DisplayPlacementSetting {
+        display: DisplayKey {
+            device_id: peer,
+            display_id: DisplayId::from("display"),
+        },
+        x,
+        y: 0.0,
+    }];
+    let placements = scene.settings.placements.clone();
+    actor.snapshot.scenes.push(scene);
+    placements
+}
+
+#[test]
+fn wifi_diagnostics_explain_restore_and_deduplicate_unchanged_observations() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let mut events = actor.events.subscribe();
+    bind_layout(&mut actor, peer, "office", -1000.0);
+    settle(&mut actor, Some("office"));
+    actor.observe_environment(Some("office".into()));
+    actor.environment.last_sent = None;
+    actor.tick_environment();
+    actor.apply_environment_layout(Some("missing"));
+
+    let mut diagnostics = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let RuntimeEvent::InputDiagnostic { stage, detail } = event {
+            diagnostics.push((stage, detail));
+        }
+    }
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|(stage, _)| *stage == "wifi_observed")
+            .count(),
+        1,
+    );
+    assert!(diagnostics.iter().any(|(stage, detail)| {
+        *stage == "wifi_environment_state"
+            && detail.contains("effective=Some(\"office\")")
+            && detail.contains("layout_pending=false")
+    }));
+    for outcome in ["applied", "no_saved_scene"] {
+        assert!(diagnostics.iter().any(|(stage, detail)| {
+            *stage == "wifi_layout_restore" && detail.contains(&format!("outcome={outcome}"))
+        }));
+    }
+}
+
 #[test]
 fn wifi_rules_enter_leave_and_restore_controller_without_rewriting_settings() {
     let (mut actor, peer, _, _, _) = setup(true);
@@ -33,6 +90,72 @@ fn wifi_rules_enter_leave_and_restore_controller_without_rewriting_settings() {
     assert_eq!(actor.snapshot.environment.selected, Some(local));
     assert!(!actor.snapshot.environment.local_suspended);
     assert_eq!(actor.snapshot.settings, settings);
+}
+
+#[test]
+fn wifi_layout_restores_after_disconnected_transition_resumes_controller() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.environment.rules.insert("home".into(), local);
+    actor.environment.rules.insert("office".into(), local);
+    let expected = bind_layout(&mut actor, peer, "office", -1000.0);
+    let original = actor.snapshot.settings.clone();
+
+    settle(&mut actor, Some("home"));
+    settle(&mut actor, None);
+    assert!(actor.snapshot.environment.local_suspended);
+    settle(&mut actor, Some("office"));
+
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert_eq!(actor.snapshot.settings.placements, expected);
+    assert_eq!(actor.snapshot.settings.enabled, original.enabled);
+    assert_eq!(actor.snapshot.settings.role, original.role);
+    assert_eq!(actor.snapshot.settings.participants, original.participants);
+    assert_eq!(
+        actor.snapshot.settings.authorized_controller,
+        original.authorized_controller
+    );
+    // A background save must not replace the office scene with the old layout.
+    actor.refresh_environment_scene();
+    assert_eq!(actor.snapshot.scenes[0].settings.placements, expected);
+}
+
+#[tokio::test]
+async fn wifi_layout_waits_for_local_handover_without_overwriting_saved_scene() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.environment.rules.insert("home".into(), local);
+    actor.environment.rules.insert("office".into(), peer);
+    let home = bind_layout(&mut actor, peer, "home", 1000.0);
+    let office = bind_layout(&mut actor, peer, "office", -1000.0);
+    settle(&mut actor, Some("home"));
+    assert_eq!(actor.snapshot.settings.placements, home);
+    settle(&mut actor, Some("office"));
+    assert!(actor.snapshot.environment.local_suspended);
+    assert_eq!(actor.snapshot.settings.placements, home);
+    assert!(!actor.refresh_environment_scene());
+    assert_eq!(actor.snapshot.scenes[1].settings.placements, office);
+
+    actor.choose_environment_controller(local, false).await;
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert_eq!(actor.snapshot.settings.placements, office);
+    // Restore once: subsequent ticks must not undo a user's layout edit.
+    actor.snapshot.settings.placements[0].x = -2000.0;
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.settings.placements[0].x, -2000.0);
+}
+
+#[test]
+fn wifi_transition_does_not_save_new_topology_into_previous_network_scene() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let home = bind_layout(&mut actor, peer, "home", 1000.0);
+    settle(&mut actor, Some("home"));
+    actor.observe_environment(Some("office".into()));
+    actor.tick_environment();
+    actor.snapshot.settings.placements[0].x = -1000.0;
+
+    assert!(!actor.refresh_environment_scene());
+    assert_eq!(actor.snapshot.scenes[0].settings.placements, home);
 }
 
 #[test]

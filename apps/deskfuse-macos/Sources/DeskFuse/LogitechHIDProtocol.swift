@@ -9,7 +9,24 @@ enum LogitechHIDProtocol {
     static let g502Buttons = Set(208..<224)
     static let buttons = mxButtons.union(g502Buttons)
 
-    enum Model { case mxMaster3, g502Lightspeed }
+    enum Model: String, CaseIterable, Hashable, Identifiable {
+        case g502Lightspeed
+        case mxMaster3
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .g502Lightspeed: "G502 LIGHTSPEED"
+            case .mxMaster3: "MX Master 3 / 3S"
+            }
+        }
+        var supportSummary: String {
+            switch self {
+            case .g502Lightspeed: "11 个实体键 · 保留原生功能"
+            case .mxMaster3: "手势键、模式切换键与标准按键"
+            }
+        }
+    }
     static func model(_ name: String) -> Model? {
         let name = name.lowercased()
         if name.contains("mx master 3") { return .mxMaster3 }

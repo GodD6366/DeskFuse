@@ -70,6 +70,9 @@ pub(super) struct Sync {
     peers: HashMap<DeviceId, PeerWorker>,
 }
 impl Sync {
+    pub fn stop(&mut self) {
+        self.peers.clear();
+    }
     pub fn refresh(&mut self, runtime: &RuntimeHandle, ui: &UnboundedSender<UiEvent>) {
         let trusted = trusted_connected_peer_ids(&runtime.snapshot_view());
         self.peers.retain(|id, p| {
@@ -548,6 +551,28 @@ mod tests {
             }
             assert!(result.is_none()); // No operation/cursor ACK before the last chunk.
         }
+    }
+
+    #[tokio::test]
+    async fn stop_aborts_replication_workers_and_closes_inbox() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let abort = task.abort_handle();
+        let sender = tx.clone();
+        let mut sync = Sync::default();
+        sync.peers.insert(
+            DeviceId::from_bytes([7; 32]),
+            PeerWorker {
+                generation: 1,
+                tx,
+                task,
+            },
+        );
+        sync.stop();
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
+        assert!(sender.send(vec![1]).await.is_err());
+        assert!(sync.peers.is_empty());
     }
 
     #[test]

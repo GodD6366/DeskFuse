@@ -766,6 +766,7 @@ fn native_settings_equal(a: &InputSharingSettings, b: &InputSharingSettings) -> 
     a.shortcuts == b.shortcuts
         && a.disabled_corners == b.disabled_corners
         && a.corner_size == b.corner_size
+        && a.feature_enabled == b.feature_enabled
         && a.enabled == b.enabled
         && a.role == b.role
         && a.authorized_controller == b.authorized_controller
@@ -894,6 +895,7 @@ type NativeObserver = (
 /// work item. A stalled observer fails closed through the freshness check.
 fn native_observer(
     stopping: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
     platform: Arc<dyn EnginePlatformPort>,
 ) -> NativeObserver {
     let (tx, rx) = tokio::sync::watch::channel(None);
@@ -906,6 +908,11 @@ fn native_observer(
                 Result<deskfuse_core::DisplayTopology, String>,
             )> = None;
             while !stopping.load(Ordering::Acquire) {
+                if !enabled.load(Ordering::Acquire) {
+                    last_topology = None;
+                    thread::park_timeout(Duration::from_secs(1));
+                    continue;
+                }
                 let started_at = Instant::now();
                 let started_wall = SystemTime::now();
                 let topology = match last_topology.as_ref() {
@@ -998,8 +1005,11 @@ async fn run(
         cadence_at: Instant::now(),
         live_synced: false,
     };
+    let observer_enabled = Arc::new(AtomicBool::new(
+        runtime.input_snapshot().settings.feature_enabled,
+    ));
     let (mut observations, observer, observer_thread) =
-        native_observer(stopping.clone(), platform.clone());
+        native_observer(stopping.clone(), observer_enabled.clone(), platform.clone());
     state.observer_thread = observer_thread;
     let mut observer_open = observer.is_some();
     let mut previous_permission = None;
@@ -1105,6 +1115,8 @@ async fn run(
                         next_refresh=Instant::now();
                     }
                     RuntimeEvent::InputSharingSettingsChanged(_) => {
+                        timer = tokio::time::interval(Duration::from_millis(20));
+                        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         // Also emitted when settings validation/persistence fails:
                         // re-evaluate the native gate instead of retaining a cached true.
                         state.reclaim(&runtime,Some(state.anchor)).await;
@@ -1288,6 +1300,26 @@ async fn run(
                 // 本轮同步完成前热路径一律走完整校验。
                 state.live_synced = false;
                 let mut snapshot = live_input.borrow_and_update().clone();
+                let feature_enabled = snapshot.settings.feature_enabled;
+                if observer_enabled.swap(feature_enabled, Ordering::AcqRel) != feature_enabled
+                    && let Some(thread) = &state.observer_thread {
+                    thread.unpark();
+                }
+                if !feature_enabled {
+                    if state.snapshot.settings.feature_enabled || state.capture_started || state.injector.is_some() {
+                        state.reset_adapters(&runtime).await;
+                    }
+                    state.snapshot = snapshot.clone();
+                    state.effective = snapshot.effective_settings();
+                    state.available = false;
+                    state.grants.clear();
+                    if previous_ui_snapshot.as_ref() != Some(&snapshot) {
+                        previous_ui_snapshot = Some(snapshot.clone());
+                        let _ = ui.unbounded_send(UiEvent::InputSharingSnapshot(Box::new(snapshot)));
+                    }
+                    timer = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(1), Duration::from_secs(1));
+                    continue;
+                }
                 let effective = effective_native_settings(&snapshot, &state.paused_activations);
                 if latch_emergency(&emergency, &snapshot, &mut state.paused_activations) {
                     state.snapshot = snapshot.clone();

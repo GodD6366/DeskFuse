@@ -19,10 +19,15 @@ pub(super) struct Environment {
     pub(super) dirty: bool,
     observed: Option<String>,
     pending: Option<(Option<String>, Instant)>,
+    layout_pending: bool,
     peers: BTreeMap<DeviceId, Presence>,
     last_sent: Option<Instant>,
 }
 impl InputActor {
+    pub(super) fn environment_layout_pending(&self) -> bool {
+        self.environment.pending.is_some() || self.environment.layout_pending
+    }
+
     fn environment_capable(&self, peer: DeviceId, context: &ConnectionContext) -> bool {
         self.network_allowed(peer)
             && self.context_live(peer, context)
@@ -33,6 +38,9 @@ impl InputActor {
     }
     pub(super) fn observe_environment(&mut self, ssid: Option<String>) {
         self.environment.observed = ssid.filter(|s| !s.is_empty() && s.len() <= 32);
+        let observed = self.environment.observed.clone();
+        let local = self.network.borrow().snapshot.local_device_id;
+        self.activation_diagnostic(local, "wifi_observed", || format!("observed={observed:?}"));
     }
     pub(super) fn receive_controller_presence(
         &mut self,
@@ -291,9 +299,9 @@ impl InputActor {
                 self.snapshot.environment.ssid = ssid.clone();
                 self.environment.temporary = None;
                 self.environment.pending = None;
-                // A network with a remembered arrangement restores it here; the
-                // sharing switch, participants and consent are never touched.
-                self.apply_environment_layout(ssid.as_deref());
+                // Restore only after this network's controller policy has settled.
+                // The old network may still have the local controller suspended.
+                self.environment.layout_pending = true;
             }
         } else {
             self.environment.pending = None;
@@ -430,6 +438,18 @@ impl InputActor {
             "可为当前 Wi-Fi 保存主控；陌生网络出现多个主控时需要选择"
         }
         .into();
+        // Keep a deferred restore until the local controller can own its layout.
+        // Consuming it before clearing local_suspended loses the restore forever.
+        if self.environment.layout_pending
+            && self.environment.pending.is_none()
+            && !busy
+            && self.incoming.is_none()
+            && self.snapshot.can_configure_layout()
+        {
+            self.environment.layout_pending = false;
+            let ssid = self.snapshot.environment.ssid.clone();
+            self.apply_environment_layout(ssid.as_deref());
+        }
         if self
             .environment
             .last_sent
@@ -438,6 +458,22 @@ impl InputActor {
             return;
         }
         self.environment.last_sent = Some(now);
+        if deskfuse_core::debug_logging::enabled() {
+            let detail = format!(
+                "observed={:?} effective={:?} pending={:?} remote_ssids={remote_ssids:?} layout_pending={} busy={busy} incoming={} selected={:?} suspended={} conflict={} can_configure={} message={:?}",
+                self.environment.observed,
+                self.snapshot.environment.ssid,
+                self.environment.pending.as_ref().map(|(ssid, _)| ssid),
+                self.environment.layout_pending,
+                self.incoming.is_some(),
+                self.snapshot.environment.selected,
+                self.snapshot.environment.local_suspended,
+                self.snapshot.environment.conflict,
+                self.snapshot.can_configure_layout(),
+                self.snapshot.environment.message,
+            );
+            self.activation_diagnostic(local, "wifi_environment_state", || detail);
+        }
         let peers = self
             .network
             .borrow()

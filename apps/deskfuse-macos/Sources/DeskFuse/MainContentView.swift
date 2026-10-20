@@ -13,18 +13,37 @@ struct MainContentView: View {
         VStack(spacing: 0) {
             if page != .settings {
                 DFTopBar(section: page.section, title: page.rawValue, badge: page.isBeta ? "Beta" : nil)
+                    .overlay(alignment: .trailing) {
+                        FeatureControls(store: store, page: page)
+                            .id(page)
+                            .padding(.trailing, DFMetrics.pageInset)
+                            .padding(.bottom, DFSpace.s)
+                    }
             }
+            featureError
             pageContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
             .dfWorkspace()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .overlay(alignment: .bottomLeading) {
-                ErrorNoticeView(notice: store.errorNotice)
-                    .frame(width: 320)
-                    .padding(.leading, 14)
-                    .padding(.bottom, 14)
-            }
+    }
+
+    @ViewBuilder private var featureError: some View {
+        if page == .remoteApplications, #available(macOS 14.2, *),
+           let message = RemoteApplicationManager.shared.error {
+            DFNotice(tone: .warning, title: "远程应用暂不可用",
+                     message: friendlyError(message),
+                     actionTitle: RemoteApplicationManager.shared.enabled ? "重试" : nil,
+                     action: { RemoteApplicationManager.shared.retry() },
+                     onDismiss: { RemoteApplicationManager.shared.error = nil })
+                .padding(.horizontal, DFMetrics.pageInset)
+                .padding(.bottom, DFSpace.s)
+        } else if page == .microphone, store.featureEnabled(for: page) == false,
+                  let message = MicrophoneSharing.shared.error {
+            DFNotice(tone: .warning, title: "麦克风操作未完成", message: friendlyError(message),
+                     onDismiss: { MicrophoneSharing.shared.error = nil })
+                .padding(.horizontal, DFMetrics.pageInset)
+        }
     }
 
     @ViewBuilder private var pageContent: some View {
@@ -36,28 +55,33 @@ struct MainContentView: View {
             // RootView owns the window-wide loading presentation.
             Color.clear
         } else if let snapshot = store.snapshot {
-            switch page {
-            case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
-            case .input: InputView(store: store, snapshot: snapshot)
-            case .mouse: MouseSettingsView(engine: store.engine)
-            case .microphone: MicrophoneSettingsView(store: store).padding(.top, 16)
-            case .devices:
-                DevicesView(
-                    store: store,
-                    snapshot: snapshot,
-                    searchRequest: deviceSearchRequest,
-                    localSelectionRequest: localDeviceRequest
-                )
-            case .remoteApplications:
-                DevicesView(
-                    store: store,
-                    snapshot: snapshot,
-                    searchRequest: deviceSearchRequest,
-                    localSelectionRequest: 0,
-                    showsApplications: true
-                )
-            case .files: FileTransferView(store: store, snapshot: snapshot)
-            case .settings: EmptyView() // Owned by the retained settings host in RootView.
+            if store.featureEnabled(for: page) == false {
+                DFEmptyState(symbol: page.symbol, title: "\(page.rawValue)已关闭",
+                             message: "相关后台任务已停止。打开右上角总开关即可继续使用。")
+            } else {
+                switch page {
+                case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
+                case .input: InputView(store: store, snapshot: snapshot)
+                case .mouse: MouseSettingsView(engine: store.engine)
+                case .microphone: MicrophoneSettingsView(store: store).padding(.top, 16)
+                case .devices:
+                    DevicesView(
+                        store: store,
+                        snapshot: snapshot,
+                        searchRequest: deviceSearchRequest,
+                        localSelectionRequest: localDeviceRequest
+                    )
+                case .remoteApplications:
+                    DevicesView(
+                        store: store,
+                        snapshot: snapshot,
+                        searchRequest: deviceSearchRequest,
+                        localSelectionRequest: 0,
+                        showsApplications: true
+                    )
+                case .files: FileTransferView(store: store, snapshot: snapshot)
+                case .settings: EmptyView() // Owned by the retained settings host in RootView.
+                }
             }
         } else {
             DFEmptyState(symbol: "exclamationmark.triangle",

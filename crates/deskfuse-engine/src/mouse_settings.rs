@@ -178,12 +178,14 @@ impl Catalog {
         if bytes.len() > MAX_FRAME {
             return Err("鼠标同步配置过大".into());
         }
-        let incoming: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut incoming: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         incoming.validate()?;
         let mut current = self.document.lock().map_err(|e| e.to_string())?;
         if incoming.revision <= current.revision {
             return Ok(false);
         }
+        // Bindings sync across devices; the master switch is a local user choice.
+        incoming.settings.enabled = current.settings.enabled;
         self.persist(&incoming)?;
         *current = incoming;
         Ok(true)
@@ -226,6 +228,37 @@ mod tests {
         assert!(!b.receive(&old).unwrap());
     }
     #[test]
+    fn remote_bindings_never_change_the_local_master_switch() {
+        for enabled in [false, true] {
+            let local = catalog();
+            let remote = catalog();
+            let mut local_settings: Settings = serde_json::from_str(&settings(3)).unwrap();
+            local_settings.enabled = enabled;
+            local
+                .save(
+                    &serde_json::to_string(&local_settings).unwrap(),
+                    &"a".repeat(64),
+                )
+                .unwrap();
+            let mut remote_settings: Settings = serde_json::from_str(&settings(4)).unwrap();
+            remote_settings.enabled = !enabled;
+            remote
+                .save(
+                    &serde_json::to_string(&remote_settings).unwrap(),
+                    &"b".repeat(64),
+                )
+                .unwrap();
+            assert!(local.receive(&remote.frame().unwrap()).unwrap());
+            let loaded: Settings = serde_json::from_str(&local.settings_json().unwrap()).unwrap();
+            assert_eq!(loaded.enabled, enabled);
+            assert_eq!(loaded.bindings, remote_settings.bindings);
+            let reopened = Catalog::open(local.store.clone()).unwrap();
+            let persisted: Settings =
+                serde_json::from_str(&reopened.settings_json().unwrap()).unwrap();
+            assert_eq!(persisted.enabled, enabled);
+        }
+    }
+    #[test]
     fn reject_wrong_platform_invalid_keys_and_oversize() {
         let c = catalog();
         assert!(c.save(&settings(32), &"a".repeat(64)).is_err());
@@ -247,7 +280,10 @@ mod tests {
         for cid in [195, 196] {
             a.save(&settings(cid), &"a".repeat(64)).unwrap();
             b.receive(&a.frame().unwrap()).unwrap();
-            assert_eq!(a.settings_json().unwrap(), b.settings_json().unwrap());
+            let source: Settings = serde_json::from_str(&a.settings_json().unwrap()).unwrap();
+            let received: Settings = serde_json::from_str(&b.settings_json().unwrap()).unwrap();
+            assert_eq!(source.bindings, received.bindings);
+            assert!(!received.enabled);
         }
         for cid in [32, 194, 197, 255] {
             assert!(a.save(&settings(cid), &"a".repeat(64)).is_err());
@@ -269,7 +305,10 @@ mod tests {
         for button in 208..=223 {
             a.save(&settings(button), &"a".repeat(64)).unwrap();
             b.receive(&a.frame().unwrap()).unwrap();
-            assert_eq!(a.settings_json().unwrap(), b.settings_json().unwrap());
+            let source: Settings = serde_json::from_str(&a.settings_json().unwrap()).unwrap();
+            let received: Settings = serde_json::from_str(&b.settings_json().unwrap()).unwrap();
+            assert_eq!(source.bindings, received.bindings);
+            assert!(!received.enabled);
         }
         for button in [207, 224] {
             assert!(a.save(&settings(button), &"a".repeat(64)).is_err());

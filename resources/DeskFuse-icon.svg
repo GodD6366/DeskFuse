@@ -1,44 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
-  <title>DeskFuse — Shared control bridge</title>
-  <desc>Two luminous desktop panels joined by a shared input cursor. The dark tile and bright fusion point make cross-device control recognizable at small sizes.</desc>
+  <title>DeskFuse — Screen arrangement</title>
+  <desc>Three screens laid edge to edge as in a real display arrangement: the remote device's screen (signal orange) at top left, this Mac's external display to its right, and the built-in display below it.</desc>
   <defs>
-    <linearGradient id="tile" x1="218" y1="94" x2="812" y2="930" gradientUnits="userSpaceOnUse"><stop stop-color="#1A376B"/><stop offset=".48" stop-color="#102650"/><stop offset="1" stop-color="#0A1430"/></linearGradient>
-    <linearGradient id="tileRim" x1="512" y1="104" x2="512" y2="920" gradientUnits="userSpaceOnUse"><stop stop-color="#5375B8" stop-opacity=".78"/><stop offset=".52" stop-color="#2B4D8D" stop-opacity=".48"/><stop offset="1" stop-color="#050B1D" stop-opacity=".9"/></linearGradient>
-    <linearGradient id="rearFrame" x1="236" y1="286" x2="602" y2="565" gradientUnits="userSpaceOnUse"><stop stop-color="#62F0EA"/><stop offset=".5" stop-color="#22C9EA"/><stop offset="1" stop-color="#3276F3"/></linearGradient>
-    <linearGradient id="frontFrame" x1="428" y1="458" x2="798" y2="734" gradientUnits="userSpaceOnUse"><stop stop-color="#6DDBFF"/><stop offset=".42" stop-color="#5A80FF"/><stop offset="1" stop-color="#9B5CFF"/></linearGradient>
-    <linearGradient id="rearGlass" x1="288" y1="340" x2="548" y2="504" gradientUnits="userSpaceOnUse"><stop stop-color="#D5FFFF" stop-opacity=".86"/><stop offset="1" stop-color="#7BC9EE" stop-opacity=".18"/></linearGradient>
-    <linearGradient id="frontGlass" x1="486" y1="510" x2="748" y2="678" gradientUnits="userSpaceOnUse"><stop stop-color="#E5F4FF" stop-opacity=".82"/><stop offset="1" stop-color="#9B9DFF" stop-opacity=".16"/></linearGradient>
-    <linearGradient id="cursor" x1="475" y1="378" x2="626" y2="595" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset=".42" stop-color="#D7FFFF"/><stop offset="1" stop-color="#86D8FF"/></linearGradient>
-    <radialGradient id="halo" cx="0" cy="0" r="1" gradientTransform="translate(512 510) rotate(90) scale(270)" gradientUnits="userSpaceOnUse"><stop stop-color="#51E7FF" stop-opacity=".32"/><stop offset=".6" stop-color="#4776FF" stop-opacity=".12"/><stop offset="1" stop-color="#243A85" stop-opacity="0"/></radialGradient>
-    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="180%"><feGaussianBlur stdDeviation="15"/></filter>
+    <linearGradient id="tile" x1="512" y1="104" x2="512" y2="920" gradientUnits="userSpaceOnUse"><stop stop-color="#33353B"/><stop offset="1" stop-color="#1B1C20"/></linearGradient>
+    <linearGradient id="tileRim" x1="512" y1="104" x2="512" y2="920" gradientUnits="userSpaceOnUse"><stop stop-color="#4A4D55"/><stop offset="1" stop-color="#16171A"/></linearGradient>
+    <linearGradient id="remoteFill" x1="0" y1="314" x2="0" y2="520" gradientUnits="userSpaceOnUse"><stop stop-color="#FF7346"/><stop offset="1" stop-color="#E9491B"/></linearGradient>
+    <linearGradient id="externalFill" x1="0" y1="346" x2="0" y2="552" gradientUnits="userSpaceOnUse"><stop stop-color="#F6F4F0"/><stop offset="1" stop-color="#DAD6CE"/></linearGradient>
+    <linearGradient id="builtinFill" x1="0" y1="534" x2="0" y2="704" gradientUnits="userSpaceOnUse"><stop stop-color="#F6F4F0"/><stop offset="1" stop-color="#DAD6CE"/></linearGradient>
+    <!-- 顶缘高光：只在每块屏幕上沿出现，向下迅速消失。 -->
+    <linearGradient id="remoteRim" x1="0" y1="314" x2="0" y2="380" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity=".55"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <linearGradient id="externalRim" x1="0" y1="346" x2="0" y2="412" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity=".9"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <linearGradient id="builtinRim" x1="0" y1="534" x2="0" y2="600" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity=".9"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+    <filter id="tileShadow" x="-30%" y="-30%" width="160%" height="180%"><feGaussianBlur stdDeviation="16"/></filter>
+    <filter id="ambient" x="-30%" y="-30%" width="160%" height="190%"><feGaussianBlur stdDeviation="16"/></filter>
+    <filter id="contact" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur stdDeviation="3"/></filter>
     <path id="tileShape" d="M309 104H715C789 104 837 121 871 155C905 189 920 237 920 311V713C920 787 905 835 871 869C837 903 789 920 715 920H309C235 920 187 903 153 869C119 835 104 787 104 713V311C104 237 119 189 153 155C187 121 235 104 309 104Z"/>
-    <path id="rearFramePath" fill-rule="evenodd" d="M302 286H532C570.7 286 602 317.3 602 356V495C602 533.7 570.7 565 532 565H302C263.3 565 232 533.7 232 495V356C232 317.3 263.3 286 302 286ZM306 337C293.3 337 283 347.3 283 360V491C283 503.7 293.3 514 306 514H528C540.7 514 551 503.7 551 491V360C551 347.3 540.7 337 528 337H306Z"/>
-    <path id="frontFramePath" fill-rule="evenodd" d="M492 458H722C760.7 458 792 489.3 792 528V667C792 705.7 760.7 737 722 737H492C453.3 737 422 705.7 422 667V528C422 489.3 453.3 458 492 458ZM496 509C483.3 509 473 519.3 473 532V663C473 675.7 483.3 686 496 686H718C730.7 686 741 675.7 741 663V532C741 519.3 730.7 509 718 509H496Z"/>
+    <!-- 屏幕排列参照实际使用：远端设备在左上，本机外接屏在右侧并略微下沉，
+         本机内建屏在远端屏下方、右边缘对齐。屏幕之间只留细缝，互不重叠。 -->
+    <rect id="remoteShape" x="176" y="314" width="330" height="206" rx="24"/>
+    <rect id="externalShape" x="520" y="346" width="330" height="206" rx="24"/>
+    <rect id="builtinShape" x="246" y="534" width="260" height="170" rx="22"/>
     <clipPath id="tileClip"><use href="#tileShape"/></clipPath>
+    <clipPath id="remoteClip"><use href="#remoteShape"/></clipPath>
+    <clipPath id="externalClip"><use href="#externalShape"/></clipPath>
+    <clipPath id="builtinClip"><use href="#builtinShape"/></clipPath>
   </defs>
   <g id="app-tile">
-    <use href="#tileShape" transform="translate(0 8)" fill="#020716" opacity=".5" filter="url(#softShadow)"/>
+    <use href="#tileShape" transform="translate(0 10)" fill="#000000" opacity=".2" filter="url(#tileShadow)"/>
     <use href="#tileShape" fill="url(#tile)"/>
     <use href="#tileShape" stroke="url(#tileRim)" stroke-width="3"/>
-    <path d="M185 330C185 222 224 170 330 151" stroke="#8EB8FF" stroke-opacity=".13" stroke-width="8" stroke-linecap="round"/>
-    <path d="M839 696C839 805 800 854 694 873" stroke="#050B1D" stroke-opacity=".48" stroke-width="10" stroke-linecap="round"/>
   </g>
   <g id="center-mark" clip-path="url(#tileClip)">
-    <circle cx="512" cy="510" r="280" fill="url(#halo)"/>
-    <use href="#rearFramePath" transform="translate(0 14)" fill="#06172F" opacity=".65" filter="url(#softShadow)"/>
-    <use href="#frontFramePath" transform="translate(0 14)" fill="#06152E" opacity=".72" filter="url(#softShadow)"/>
-    <rect x="283" y="337" width="268" height="177" rx="25" fill="url(#rearGlass)"/>
-    <rect x="473" y="509" width="268" height="177" rx="25" fill="url(#frontGlass)"/>
-    <use href="#rearFramePath" fill="url(#rearFrame)"/>
-    <use href="#frontFramePath" fill="url(#frontFrame)"/>
-    <path d="M490 452C527 421 570 421 609 451" stroke="#B7FFFF" stroke-opacity=".88" stroke-width="8" stroke-linecap="round"/>
-    <path d="M442 625C474 655 511 666 548 660" stroke="#C8B8FF" stroke-opacity=".62" stroke-width="7" stroke-linecap="round"/>
-    <circle cx="512" cy="512" r="46" fill="#58E7FF" opacity=".2"/>
-    <circle cx="512" cy="512" r="22" fill="#E9FFFF" stroke="#54DFFF" stroke-width="7"/>
-    <path d="M476 365L650 525L574 516L613 594L573 615L533 535L477 584L476 365Z" fill="#07152F" opacity=".62" transform="translate(0 12)" filter="url(#softShadow)"/>
-    <path d="M476 365L650 525L574 516L613 594L573 615L533 535L477 584L476 365Z" fill="url(#cursor)" stroke="#FFFFFF" stroke-width="7" stroke-linejoin="round"/>
-    <path d="M495 407L495 535L528 507" stroke="#6DEBFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/>
-    <g fill="#C7F8FF"><circle cx="301" cy="297" r="6" opacity=".9"/><circle cx="323" cy="297" r="4" opacity=".52"/><circle cx="701" cy="756" r="6" opacity=".84"/><circle cx="723" cy="756" r="4" opacity=".46"/></g>
+    <g transform="translate(512 530) scale(1.02) translate(-513 -509)">
+      <!-- 两层投影：大范围环境阴影 + 贴近底边的接触阴影。 -->
+      <use href="#remoteShape" transform="translate(0 18)" fill="#000000" opacity=".45" filter="url(#ambient)"/>
+      <use href="#externalShape" transform="translate(0 18)" fill="#000000" opacity=".45" filter="url(#ambient)"/>
+      <use href="#builtinShape" transform="translate(0 18)" fill="#000000" opacity=".45" filter="url(#ambient)"/>
+      <use href="#remoteShape" transform="translate(0 2)" fill="#000000" opacity=".25" filter="url(#contact)"/>
+      <use href="#externalShape" transform="translate(0 2)" fill="#000000" opacity=".25" filter="url(#contact)"/>
+      <use href="#builtinShape" transform="translate(0 2)" fill="#000000" opacity=".25" filter="url(#contact)"/>
+      <use href="#remoteShape" fill="url(#remoteFill)"/>
+      <use href="#externalShape" fill="url(#externalFill)"/>
+      <use href="#builtinShape" fill="url(#builtinFill)"/>
+      <!-- 每块屏幕顶部一条细菜单栏，让色块读作“屏幕”。 -->
+      <rect x="176" y="314" width="330" height="22" fill="#FFFFFF" opacity=".2" clip-path="url(#remoteClip)"/>
+      <rect x="520" y="346" width="330" height="22" fill="#000000" opacity=".06" clip-path="url(#externalClip)"/>
+      <rect x="246" y="534" width="260" height="18" fill="#000000" opacity=".06" clip-path="url(#builtinClip)"/>
+      <use href="#remoteShape" stroke="url(#remoteRim)" stroke-width="3"/>
+      <use href="#externalShape" stroke="url(#externalRim)" stroke-width="3"/>
+      <use href="#builtinShape" stroke="url(#builtinRim)" stroke-width="3"/>
+    </g>
   </g>
 </svg>

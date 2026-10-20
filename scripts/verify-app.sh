@@ -25,6 +25,7 @@ APP_BUNDLE="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 BINARY_PATH="$CONTENTS_DIR/MacOS/deskfuse-app"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
+python3 "$ROOT_DIR/scripts/macos-rpaths.py" "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 
 MACOS_ARCH="${DESKFUSE_MACOS_ARCH:-arm64}"
 case "$MACOS_ARCH" in

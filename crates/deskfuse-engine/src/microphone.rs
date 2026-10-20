@@ -97,8 +97,10 @@ impl State {
 pub struct Service {
     transport: QuinnTransport,
     runtime: RuntimeHandle,
+    executor: tokio::runtime::Handle,
     diagnostics: Diagnostics,
     state: Mutex<State>,
+    enabled: tokio::sync::watch::Sender<bool>,
 }
 pub fn install(transport: QuinnTransport, runtime: RuntimeHandle, diagnostics: Diagnostics) {
     let path = SQLiteStore::default_path()
@@ -110,9 +112,14 @@ pub fn install(transport: QuinnTransport, runtime: RuntimeHandle, diagnostics: D
         .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
         .filter(|s| validate_settings(s).is_ok())
         .unwrap_or_default();
+    transport.set_microphone_enabled(settings.enabled);
+    transport.set_microphone_source_enabled(settings.enabled && settings.source.is_empty());
+    let (enabled, mut enabled_rx) = tokio::sync::watch::channel(settings.enabled);
     let service = Arc::new(Service {
+        enabled,
         transport,
         runtime,
+        executor: tokio::runtime::Handle::current(),
         diagnostics,
         state: Mutex::new(State {
             settings,
@@ -138,7 +145,14 @@ pub fn install(transport: QuinnTransport, runtime: RuntimeHandle, diagnostics: D
         let mut timer = tokio::time::interval(Duration::from_millis(100));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            timer.tick().await;
+            let is_enabled = *enabled_rx.borrow_and_update();
+            tokio::select! {
+                changed = enabled_rx.changed() => {
+                    if changed.is_err() { break; }
+                    continue;
+                }
+                _ = timer.tick(), if is_enabled => {}
+            }
             let Some(service) = weak.upgrade() else { break };
             service.tick().await;
         }
@@ -161,6 +175,21 @@ fn validate_settings(s: &Settings) -> Result<(), String> {
     Ok(())
 }
 impl Service {
+    pub fn source_enabled(&self, peer: DeviceId) -> Result<bool, String> {
+        if !self.authorized(peer) {
+            return Ok(false);
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let transport = self.transport.clone();
+        self.executor.spawn(async move {
+            let _ = tx.send(transport.microphone_source_enabled(peer).await);
+        });
+        let enabled = rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "麦克风状态查询超时".to_string())??;
+        Ok(enabled && self.authorized(peer))
+    }
+
     fn activate(&self, state: &mut State, sender: bool, channel: Arc<MicrophoneSession>) {
         state.generation += 1;
         let active = Active {
@@ -233,6 +262,10 @@ impl Service {
                 "disabled"
             },
         );
+        self.transport.set_microphone_enabled(settings.enabled);
+        self.transport
+            .set_microphone_source_enabled(settings.enabled && settings.source.is_empty());
+        self.enabled.send_replace(settings.enabled);
         state.settings = settings;
         state.generation += 1;
         state.opening = false;

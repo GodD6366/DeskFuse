@@ -1,32 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DMG 安装窗口背景：920×560 逻辑点。图标中心与 scripts/package-macos.sh 中的
+     Finder 布局保持一致：DeskFuse.app (250, 262)，Applications (670, 262)。
+     底部约 40 pt 可能被窗口标题栏高度差裁掉，不放置关键内容。 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560">
   <defs>
-    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#f7f8fb"/>
+    <linearGradient id="canvas" x1="0" y1="0" x2="0" y2="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8F6F2"/>
+      <stop offset="1" stop-color="#EFECE6"/>
     </linearGradient>
-    <linearGradient id="route" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#c2e6ff"/>
-      <stop offset="0.5" stop-color="#3c99ff"/>
-      <stop offset="1" stop-color="#b7e9ff"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-100%" width="140%" height="300%">
-      <feGaussianBlur stdDeviation="5"/>
+    <filter id="padShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feGaussianBlur stdDeviation="10"/>
     </filter>
+    <rect id="pad" width="184" height="200" rx="32"/>
   </defs>
+
   <rect width="920" height="560" fill="url(#canvas)"/>
-  <path d="M241 266C343 194 569 194 681 266" fill="none" stroke="#d9edff" stroke-width="10" stroke-linecap="round" filter="url(#glow)"/>
-  <path d="M241 266C343 194 569 194 681 266" fill="none" stroke="url(#route)" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="455" cy="213" r="7" fill="#f6ffff" stroke="#8ed3ff" stroke-width="2"/>
-  <path d="M148 152l18-11 16 17-16 12Z" fill="#a6d8ff" fill-opacity="0.65"/>
-  <path d="M170 139l13 19-17 12-18-18Z" fill="#b8a8ff" fill-opacity="0.48"/>
-  <path d="M746 140l17 10-1 22-18-11Z" fill="#8dd9ff" fill-opacity="0.65"/>
-  <path d="M760 158l-14 15-17-13 16-17Z" fill="#c8b5ff" fill-opacity="0.42"/>
-  <path d="M187 401c33 31 77 43 126 36" fill="none" stroke="#e2ecff" stroke-width="2"/>
-  <circle cx="214" cy="418" r="6" fill="#b895ff" fill-opacity="0.75"/>
-  <circle cx="286" cy="438" r="5" fill="#9acfff" fill-opacity="0.72"/>
-  <path d="M622 434c44 8 84-7 113-39" fill="none" stroke="#e2ecff" stroke-width="2"/>
-  <circle cx="650" cy="438" r="5" fill="#8fcaff" fill-opacity="0.7"/>
-  <circle cx="716" cy="410" r="6" fill="#bc9dff" fill-opacity="0.7"/>
-  <path d="M0 508H920" stroke="#e4e6eb"/>
-  <text x="460" y="539" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16" font-weight="500" fill="#4a4d54">将 DeskFuse 拖入 Applications 文件夹</text>
+
+  <!-- 标题 -->
+  <text x="460" y="80" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif" font-size="30" font-weight="700" letter-spacing="-0.4" fill="#202226">DeskFuse</text>
+  <text x="460" y="110" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="14" fill="#6E6A63">在多台电脑间共享剪贴板、文件和键鼠</text>
+
+  <!-- 图标落位卡片：中心分别为 (250, 262) 与 (670, 262)，留出标签空间。 -->
+  <g>
+    <use href="#pad" x="158" y="168" transform="translate(0 8)" fill="#3A332A" opacity=".08" filter="url(#padShadow)"/>
+    <use href="#pad" x="158" y="168" fill="#FFFFFF" fill-opacity=".85" stroke="#E2DED6"/>
+    <use href="#pad" x="578" y="168" transform="translate(0 8)" fill="#3A332A" opacity=".08" filter="url(#padShadow)"/>
+    <use href="#pad" x="578" y="168" fill="#FFFFFF" fill-opacity=".85" stroke="#E2DED6"/>
+  </g>
+
+  <!-- 应用入口与手动安装备用路径。 -->
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M372 262H540" stroke="#C9C4BA" stroke-width="4" stroke-dasharray="1 14"/>
+    <path d="M526 248L544 262L526 276" stroke="#F2582A" stroke-width="4"/>
+  </g>
+
+  <!-- 操作说明 -->
+  <text x="460" y="414" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="18" font-weight="600" fill="#2E2C29">双击 DeskFuse，点击安装即可开始</text>
+  <text x="460" y="440" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif" font-size="13" fill="#6E6A63">Double-click DeskFuse, then click Install</text>
+  <text x="460" y="476" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12" fill="#8D877E">也可拖入「应用程序」手动安装 · Or drag into Applications</text>
 </svg>
