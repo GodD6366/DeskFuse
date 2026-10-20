@@ -12,7 +12,7 @@ public sealed class RemoteAppPage : UserControl
     private readonly ServiceClient service;
     private readonly ListBox registered = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
     private readonly ListBox installed = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
-    private readonly TextBlock status = new() { Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+    private readonly TextBlock status = new() { Foreground = (Brush)Application.Current.Resources["DFMutedBrush"], TextWrapping = TextWrapping.Wrap, FontSize = 12 };
     private readonly TextBox name = new();
     private readonly TextBox displayName = new();
     private readonly TextBox path = new();
@@ -36,7 +36,7 @@ public sealed class RemoteAppPage : UserControl
         Grid.SetColumn(refresh, 1); header.Children.Add(refresh);
         Grid.SetRow(header, 0); root.Children.Add(header);
 
-        var notice = new TextBlock { Text = "管理这台 Windows 共享的应用，其他已配对设备可以连接使用。连接时需要 Windows 登录凭据，DeskFuse 不保存密码。", Margin = new Thickness(0, 0, 0, 16), Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), TextWrapping = TextWrapping.Wrap, FontSize = 12 };
+        var notice = new TextBlock { Text = "管理这台 Windows 共享的应用，其他已配对设备可以连接使用。连接时需要 Windows 登录凭据，DeskFuse 不保存密码。", Margin = new Thickness(0, 0, 0, 16), Foreground = (Brush)Application.Current.Resources["DFMutedBrush"], TextWrapping = TextWrapping.Wrap, FontSize = 12 };
         Grid.SetRow(notice, 1); root.Children.Add(notice);
 
         var columns = new Grid();
@@ -110,7 +110,7 @@ public sealed class RemoteAppPage : UserControl
     private static UIElement Field(string label, TextBox box)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-        panel.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)), Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = (Brush)Application.Current.Resources["DFMutedBrush"], Margin = new Thickness(0, 0, 0, 4) });
         panel.Children.Add(box);
         return panel;
     }

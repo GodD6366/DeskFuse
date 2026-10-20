@@ -73,6 +73,7 @@ public partial class App : Application
 
         service.Start();
         inputHelper = new InputHelperProcess(dispatcher);
+        ShowOnboardingIfNeeded();
         window.RestoreFromTray();
         if (Environment.GetCommandLineArgs().Any(argument => argument.Equals("--minimized", StringComparison.OrdinalIgnoreCase))) window.HideToTray();
     }
@@ -127,5 +128,19 @@ public partial class App : Application
         tray?.Dispose();
         activate?.Dispose();
         singleton?.Dispose();
+    }
+
+    private const int OnboardingVersion = 1;
+
+    private void ShowOnboardingIfNeeded()
+    {
+        if (window is null || clipboard is null) return;
+        var settings = global::Windows.Storage.ApplicationData.Current.LocalSettings.Values;
+        if (settings["OnboardingVersion"] is int completed && completed >= OnboardingVersion) return;
+        window.ShowOnboarding(new OnboardingPage(clipboard, () =>
+        {
+            settings["OnboardingVersion"] = OnboardingVersion;
+            window?.HideOnboarding();
+        }));
     }
 }

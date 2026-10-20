@@ -6,20 +6,29 @@
        and the OS theme colors. Sizing and title are set on AppWindow in code. -->
   <Grid x:Name="Root">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
+      <RowDefinition Height="{StaticResource DFTopBarHeight}" />
       <RowDefinition Height="*" />
-      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
+
+    <!-- Top bar: page title on the left, feature controls on the right. -->
+    <Grid Grid.Row="0" Margin="24,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <TextBlock x:Name="PageTitle" Text="设备" Style="{StaticResource DFPageTitleTextStyle}" VerticalAlignment="Center" />
+      <ContentControl x:Name="FeatureControlsHost" Grid.Column="1" VerticalAlignment="Center" />
+    </Grid>
 
     <!-- Body -->
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="SidebarColumn" Width="248" />
+        <ColumnDefinition x:Name="SidebarColumn" Width="{StaticResource DFSidebarWidth}" />
         <ColumnDefinition Width="*" />
       </Grid.ColumnDefinitions>
 
       <!-- Sidebar -->
-      <Border Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+      <Border Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DFLineBrush}" BorderThickness="0,0,1,0">
         <Grid Margin="12,8,12,16">
           <Grid.RowDefinitions>
             <RowDefinition Height="*" />
@@ -27,27 +36,25 @@
           </Grid.RowDefinitions>
           <StackPanel>
             <StackPanel Orientation="Horizontal" Margin="10,8,0,8" Spacing="10">
-              <FontIcon Glyph="&#xE8A7;" FontSize="28" />
-              <TextBlock Text="DeskFuse" FontSize="24" FontWeight="SemiBold" />
+              <FontIcon Glyph="&#xE8A7;" FontSize="24" Foreground="{ThemeResource DFAccentBrush}" />
+              <TextBlock Text="DeskFuse" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" />
             </StackPanel>
-            <TextBlock Text="在所有设备间，自由流转" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="10,0,0,20" />
+            <TextBlock Text="在所有设备间，自由流转" Style="{StaticResource DFCaptionTextStyle}" Margin="10,0,0,20" />
             <ListBox x:Name="Navigation" SelectionChanged="NavigationChanged" Background="Transparent" BorderThickness="0">
               <ListBox.Resources>
-                <Style TargetType="ListBoxItem">
-                  <Setter Property="Padding" Value="12,10" />
-                  <Setter Property="Margin" Value="0,0,0,2" />
-                  <Setter Property="CornerRadius" Value="6" />
-                  <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
-                  <Setter Property="MinHeight" Value="40" />
+                <Style TargetType="ListBoxItem" BasedOn="{StaticResource DFSidebarRowStyle}">
+                  <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
                 </Style>
               </ListBox.Resources>
-              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="工作区" FontSize="12" MinHeight="32" />
-              <ListBoxItem Tag="Clipboard"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8C8;" FontSize="16" /><TextBlock Text="剪贴板" /></StackPanel></ListBoxItem>
-              <ListBoxItem Tag="Input"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE962;" FontSize="16" /><TextBlock Text="鼠标共享" /></StackPanel></ListBoxItem>
-              <ListBoxItem Tag="RemoteApplications"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8A7;" FontSize="16" /><TextBlock Text="远程应用" /></StackPanel></ListBoxItem>
-              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="连接" FontSize="12" MinHeight="32" Margin="0,12,0,2" />
+              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="功能" Style="{StaticResource DFSectionTextStyle}" MinHeight="28" Margin="10,0,0,4" />
               <ListBoxItem Tag="Devices"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE772;" FontSize="16" /><TextBlock Text="设备" /></StackPanel></ListBoxItem>
-              <ListBoxItem Tag="ShareAndTransfer"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8AB;" FontSize="16" /><TextBlock Text="分享与传输" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="Clipboard"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8C8;" FontSize="16" /><TextBlock Text="剪贴板" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="Input"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE962;" FontSize="16" /><TextBlock Text="键鼠共享" /></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="ShareAndTransfer"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8AB;" FontSize="16" /><TextBlock Text="局域网传输" /></StackPanel></ListBoxItem>
+              <ListBoxItem IsEnabled="False" IsTabStop="False" Content="进阶" Style="{StaticResource DFSectionTextStyle}" MinHeight="28" Margin="10,12,0,4" />
+              <ListBoxItem Tag="RemoteApplications"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8A7;" FontSize="16" /><TextBlock Text="远程应用" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="Microphone"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE720;" FontSize="16" /><TextBlock Text="麦克风共享" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
+              <ListBoxItem Tag="MouseButtons"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8B1;" FontSize="16" /><TextBlock Text="鼠标按键" /><Border CornerRadius="4" BorderBrush="{ThemeResource DFBorderBrush}" Padding="4,1" Margin="8,0,0,0"><TextBlock Text="Beta" Style="{StaticResource DFCaptionTextStyle}" /></Border></StackPanel></ListBoxItem>
             </ListBox>
           </StackPanel>
           <StackPanel Grid.Row="1" Margin="8,0,8,0">
@@ -56,12 +63,22 @@
             <TextBlock x:Name="LocalStatus" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="正在连接服务…" Margin="0,6,0,0" TextWrapping="Wrap" />
             <TextBlock x:Name="LocalVersion" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Margin="0,6,0,8" />
             <Button Content="设置" Click="SettingsClick" HorizontalAlignment="Stretch" />
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="2,12,0,0" Tapped="HealthTapped">
+              <FlyoutBase.AttachedFlyout>
+                <Flyout>
+                  <StackPanel x:Name="HealthIssuesList" MaxWidth="320" MinWidth="240" Spacing="10" />
+                </Flyout>
+              </FlyoutBase.AttachedFlyout>
+              <Ellipse x:Name="HealthDot" Width="7" Height="7" Fill="{ThemeResource DFSuccessBrush}" VerticalAlignment="Center" />
+              <TextBlock x:Name="HealthSummary" Text="运行正常" Style="{StaticResource DFCaptionTextStyle}" VerticalAlignment="Center" />
+            </StackPanel>
           </StackPanel>
         </Grid>
       </Border>
 
       <!-- Pages -->
       <Grid x:Name="PageHost" Grid.Column="1">
+        <ContentControl x:Name="SettingsHost" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
         <ContentControl x:Name="RemoteApplicationsPage" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
         <Grid x:Name="ClipboardPage">
           <Grid.ColumnDefinitions>
@@ -75,8 +92,6 @@
               <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,12">
-              <TextBlock Text="剪贴板" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
-              <TextBlock Text="在设备之间，接着用" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,16" />
               <Button Content="工作流" Click="WorkflowsClick" HorizontalAlignment="Left" />
               <TextBox x:Name="HistorySearch" TextChanged="HistoryFilterChanged" PlaceholderText="搜索剪贴板内容 (Ctrl+F)" />
               <ComboBox x:Name="KindFilter" SelectedIndex="0" SelectionChanged="HistoryFilterChanged">
@@ -163,14 +178,9 @@
         <!-- Input sharing -->
         <Grid x:Name="InputPage" Visibility="Collapsed" Margin="24,12,24,16">
           <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
           </Grid.RowDefinitions>
-          <StackPanel Margin="0,0,0,12">
-            <TextBlock Text="让操作自然跨过屏幕" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
-            <TextBlock Text="真实显示器布局 · 不把开关当成可用性" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,6,0,0" />
-          </StackPanel>
-          <Grid Grid.Row="1">
+          <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="320" />
@@ -226,8 +236,6 @@
               <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Margin="0,0,0,12">
-              <TextBlock Text="设备" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
-              <TextBlock Text="发现并管理附近设备" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,4,0,16" />
               <TextBox x:Name="DeviceSearch" PlaceholderText="搜索设备" TextChanged="DeviceSearchChanged" />
             </StackPanel>
             <Border Grid.Row="1" Style="{StaticResource CardBorder}" Padding="4">
@@ -268,26 +276,26 @@
 
         <!-- Transfers -->
         <ScrollViewer x:Name="TransfersPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-          <StackPanel Margin="24,12,24,16">
-            <StackPanel Margin="0,0,0,12">
-              <TextBlock Text="分享与传输" FontSize="{StaticResource TitleFontSize}" FontWeight="SemiBold" />
-              <TextBlock Text="远端文件按需传输：接收的文件经过完整校验后落盘，并放入本机剪贴板。" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,6,0,0" />
-            </StackPanel>
-            <Border Style="{StaticResource CardBorder}">
+          <Grid Margin="24,12,24,16" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="380" MinWidth="320" />
+            </Grid.ColumnDefinitions>
+            <Border Style="{StaticResource CardBorder}" VerticalAlignment="Top">
               <StackPanel>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                  </Grid.ColumnDefinitions>
-                  <TextBlock Text="传输队列" FontSize="{StaticResource SubtitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" Content="打开本地暂存区" Click="ShelfClick" Margin="0,0,0,0" />
-                </Grid>
-                <TextBlock x:Name="TransferSummary" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,8,0,4" Text="等待服务状态…" />
+                <TextBlock Text="共享与发送" Style="{StaticResource DFSectionTextStyle}" />
+                <TextBlock Text="在设备之间发送文件：拖入暂存区或从剪贴板发送；远端文件按需传输，接收的文件经过完整校验后落盘，并放入本机剪贴板。" Style="{StaticResource DFDetailTextStyle}" Margin="0,8,0,12" />
+                <Button Content="打开本地暂存区" Click="ShelfClick" HorizontalAlignment="Left" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Column="1" Style="{StaticResource CardBorder}" VerticalAlignment="Top">
+              <StackPanel>
+                <TextBlock Text="传输任务" Style="{StaticResource DFSectionTextStyle}" />
+                <TextBlock x:Name="TransferSummary" Style="{StaticResource DFDetailTextStyle}" Margin="0,8,0,4" Text="等待服务状态…" />
                 <StackPanel x:Name="TransferList" Margin="0,8,0,0" />
               </StackPanel>
             </Border>
-          </StackPanel>
+          </Grid>
         </ScrollViewer>
 
         <!-- Workflows -->
@@ -347,11 +355,46 @@
             </ScrollViewer>
           </Border>
         </Grid>
+        <!-- Microphone sharing (Beta placeholder) -->
+        <Grid x:Name="MicrophonePage" Visibility="Collapsed" Margin="24,12,24,16">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <Border Style="{StaticResource CardBorder}" VerticalAlignment="Stretch">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="360" Spacing="8">
+              <FontIcon Glyph="&#xE720;" FontSize="40" Foreground="{ThemeResource DFMutedBrush}" />
+              <TextBlock Text="麦克风共享" Style="{StaticResource DFPageTitleTextStyle}" HorizontalAlignment="Center" />
+              <TextBlock Text="跨设备共享麦克风即将在 Windows 上提供。" Style="{StaticResource DFDetailTextStyle}" HorizontalAlignment="Center" TextAlignment="Center" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <!-- Mouse buttons (Beta placeholder) -->
+        <Grid x:Name="MouseButtonsPage" Visibility="Collapsed" Margin="24,12,24,16">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <Border Style="{StaticResource CardBorder}" VerticalAlignment="Stretch">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="360" Spacing="8">
+              <FontIcon Glyph="&#xE8B1;" FontSize="40" Foreground="{ThemeResource DFMutedBrush}" />
+              <TextBlock Text="鼠标按键" Style="{StaticResource DFPageTitleTextStyle}" HorizontalAlignment="Center" />
+              <TextBlock Text="侧键自定义即将在 Windows 上提供。" Style="{StaticResource DFDetailTextStyle}" HorizontalAlignment="Center" TextAlignment="Center" />
+            </StackPanel>
+          </Border>
+        </Grid>
       </Grid>
     </Grid>
-    <!-- Status bar -->
-    <Border Grid.Row="2" Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="24,10">
-      <TextBlock x:Name="Notice" Text="正在连接 DeskFuseService…" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+    <!-- Floating notice, mirrored from the macOS error banner: bottom-right,
+         persistent until replaced, hairline card surface. -->
+    <Border Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,0,24,24" MaxWidth="480" Background="{ThemeResource DFSurfaceBrush}" BorderBrush="{ThemeResource DFLineBrush}" BorderThickness="1" CornerRadius="{StaticResource DFRadiusCard}" Padding="12,10">
+      <TextBlock x:Name="Notice" Text="正在连接 DeskFuseService…" Style="{StaticResource DFCaptionTextStyle}" TextWrapping="Wrap" />
     </Border>
+
+    <!-- First-run onboarding: covers the workspace until completed. -->
+    <Grid x:Name="OnboardingOverlay" Grid.RowSpan="2" Visibility="Collapsed" Background="{ThemeResource DFCanvasBrush}">
+      <ContentControl x:Name="OnboardingHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+    </Grid>
   </Grid>
 </Window>

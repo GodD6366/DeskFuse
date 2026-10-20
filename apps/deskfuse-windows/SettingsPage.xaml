@@ -1,0 +1,38 @@
+<UserControl
+  x:Class="DeskFuse.Windows.SettingsPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Settings inlined in the main window, mirroring the macOS settings:
+       a horizontal category bar (通用 / 剪贴板 / 快捷键 / 文件 / 权限 /
+       关于与更新 / 高级) above a content host. -->
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <ListBox
+      x:Name="Navigation"
+      SelectionChanged="NavigationChanged"
+      Background="Transparent"
+      BorderThickness="0"
+      Padding="0,0,0,12"
+      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+      ScrollViewer.VerticalScrollBarVisibility="Disabled">
+      <ListBox.ItemsPanel>
+        <ItemsPanelTemplate>
+          <StackPanel Orientation="Horizontal" Spacing="4" />
+        </ItemsPanelTemplate>
+      </ListBox.ItemsPanel>
+      <ListBox.Resources>
+        <Style TargetType="ListBoxItem" BasedOn="{StaticResource DFSidebarRowStyle}">
+          <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        </Style>
+      </ListBox.Resources>
+    </ListBox>
+    <ContentControl
+      x:Name="Page"
+      Grid.Row="1"
+      HorizontalContentAlignment="Stretch"
+      VerticalContentAlignment="Stretch" />
+  </Grid>
+</UserControl>

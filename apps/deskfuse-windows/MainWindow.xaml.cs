@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -18,9 +19,9 @@ public sealed partial class MainWindow : Window
     private readonly DesktopClipboardController clipboard;
     private readonly PowerStateController power;
     private readonly WorkflowExecutionPort workflowExecution;
-    private SettingsWindow? settings;
-    private WorkspacePage selectedPage = WorkspacePage.Clipboard;
-    private enum WorkspacePage { Clipboard, Input, RemoteApplications, Devices, ShareAndTransfer }
+    private SettingsPage? settings;
+    private WorkspacePage selectedPage = WorkspacePage.Devices;
+    private enum WorkspacePage { Clipboard, Input, RemoteApplications, Devices, ShareAndTransfer, Microphone, MouseButtons }
     private List<DeviceRow> devices = [];
     private bool updatingHistory;
     private bool updatingDevices;
@@ -53,7 +54,7 @@ public sealed partial class MainWindow : Window
         this.power = power;
         InitializeComponent();
         LocalVersion.Text = $"v{AppVersion.Display}";
-        Navigate(WorkspacePage.Clipboard);
+        Navigate(WorkspacePage.Devices);
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         AppIcon.Apply(this);
         AppWindow.Title = "DeskFuse";
@@ -118,11 +119,25 @@ public sealed partial class MainWindow : Window
     private void ShowPage(WorkspacePage page)
     {
         selectedPage = page;
+        SettingsHost.Visibility = Visibility.Collapsed;
         ClipboardPage.Visibility = page == WorkspacePage.Clipboard ? Visibility.Visible : Visibility.Collapsed;
         InputPage.Visibility = page == WorkspacePage.Input ? Visibility.Visible : Visibility.Collapsed;
         DevicesPage.Visibility = page == WorkspacePage.Devices ? Visibility.Visible : Visibility.Collapsed;
         TransfersPage.Visibility = page == WorkspacePage.ShareAndTransfer ? Visibility.Visible : Visibility.Collapsed;
         RemoteApplicationsPage.Visibility = page == WorkspacePage.RemoteApplications ? Visibility.Visible : Visibility.Collapsed;
+        MicrophonePage.Visibility = page == WorkspacePage.Microphone ? Visibility.Visible : Visibility.Collapsed;
+        MouseButtonsPage.Visibility = page == WorkspacePage.MouseButtons ? Visibility.Visible : Visibility.Collapsed;
+        PageTitle.Text = page switch
+        {
+            WorkspacePage.Devices => "设备",
+            WorkspacePage.Clipboard => "剪贴板",
+            WorkspacePage.Input => "键鼠共享",
+            WorkspacePage.ShareAndTransfer => "局域网传输",
+            WorkspacePage.RemoteApplications => "远程应用",
+            WorkspacePage.Microphone => "麦克风共享",
+            WorkspacePage.MouseButtons => "鼠标按键",
+            _ => "DeskFuse",
+        };
         if (page == WorkspacePage.RemoteApplications)
             RemoteApplicationsPage.Content ??= new RemoteAppPage(service);
         if (page == WorkspacePage.Input) DrawInputLayout(latest.HasValue && latest.Value.TryGetProperty("input", out var layoutInput) ? layoutInput : default);
@@ -345,7 +360,62 @@ public sealed partial class MainWindow : Window
             _ = LoadWorkflowsAsync();
         }
         wasConnected = connected;
+        UpdateHealth(connected);
     }
+
+    private void UpdateHealth(bool connected)
+    {
+        var issues = new List<(string Tone, string Title, string Detail)>();
+        if (!connected) issues.Add(("danger", "服务未连接", "无法连接 DeskFuseService；本机剪贴板历史仍可用。"));
+        if (clipboard.StorageError.Length > 0) issues.Add(("warning", "剪贴板存储异常", clipboard.StorageError));
+        string dot = issues.Any(issue => issue.Tone == "danger") ? "DFDangerBrush"
+            : issues.Any(issue => issue.Tone == "warning") ? "DFWarningBrush"
+            : "DFSuccessBrush";
+        HealthDot.Fill = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[dot];
+        HealthSummary.Text = issues.Count == 0 ? "运行正常" : $"{issues.Count} 项待处理";
+        healthIssues = issues;
+    }
+
+    private List<(string Tone, string Title, string Detail)> healthIssues = [];
+
+    private void HealthTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs args)
+    {
+        HealthIssuesList.Children.Clear();
+        if (healthIssues.Count == 0)
+        {
+            HealthIssuesList.Children.Add(new TextBlock { Text = "暂无待处理问题。", Style = (Style)Application.Current.Resources["DFDetailTextStyle"] });
+        }
+        else
+        {
+            foreach (var (tone, title, detail) in healthIssues)
+            {
+                var brush = tone == "danger" ? "DFDangerBrush" : tone == "warning" ? "DFWarningBrush" : "DFMutedBrush";
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                row.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 7, Height = 7, Fill = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[brush], VerticalAlignment = VerticalAlignment.Center });
+                var text = new StackPanel();
+                text.Children.Add(new TextBlock { Text = title, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Style = (Style)Application.Current.Resources["DFBodyTextStyle"] });
+                text.Children.Add(new TextBlock { Text = detail, Style = (Style)Application.Current.Resources["DFCaptionTextStyle"] });
+                row.Children.Add(text);
+                HealthIssuesList.Children.Add(row);
+            }
+        }
+        FlyoutBase.ShowAttachedFlyout((FrameworkElement)sender);
+    }
+
+    public void ShowOnboarding(UIElement view)
+    {
+        OnboardingHost.Content = view;
+        OnboardingOverlay.Visibility = Visibility.Visible;
+    }
+
+    public void HideOnboarding()
+    {
+        OnboardingOverlay.Visibility = Visibility.Collapsed;
+        OnboardingHost.Content = null;
+    }
+
+    private static Brush DFResource(string key) => (Brush)Application.Current.Resources[key];
+
     private void ClearInputQuality()
     {
         if (InputQualitySummary is null) return;
@@ -434,7 +504,7 @@ public sealed partial class MainWindow : Window
         InputQualityCanvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline
         {
             Points = points,
-            Stroke = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 70, 130, 180)),
+            Stroke = DFResource("DFAccentBrush"),
             StrokeThickness = 1.5,
         });
     }
@@ -595,9 +665,9 @@ public sealed partial class MainWindow : Window
             {
                 Width = monitor.Width * scale,
                 Height = monitor.Height * scale,
-                BorderBrush = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 40, 114, 193)),
+                BorderBrush = DFResource("DFAccentBrush"),
                 BorderThickness = new Thickness(2),
-                Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 221, 236, 250)),
+                Background = DFResource("DFAccentSubtleBrush"),
                 CornerRadius = new CornerRadius(6),
                 Child = content,
             };
@@ -641,9 +711,9 @@ public sealed partial class MainWindow : Window
                     {
                         Width = width * scale,
                         Height = height * scale,
-                        BorderBrush = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 22, 163, 74)),
+                        BorderBrush = DFResource("DFSuccessBrush"),
                         BorderThickness = new Thickness(2),
-                        Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 220, 245, 228)),
+                        Background = DFResource("DFSuccessSubtleBrush"),
                         CornerRadius = new CornerRadius(6),
                         Child = content,
                         Tag = new RemoteDisplayDrag(peer, display.String("id"), x, y, scale),
@@ -767,7 +837,7 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = row.Title, FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = row.Detail, FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 101, 118, 140)) });
+        panel.Children.Add(new TextBlock { Text = row.Detail, FontSize = 12, Foreground = DFResource("DFMutedBrush") });
         panel.Children.Add(new ProgressBar { Value = row.Progress * 100, Height = 4, Margin = new Thickness(0, 8, 0, 8) });
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
         if (row.CanReceive)
@@ -786,7 +856,7 @@ public sealed partial class MainWindow : Window
         return new Border
         {
             CornerRadius = new CornerRadius(8),
-            BorderBrush = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 203, 213, 225)),
+            BorderBrush = DFResource("DFLineBrush"),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(12),
             Margin = new Thickness(0, 6, 0, 0),
@@ -1018,7 +1088,7 @@ public sealed partial class MainWindow : Window
                 actions.Children.Add(ActionButton("拒绝", "RejectPairing", new { request_id = id }));
                 invitation.Children.Add(actions);
             }
-            DeviceDetails.Children.Add(new Border { Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 232, 243, 255)), Padding = new Thickness(16), CornerRadius = new CornerRadius(8), Child = invitation, Margin = new Thickness(0, 14, 0, 10) });
+            DeviceDetails.Children.Add(new Border { Background = DFResource("DFAccentSubtleBrush"), Padding = new Thickness(16), CornerRadius = new CornerRadius(8), Child = invitation, Margin = new Thickness(0, 14, 0, 10) });
         }
         string pairing = latest.Value.String("pairing_status");
         if (pairing.Length > 0) DeviceDetails.Children.Add(Label(pairing, 13, false, true));
@@ -1208,7 +1278,7 @@ public sealed partial class MainWindow : Window
         Text = text,
         FontSize = size,
         FontWeight = bold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
-        Foreground = new SolidColorBrush(muted ? Microsoft.UI.ColorHelper.FromArgb(255, 101, 118, 140) : Microsoft.UI.ColorHelper.FromArgb(255, 24, 36, 60)),
+        Foreground = DFResource(muted ? "DFMutedBrush" : "TextFillColorPrimaryBrush"),
         Margin = new Thickness(0, 8, 0, 10),
         TextWrapping = TextWrapping.Wrap,
     };
@@ -1246,10 +1316,21 @@ public sealed partial class MainWindow : Window
         if (settings is null)
         {
             PageHost.Children.Remove(WorkflowsPage);
-            WorkflowsPage.Visibility = Visibility.Visible;
-            settings = new SettingsWindow(clipboard, service, power, WorkflowsPage, () => _ = LoadWorkflowsAsync());
+            WorkflowsPage.Visibility = Visibility.Collapsed;
+            settings = new SettingsPage(clipboard, service, power, WorkflowsPage, () => _ = LoadWorkflowsAsync());
+            SettingsHost.Content = settings;
         }
         settings.Show(category);
+        Navigation.SelectedItem = null;
+        SettingsHost.Visibility = Visibility.Visible;
+        ClipboardPage.Visibility = Visibility.Collapsed;
+        InputPage.Visibility = Visibility.Collapsed;
+        DevicesPage.Visibility = Visibility.Collapsed;
+        TransfersPage.Visibility = Visibility.Collapsed;
+        RemoteApplicationsPage.Visibility = Visibility.Collapsed;
+        MicrophonePage.Visibility = Visibility.Collapsed;
+        MouseButtonsPage.Visibility = Visibility.Collapsed;
+        PageTitle.Text = "设置";
     }
 
     private void KeyboardShortcut(object sender, KeyRoutedEventArgs args)

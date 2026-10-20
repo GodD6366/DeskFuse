@@ -23,7 +23,7 @@ public sealed class ShelfWindow : IShelfHost
     {
         Text = "拖入本机文件，或从历史加入",
         TextWrapping = TextWrapping.Wrap,
-        Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 112, 128, 144)),
+        Foreground = (Brush)Application.Current.Resources["DFMutedBrush"],
         FontSize = 12,
     };
     private readonly Button expand = new() { Content = "展开", Padding = new Thickness(10, 4, 10, 4), MinHeight = 0, Margin = new Thickness(0, 0, 0, 0) };

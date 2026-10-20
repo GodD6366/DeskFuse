@@ -6,34 +6,15 @@
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+        <ResourceDictionary Source="Design/DFColors.xaml" />
+        <ResourceDictionary Source="Design/DFMetrics.xaml" />
+        <ResourceDictionary Source="Design/DFType.xaml" />
+        <ResourceDictionary Source="Design/DFStyles.xaml" />
       </ResourceDictionary.MergedDictionaries>
 
-      <!-- Native Fluent visuals: surfaces, text colors and control styles follow
-           the Windows theme resources, so light/dark mode and the accent color
-           match the OS instead of a hand-rolled palette. -->
-
-      <!-- Typography ramp (native Fluent type sizes). -->
-      <x:Double x:Key="DisplayFontSize">28</x:Double>
-      <x:Double x:Key="TitleFontSize">20</x:Double>
-      <x:Double x:Key="SubtitleFontSize">16</x:Double>
-      <x:Double x:Key="BodyFontSize">14</x:Double>
-      <x:Double x:Key="CaptionFontSize">12</x:Double>
-
-      <!-- Card container used by every page section. -->
-      <Style x:Key="CardBorder" TargetType="Border">
-        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="Padding" Value="20" />
-      </Style>
-
-      <!-- Section divider. -->
-      <Style x:Key="DividerBorder" TargetType="Border">
-        <Setter Property="Height" Value="1" />
-        <Setter Property="Background" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
-        <Setter Property="Margin" Value="0,16" />
-      </Style>
+      <!-- Design tokens live in Design/DF*.xaml, mirrored from the macOS
+           DFTokens design system. Light/dark surfaces, text colors and control
+           visuals resolve through DF* brushes so both themes stay coherent. -->
 
       <Style TargetType="TextBlock">
         <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
