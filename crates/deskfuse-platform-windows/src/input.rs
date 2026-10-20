@@ -330,6 +330,73 @@ mod native {
             Err(InputError::SecureAttentionSequenceUnsupported)
         }
 
+        /// Release physical input that local applications already saw, before an
+        /// exclusive capture handover (mirrors macOS `release_local_keyboard`).
+        /// Unlike `release_all`, the key/button ups are injected without touching
+        /// the tracked injected state — the physical edges were never tracked
+        /// here — and carry the process marker so the capture hook ignores them.
+        /// Attempts every release even after failure.
+        /// # Errors
+        /// Returns the first native injection failure after attempting the rest.
+        pub fn release_local_physical(
+            &mut self,
+            usages: &[u16],
+            buttons: u8,
+        ) -> Result<(), InputError> {
+            let mut first_error = None;
+            for &usage in usages {
+                let Some(scan) = keyboard_usage_to_scan_code(usage) else {
+                    continue;
+                };
+                let flags = KEYEVENTF_SCANCODE
+                    | KEYEVENTF_KEYUP
+                    | if scan.extended {
+                        KEYEVENTF_EXTENDEDKEY
+                    } else {
+                        0
+                    };
+                if let Err(error) = send_one(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: 0,
+                            wScan: scan.code,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: INPUT_INJECTION_MARKER,
+                        },
+                    },
+                }) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            for (button, bit) in [
+                (MouseButton::Left, 1),
+                (MouseButton::Right, 2),
+                (MouseButton::Middle, 4),
+                (MouseButton::Back, 8),
+                (MouseButton::Forward, 16),
+            ] {
+                if buttons & bit == 0 {
+                    continue;
+                }
+                let (flag, data) = match button {
+                    MouseButton::Left => (MOUSEEVENTF_LEFTUP, 0),
+                    MouseButton::Right => (MOUSEEVENTF_RIGHTUP, 0),
+                    MouseButton::Middle => (MOUSEEVENTF_MIDDLEUP, 0),
+                    MouseButton::Back => (MOUSEEVENTF_XUP, 1),
+                    MouseButton::Forward => (MOUSEEVENTF_XUP, 2),
+                };
+                if let Err(error) = send_mouse(0, 0, data, flag) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+            Ok(())
+        }
+
         /// Attempt every owned release even after failure. Failed releases remain
         /// tracked for retry; the owner must inspect errors before dropping.
         /// # Errors

@@ -35,6 +35,9 @@ const INPUT_LEASE: Duration = Duration::from_millis(1_500);
 /// One controller IPC request per drained capture batch.
 const MAX_BATCH_EVENTS: usize = 256;
 const LEASE_TTL: Duration = Duration::from_millis(1_500);
+/// Display topology is probed on this interval; a change restarts the helper
+/// so the supervisor relaunches it with a fresh `RegisterInput` snapshot.
+const TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 
 fn input_desktop() -> ipc::InputDesktop {
     match deskfuse_platform_windows::session::session_capabilities().desktop {
@@ -172,6 +175,7 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
     let mut registered = false;
     let mut session_epoch = 0_u64;
     let mut failures = 0_u8;
+    let mut topology_probe = Instant::now();
     loop {
         if !parent.alive()? {
             let _ = injector.release_all_nowait();
@@ -457,6 +461,29 @@ async fn run(parent: ParentProcess) -> io::Result<()> {
         if let Some(error) = injector.take_error() {
             let _ = injector.release_all_nowait();
             return report_failure(&mut request_id, &error.to_string()).await;
+        }
+        if topology_probe.elapsed() >= TOPOLOGY_PROBE_INTERVAL {
+            topology_probe = Instant::now();
+            // Monitor hot-plug and DPI changes: coordinate mapping reads live
+            // native geometry, but the registered topology and per-batch target
+            // lookup still use the startup snapshot, so exit and let the
+            // supervisor relaunch with a fresh registration.
+            if let Ok(current) = display_topology()
+                && current != topology
+            {
+                let _ = exchange(
+                    &mut request_id,
+                    ipc::Command::InputFault {
+                        message: "display topology changed; input helper restarting".into(),
+                    },
+                )
+                .await;
+                let _ = injector.release_all_nowait();
+                stop_controller(&mut controller);
+                return Err(io::Error::other(
+                    "display topology changed; helper restarting",
+                ));
+            }
         }
         sleep(Duration::from_millis(8)).await;
     }
@@ -775,10 +802,29 @@ async fn apply_actions(
                     .await;
                     match entered {
                         Ok(ipc::Reply::Queued { .. }) => {
-                            if changing_device {
-                                let _ = controller
+                            if changing_device
+                                && let Err(error) = controller
                                     .capture
-                                    .enter_remote(controller.anchor.0, controller.anchor.1);
+                                    .enter_remote(controller.anchor.0, controller.anchor.1)
+                            {
+                                // The runtime already entered remote control; without
+                                // local suppression the same input would drive both
+                                // machines. Release the session and reclaim, like the
+                                // macOS coordinator, instead of dropping the error.
+                                if let Some(outbound) = controller.outbound.take() {
+                                    let _ = exchange(
+                                        request_id,
+                                        ipc::Command::ReleaseInputControl {
+                                            session_id: outbound.session.to_string(),
+                                        },
+                                    )
+                                    .await;
+                                }
+                                controller.restore_local();
+                                let _ = exchange(request_id, ipc::Command::ReclaimInput).await;
+                                return Err(io::Error::other(format!(
+                                    "进入远端输入控制失败：{error}"
+                                )));
                             }
                         }
                         Ok(_) => {}

@@ -1,8 +1,13 @@
 //! Ordinary Default-desktop capture with bounded exclusive handoff.
 //! Dedicated low-level hooks forward through a nonblocking queue. Exclusive
 //! suppression starts only when no physical key/button already delivered locally
-//! is held, and expires after at most 1.5 seconds without renewal. Queue faults,
-//! desktop changes, callback failures and the emergency chord always fail open.
+//! is held — the caller may inject local releases for held input first, exactly
+//! like the macOS `release_local_keyboard` handover — and expires after at most
+//! 1.5 seconds without renewal. Controller hotkey chords are forwarded to the
+//! consumer but never reach local applications. Keys without a HID usage
+//! (Pause, some media/IME keys) are swallowed while suppressing and passed
+//! through otherwise, never faulting the capture. Queue faults, desktop
+//! changes, callback failures and the emergency chord always fail open.
 //!
 //! Always poll faults before consuming further input and release the remote
 //! injector/control lease on any fault. Faults are latched outside the event
@@ -12,6 +17,7 @@
 //! remove a timed-out low-level hook without providing a detection API.
 
 use crate::{hid::HidModifiers, input::MouseButton};
+use deskfuse_input::sharing::HotkeyBindings;
 use std::{
     fmt,
     sync::{
@@ -141,6 +147,11 @@ struct SuppressionState {
     until: Option<(Instant, SystemTime)>,
     physical_keys: [bool; 256],
     physical_buttons: u8,
+    /// Physical keys without a HID usage (Pause, some media/IME keys), by
+    /// virtual key. They can never be forwarded, but their held state must
+    /// still block a suppression handover: a down delivered locally followed
+    /// by a swallowed up would leave the local key stuck.
+    unmapped_keys: [bool; 256],
 }
 impl Default for SuppressionState {
     fn default() -> Self {
@@ -148,6 +159,7 @@ impl Default for SuppressionState {
             until: None,
             physical_keys: [false; 256],
             physical_buttons: 0,
+            unmapped_keys: [false; 256],
         }
     }
 }
@@ -164,8 +176,19 @@ impl SuppressionState {
         self.until.is_some()
     }
     fn held(&self) -> bool {
-        self.physical_keys.iter().any(|down| *down) || self.physical_buttons != 0
+        self.physical_keys.iter().any(|down| *down)
+            || self.physical_buttons != 0
+            || self.unmapped_keys.iter().any(|down| *down)
     }
+}
+
+/// Physical input delivered locally that a suppression handover may need to
+/// release on behalf of local applications (mirrors macOS
+/// `release_local_keyboard`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeldPhysicalInput {
+    pub usages: Vec<u16>,
+    pub buttons: u8,
 }
 
 struct Shared {
@@ -176,6 +199,8 @@ struct Shared {
     heartbeat_ms: AtomicU64,
     fault: AtomicU8,
     suppression: Mutex<SuppressionState>,
+    hotkeys: Mutex<HotkeyBindings>,
+    controller_hotkeys: AtomicBool,
     notification: Arc<Notify>,
 }
 impl Shared {
@@ -188,6 +213,8 @@ impl Shared {
             heartbeat_ms: AtomicU64::new(0),
             fault: AtomicU8::new(0),
             suppression: Mutex::new(SuppressionState::default()),
+            hotkeys: Mutex::new(HotkeyBindings::default()),
+            controller_hotkeys: AtomicBool::new(false),
             notification: Arc::new(Notify::new()),
         }
     }
@@ -268,6 +295,66 @@ impl Shared {
             suppression.physical_buttons &= !bit;
         }
         active
+    }
+    /// Track a physical key that has no HID usage. Returns whether suppression
+    /// is active so the caller can swallow it; the held state still blocks a
+    /// later handover.
+    fn observe_unmapped(&self, vk: u32, down: bool) -> bool {
+        let Ok(mut suppression) = self.suppression.try_lock() else {
+            self.trip(CaptureFault::CallbackFailed);
+            return false;
+        };
+        let active = suppression.active();
+        if vk < 256 {
+            suppression.unmapped_keys[vk as usize] = down;
+        }
+        active
+    }
+    fn set_hotkeys(&self, hotkeys: HotkeyBindings) {
+        if let Ok(mut guard) = self.hotkeys.lock() {
+            *guard = hotkeys;
+        }
+    }
+    fn set_controller_hotkeys_enabled(&self, enabled: bool) {
+        self.controller_hotkeys.store(enabled, Ordering::Release);
+    }
+    /// Matches `capture_hotkey_matches` on macOS: the reclaim chord always
+    /// suppresses locally; configured chords only while controller hotkeys
+    /// are enabled. The consumer still receives the event for policy.
+    fn hotkey_match(&self, code: u16, modifiers: u64, repeat: bool) -> bool {
+        if repeat {
+            return false;
+        }
+        let Ok(bindings) = self.hotkeys.lock() else {
+            return false;
+        };
+        bindings.is_reclaim(code, modifiers)
+            || (self.controller_hotkeys.load(Ordering::Acquire)
+                && bindings.matches(code, modifiers))
+    }
+    fn held_physical_input(&self) -> HeldPhysicalInput {
+        let Ok(suppression) = self.suppression.lock() else {
+            return HeldPhysicalInput::default();
+        };
+        HeldPhysicalInput {
+            usages: (0..256_u16)
+                .filter(|usage| suppression.physical_keys[usize::from(*usage)])
+                .collect(),
+            buttons: suppression.physical_buttons,
+        }
+    }
+    /// Forget held state the caller just released locally through injected
+    /// key/button ups. The injected ups are invisible to the hooks, so the
+    /// tracked state must be cleared here before requesting suppression.
+    fn clear_held_physical(&self, held: &HeldPhysicalInput) {
+        if let Ok(mut suppression) = self.suppression.lock() {
+            for usage in &held.usages {
+                if let Some(slot) = suppression.physical_keys.get_mut(usize::from(*usage)) {
+                    *slot = false;
+                }
+            }
+            suppression.physical_buttons &= !held.buttons;
+        }
     }
     fn should_suppress(&self) -> bool {
         self.suppression
@@ -357,21 +444,25 @@ pub use native::WindowsInputCapture;
 mod native {
     use super::{
         AtomicBool, CaptureError, CaptureEvent, CaptureFault, CapturePoll, CaptureStatus, Duration,
-        HidModifiers, Instant, MouseButton, Notify, Ordering, Receiver, Shared, SyncSender,
-        emergency_chord,
+        HeldPhysicalInput, HidModifiers, Instant, MouseButton, Notify, Ordering, Receiver, Shared,
+        SyncSender, emergency_chord,
     };
     use crate::{
-        hid::{ScanCode, scan_code_to_keyboard_usage},
+        hid::{
+            ScanCode, hid_modifiers_to_legacy, keyboard_usage_to_legacy_keycode,
+            scan_code_to_keyboard_usage,
+        },
         input::is_own_injected_event,
     };
+    use deskfuse_input::sharing::HotkeyBindings;
     use deskfuse_platform::DesktopState;
-    use std::sync::Arc;
     use std::{
         cell::RefCell,
         ptr::null_mut,
         sync::mpsc::sync_channel,
         thread::{self, JoinHandle},
     };
+    use std::{collections::BTreeSet, sync::Arc};
     use windows_sys::Win32::{
         Foundation::{GetLastError, LPARAM, LRESULT, WAIT_FAILED, WPARAM},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
@@ -512,6 +603,23 @@ mod native {
         }
         pub fn notification(&self) -> Arc<Notify> {
             Arc::clone(&self.shared.notification)
+        }
+        pub fn set_hotkeys(&self, hotkeys: HotkeyBindings) {
+            self.shared.set_hotkeys(hotkeys);
+        }
+        pub fn set_controller_hotkeys_enabled(&self, enabled: bool) {
+            self.shared.set_controller_hotkeys_enabled(enabled);
+        }
+        /// Physical input already delivered locally that a handover must
+        /// release before suppression can start.
+        pub fn held_physical_input(&self) -> HeldPhysicalInput {
+            self.shared.held_physical_input()
+        }
+        /// Forget held state the caller released locally with injected ups.
+        /// Call only after those injections succeeded, immediately before
+        /// retrying `begin_suppression_lease`.
+        pub fn clear_held_physical(&self, held: &HeldPhysicalInput) {
+            self.shared.clear_held_physical(held);
         }
 
         /// Stop observation and uninstall the owned hooks.
@@ -688,6 +796,9 @@ mod native {
         shared: Arc<Shared>,
         sender: SyncSender<CaptureEvent>,
         keys: [bool; 256],
+        /// Legacy keycodes whose down was swallowed as a controller hotkey;
+        /// the matching up is swallowed too (macOS `context.consumed`).
+        consumed: BTreeSet<u16>,
     }
     impl HookContext {
         fn new(shared: &Arc<Shared>, sender: SyncSender<CaptureEvent>) -> Self {
@@ -695,6 +806,7 @@ mod native {
                 shared: Arc::clone(shared),
                 sender,
                 keys: [false; 256],
+                consumed: BTreeSet::new(),
             };
             for (index, vk) in [
                 VK_LCONTROL,
@@ -770,8 +882,10 @@ mod native {
                 })
             };
             let Some(usage) = usage else {
-                self.shared.trip(CaptureFault::UnsupportedKeyboardMapping);
-                return false;
+                // No HID usage (Pause by design, some media/IME keys): never
+                // forwardable, so never a capture fault. Swallow the edge while
+                // suppressing; pass it to local applications otherwise.
+                return self.shared.observe_unmapped(data.vkCode, down);
             };
             let repeat = down && self.keys[usize::from(usage)];
             self.keys[usize::from(usage)] = down;
@@ -784,7 +898,24 @@ mod native {
                 self.shared.trip(CaptureFault::SecureAttentionRequested);
                 return false;
             }
-            let suppress = self.shared.observe_key(usage, down);
+            let mut hotkey = false;
+            if let Some(code) = keyboard_usage_to_legacy_keycode(usage) {
+                if down
+                    && (self.consumed.contains(&code)
+                        || self.shared.hotkey_match(
+                            code,
+                            hid_modifiers_to_legacy(modifiers),
+                            repeat,
+                        ))
+                {
+                    self.consumed.insert(code);
+                    hotkey = true;
+                }
+                if !down && self.consumed.remove(&code) {
+                    hotkey = true;
+                }
+            }
+            let suppress = self.shared.observe_key(usage, down) || hotkey;
             if (0xe0..=0xe7).contains(&usage) {
                 self.emit(CaptureEvent::Modifiers(modifiers), suppress)
             } else {
@@ -933,6 +1064,7 @@ mod native {
                     shared,
                     sender,
                     keys: [false; 256],
+                    consumed: std::collections::BTreeSet::new(),
                 },
                 receiver,
             )
@@ -1110,16 +1242,120 @@ mod native {
                 context.shared.poll(&receiver),
                 CapturePoll::Fault(CaptureFault::EmergencyReclaim)
             );
+            // Pause has no HID usage: it passes through locally while observer-only
+            // and is swallowed once suppression is active — never a capture fault.
             let (mut pause_context, _) = self::context(8);
             let pause = KBDLLHOOKSTRUCT {
                 vkCode: u32::from(VK_PAUSE),
                 ..raw_key(0x45)
             };
             assert!(!pause_context.keyboard(WM_KEYDOWN, &pause));
-            assert_eq!(
-                pause_context.shared.fault(),
-                Some(CaptureFault::UnsupportedKeyboardMapping)
+            assert!(!pause_context.keyboard(WM_KEYUP, &pause));
+            assert!(pause_context.shared.fault().is_none());
+            assert!(
+                pause_context
+                    .shared
+                    .request_suppression(Duration::from_millis(500))
+                    .is_ok()
             );
+            assert!(pause_context.keyboard(WM_KEYDOWN, &pause));
+        }
+
+        #[test]
+        fn unmapped_key_held_blocks_handover_until_released() {
+            let (mut context, _) = context(8);
+            let pause = KBDLLHOOKSTRUCT {
+                vkCode: u32::from(VK_PAUSE),
+                ..raw_key(0x45)
+            };
+            assert!(!context.keyboard(WM_KEYDOWN, &pause));
+            assert_eq!(
+                context
+                    .shared
+                    .request_suppression(Duration::from_millis(500)),
+                Err(CaptureError::SuppressionBlockedByHeldInput)
+            );
+            assert!(!context.keyboard(WM_KEYUP, &pause));
+            assert!(
+                context
+                    .shared
+                    .request_suppression(Duration::from_millis(500))
+                    .is_ok()
+            );
+        }
+
+        #[test]
+        fn held_physical_release_unblocks_suppression() {
+            let shared = Shared::new();
+            shared.alive.store(true, Ordering::Release);
+            // Model a modifier delivered locally before the handover; the
+            // injected release path clears it, then the lease can start.
+            assert!(!shared.observe_key(0xe0, true));
+            let held = shared.held_physical_input();
+            assert_eq!(held.usages, vec![0xe0]);
+            assert_eq!(
+                shared.request_suppression(Duration::from_millis(500)),
+                Err(CaptureError::SuppressionBlockedByHeldInput)
+            );
+            shared.clear_held_physical(&held);
+            assert!(
+                shared
+                    .request_suppression(Duration::from_millis(500))
+                    .is_ok()
+            );
+            assert!(shared.status().suppressing);
+        }
+
+        #[test]
+        fn controller_hotkey_chord_is_swallowed_but_forwarded() {
+            let (mut context, receiver) = context(8);
+            context.shared.set_controller_hotkeys_enabled(true);
+            // Ctrl down (scan 0x1d, left control) then Left Arrow (0x4b ext):
+            // default directional chord Ctrl+Alt+Gui+Left. LWIN arrives as the
+            // extended 0x5b make.
+            for scan in [0x1d_u32, 0x38] {
+                assert!(!context.keyboard(WM_KEYDOWN, &raw_key(scan)));
+            }
+            let win = KBDLLHOOKSTRUCT {
+                flags: LLKHF_EXTENDED,
+                ..raw_key(0x5b)
+            };
+            assert!(!context.keyboard(WM_KEYDOWN, &win));
+            while matches!(receiver.try_recv(), Ok(CaptureEvent::Modifiers(_))) {}
+            let left = KBDLLHOOKSTRUCT {
+                flags: LLKHF_EXTENDED,
+                ..raw_key(0x4b)
+            };
+            assert!(context.keyboard(WM_KEYDOWN, &left));
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(CaptureEvent::Key { usage: 0x50, .. })
+            ));
+            // Key up of a consumed chord key is swallowed too.
+            assert!(context.keyboard(WM_KEYUP, &left));
+        }
+
+        #[test]
+        fn controller_hotkeys_disabled_leaves_chord_to_local_apps() {
+            let (mut context, receiver) = context(8);
+            for scan in [0x1d_u32, 0x38] {
+                assert!(!context.keyboard(WM_KEYDOWN, &raw_key(scan)));
+            }
+            let win = KBDLLHOOKSTRUCT {
+                flags: LLKHF_EXTENDED,
+                ..raw_key(0x5b)
+            };
+            assert!(!context.keyboard(WM_KEYDOWN, &win));
+            while matches!(receiver.try_recv(), Ok(CaptureEvent::Modifiers(_))) {}
+            let left = KBDLLHOOKSTRUCT {
+                flags: LLKHF_EXTENDED,
+                ..raw_key(0x4b)
+            };
+            assert!(!context.keyboard(WM_KEYDOWN, &left));
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(CaptureEvent::Key { usage: 0x50, .. })
+            ));
         }
         #[test]
         fn ordinary_escape_repeat_with_later_modifiers_does_not_reclaim() {

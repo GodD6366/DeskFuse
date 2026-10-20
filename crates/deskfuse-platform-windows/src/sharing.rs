@@ -7,7 +7,10 @@
 #![allow(unsafe_code)]
 
 use crate::{
-    capture::{CaptureEvent as NativeCaptureEvent, CaptureFault, CapturePoll, WindowsInputCapture},
+    capture::{
+        CaptureError, CaptureEvent as NativeCaptureEvent, CaptureFault, CapturePoll,
+        WindowsInputCapture,
+    },
     display::{NativeDisplay, native_displays},
     hid::{
         LegacyCapsLock, keyboard_usage_to_legacy_keycode, legacy_keycode_to_keyboard_usage,
@@ -25,6 +28,7 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -133,6 +137,10 @@ pub struct WindowsSharingCapture {
     lease: SessionLease,
     last_position: Option<(f64, f64)>,
     caps_lock: LegacyCapsLock,
+    /// Cached adapter settings applied to every native capture instance:
+    /// `set_hotkeys`/`set_controller_hotkeys_enabled` can run before `start`.
+    hotkeys: Mutex<HotkeyBindings>,
+    controller_hotkeys: AtomicBool,
 }
 impl WindowsSharingCapture {
     #[must_use]
@@ -143,7 +151,15 @@ impl WindowsSharingCapture {
             lease: SessionLease::default(),
             last_position: None,
             caps_lock: LegacyCapsLock::default(),
+            hotkeys: Mutex::new(HotkeyBindings::default()),
+            controller_hotkeys: AtomicBool::new(false),
         }
+    }
+    fn apply_hotkey_settings(&self, native: &WindowsInputCapture) {
+        if let Ok(hotkeys) = self.hotkeys.lock() {
+            native.set_hotkeys(hotkeys.clone());
+        }
+        native.set_controller_hotkeys_enabled(self.controller_hotkeys.load(Ordering::Acquire));
     }
 }
 impl Default for WindowsSharingCapture {
@@ -156,14 +172,14 @@ impl SharedInputCapture for WindowsSharingCapture {
         if self.native.is_some() {
             return Ok(());
         }
-        self.native = Some(
-            WindowsInputCapture::start_with_notification(
-                NATIVE_QUEUE,
-                Arc::clone(&self.notification),
-            )
-            .map_err(|_| PlatformError::InputCaptureUnavailable)?,
-        );
-        self.caps_lock = LegacyCapsLock::new(self.native.as_ref().unwrap().initial_caps_lock());
+        let native = WindowsInputCapture::start_with_notification(
+            NATIVE_QUEUE,
+            Arc::clone(&self.notification),
+        )
+        .map_err(|_| PlatformError::InputCaptureUnavailable)?;
+        self.apply_hotkey_settings(&native);
+        self.caps_lock = LegacyCapsLock::new(native.initial_caps_lock());
+        self.native = Some(native);
         Ok(())
     }
     fn stop(&mut self) -> PlatformResult<()> {
@@ -177,7 +193,14 @@ impl SharedInputCapture for WindowsSharingCapture {
         Ok(())
     }
     fn set_mode(&self, _mode: CaptureMode) {}
-    fn set_hotkeys(&self, _hotkeys: HotkeyBindings) {}
+    fn set_hotkeys(&self, hotkeys: HotkeyBindings) {
+        if let Ok(mut guard) = self.hotkeys.lock() {
+            *guard = hotkeys.clone();
+        }
+        if let Some(native) = &self.native {
+            native.set_hotkeys(hotkeys);
+        }
+    }
     fn arm_session(&self, session: InputSessionId, duration: Duration) -> bool {
         self.lease.arm(session, duration)
     }
@@ -196,17 +219,44 @@ impl SharedInputCapture for WindowsSharingCapture {
                 .as_ref()
                 .is_some_and(|native| native.status().suppressing && !native.status().thread_alive)
     }
-    fn set_controller_hotkeys_enabled(&self, _enabled: bool) {}
+    fn set_controller_hotkeys_enabled(&self, enabled: bool) {
+        self.controller_hotkeys.store(enabled, Ordering::Release);
+        if let Some(native) = &self.native {
+            native.set_controller_hotkeys_enabled(enabled);
+        }
+    }
     fn enter_remote(&self, _x: f64, _y: f64) -> PlatformResult<()> {
         let remaining = self
             .lease
             .remaining()
             .ok_or(PlatformError::InputCaptureUnavailable)?;
-        self.native
+        let native = self
+            .native
             .as_ref()
-            .ok_or(PlatformError::InputCaptureUnavailable)?
-            .begin_suppression_lease(remaining)
-            .map_err(|_| PlatformError::InputCaptureUnavailable)
+            .ok_or(PlatformError::InputCaptureUnavailable)?;
+        match native.begin_suppression_lease(remaining) {
+            Ok(()) => Ok(()),
+            Err(CaptureError::SuppressionBlockedByHeldInput) => {
+                // Directional hotkeys require held modifiers, and edge switches
+                // can happen mid-drag: release what local applications already
+                // saw (mirrors macOS `release_local_keyboard`), then the lease
+                // can start without stranding those keys on the local machine.
+                let held = native.held_physical_input();
+                if held.usages.is_empty() && held.buttons == 0 {
+                    return Err(PlatformError::InputCaptureUnavailable);
+                }
+                let mut injector = OrdinaryDesktopInjector::new()
+                    .map_err(|_| PlatformError::InputCaptureUnavailable)?;
+                injector
+                    .release_local_physical(&held.usages, held.buttons)
+                    .map_err(|_| PlatformError::InputCaptureUnavailable)?;
+                native.clear_held_physical(&held);
+                native
+                    .begin_suppression_lease(remaining)
+                    .map_err(|_| PlatformError::InputCaptureUnavailable)
+            }
+            Err(_) => Err(PlatformError::InputCaptureUnavailable),
+        }
     }
     fn exit_remote(&self, restore: Option<(f64, f64)>) -> PlatformResult<()> {
         if let Some(native) = &self.native {
@@ -611,7 +661,6 @@ fn injection_worker(
                 result
             }
             InjectionCommand::Stop => {
-                motion_residual = (0.0, 0.0);
                 let _ = injector.release_all();
                 break;
             }
