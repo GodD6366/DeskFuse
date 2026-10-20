@@ -326,6 +326,9 @@ struct State {
     out_motion: MotionCadence,
     in_motion: MotionCadence,
     cadence_at: Instant,
+    /// 维护周期已把实时快照的最新版本完整同步进 `snapshot`/`effective`。
+    /// 热路径据此跳过逐事件的快照比较，避免克隆含壁纸字节的整份快照。
+    live_synced: bool,
 }
 /// Bounded so a once-per-second summary stays cheap even at 1000 Hz sampling.
 const CADENCE_GAPS: usize = 1024;
@@ -373,6 +376,10 @@ impl MotionCadence {
     }
 }
 impl State {
+    /// 实时快照自上次维护同步后没有任何变化。发送端已关闭时按已变化处理（走完整校验）。
+    fn live_unchanged(&self, live: &tokio::sync::watch::Receiver<InputSharingSnapshot>) -> bool {
+        self.live_synced && live.has_changed().is_ok_and(|changed| !changed)
+    }
     fn error(&mut self, ui: &UnboundedSender<UiEvent>, message: String) {
         if self.last_error.as_ref() != Some(&message) {
             self.last_error = Some(message.clone());
@@ -960,6 +967,8 @@ async fn run(
 ) {
     let local = runtime.snapshot_view().snapshot.local_device_id;
     let mut events = runtime.input_event_stream();
+    // 热路径专用订阅：只看版本是否变化，读取时借用而不克隆。
+    let mut live_input = runtime.subscribe_input();
     let mut state = State {
         last_capture_at: None,
         crossing_started: None,
@@ -987,6 +996,7 @@ async fn run(
         out_motion: MotionCadence::default(),
         in_motion: MotionCadence::default(),
         cadence_at: Instant::now(),
+        live_synced: false,
     };
     let (mut observations, observer, observer_thread) =
         native_observer(stopping.clone(), platform.clone());
@@ -1114,17 +1124,21 @@ async fn run(
                         // Runtime has already checked token, role, transport identity,
                         // topology generation, sequence and lease before this event.
                         if !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input) || state.retired.contains(&session_id) || !state.available || !state.effective.enabled || state.effective.role!=InputShareRole::Controlled {continue;}
-                        let live=runtime.input_snapshot();
-                        if !native_report_is_current(&state.snapshot,&live) || !live.effective_settings().enabled {continue;}
-                        let Some(link)=live.links.iter().find(|l| l.control_session==Some(session_id) && l.ready) else {continue;};
-                        let Some(display)=live.local_topology.as_ref().and_then(|t|t.displays.iter().find(|d| d.id==target_display)) else {continue;};
+                        // 只借用实时快照取出本批需要的字段，借用在任何 await 之前释放。
+                        let (lease_revision, motion_mode, display) = {
+                            let live = live_input.borrow();
+                            if !state.live_unchanged(&live_input) && (!native_report_is_current(&state.snapshot,&live) || !live.effective_settings().enabled) {continue;}
+                            let Some(link)=live.links.iter().find(|l| l.control_session==Some(session_id) && l.ready) else {continue;};
+                            let Some(display)=live.local_topology.as_ref().and_then(|t|t.displays.iter().find(|d| d.id==target_display)).cloned() else {continue;};
+                            (link.lease_revision, link.motion_mode.clone(), display)
+                        };
                         if state.inbound.as_ref().is_none_or(|p|p.session!=session_id) {
                             let entry_started = Instant::now();
-                            timing::record!("receive_entry", Duration::ZERO, format!("session={session_id:?} epoch={state_epoch:?} motion_mode={:?}", link.motion_mode));
+                            timing::record!("receive_entry", Duration::ZERO, format!("session={session_id:?} epoch={state_epoch:?} motion_mode={motion_mode:?}"));
                             let now=Instant::now();
-                            let progress=state.grants.entry(session_id).or_insert(LeaseProgress{session:session_id,revision:link.lease_revision,advanced_at:now,advanced_wall:SystemTime::now()});
+                            let progress=state.grants.entry(session_id).or_insert(LeaseProgress{session:session_id,revision:lease_revision,advanced_at:now,advanced_wall:SystemTime::now()});
                             if progress.expired(now) {state.retired.insert(session_id);let _=runtime.send(RuntimeCommand::ReleaseInputControl{session_id}).await;continue;}
-                            progress.observe(session_id,link.lease_revision,now);
+                            progress.observe(session_id,lease_revision,now);
                             if let Some(injector)=&state.injector {
                                 let _=injector.release_all_nowait();
                                 let armed = injector.arm_session(session_id,progress.remaining(Instant::now()));
@@ -1148,7 +1162,7 @@ async fn run(
                         }
                         if let Some(injector)=&state.injector {
                             let enqueue_start = Instant::now();
-                            let error=injector.enqueue_batch(session_id,display,state_epoch,&events).err();
+                            let error=injector.enqueue_batch(session_id,&display,state_epoch,&events).err();
                             let enqueue_time = enqueue_start.elapsed();
                             if timing::enabled() && (precheck_time >= Duration::from_millis(2) || enqueue_time >= Duration::from_millis(2)) {
                                 timing::record!("receive_slow_path", receive_arrived.elapsed(), format!("session={session_id:?} precheck={}us enqueue={}us events={}", precheck_time.as_micros(), enqueue_time.as_micros(), events.len()));
@@ -1195,10 +1209,12 @@ async fn run(
                     timer.reset_immediately();
                     continue;
                 }
-                let live = runtime.input_snapshot();
-                if !native_report_is_current(&state.snapshot, &live)
-                    || effective_native_settings(&live, &state.paused_activations) != state.effective
-                {
+                let stale = !state.live_unchanged(&live_input) && {
+                    let live = live_input.borrow();
+                    !native_report_is_current(&state.snapshot, &live)
+                        || effective_native_settings(&live, &state.paused_activations) != state.effective
+                };
+                if stale {
                     timer.reset_immediately();
                     continue;
                 }
@@ -1250,6 +1266,13 @@ async fn run(
                             if !state.available || emergency.load(Ordering::Acquire) { break; }
                         }
                         Ok(None) => break,
+                        // 租约到期时捕获端已自行退出独占，tap 仍然健康：只回收控制，
+                        // 不拆适配器，也不按"捕获中断"报错。
+                        Ok(Some(CaptureEvent::LeaseExpired)) => {
+                            state.error(&ui,"控制租约已过期，已恢复本机输入".into());
+                            state.reclaim(&runtime,Some(state.anchor)).await;
+                            break;
+                        }
                         Ok(Some(_)) | Err(_) => {
                             let reason = "输入捕获中断，已恢复本机输入".to_owned();
                             state.error(&ui,reason.clone());
@@ -1262,7 +1285,9 @@ async fn run(
             }
             _ = timer.tick() => {
                 let now = Instant::now();
-                let mut snapshot = runtime.input_snapshot();
+                // 本轮同步完成前热路径一律走完整校验。
+                state.live_synced = false;
+                let mut snapshot = live_input.borrow_and_update().clone();
                 let effective = effective_native_settings(&snapshot, &state.paused_activations);
                 if latch_emergency(&emergency, &snapshot, &mut state.paused_activations) {
                     state.snapshot = snapshot.clone();
@@ -1315,7 +1340,7 @@ async fn run(
                             if snapshot.local_topology.as_ref() != Some(&topology) {
                                 state.reclaim(&runtime, Some(state.anchor)).await;
                                 if let Err(error) = runtime.send(RuntimeCommand::PublishDisplayTopology(topology)).await { adapter_error=Some(error.to_string()); }
-                                let refreshed = runtime.input_snapshot();
+                                let refreshed = live_input.borrow_and_update().clone();
                                 if !native_report_is_current(&snapshot, &refreshed) { next_refresh=now; continue; }
                                 snapshot=refreshed;
                                 // The same activation was verified above; retain any local emergency pause overlay.
@@ -1375,6 +1400,9 @@ async fn run(
                     let _ = ui.unbounded_send(UiEvent::InputLockStatus(state.policy.is_locked()));
                 }
                 state.grants.retain(|session,_| snapshot.links.iter().any(|l|l.control_session==Some(*session)));
+                // 链路已不再持有的会话不会再被投递，留着只会让集合无限增长。
+                let held=[state.outbound.as_ref(),state.inbound.as_ref()].into_iter().flatten().map(|p|p.session).collect::<Vec<_>>();
+                state.retired.retain(|session| held.contains(session) || snapshot.links.iter().any(|l|l.control_session==Some(*session)));
                 for link in &mut snapshot.links {
                     if let Some(session)=link.control_session {
                         let progress=state.grants.entry(session).or_insert(LeaseProgress{session,revision:link.lease_revision,advanced_at:now,advanced_wall:SystemTime::now()});
@@ -1404,6 +1432,7 @@ async fn run(
                 }
                 state.effective=effective;
                 state.snapshot=snapshot;
+                state.live_synced=true;
                 let mut expired=false;
                 for (lease, outbound) in [(&mut state.outbound,true),(&mut state.inbound,false)] {
                     if let Some(progress)=lease {

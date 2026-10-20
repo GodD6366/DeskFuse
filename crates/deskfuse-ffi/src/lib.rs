@@ -50,6 +50,8 @@ pub fn run_input_service() -> Result<(), String> {
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static STARTUP: OnceLock<Mutex<Option<deskfuse_update::UpdateStatus>>> = OnceLock::new();
+/// 启动前数据优化的结果，等引擎的诊断通道就绪后再记录。
+static DATA_OPTIMIZATION: Mutex<Option<(&'static str, u64, u64)>> = Mutex::new(None);
 fn failure(message: impl ToString) -> EngineError {
     EngineError::Failed {
         message: message.to_string(),
@@ -136,6 +138,13 @@ impl Engine {
             RUNNING.store(false, Ordering::Release);
             failure(e)
         })?;
+        if let Some((outcome, before, after)) = DATA_OPTIMIZATION
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take())
+        {
+            bridge.record_data_optimization(outcome, before, after);
+        }
         bridge.record_startup_stage("engine_host");
         let host = match deskfuse_engine::host::EngineHost::assemble_with(
             deskfuse_store::SQLiteStore::default_path()
@@ -693,6 +702,56 @@ pub fn prepare_startup(transaction: Option<String>) -> Result<bool, EngineError>
         .lock()
         .map_err(failure)? = status;
     Ok(self_test)
+}
+/// 启动前数据优化阶段的结果。
+#[derive(uniffi::Record)]
+pub struct DataOptimization {
+    /// 本次是否实际整理或回收了空间。
+    pub performed: bool,
+    /// 本次延后（下次启动重试）的原因。
+    pub deferred_reason: Option<String>,
+    /// 优化前数据库与 WAL 合计字节数。
+    pub bytes_before: u64,
+    /// 优化后数据库与 WAL 合计字节数。
+    pub bytes_after: u64,
+}
+#[uniffi::export]
+/// 是否需要展示"数据优化"启动阶段。只读页头，判断失败时按不需要处理。
+pub fn local_data_needs_optimization() -> bool {
+    deskfuse_store::SQLiteStore::default_path()
+        .ok()
+        .and_then(|path| deskfuse_store::maintenance::needs_optimization(&path).ok())
+        .unwrap_or(false)
+}
+#[uniffi::export]
+/// 升级后的数据优化阶段：旧库一次性转换为增量回收模式并整理，之后只做增量回收。
+/// 必须在 [`Engine::new`] 之前调用。
+///
+/// # Errors
+/// Returns an error if the engine is already running or the database cannot be opened.
+pub fn optimize_local_data() -> Result<DataOptimization, EngineError> {
+    use deskfuse_store::maintenance::{OptimizationOutcome, optimize_database};
+    if RUNNING.load(Ordering::Acquire) {
+        return Err(failure("引擎运行期间不能优化本地数据"));
+    }
+    let path = deskfuse_store::SQLiteStore::default_path().map_err(failure)?;
+    let report = optimize_database(&path).map_err(failure)?;
+    let (outcome, performed, deferred_reason) = match report.outcome {
+        OptimizationOutcome::Missing => ("missing", false, None),
+        OptimizationOutcome::AlreadyOptimal => ("already_optimal", false, None),
+        OptimizationOutcome::Compacted => ("compacted", true, None),
+        OptimizationOutcome::Reclaimed => ("reclaimed", true, None),
+        OptimizationOutcome::Deferred(reason) => ("deferred", false, Some(reason)),
+    };
+    if let Ok(mut pending) = DATA_OPTIMIZATION.lock() {
+        *pending = Some((outcome, report.bytes_before, report.bytes_after));
+    }
+    Ok(DataOptimization {
+        performed,
+        deferred_reason,
+        bytes_before: report.bytes_before,
+        bytes_after: report.bytes_after,
+    })
 }
 #[uniffi::export]
 /// # Errors

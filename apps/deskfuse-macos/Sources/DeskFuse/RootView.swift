@@ -17,7 +17,7 @@ struct RootView: View {
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .tint(DFPalette.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading))
+        .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading, optimizingData: store.optimizingLocalData))
         .focusedSceneValue(\.searchClipboard, store.selectedPage == .clipboard ? { historySearchRequest += 1 } : nil)
         .focusedSceneValue(\.searchDevices, (store.selectedPage == .devices || store.selectedPage == .remoteApplications) ? { deviceSearchRequest += 1 } : nil)
         .onAppear {

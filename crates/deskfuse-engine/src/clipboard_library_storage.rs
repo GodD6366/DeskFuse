@@ -43,6 +43,21 @@ impl Drop for BackgroundWriter<'_> {
     }
 }
 
+/// 删除 seq 区间内被支配的同步操作。只有胜者操作仍在日志中时才删除其他
+/// 操作，绝不让某个记录从日志里消失。`+r.x` 去掉列亲和性，否则 TEXT 亲和性
+/// 会让表达式索引失效，退化成每行全表扫描（真实 3.7 万条日志会跑数分钟）。
+pub(super) const COMPACT_OPERATIONS_SQL: &str = "DELETE FROM cl_operations AS o WHERE o.seq>?1 AND o.seq<=?2 AND (
+    EXISTS(SELECT 1 FROM cl_records r
+        WHERE r.key=json_extract(o.body,'$.key') AND r.key NOT GLOB 'member:*'
+        AND (json_extract(o.body,'$.revision')<>r.revision OR json_extract(o.body,'$.author')<>r.author)
+        AND EXISTS(SELECT 1 FROM cl_operations w
+            WHERE json_extract(w.body,'$.key')=+r.key
+            AND json_extract(w.body,'$.revision')=+r.revision
+            AND json_extract(w.body,'$.author')=+r.author))
+    OR EXISTS(SELECT 1 FROM cl_member_frontier_state s
+        WHERE s.key=json_extract(o.body,'$.key')
+        AND NOT EXISTS(SELECT 1 FROM cl_member_frontier f WHERE f.key=s.key AND f.op_id=o.op_id)))";
+
 pub(super) fn install_clocks(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS cl_author_clocks(author TEXT PRIMARY KEY,revision INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS cl_member_frontier(key TEXT NOT NULL,op_id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(key,op_id));
@@ -478,6 +493,50 @@ impl Library {
             self.changed();
         }
         Ok(deleted > 0)
+    }
+    /// 删除历史后归还空闲页。每步最多 1 MiB（4 KiB 页），前台写入时立即让路。
+    pub(super) fn reclaim_space_step(&self) -> Result<bool> {
+        let Some(db) = self.background_writer()? else {
+            return Ok(false);
+        };
+        deskfuse_store::maintenance::reclaim_free_pages_step(&db, 256).map_err(err)
+    }
+    /// 一次性压缩旧版本留下的操作日志：单值记录只留当前胜者，成员记录只留
+    /// 因果前沿。新合并已在写入时压缩，因此扫完一轮即写入完成标记。
+    /// 返回下一游标与是否仍有待扫描的操作。
+    pub(super) fn compact_operations_step(&self, cursor: u64) -> Result<(u64, bool)> {
+        const BATCH: u64 = 256;
+        let Some(db) = self.background_writer()? else {
+            return Ok((cursor, false));
+        };
+        let done: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='operations_compacted_v1')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if done {
+            return Ok((cursor, false));
+        }
+        let end: Option<u64> = db
+            .query_row(
+                "SELECT MAX(seq) FROM (SELECT seq FROM cl_operations WHERE seq>?1 ORDER BY seq LIMIT ?2)",
+                params![cursor, BATCH],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        let Some(end) = end else {
+            db.execute(
+                "INSERT OR IGNORE INTO cl_meta VALUES('operations_compacted_v1','1')",
+                [],
+            )
+            .map_err(err)?;
+            return Ok((cursor, false));
+        };
+        db.execute(COMPACT_OPERATIONS_SQL, params![cursor, end])
+            .map_err(err)?;
+        Ok((end, true))
     }
     pub(super) fn collect_blobs_step(&self) -> Result<()> {
         let Some(mut db) = self.background_writer()? else {

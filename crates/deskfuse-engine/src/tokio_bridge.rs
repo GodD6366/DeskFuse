@@ -1377,6 +1377,24 @@ impl TokioBridge {
         }
     }
 
+    /// 记录启动前数据优化阶段的结果。只含固定的结果类别与字节数。
+    pub fn record_data_optimization(
+        &self,
+        outcome: &'static str,
+        bytes_before: u64,
+        bytes_after: u64,
+    ) {
+        self.diagnostics.record(
+            DiagnosticLevel::Info,
+            "startup",
+            "data_optimization",
+            Some(format!(
+                "outcome={outcome} bytes_before={bytes_before} bytes_after={bytes_after}"
+            )),
+            None,
+        );
+    }
+
     /// Fixed startup milestones only; never accept user content into diagnostics.
     pub fn record_startup_stage(&self, stage: &str) {
         if !matches!(

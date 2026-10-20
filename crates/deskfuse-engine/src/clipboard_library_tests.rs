@@ -1100,14 +1100,20 @@ fn archived_item_title_syncs_to_peer_and_survives_text_edit() {
     );
 
     // 对端改名后回传；编辑归档正文不丢标题。
-    let after = peer.export_operations(0, 100).unwrap().len() as u64;
+    // 按 seq 游标增量拉取：日志压缩会删掉被支配的旧操作，条数不再单调。
+    let after = peer
+        .export_operations(0, 100)
+        .unwrap()
+        .last()
+        .and_then(|operation| operation["seq"].as_u64())
+        .unwrap();
     peer.mutate(
         &json!({"op":"set_item_title","id":remote_archive,"title":"连锁","compact":true})
             .to_string(),
     )
     .unwrap();
     library
-        .merge_operations(peer.export_operations(0, 100).unwrap()[after as usize..].to_vec())
+        .merge_operations(peer.export_operations(after, 100).unwrap())
         .unwrap();
     assert_eq!(item_title(&library, archived).as_deref(), Some("连锁"));
     library
@@ -1177,4 +1183,177 @@ fn history_title_edited_on_peer_updates_origin_row() {
         .unwrap();
     library.reconcile_index().unwrap();
     assert_eq!(item_title(&library, id).as_deref(), Some("本机"));
+}
+
+fn operations_for(library: &Library, key: &str) -> u64 {
+    library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM cl_operations WHERE json_extract(body,'$.key')=?1",
+            [key],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn operation_log_keeps_only_register_winner_and_ignores_replayed_losers() {
+    let library = Library::open().unwrap();
+    library.set_local_device("a".into()).unwrap();
+    let id = text(&library, "压缩日志");
+    library
+        .mutate(&json!({"op":"set_item_title","id":id,"title":"旧标题","compact":true}).to_string())
+        .unwrap();
+    let stale = library.export_operations(0, 100).unwrap();
+    let key = stale.last().unwrap()["key"].as_str().unwrap().to_string();
+    library
+        .mutate(&json!({"op":"set_item_title","id":id,"title":"新标题","compact":true}).to_string())
+        .unwrap();
+    assert_eq!(operations_for(&library, &key), 1);
+
+    // 旧版本对端每次连接都会从头重放；落败操作不能重新进入日志。
+    library.merge_operations(stale.clone()).unwrap();
+    assert_eq!(operations_for(&library, &key), 1);
+    assert_eq!(item_title(&library, id).as_deref(), Some("新标题"));
+
+    // 新设备只拿到压缩后的日志，也收敛到相同状态。
+    let fresh = Library::open().unwrap();
+    fresh.set_local_device("b".into()).unwrap();
+    fresh
+        .merge_operations(library.export_operations(0, 100).unwrap())
+        .unwrap();
+    let gid: String = library
+        .reader()
+        .unwrap()
+        .query_row("SELECT global_id FROM cl_items WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        item_title(&fresh, row_id(&fresh, &gid)).as_deref(),
+        Some("新标题")
+    );
+}
+
+#[test]
+fn operation_log_keeps_member_frontier_only() {
+    let key = "member:list:archive:item";
+    let make = |op_id: &str, author: &str, revision: u64, deleted, clock: Value| json!({"op_id":op_id,"key":key,"revision":revision,"author":author,"clock":clock,"deleted":deleted,"value":{"list_id":"list","item_id":"archive:item"}});
+    let library = Library::open().unwrap();
+    library
+        .merge_operations(vec![
+            make("a", "a", 1, false, json!({"a":1})),
+            make("b", "b", 1, true, json!({"b":1})),
+            make("c", "c", 1, false, json!({"a":1,"c":1})),
+        ])
+        .unwrap();
+    // a 被 c 支配；b 与 c 并发，二者都在前沿。
+    assert_eq!(operations_for(&library, key), 2);
+    library
+        .merge_operations(vec![make("d", "a", 2, false, json!({"a":2,"b":1,"c":1}))])
+        .unwrap();
+    assert_eq!(operations_for(&library, key), 1);
+}
+
+#[test]
+fn legacy_operation_log_is_compacted_once_without_losing_records() {
+    let library = Library::open().unwrap();
+    library.set_local_device("a".into()).unwrap();
+    let id = text(&library, "旧日志");
+    library
+        .mutate(&json!({"op":"set_item_title","id":id,"title":"标题","compact":true}).to_string())
+        .unwrap();
+    let winner = library.export_operations(0, 100).unwrap().pop().unwrap();
+    let key = winner["key"].as_str().unwrap().to_string();
+    let orphan = "index:orphan";
+    {
+        let db = library.writer().unwrap();
+        // 模拟旧版本：落败操作留在日志里，且有记录的胜者操作已缺失。
+        let mut loser = winner.clone();
+        loser.as_object_mut().unwrap().remove("seq");
+        loser["op_id"] = json!("legacy-loser");
+        loser["revision"] = json!(0);
+        db.execute(
+            "INSERT INTO cl_operations(op_id,body) VALUES('legacy-loser',?1)",
+            [loser.to_string()],
+        )
+        .unwrap();
+        let mut stray = loser.clone();
+        stray["op_id"] = json!("legacy-orphan");
+        stray["key"] = json!(orphan);
+        db.execute(
+            "INSERT INTO cl_operations(op_id,body) VALUES('legacy-orphan',?1)",
+            [stray.to_string()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO cl_records VALUES(?1,9,'z',0,'{}')", [orphan])
+            .unwrap();
+        db.execute(
+            "DELETE FROM cl_meta WHERE key='operations_compacted_v1'",
+            [],
+        )
+        .unwrap();
+    }
+    assert_eq!(operations_for(&library, &key), 2);
+    let mut cursor = 0;
+    let mut steps = 0;
+    loop {
+        let (next, more) = library.compact_operations_step(cursor).unwrap();
+        cursor = next;
+        steps += 1;
+        if !more {
+            break;
+        }
+        assert!(steps < 100);
+    }
+    assert_eq!(operations_for(&library, &key), 1);
+    // 胜者缺失时保留现有操作，记录不能从同步日志里消失。
+    assert_eq!(operations_for(&library, orphan), 1);
+    let done: bool = library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM cl_meta WHERE key='operations_compacted_v1')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(done);
+}
+
+#[test]
+fn unused_record_clocks_table_is_dropped() {
+    let library = Library::open().unwrap();
+    let exists: bool = library
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='cl_clocks')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+}
+
+#[test]
+fn operation_compaction_uses_indexes_instead_of_nested_scans() {
+    let library = Library::open().unwrap();
+    let db = library.reader().unwrap();
+    let mut statement = db
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            storage::COMPACT_OPERATIONS_SQL
+        ))
+        .unwrap();
+    let plan = statement
+        .query_map(params![0, 1], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter().all(|step| !step.starts_with("SCAN")),
+        "{plan:?}"
+    );
 }

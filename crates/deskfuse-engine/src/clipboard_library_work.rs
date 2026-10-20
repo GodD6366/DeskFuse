@@ -169,6 +169,7 @@ fn run(library: Weak<Library>, queue: Arc<Queue>) {
     let mut payload_pending = true;
     let mut next_prune = Instant::now() + Duration::from_secs(60);
     let mut missing_files_cursor = 0_u64;
+    let mut compaction_cursor = 0_u64;
     let mut wait = ACTIVE_WAIT;
     let mut stats = MaintenanceStats::default();
     let diagnostics = crate::diagnostics::Diagnostics::new(4);
@@ -268,9 +269,20 @@ fn run(library: Weak<Library>, queue: Arc<Queue>) {
                 )
                 .unwrap_or((missing_files_cursor, false));
             missing_files_cursor = cursor;
-            active |= more || sweeping;
+            let (cursor, compacting) = stats
+                .result(
+                    "operation_compaction",
+                    library.compact_operations_step(compaction_cursor),
+                )
+                .unwrap_or((compaction_cursor, false));
+            compaction_cursor = cursor;
+            let reclaiming = stats
+                .result("space_reclaim", library.reclaim_space_step())
+                .unwrap_or(false);
+            let pending = more || sweeping || compacting || reclaiming;
+            active |= pending;
             next_prune = Instant::now()
-                + if more || sweeping {
+                + if pending {
                     Duration::from_millis(25)
                 } else {
                     Duration::from_secs(60)

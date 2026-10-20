@@ -4,6 +4,7 @@ import SwiftUI
 /// workspace. Keep the underlying selection and scroll positions intact.
 struct WorkspaceLoadingOverlay: ViewModifier {
     let isPresented: Bool
+    var optimizingData = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
@@ -13,7 +14,7 @@ struct WorkspaceLoadingOverlay: ViewModifier {
             .overlay {
                 ZStack {
                     if isPresented {
-                        WorkspaceLoadingView()
+                        WorkspaceLoadingView(optimizingData: optimizingData)
                             .transition(.opacity)
                     }
                 }
@@ -30,6 +31,7 @@ struct WorkspaceLoadingOverlay: ViewModifier {
 }
 
 private struct WorkspaceLoadingView: View {
+    let optimizingData: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -45,9 +47,11 @@ private struct WorkspaceLoadingView: View {
                 .accessibilityHidden(true)
 
             VStack(spacing: 8) {
-                Text("正在启动 DeskFuse")
+                Text(optimizingData ? "正在优化本地数据" : "正在启动 DeskFuse")
                     .font(DFType.pageTitle)
-                Text("正在连接本地引擎，准备你的工作区。")
+                Text(optimizingData
+                     ? "升级后整理一次数据库并回收磁盘空间，完成后自动继续。"
+                     : "正在连接本地引擎，准备你的工作区。")
                     .font(DFType.detail)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

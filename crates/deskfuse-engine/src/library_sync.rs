@@ -5,6 +5,8 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::clipboard_library::{LogPosition, PullCursor};
+
 pub(super) const MIME: &str = "application/x-deskfuse-library-sync-v1";
 const CHUNK: usize = 128 * 1024;
 const MAX_BLOB: usize = 257 * 1024 * 1024;
@@ -19,6 +21,9 @@ enum Frame {
         // Old v1 peers ignore this field and keep receiving ordinary frames.
         #[serde(default)]
         operation_chunks: bool,
+        /// 发送端日志纪元与高水位；旧版本不发送，接收端退回每次从头拉取。
+        #[serde(default)]
+        log: Option<LogPosition>,
     },
     Pull {
         after: u64,
@@ -321,6 +326,13 @@ impl Drop for BlobTask {
         }
     }
 }
+fn hello(library: &crate::clipboard_library::Library) -> Result<Frame, String> {
+    Ok(Frame::Hello {
+        version: 1,
+        operation_chunks: true,
+        log: Some(library.operation_log_position()?),
+    })
+}
 async fn worker(
     peer: DeviceId,
     generation: u64,
@@ -338,6 +350,9 @@ async fn worker(
     let mut operations_updated = std::time::Instant::now();
     let mut hello_attempts = 0;
     let mut cursor = 0;
+    // 对端日志纪元；存在时游标随合并事务持久化，重连后从断点继续。
+    let mut remote_epoch: Option<String> = None;
+    let peer_key = peer.to_string();
     let mut pending = std::collections::BTreeSet::<String>::new();
     let mut receiving: Option<(String, usize, Vec<u8>)> = None;
 
@@ -354,7 +369,8 @@ async fn worker(
                 }
                 if operations_updated.elapsed() > Duration::from_secs(30) { incoming_operations.0 = None; }
                 if !ready || incoming_operations.0.is_none() {
-                    send(&runtime, peer, generation, if ready { Frame::Pull { after: cursor } } else { Frame::Hello { version: 1, operation_chunks: true } }).await?;
+                    let frame = if ready { Frame::Pull { after: cursor } } else { hello(&library)? };
+                    send(&runtime, peer, generation, frame).await?;
                 }
                 if receive_updated.elapsed() > Duration::from_secs(30) { receiving = None; }
                 if ready && receiving.is_none() {
@@ -385,10 +401,18 @@ async fn worker(
                 }
                 let Some(frame) = incoming_operations.receive(cursor, frame)? else { continue; };
                 match frame {
-                    Frame::Hello { version, operation_chunks } => {
+                    Frame::Hello { version, operation_chunks, log } => {
                         if version != 1 { return Err("对端需升级列表同步协议".into()); }
-                        if !ready { send(&runtime, peer, generation, Frame::Hello { version: 1, operation_chunks: true }).await?; }
+                        if !ready { send(&runtime, peer, generation, hello(&library)?).await?; }
                         supports_chunks = operation_chunks;
+                        if let Some(log) = log {
+                            cursor = library.pull_cursor(&peer_key, &log)?;
+                            remote_epoch = Some(log.epoch);
+                        }
+                        if !ready {
+                            // 游标不再回到 0，已同步归档缺失的正文要从库里重新排队。
+                            pending.extend(library.missing_archive_blobs()?);
+                        }
                         ready = true;
                         send(&runtime, peer, generation, Frame::Pull { after: cursor }).await?;
                     }
@@ -424,7 +448,13 @@ async fn worker(
                         }
                         // Storage validates, deduplicates by persistent operation UUID,
                         // resolves versions/tombstones, and commits atomically before ACK.
-                        library.merge_operations(operations)?;
+                        match &remote_epoch {
+                            Some(epoch) if next > cursor => library.merge_pulled_operations(
+                                operations,
+                                &PullCursor { peer: peer_key.clone(), epoch: epoch.clone(), next },
+                            )?,
+                            _ => library.merge_operations(operations)?,
+                        }
                         incoming_operations.0 = None;
                         let mut completed = Vec::new();
                         for hash in &pending { if library.read_blob(hash)?.is_some() { completed.push(hash.clone()); } }
@@ -485,6 +515,8 @@ async fn worker(
                             eprintln!("[library_sync] peer={:?} blob missing hash={}", peer, hash);
                         }
                         if receiving.as_ref().is_some_and(|(id, _, _)| *id == hash) { receiving = None; }
+                        // 对端没有这份正文；留在队首会每个周期重复请求并挡住后续正文。
+                        pending.remove(&hash);
                     }
                 }
             }
@@ -608,7 +640,8 @@ mod tests {
             frame,
             Frame::Hello {
                 version: 1,
-                operation_chunks: false
+                operation_chunks: false,
+                log: None
             }
         ));
         let (small, transfer) =
@@ -674,5 +707,123 @@ mod tests {
             *offset = 0;
         }
         assert!(receiver.receive(4, bad).is_err());
+    }
+
+    fn archive_one(library: &Library) -> String {
+        library.mutate(r#"{"op":"save_list","list":{"id":"manual","name":"manual","kind":"manual"},"compact":true}"#).unwrap();
+        let id = library
+            .ingest(
+                &PasteboardSnapshot {
+                    text: Some("断点续传".into()),
+                    ..Default::default()
+                },
+                "local",
+            )
+            .unwrap()
+            .unwrap();
+        library
+            .mutate(&json!({"op":"membership","list_id":"manual","history_id":id,"present":true,"compact":true}).to_string())
+            .unwrap();
+        let mut hashes = std::collections::BTreeSet::new();
+        for op in library.export_operations(0, 100).unwrap() {
+            if op["key"].as_str().unwrap().starts_with("item:") {
+                blob_hashes(&op, &mut hashes);
+            }
+        }
+        hashes.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn pull_cursor_resumes_per_peer_epoch_and_requeues_missing_archives() {
+        let a = Library::open().unwrap();
+        let b = Library::open().unwrap();
+        a.set_local_device("device-a".into()).unwrap();
+        b.set_local_device("device-b".into()).unwrap();
+        let hash = archive_one(&a);
+        let position = a.operation_log_position().unwrap();
+        assert_eq!(a.operation_log_position().unwrap().epoch, position.epoch);
+        assert!(position.last_seq > 0);
+
+        // 第一次连接只拉一条就断开：游标停在已提交的位置。
+        assert_eq!(b.pull_cursor("peer-a", &position).unwrap(), 0);
+        let first = a.export_operations(0, 1).unwrap();
+        let next = first[0]["seq"].as_u64().unwrap();
+        let cursor = PullCursor {
+            peer: "peer-a".into(),
+            epoch: position.epoch.clone(),
+            next,
+        };
+        b.merge_pulled_operations(first, &cursor).unwrap();
+        assert_eq!(b.pull_cursor("peer-a", &position).unwrap(), next);
+
+        // 合并失败不推进游标。
+        let broken = PullCursor {
+            next: next + 100,
+            ..cursor
+        };
+        assert!(
+            b.merge_pulled_operations(vec![json!({"op_id":"bad"})], &broken)
+                .is_err()
+        );
+        assert_eq!(b.pull_cursor("peer-a", &position).unwrap(), next);
+
+        // 重连后从断点继续，拉完全部剩余操作。
+        let mut after = b.pull_cursor("peer-a", &position).unwrap();
+        loop {
+            let ops = a.export_operations(after, 1).unwrap();
+            let Some(next) = ops.last().and_then(|op| op["seq"].as_u64()) else {
+                break;
+            };
+            b.merge_pulled_operations(
+                ops,
+                &PullCursor {
+                    peer: "peer-a".into(),
+                    epoch: position.epoch.clone(),
+                    next,
+                },
+            )
+            .unwrap();
+            after = next;
+        }
+        let page: Value = serde_json::from_str(
+            &b.query(r#"{"op":"items","list_id":"manual","include_total":true}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page["total"], 1);
+
+        // 不再重放日志后，缺失的归档正文由库重新排队；写入后出队。
+        assert_eq!(b.missing_archive_blobs().unwrap(), vec![hash.clone()]);
+        b.write_blob(&hash, &a.read_blob(&hash).unwrap().unwrap())
+            .unwrap();
+        assert!(b.missing_archive_blobs().unwrap().is_empty());
+
+        // 其他对端、新纪元或对端从备份回退高水位，都从头拉取。
+        assert_eq!(b.pull_cursor("peer-c", &position).unwrap(), 0);
+        let rebuilt = LogPosition {
+            epoch: "rebuilt".into(),
+            ..position.clone()
+        };
+        assert_eq!(b.pull_cursor("peer-a", &rebuilt).unwrap(), 0);
+        let restored = LogPosition {
+            last_seq: after - 1,
+            ..position
+        };
+        assert_eq!(b.pull_cursor("peer-a", &restored).unwrap(), 0);
+    }
+
+    #[test]
+    fn hello_carries_log_position_for_new_peers() {
+        let library = Library::open().unwrap();
+        let bytes = serde_json::to_vec(&hello(&library).unwrap()).unwrap();
+        let Frame::Hello {
+            log: Some(log),
+            operation_chunks: true,
+            ..
+        } = serde_json::from_slice(&bytes).unwrap()
+        else {
+            panic!("expected hello with log position");
+        };
+        assert_eq!(log, library.operation_log_position().unwrap());
     }
 }

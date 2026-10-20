@@ -29,6 +29,8 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehav
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod maintenance;
+
 /// The latest schema version understood by this crate.
 pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
@@ -47,11 +49,20 @@ const SQLITE_PAGE_CACHE_KIB: i64 = -1024;
 /// In-memory stores retain SQLite's memory journal for isolated callers.
 pub fn configure_connection(connection: &mut Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(Duration::from_secs(5))?;
+    // 只对尚未建表的新库生效；已有数据的旧库由启动时的数据优化阶段转换。
+    // 必须在切换 WAL（会写入页头）之前设置。
+    connection.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
     let journal: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
     if journal != "wal" && journal != "memory" {
         connection.pragma_update(None, "journal_mode", "WAL")?;
     }
     connection.pragma_update(None, "cache_size", SQLITE_PAGE_CACHE_KIB)?;
+    // 检查点后把 WAL 截回上限，避免它永久停留在历史峰值。
+    connection.pragma_update(
+        None,
+        "journal_size_limit",
+        maintenance::WAL_SIZE_LIMIT_BYTES,
+    )?;
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.set_transaction_behavior(TransactionBehavior::Immediate);
     Ok(())

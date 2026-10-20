@@ -468,6 +468,18 @@ CREATE INDEX IF NOT EXISTS cl_operations_author_revision ON cl_operations(
     json_extract(body,'$.author'),json_extract(body,'$.revision'));
 CREATE INDEX IF NOT EXISTS cl_operations_revision ON cl_operations(json_extract(body,'$.revision'));
 ";
+/// 发送端操作日志的身份与 seq 高水位，随 Hello 交换。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPosition {
+    pub epoch: String,
+    pub last_seq: u64,
+}
+/// 从某个对端日志纪元拉取到的位置，随合并事务一起提交。
+pub struct PullCursor {
+    pub peer: String,
+    pub epoch: String,
+    pub next: u64,
+}
 pub struct Library {
     db: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
@@ -536,7 +548,8 @@ impl Library {
    CREATE TABLE IF NOT EXISTS cl_records(key TEXT PRIMARY KEY,revision INTEGER NOT NULL,author TEXT NOT NULL,deleted INTEGER NOT NULL,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_operations(seq INTEGER PRIMARY KEY AUTOINCREMENT,op_id TEXT UNIQUE NOT NULL,body TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_blobs(hash TEXT PRIMARY KEY,bytes BLOB NOT NULL);
-   CREATE TABLE IF NOT EXISTS cl_clocks(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+   DROP TABLE IF EXISTS cl_clocks;
+   CREATE TABLE IF NOT EXISTS cl_pull_cursors(peer TEXT PRIMARY KEY,epoch TEXT NOT NULL,cursor INTEGER NOT NULL);
    CREATE TABLE IF NOT EXISTS cl_pending_publications(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL);
    CREATE INDEX IF NOT EXISTS cl_operations_key ON cl_operations(json_extract(body,'$.key'));
   ").map_err(err)?;
@@ -2535,7 +2548,7 @@ END;").map_err(err)?;
         bases: &[String],
     ) -> Result<()> {
         if changes.is_empty() {
-            return self.merge_operations_with_delete(Vec::new(), bases);
+            return self.merge_operations_with_delete(Vec::new(), bases, None);
         }
         let author = self.device.lock().map_err(err)?.clone();
         if author.is_empty() {
@@ -2584,13 +2597,111 @@ END;").map_err(err)?;
         tx.execute("INSERT INTO cl_meta VALUES('counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[revision.to_string()]).map_err(err)?;
         tx.commit().map_err(err)?;
         drop(db);
-        self.merge_operations_with_delete(operations, bases)
+        self.merge_operations_with_delete(operations, bases, None)
     }
 
     pub fn merge_operations(&self, ops: Vec<Value>) -> Result<()> {
-        self.merge_operations_with_delete(ops, &[])
+        self.merge_operations_with_delete(ops, &[], None)
     }
-    fn merge_operations_with_delete(&self, ops: Vec<Value>, bases: &[String]) -> Result<()> {
+    /// 合并从对端拉取的操作，并在同一事务里推进该对端的拉取游标：
+    /// 提交成功才前进，失败或崩溃后从上一个已提交的位置重拉。
+    pub fn merge_pulled_operations(&self, ops: Vec<Value>, cursor: &PullCursor) -> Result<()> {
+        self.merge_operations_with_delete(ops, &[], Some(cursor))
+    }
+    /// 本机操作日志的纪元与 seq 高水位。纪元在日志首次被拉取时生成；
+    /// 数据库重建后纪元随之改变，对端据此丢弃旧游标。
+    pub fn operation_log_position(&self) -> Result<LogPosition> {
+        let epoch = {
+            let db = self.reader()?;
+            db.query_row(
+                "SELECT value FROM cl_meta WHERE key='operation_log_epoch'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(err)?
+        };
+        let epoch = match epoch {
+            Some(epoch) => epoch,
+            None => {
+                let db = self.writer()?;
+                db.execute(
+                    "INSERT OR IGNORE INTO cl_meta VALUES('operation_log_epoch',?1)",
+                    [uuid::Uuid::new_v4().to_string()],
+                )
+                .map_err(err)?;
+                db.query_row(
+                    "SELECT value FROM cl_meta WHERE key='operation_log_epoch'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(err)?
+            }
+        };
+        // sqlite_sequence 是 AUTOINCREMENT 的单调高水位，日志压缩删掉末尾行也不回退。
+        let last_seq = self
+            .reader()?
+            .query_row(
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='cl_operations'),0)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        Ok(LogPosition { epoch, last_seq })
+    }
+    /// 断点续传的起点。纪元不同或游标超过对端高水位（对端从备份恢复）时从头拉取。
+    pub fn pull_cursor(&self, peer: &str, remote: &LogPosition) -> Result<u64> {
+        let cursor: Option<u64> = self
+            .reader()?
+            .query_row(
+                "SELECT cursor FROM cl_pull_cursors WHERE peer=?1 AND epoch=?2",
+                params![peer, remote.epoch],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        Ok(cursor
+            .filter(|cursor| *cursor <= remote.last_seq)
+            .unwrap_or(0))
+    }
+    /// 已同步但本机仍缺正文的列表归档。游标持久化后不再靠重放日志触发补拉，
+    /// 每次连接都从这里重新排队。
+    pub fn missing_archive_blobs(&self) -> Result<Vec<String>> {
+        let db = self.reader()?;
+        let hashes = db
+            .prepare("SELECT DISTINCT json_extract(value,'$.blob_hash') FROM cl_records WHERE key GLOB 'item:*' AND deleted=0")
+            .map_err(err)?
+            .query_map([], |r| r.get::<_, Option<String>>(0))
+            .map_err(err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(err)?;
+        let mut missing = Vec::new();
+        for hash in hashes.into_iter().flatten() {
+            if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                continue;
+            }
+            if blob_file_path(&self.blob_dir, &hash).exists() {
+                continue;
+            }
+            let stored: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM cl_blobs WHERE hash=?1 AND length(bytes)>0) OR EXISTS(SELECT 1 FROM cl_items WHERE blob_hash=?1 AND payload IS NOT NULL)",
+                    [&hash],
+                    |r| r.get(0),
+                )
+                .map_err(err)?;
+            if !stored {
+                missing.push(hash);
+            }
+        }
+        Ok(missing)
+    }
+    fn merge_operations_with_delete(
+        &self,
+        ops: Vec<Value>,
+        bases: &[String],
+        pulled: Option<&PullCursor>,
+    ) -> Result<()> {
         let mut db = self.writer()?;
         let tx = db.transaction().map_err(err)?;
         let sync_index = settings_db(&tx)?.sync_index;
@@ -2669,7 +2780,12 @@ END;").map_err(err)?;
                 // causal frontier from durable operations, then remove wins only
                 // among concurrent maxima; a causally newer add may restore it.
                 let winner = member_winner(&tx, key, &op)?;
-                tx.execute("INSERT INTO cl_clocks VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, serde_json::to_string(&winner["clock"]).map_err(err)?]).map_err(err)?;
+                // 被因果前沿支配的操作不再影响任何未来结果，只保留前沿。
+                tx.execute(
+                    "DELETE FROM cl_operations WHERE json_extract(body,'$.key')=?1 AND op_id NOT IN (SELECT op_id FROM cl_member_frontier WHERE key=?1)",
+                    [key],
+                )
+                .map_err(err)?;
                 tx.execute("INSERT INTO cl_records VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,author=excluded.author,deleted=excluded.deleted,value=excluded.value",
                     params![key, winner["revision"].as_u64(), winner["author"].as_str(), winner["deleted"].as_bool(), serde_json::to_string(&winner["value"]).map_err(err)?]).map_err(err)?;
                 if let Some(id) = value["item_id"].as_str() {
@@ -2677,21 +2793,6 @@ END;").map_err(err)?;
                 }
                 continue;
             }
-            let old_clock: std::collections::BTreeMap<String, u64> = tx
-                .query_row("SELECT value FROM cl_clocks WHERE key=?1", [key], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()
-                .map_err(err)?
-                .map(|s| serde_json::from_str(&s).map_err(err))
-                .transpose()?
-                .unwrap_or_default();
-            let dominates =
-                |a: &std::collections::BTreeMap<String, u64>,
-                 b: &std::collections::BTreeMap<String, u64>| {
-                    b.iter().all(|(k, v)| a.get(k).unwrap_or(&0) >= v)
-                };
-            let concurrent = !dominates(&clock, &old_clock) && !dominates(&old_clock, &clock);
             let accept = previous.as_ref().is_none_or(|(r, a, d)| {
                 if key.starts_with("list:") && *d {
                     return false;
@@ -2699,11 +2800,20 @@ END;").map_err(err)?;
                 if key.starts_with("list:") && deleted {
                     return true;
                 }
-                if key.starts_with("member:") && concurrent && deleted != *d {
-                    return deleted;
-                }
                 (revision, author) > (*r, a.as_str())
             });
+            // 列表、条目与索引是单值寄存器：日志里只保留当前胜者。旧胜者与
+            // 落败操作被新胜者支配，对端只拿到胜者也会收敛到相同状态。
+            if accept {
+                tx.execute(
+                    "DELETE FROM cl_operations WHERE json_extract(body,'$.key')=?1 AND op_id<>?2",
+                    params![key, op_id],
+                )
+                .map_err(err)?;
+            } else {
+                tx.execute("DELETE FROM cl_operations WHERE op_id=?1", [op_id])
+                    .map_err(err)?;
+            }
 
             if accept {
                 if let Some(id) = key.strip_prefix("item:") {
@@ -2722,7 +2832,6 @@ END;").map_err(err)?;
                         reconcile_items.insert(item.map_err(err)?);
                     }
                 }
-                tx.execute("INSERT INTO cl_clocks VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(&clock).map_err(err)?]).map_err(err)?;
                 tx.execute("INSERT INTO cl_records VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,author=excluded.author,deleted=excluded.deleted,value=excluded.value",params![key,revision,author,deleted,serde_json::to_string(value).map_err(err)?]).map_err(err)?;
                 if key.starts_with("item:") && !deleted {
                     materialize(&tx, &self.blob_dir, value)?;
@@ -2745,6 +2854,13 @@ END;").map_err(err)?;
                 )
                 .map_err(err)?
                 > 0;
+        }
+        if let Some(pulled) = pulled {
+            tx.execute(
+                "INSERT INTO cl_pull_cursors VALUES(?1,?2,?3) ON CONFLICT(peer) DO UPDATE SET epoch=excluded.epoch,cursor=excluded.cursor",
+                params![pulled.peer, pulled.epoch, pulled.next],
+            )
+            .map_err(err)?;
         }
         tx.commit().map_err(err)?;
         drop(db);

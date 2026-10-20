@@ -80,11 +80,39 @@ unsafe extern "C" {
     fn mach_continuous_time() -> u64;
     fn mach_timebase_info(info: *mut MachTimebase) -> i32;
 }
+/// 已退役会话的有界集合：保留插入顺序，超过上限时淘汰最旧项。
+/// 会话 ID 是随机 UUID，旧 ID 被淘汰后不会再次出现，因此有界是安全的。
+#[derive(Default)]
+struct RetiredSessions {
+    set: std::collections::BTreeSet<deskfuse_core::InputSessionId>,
+    order: std::collections::VecDeque<deskfuse_core::InputSessionId>,
+}
+impl RetiredSessions {
+    const CAPACITY: usize = 256;
+    fn insert(&mut self, session: deskfuse_core::InputSessionId) {
+        if !self.set.insert(session) {
+            return;
+        }
+        self.order.push_back(session);
+        while self.order.len() > Self::CAPACITY {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+    }
+    fn contains(&self, session: &deskfuse_core::InputSessionId) -> bool {
+        self.set.contains(session)
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.set.len()
+    }
+}
 #[derive(Default)]
 struct DeadlineState {
     current: Option<deskfuse_core::InputSessionId>,
     paused: bool,
-    retired: std::collections::BTreeSet<deskfuse_core::InputSessionId>,
+    retired: RetiredSessions,
 }
 struct Deadline {
     until: AtomicU64,
@@ -256,6 +284,19 @@ fn prioritize_current_thread() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retired_sessions_are_bounded_and_evict_oldest() {
+        let mut retired = RetiredSessions::default();
+        let ids: Vec<_> = (0..300)
+            .map(|_| deskfuse_core::InputSessionId::new())
+            .collect();
+        for id in &ids {
+            retired.insert(*id);
+        }
+        assert!(retired.len() <= RetiredSessions::CAPACITY);
+        assert!(retired.contains(&ids[299]));
+        assert!(!retired.contains(&ids[0]));
+    }
     #[test]
     fn expired_epoch_cannot_be_renewed_or_rearmed() {
         let d = Deadline::new();

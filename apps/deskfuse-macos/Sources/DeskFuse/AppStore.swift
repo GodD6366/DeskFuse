@@ -19,6 +19,8 @@ import DeskFuseEngine
         didSet { errorNotice.updateLocalError(error) }
     }
     var starting = true
+    /// 升级后首次启动的数据优化阶段；只影响加载遮罩文案。
+    var optimizingLocalData = false
     var selfTest = false
     /// A connected client may precede its first snapshot. Do not flash a
     /// failure page during that gap, or mask a real startup failure.
@@ -125,6 +127,8 @@ import DeskFuseEngine
         } catch { self.error = error.userFacingMessage; starting = false; return }
         Task {
             do {
+                await optimizeLocalDataIfNeeded()
+                recordStartup("data_ready")
                 let engine = try await Task.detached { try Engine() }.value
                 recordStartup("engine_ready")
                 self.engine = engine
@@ -162,6 +166,25 @@ import DeskFuseEngine
                 // that peer has never opened the keyboard-sharing page.
                 publishDisplayWallpapers()
             } catch { self.error = error.userFacingMessage; starting = false }
+        }
+    }
+
+    /// 引擎启动前整理本地数据库：旧版本数据库在升级后转换一次，之后只做增量回收。
+    /// 优化失败不阻断启动，下次启动会重新判断。
+    private func optimizeLocalDataIfNeeded() async {
+        guard await Task.detached(operation: { localDataNeedsOptimization() }).value else { return }
+        optimizingLocalData = true
+        defer { optimizingLocalData = false }
+        do {
+            let result = try await Task.detached { try optimizeLocalData() }.value
+            if let reason = result.deferredReason {
+                NSLog("DeskFuse data optimization deferred: %@", reason)
+            } else {
+                NSLog("DeskFuse data optimization %@ %llu -> %llu bytes",
+                      result.performed ? "performed" : "skipped", result.bytesBefore, result.bytesAfter)
+            }
+        } catch {
+            NSLog("DeskFuse data optimization failed: %@", error.userFacingMessage)
         }
     }
 

@@ -97,6 +97,9 @@ pub type TransportMessageStream = BoxStream<'static, Result<(DeviceId, PeerMessa
 pub enum RuntimeError {
     #[error("runtime command channel is closed")]
     ChannelClosed,
+    /// 有界命令队列已满：运行时仍在运行，只是暂时无法接收新命令。
+    #[error("runtime command queue is full")]
+    QueueFull,
     #[error("runtime is shutting down")]
     ShuttingDown,
     #[error("runtime thread could not start: {0}")]
@@ -2007,15 +2010,26 @@ impl RuntimeHandle {
 
     /// Try to enqueue a command without waiting.
     pub fn try_send(&self, command: RuntimeCommand) -> Result<(), RuntimeError> {
+        use tokio::sync::mpsc::error::TrySendError;
         if command.is_input() {
-            return self.input_tx.try_send(command).map_err(|_| {
-                self.input_overflow.store(true, Ordering::Release);
-                RuntimeError::ChannelClosed
-            });
+            return self
+                .input_tx
+                .try_send(command)
+                .map_err(|error| match error {
+                    // 仅队列满时触发溢出降级；通道关闭表示运行时已停止，不属于溢出。
+                    TrySendError::Full(_) => {
+                        self.input_overflow.store(true, Ordering::Release);
+                        RuntimeError::QueueFull
+                    }
+                    TrySendError::Closed(_) => RuntimeError::ChannelClosed,
+                });
         }
         self.command_tx
             .try_send(command)
-            .map_err(|_| RuntimeError::ChannelClosed)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => RuntimeError::QueueFull,
+                TrySendError::Closed(_) => RuntimeError::ChannelClosed,
+            })
     }
 
     /// Ask the actor to stop.  The event stream closes after all queued work
