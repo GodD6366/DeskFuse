@@ -28,6 +28,25 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const MAX_RECEIVE_SLOTS: usize = 512; // Increased from 128 to reduce event replacement
+/// 雷电/有线链路平滑 RTT 通常低于 1ms；Wi-Fi 一般在 3–20ms，且会成批停顿。
+const WIFI_RTT_THRESHOLD: Duration = Duration::from_millis(3);
+/// 低延迟链路每条至多 250 批/秒：覆盖 240Hz 外接屏，超过屏幕刷新率的
+/// 中间位置画不出来，1kHz 鼠标的逐个事件只会白白占用双方 CPU 和注入队列。
+const LOW_LATENCY_INTERVAL: Duration = Duration::from_millis(4);
+/// Wi-Fi 下每条链路至多 125 批/秒，高于 ProMotion 刷新率，又把 1kHz 鼠标的
+/// 小包数压到约八分之一，减少空口争用和拥塞窗口占用。
+const WIFI_INTERVAL: Duration = Duration::from_millis(8);
+/// quinn 数据报缓冲已有排队时的重查间隔。
+const BACKPRESSURE_POLL: Duration = Duration::from_millis(2);
+
+/// 按链路平滑 RTT 选择合并节奏：低延迟链路贴合高刷屏，Wi-Fi 链路进一步减包。
+fn motion_send_interval(rtt: Duration) -> Duration {
+    if rtt >= WIFI_RTT_THRESHOLD {
+        WIFI_INTERVAL
+    } else {
+        LOW_LATENCY_INTERVAL
+    }
+}
 // Disjoint from the protocol's motion framing; exact length and nonce are checked.
 const PROBE_MAGIC: &[u8; 8] = b"DFPROBE1";
 const PROBE_SIZE: usize = 41;
@@ -306,6 +325,16 @@ impl MotionLink {
                 .lock()
                 .is_ok_and(|pending| !pending.is_empty())
     }
+
+    /// 待发槽位数（绝对 + 相对），用来确定每批预算。
+    fn outgoing_len(&self) -> usize {
+        self.pending.lock().map(|p| p.len()).unwrap_or_default()
+            + self
+                .pending_relative
+                .lock()
+                .map(|p| p.len())
+                .unwrap_or_default()
+    }
 }
 
 enum OutgoingMotion {
@@ -531,12 +560,7 @@ impl InputHub {
             send_replaced: link.send_replaced.load(Ordering::Relaxed),
             receive_replaced: link.receive_replaced.load(Ordering::Relaxed),
             dropped: link.dropped.load(Ordering::Relaxed),
-            pending_send: link.pending.lock().map(|p| p.len()).unwrap_or_default()
-                + link
-                    .pending_relative
-                    .lock()
-                    .map(|p| p.len())
-                    .unwrap_or_default(),
+            pending_send: link.outgoing_len(),
             rtt_micros: path.rtt.as_micros().min(u128::from(u64::MAX)) as u64,
             lost_packets: path.lost_packets,
             sent_packets: path.sent_packets,
@@ -778,13 +802,12 @@ impl InputHub {
             }
         });
         executor.spawn(async move {
-            // Match Deskflow's motion path: writes are event-driven and immediate.
-            // The mailbox already keeps only the newest position per input session;
-            // draining it here handles every slot covered by one Notify wake without
-            // imposing an application-level frame rate.  The receiver performs the
-            // final adjacent-motion coalescing when data is already queued.
+            // 按批发送：空闲后的第一个样本立即发出，持续移动时每个间隔至多
+            // 一批。邮箱按输入会话只留最新绝对位置、累加相对位移，所以合并
+            // 只减少包数，不丢位移；接收端仍做最后的相邻合并。
             let mut drain_count = 0u64;
             let mut wake_count = 0u64;
+            let mut next_batch_at = tokio::time::Instant::now();
             while session.live() {
                 tokio::select! {
                     _ = session.motion.wake.notified() => {},
@@ -795,30 +818,47 @@ impl InputHub {
                 if !session.live() {
                     break;
                 }
+                let interval = motion_send_interval(session.connection.rtt());
+                if next_batch_at > tokio::time::Instant::now() {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(next_batch_at) => {},
+                        _ = session.cancel.notified() => break,
+                    }
+                }
+                // 每批只发开批时已有的槽位，避免生产者在 yield 期间持续补样本，
+                // 把一批拖成不合并的连续发送。
+                let mut budget = session.motion.outgoing_len().max(1);
                 wake_count += 1;
                 let drain_started = Instant::now();
                 let mut batch_sent = 0usize;
 
-                // Double-check drain loop: prevents Notify merge from losing samples.
-                // After exhausting the mailbox, check once more that nothing arrived
-                // during the final pop_first(), because concurrent enqueue + notify
-                // between our empty check and the outer notified().await would merge
-                // into one permit and skip a wake cycle.
                 'drain: loop {
-                    if !session.live() {
+                    if !session.live() || budget == 0 {
                         break 'drain;
+                    }
+
+                    // quinn 的 send_datagram 在缓冲满时会静默丢掉更早的数据报，
+                    // 相对位移因此会丢失、计数也会虚高。拥塞或 Wi-Fi 停顿时先让
+                    // 样本留在本地邮箱合并，等缓冲腾出空间再交给 quinn。
+                    if session.motion.ready.load(Ordering::Acquire)
+                        && session.connection.datagram_send_buffer_space()
+                            < MAX_MOTION_DATAGRAM_SIZE
+                    {
+                        tokio::select! {
+                            _ = tokio::time::sleep(BACKPRESSURE_POLL) => {},
+                            _ = session.cancel.notified() => break 'drain,
+                        }
+                        continue 'drain;
                     }
 
                     let next = session.motion.pop_outgoing();
 
+                    // 本批期间新到的样本由下一批处理：并发 enqueue 留下的 Notify
+                    // 许可，或下面补发的许可，会再次唤醒。
                     let Some(next) = next else {
-                        // Final check: if mailbox became non-empty between our last
-                        // pop and here, drain again instead of sleeping.
-                        if session.motion.has_outgoing() {
-                            continue 'drain;
-                        }
                         break 'drain;
                     };
+                    budget -= 1;
 
                     let encode_start = Instant::now();
                     let encoded = match &next {
@@ -902,6 +942,11 @@ impl InputHub {
                     }
                 }
 
+                next_batch_at = tokio::time::Instant::now() + interval;
+                // 预算用完时邮箱可能还有新样本；补一个许可，下一批照常发出。
+                if session.motion.has_outgoing() {
+                    session.motion.wake.notify_one();
+                }
                 drain_count += 1;
                 let drain_time = drain_started.elapsed();
 
@@ -1037,6 +1082,62 @@ mod tests {
         assert_ne!(next, fresh);
         assert!(state.acknowledge(fresh));
         assert!(state.healthy());
+    }
+
+    #[test]
+    fn motion_batches_match_display_rate_and_thin_further_on_wifi() {
+        // 雷电/有线实测 RTT 低于 1ms：250Hz，覆盖 240Hz 外接屏。
+        assert_eq!(
+            motion_send_interval(Duration::from_micros(400)),
+            LOW_LATENCY_INTERVAL
+        );
+        assert_eq!(
+            motion_send_interval(WIFI_RTT_THRESHOLD - Duration::from_micros(1)),
+            LOW_LATENCY_INTERVAL
+        );
+        assert!(LOW_LATENCY_INTERVAL <= Duration::from_micros(4_200));
+        // Wi-Fi 实测 RTT 约 13ms：125Hz，仍高于 ProMotion 120Hz。
+        assert_eq!(motion_send_interval(WIFI_RTT_THRESHOLD), WIFI_INTERVAL);
+        assert_eq!(
+            motion_send_interval(Duration::from_millis(13)),
+            WIFI_INTERVAL
+        );
+        assert!(WIFI_INTERVAL <= Duration::from_micros(8_400));
+    }
+
+    #[test]
+    fn paced_batches_keep_absolute_latest_and_accumulate_relative_delta() {
+        let link = MotionLink::default();
+        let id = InputSessionId::new();
+        assert_eq!(link.outgoing_len(), 0);
+        // 节流等待期间的 100 个样本只占一个槽位，出队得到最新位置。
+        for seq in 1..=100 {
+            link.enqueue(sample(id, seq)).unwrap();
+        }
+        let relative = InputSessionId::new();
+        for seq in 1..=100 {
+            link.enqueue_relative(RelativeMotionDatagram {
+                session_id: relative,
+                token: InputToken([8; 32]),
+                state_epoch: 1,
+                motion_seq: seq,
+                dx: 1.0,
+                dy: -2.0,
+            })
+            .unwrap();
+        }
+        assert_eq!(link.outgoing_len(), 2);
+        let mut absolute_seq = None;
+        let mut relative_delta = None;
+        while let Some(next) = link.pop_outgoing() {
+            match next {
+                OutgoingMotion::Absolute(m) => absolute_seq = Some(m.position.motion_seq),
+                OutgoingMotion::Relative(m) => relative_delta = Some((m.dx, m.dy)),
+            }
+        }
+        assert_eq!(absolute_seq, Some(100));
+        assert_eq!(relative_delta, Some((100.0, -200.0)));
+        assert_eq!(link.outgoing_len(), 0);
     }
 
     #[test]

@@ -286,6 +286,12 @@ pub trait TransportProvider: Send + Sync {
         None
     }
 
+    /// 本机物理网卡与地址集合的指纹，只在插拔网线/雷电线、换网时变化。
+    /// `None` 表示无法观察，线路复查回退到定时进行。
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        None
+    }
+
     fn configure_identity(&self, _identity: Arc<LocalIdentity>) -> Result<(), RuntimeError> {
         Ok(())
     }
@@ -508,6 +514,9 @@ where
     }
     fn inbound_control_alive(&self, peer: DeviceId) -> Option<bool> {
         (**self).inbound_control_alive(peer)
+    }
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        (**self).local_network_fingerprint()
     }
     fn configure_identity(&self, identity: Arc<LocalIdentity>) -> Result<(), RuntimeError> {
         (**self).configure_identity(identity)
@@ -4670,6 +4679,9 @@ where
     }
     fn inbound_control_alive(&self, peer: DeviceId) -> Option<bool> {
         self.inner.inbound_control_alive(peer)
+    }
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        self.inner.local_network_fingerprint()
     }
 
     fn connect(

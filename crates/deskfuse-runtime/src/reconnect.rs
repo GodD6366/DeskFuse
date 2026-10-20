@@ -13,12 +13,21 @@ pub(super) struct Recovery {
     connected_nonces: BTreeMap<DeviceId, Vec<u8>>,
     return_endpoints: BTreeMap<DeviceId, Endpoint>,
     evaluations: BTreeMap<DeviceId, Evaluation>,
-    next_evaluation: BTreeMap<DeviceId, Instant>,
+    next_evaluation: BTreeMap<DeviceId, EvaluationSchedule>,
+    /// 上一次观察到的本机网络指纹；`None` 表示传输层无法观察。
+    local_network: Option<u64>,
+    /// 最近一次本机网络变化的时间，变化后的短窗口内加密复查。
+    network_changed_at: Option<Instant>,
     /// 对方用户主动断开了与本机的连接（拨号被以挂起为由拒绝）。
     remote_suspended: BTreeSet<DeviceId>,
     /// 本机出站已连上、但对方尚未拨回本机的设备。双方都不把它当作在线，
     /// 避免出现"A 显示已连接、B 显示离线"的单边状态。
     awaiting_return: BTreeSet<DeviceId>,
+}
+/// 已连接设备的下一次线路复查：到期，或出现上次未测过的候选地址时进行。
+struct EvaluationSchedule {
+    due: Instant,
+    endpoints: Vec<Endpoint>,
 }
 struct Retry {
     failures: u32,
@@ -56,7 +65,15 @@ pub(super) struct DialResult {
     measurements: Vec<RouteMeasurement>,
     result: Result<(RouteCandidate, TransportConnection), RuntimeError>,
 }
+/// 无法观察本机网络时的定时复查间隔，也是断线重试梯度的分界。
 const ROUTE_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// 能观察本机网络时的兜底复查：雷电/网线插拔会改变本机网卡，由变化触发，
+/// 不再每 30 秒对所有候选地址做一轮 QUIC 握手。只覆盖对端单方面换网的情况。
+const ROUTE_RECHECK_FALLBACK: Duration = Duration::from_secs(300);
+/// 本机网络变化后，对端的监听刷新和 mDNS 广播需要几秒才跟上，
+/// 窗口内按该间隔补测，窗口过后回到兜底间隔。
+const ROUTE_SETTLE_RECHECK: Duration = Duration::from_secs(10);
+const ROUTE_SETTLE_WINDOW: Duration = Duration::from_secs(25);
 const ROUTE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// A route whose last probe failed is known dead: re-probing it must not cost
 /// the full handshake deadline again on every retry round.
@@ -732,9 +749,8 @@ impl Actor {
                 self.recovery.retries.remove(&peer);
                 self.recovery.remote_suspended.remove(&peer);
                 // The dial already measured every route; do not immediately duplicate it.
-                self.recovery
-                    .next_evaluation
-                    .insert(peer, Instant::now() + ROUTE_RECHECK_INTERVAL);
+                let schedule = self.evaluation_schedule(peer);
+                self.recovery.next_evaluation.insert(peer, schedule);
                 let state = self.peers.get_mut(&peer).expect("validated peer");
                 if let Some(candidate) = state.routes.get_mut(&route.id) {
                     if let Some(endpoint) = result.resolved {
@@ -783,7 +799,60 @@ impl Actor {
         self.persist_peer(peer).await;
     }
 
+    /// 下一次复查的时间与本次覆盖的候选地址。
+    fn evaluation_schedule(&self, peer: DeviceId) -> EvaluationSchedule {
+        let now = Instant::now();
+        let delay = if self.recovery.local_network.is_none() {
+            ROUTE_RECHECK_INTERVAL
+        } else if self
+            .recovery
+            .network_changed_at
+            .is_some_and(|at| now.saturating_duration_since(at) < ROUTE_SETTLE_WINDOW)
+        {
+            ROUTE_SETTLE_RECHECK
+        } else {
+            ROUTE_RECHECK_FALLBACK
+        };
+        EvaluationSchedule {
+            due: now + delay,
+            endpoints: self
+                .probe_candidates(peer)
+                .into_iter()
+                .map(|route| route.endpoint)
+                .collect(),
+        }
+    }
+
+    /// 本机网卡或地址变化（插拔雷电线/网线、换 Wi-Fi）时立即复查：已连接设备
+    /// 重新测量线路，断线设备跳过退避立即重拨。没有变化就不做全量探测。
+    fn observe_local_network(&mut self) -> bool {
+        let current = self.transport.local_network_fingerprint();
+        let previous = std::mem::replace(&mut self.recovery.local_network, current);
+        if current.is_none() || previous.is_none() || previous == current {
+            return false;
+        }
+        let now = Instant::now();
+        self.recovery.network_changed_at = Some(now);
+        for next in self.recovery.next_evaluation.values_mut() {
+            next.due = now;
+        }
+        for retry in self.recovery.retries.values_mut() {
+            retry.due = now;
+        }
+        true
+    }
+
     pub(super) async fn recovery_tick(&mut self) {
+        if self.observe_local_network() {
+            let _ = self.event_tx.send(RuntimeEvent::BackgroundDiagnostic {
+                stage: "local_network_changed",
+                detail: format!(
+                    "connected={} retrying={}",
+                    self.recovery.next_evaluation.len(),
+                    self.recovery.retries.len()
+                ),
+            });
+        }
         let finished = self
             .recovery
             .evaluations
@@ -843,12 +912,13 @@ impl Actor {
             }
             if self.peers[&peer].connection == ConnectionState::Connected {
                 if self.transport.control_session_alive(peer) != Some(false) {
-                    if self
-                        .recovery
-                        .next_evaluation
-                        .get(&peer)
-                        .is_none_or(|due| *due <= Instant::now())
-                    {
+                    if self.recovery.next_evaluation.get(&peer).is_none_or(|next| {
+                        next.due <= Instant::now()
+                            || self
+                                .probe_candidates(peer)
+                                .iter()
+                                .any(|route| !next.endpoints.contains(&route.endpoint))
+                    }) {
                         self.reevaluate_connected_route(peer).await;
                     }
                     continue;
@@ -939,9 +1009,8 @@ impl Actor {
         // Probe policy-allowed backups even if a previous dial marked them unavailable.
         // Do not resurrect them for connection selection until a probe succeeds.
         let routes = self.probe_candidates(peer);
-        self.recovery
-            .next_evaluation
-            .insert(peer, Instant::now() + ROUTE_RECHECK_INTERVAL);
+        let schedule = self.evaluation_schedule(peer);
+        self.recovery.next_evaluation.insert(peer, schedule);
         if routes.is_empty() {
             return;
         }

@@ -1,5 +1,6 @@
 //! Small, deadline-bounded audio streams on the existing paired QUIC connection.
-//! Queue congestion invalidates the entire stream: stale speech is never replayed.
+//! 过期音频按包丢弃、从不回放；Wi-Fi 常见的数百毫秒停顿只丢包不断开，
+//! 只有持续卡死超过 [`AUDIO_STALL_LIMIT`] 才作废整条流并重建。
 use super::*;
 use std::sync::{atomic::Ordering, mpsc as sync};
 use tokio::sync::{mpsc, watch};
@@ -10,6 +11,11 @@ const MAX_PACKET: usize = 4097;
 // independently by AUDIO_DEADLINE on both producer and consumer paths.
 pub(super) const AUDIO_QUEUE_PACKETS: usize = 64;
 const AUDIO_DEADLINE: Duration = Duration::from_millis(150);
+/// 接收端允许的到达延迟（毫秒），更晚的包只丢弃该包。
+const AUDIO_LATE_MS: u128 = 250;
+/// 持续卡死上限。实测 Wi-Fi 会成批停顿 350–415ms，必须挺过去；写入阻塞、
+/// 读端静默或积压超过该值才说明链路失效，重建会话以重新对齐时钟。
+const AUDIO_STALL_LIMIT: Duration = Duration::from_millis(1500);
 pub struct MicrophoneSession {
     pub peer: DeviceId,
     outgoing: mpsc::Sender<(std::time::Instant, Vec<u8>)>,
@@ -39,11 +45,15 @@ impl MicrophoneSession {
                 let (created, data) = tokio::select! {
                     _ = writer_cancel.changed() => break,
                     value = output.recv() => match value {
-                        Some((created, value)) if created.elapsed() < AUDIO_DEADLINE => (created, value),
-                        _ => break,
+                        Some(value) => value,
+                        None => break,
                     },
                     _ = time::sleep(Duration::from_millis(250)) => (std::time::Instant::now(), Vec::new()),
                 };
+                // 停顿期间积压的旧语音直接跳过，不再作废整条会话。
+                if !data.is_empty() && created.elapsed() >= AUDIO_DEADLINE {
+                    continue;
+                }
                 let write = async {
                     send.write_all(&(data.len() as u16).to_be_bytes()).await?;
                     send.write_all(
@@ -54,7 +64,7 @@ impl MicrophoneSession {
                 };
                 let ok = tokio::select! {
                     _ = writer_cancel.changed() => false,
-                    result = time::timeout(AUDIO_DEADLINE, write) => result.is_ok_and(|r| r.is_ok()),
+                    result = time::timeout(AUDIO_STALL_LIMIT, write) => result.is_ok_and(|r| r.is_ok()),
                 };
                 if !ok {
                     break;
@@ -77,35 +87,37 @@ impl MicrophoneSession {
                     }
                     let mut stamp = [0u8; 8];
                     recv.read_exact(&mut stamp).await.map_err(|_| ())?;
-                    // Both clocks start at acceptance, excluding time spent
-                    // waiting for admission. Reject reliable-stream backlog
-                    // even when write_all previously fit Quinn's buffer.
                     let sent_ms = u64::from_be_bytes(stamp);
-                    if origin.elapsed().as_millis() > u128::from(sent_ms) + 250 {
-                        return Err(());
-                    }
                     let mut data = vec![0; length];
-                    time::timeout(AUDIO_DEADLINE, recv.read_exact(&mut data))
-                        .await
-                        .map_err(|_| ())?
-                        .map_err(|_| ())?;
-                    if origin.elapsed().as_millis() > u128::from(sent_ms) + 250 {
-                        return Err(());
-                    }
-                    Ok(data)
+                    recv.read_exact(&mut data).await.map_err(|_| ())?;
+                    Ok((sent_ms, data))
                 };
-                let data = tokio::select! {
+                let (sent_ms, data) = tokio::select! {
                     _ = reader_cancel.changed() => break,
-                    result = time::timeout(Duration::from_millis(1200), read) => match result {
-                        Ok(Ok(data)) => data,
+                    result = time::timeout(AUDIO_STALL_LIMIT, read) => match result {
+                        Ok(Ok(value)) => value,
                         _ => break,
                     },
                 };
-                if data.is_empty() {
+                // Both clocks start at acceptance, excluding time spent waiting
+                // for admission. 可靠流积压只丢弃迟到的包；积压大到无法追上时
+                // 才重建会话。
+                let late = origin
+                    .elapsed()
+                    .as_millis()
+                    .saturating_sub(u128::from(sent_ms));
+                if late > AUDIO_STALL_LIMIT.as_millis() {
+                    break;
+                }
+                if data.is_empty() || late > AUDIO_LATE_MS {
                     continue;
                 }
-                if !(1..=4).contains(&data[0])
-                    || input.try_send((std::time::Instant::now(), data)).is_err()
+                if !(1..=4).contains(&data[0]) {
+                    break;
+                }
+                // 消费端暂时落后时丢弃新包；只有消费端已经关闭才结束。
+                if let Err(sync::TrySendError::Disconnected(_)) =
+                    input.try_send((std::time::Instant::now(), data))
                 {
                     break;
                 }
@@ -130,24 +142,33 @@ impl MicrophoneSession {
         {
             return Err("麦克风通道已关闭或音频包无效".into());
         }
-        self.outgoing
-            .try_send((std::time::Instant::now(), data))
-            .map_err(|_| {
+        match self.outgoing.try_send((std::time::Instant::now(), data)) {
+            // 网络停顿时队列会暂时占满：丢弃这一包，写端恢复后自动追上。
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.close();
-                "音频通道积压，已丢弃本次会话".into()
-            })
+                Err("麦克风连接已断开".into())
+            }
+        }
     }
     pub fn receive(&self) -> Result<Option<Vec<u8>>, String> {
         if self.is_closed() {
             return Err("麦克风连接已断开".into());
         }
         let rx = self.incoming.lock().map_err(|_| "音频队列不可用")?;
-        match rx.try_recv() {
-            Ok((created, data)) if created.elapsed() < AUDIO_DEADLINE => Ok(Some(data)),
-            Err(sync::TryRecvError::Empty) => Ok(None),
-            _ => {
-                self.close();
-                Err("音频会话已过期".into())
+        loop {
+            match rx.try_recv() {
+                Ok((created, data)) if created.elapsed() < AUDIO_DEADLINE => {
+                    return Ok(Some(data));
+                }
+                // 消费端短暂落后：跳过过期语音，继续取更新的包。
+                Ok(_) => {}
+                Err(sync::TryRecvError::Empty) => return Ok(None),
+                Err(sync::TryRecvError::Disconnected) => {
+                    drop(rx);
+                    self.close();
+                    return Err("麦克风连接已断开".into());
+                }
             }
         }
     }

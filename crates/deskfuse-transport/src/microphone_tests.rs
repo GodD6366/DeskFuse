@@ -144,7 +144,7 @@ async fn received(channel: &MicrophoneSession) -> Vec<u8> {
     .unwrap()
 }
 async fn closed(channel: &MicrophoneSession) {
-    time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(3), async {
         while !channel.is_closed() {
             time::sleep(Duration::from_millis(5)).await;
         }
@@ -209,28 +209,50 @@ async fn microphone_revoking_peer_terminates_live_audio_and_prevents_reopen() {
     pair.close().await;
 }
 
+/// 等到指定包到达，途中的其他包（停顿前的残留）忽略。
+async fn received_exact(channel: &MicrophoneSession, expected: &[u8]) {
+    time::timeout(Duration::from_secs(2), async {
+        loop {
+            if channel.receive().unwrap().as_deref() == Some(expected) {
+                return;
+            }
+            time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
-async fn microphone_slow_consumer_discards_stale_speech_instead_of_replaying() {
+async fn microphone_slow_consumer_discards_stale_speech_and_keeps_session() {
     let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
     let (reader, source) = pair.audio().await;
     source.send(vec![1, 42]).unwrap();
+    // 模拟 Wi-Fi 停顿后消费端才来取：旧语音丢弃、绝不回放，会话保持可用。
     time::sleep(Duration::from_millis(400)).await;
-    assert!(reader.receive().is_err());
-    closed(&source).await;
+    assert_eq!(reader.receive().unwrap(), None);
+    assert!(!reader.is_closed() && !source.is_closed());
+    source.send(vec![1, 43]).unwrap();
+    assert_eq!(received(&reader).await, vec![1, 43]);
     pair.close().await;
 }
 
 #[tokio::test]
-async fn microphone_queue_overflow_closes_session_instead_of_buffering_speech() {
+async fn microphone_queue_overflow_drops_packets_without_closing_session() {
     let pair = Pair::new(Capabilities::NETWORK | Capabilities::MICROPHONE).await;
     let (reader, source) = pair.audio().await;
-    // No await: bounded writer queue must reject before the producer can enqueue unbounded audio.
-    for _ in 0..microphone::AUDIO_QUEUE_PACKETS {
+    // No await: the bounded writer queue overflows; extra packets are dropped,
+    // the producer never blocks and never enqueues unbounded audio.
+    for _ in 0..microphone::AUDIO_QUEUE_PACKETS * 2 {
         source.send(vec![1, 42]).unwrap();
     }
-    assert!(source.send(vec![1, 42]).is_err());
-    closed(&source).await;
-    closed(&reader).await;
+    assert!(!source.is_closed());
+    // 消费端恢复时一次性跳过全部过期积压，随后的新语音照常送达。
+    time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(reader.receive().unwrap(), None);
+    source.send(vec![1, 99]).unwrap();
+    received_exact(&reader, &[1, 99]).await;
+    assert!(!reader.is_closed() && !source.is_closed());
     pair.close().await;
 }
 

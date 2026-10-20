@@ -675,6 +675,13 @@ pub trait ControlTransport: Send + Sync {
         None
     }
 
+    /// 本机物理网卡与地址集合的指纹。插拔雷电线、换 Wi-Fi 时才会变化，
+    /// 上层据此触发线路复查，而不是周期性地探测所有候选地址。
+    /// `None` 表示实现无法观察本地网络，调用方回退到定时复查。
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        None
+    }
+
     /// Lift a previous [`Self::revoke_peer`] so the peer can be re-admitted.
     ///
     /// Revocation is a trust decision, and lifting one is too: only the
@@ -1463,6 +1470,15 @@ impl QuinnTransportConfig {
 }
 
 type LanEndpoints = BTreeMap<SocketAddr, (String, Arc<quinn::Endpoint>)>;
+
+/// 与顺序无关的 (网卡名, IP) 集合指纹；端口随重绑变化，不参与计算。
+fn lan_fingerprint<'a>(entries: impl Iterator<Item = (&'a str, std::net::IpAddr)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let entries = entries.collect::<BTreeSet<_>>();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Client-only endpoints for outbound input dials, keyed by local interface
 /// address.
@@ -2293,6 +2309,23 @@ impl ControlTransport for QuinnTransport {
             .lock()
             .ok()
             .map(|admission| admission.inbound_alive(peer))
+    }
+
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        // 物理网卡监听由 refresh_lan_listeners 每 2 秒按网卡变化增删，
+        // 这里只读取其结果，不额外枚举网卡或发包。
+        if self.endpoint.is_none()
+            || !self
+                .local_hello
+                .capabilities
+                .contains(Capabilities::INPUT_SHARING)
+        {
+            return None;
+        }
+        let listeners = self.lan_endpoints.lock().ok()?;
+        Some(lan_fingerprint(listeners.iter().map(
+            |(address, (interface, _))| (interface.as_str(), address.ip()),
+        )))
     }
 
     fn configure_identity(&self, identity: Arc<LocalIdentity>) -> Result<(), TransportError> {
@@ -3757,6 +3790,19 @@ mod tests {
     use super::*;
     use rcgen::generate_simple_self_signed;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn lan_fingerprint_tracks_interface_addresses_not_order_or_port() {
+        let wifi = ("en0", "10.0.0.44".parse::<std::net::IpAddr>().unwrap());
+        let bridge = ("bridge0", "10.10.10.1".parse::<std::net::IpAddr>().unwrap());
+        let both = lan_fingerprint([wifi, bridge].into_iter());
+        assert_eq!(both, lan_fingerprint([bridge, wifi].into_iter()));
+        // 拔掉雷电线：bridge0 地址消失，指纹必须变化。
+        assert_ne!(both, lan_fingerprint([wifi].into_iter()));
+        // 同一网卡换了地址（换 Wi-Fi）也算变化。
+        let moved = ("en0", "192.168.1.8".parse::<std::net::IpAddr>().unwrap());
+        assert_ne!(both, lan_fingerprint([moved, bridge].into_iter()));
+    }
 
     fn hello(seed: u8, name: &str) -> PeerHello {
         let identity = LocalIdentity::from_bytes(&[seed; 32]).expect("identity");

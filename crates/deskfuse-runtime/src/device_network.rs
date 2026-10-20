@@ -79,9 +79,18 @@ pub(super) struct DeviceNetworkState {
     inflight: BTreeSet<DeviceId>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     last_sync: u64,
+    /// 上次同步时的本机网络指纹；变化即立即同步一次名册。
+    network_fingerprint: Option<u64>,
     exchange_failures: BTreeMap<DeviceId, (u32, tokio::time::Instant)>,
     manual_probe: Option<RequestId>,
 }
+/// 无法观察本机网络时沿用的名册同步间隔（毫秒）。
+const ROSTER_SYNC_INTERVAL_MS: u64 = 5_000;
+/// 能观察本机网络时的兜底同步间隔。名册变更由 owner 立即推送，网络变化
+/// 立即触发，周期同步只补漏；每次同步都是一次新的 QUIC/TLS 握手，Wi-Fi 上
+/// 不应每 5 秒对每个成员做一次。
+const ROSTER_SYNC_FALLBACK_MS: u64 = 60_000;
+
 fn is_solo_network(roster: &SignedNetworkRoster, device: DeviceId) -> bool {
     roster.roster.owner.device_id == device
         && roster.roster.members.len() == 1
@@ -89,6 +98,19 @@ fn is_solo_network(roster: &SignedNetworkRoster, device: DeviceId) -> bool {
 }
 
 impl DeviceNetworkState {
+    /// 记录本机网络指纹并返回名册同步间隔（毫秒）。指纹变化（换网、插拔
+    /// 雷电线）时清空旧地址的失败退避并要求立即同步。
+    fn observe_local_network(&mut self, fingerprint: Option<u64>) -> u64 {
+        if std::mem::replace(&mut self.network_fingerprint, fingerprint) != fingerprint {
+            self.exchange_failures.clear();
+            self.last_sync = 0;
+        }
+        if fingerprint.is_some() {
+            ROSTER_SYNC_FALLBACK_MS
+        } else {
+            ROSTER_SYNC_INTERVAL_MS
+        }
+    }
     fn periodic_exchange_due(&self, peer: DeviceId, now: tokio::time::Instant) -> bool {
         self.exchange_failures
             .get(&peer)
@@ -1581,6 +1603,19 @@ impl Actor {
         self.connect_peer(outgoing.peer).await;
         Ok(PairingOutcome::Accepted)
     }
+    /// 名册里的地址是成员入网时记录的，拔掉雷电线或换网后会过期并反复超时。
+    /// 优先用控制会话当前在用（其次是首选）的线路，没有时才回退到名册地址。
+    fn exchange_endpoint(&self, peer: DeviceId, recorded: &Endpoint) -> Endpoint {
+        self.peers
+            .get(&peer)
+            .and_then(|state| {
+                state
+                    .active_route
+                    .or(state.preferred_route)
+                    .and_then(|id| state.routes.get(&id))
+            })
+            .map_or_else(|| recorded.clone(), |route| route.endpoint.clone())
+    }
     fn spawn_network_exchange(
         &mut self,
         peer: DeviceId,
@@ -1654,7 +1689,10 @@ impl Actor {
             .incoming_rate
             .retain(|_, time| now.saturating_sub(*time) < 300_000);
         self.device_network.tasks.retain(|t| !t.is_finished());
-        if now.saturating_sub(self.device_network.last_sync) < 5000 {
+        let interval = self
+            .device_network
+            .observe_local_network(self.transport.local_network_fingerprint());
+        if now.saturating_sub(self.device_network.last_sync) < interval {
             return;
         }
         self.device_network.last_sync = now;
@@ -1676,9 +1714,10 @@ impl Actor {
                         .device_network
                         .periodic_exchange_due(member.device_id, tokio::time::Instant::now())
                 {
+                    let endpoint = self.exchange_endpoint(member.device_id, &member.endpoint);
                     self.spawn_network_exchange(
                         member.device_id,
-                        member.endpoint.clone(),
+                        endpoint,
                         NetworkOperation::Roster(roster.clone()),
                     );
                 }
@@ -1688,9 +1727,11 @@ impl Actor {
                 .device_network
                 .periodic_exchange_due(roster.roster.owner.device_id, tokio::time::Instant::now())
         {
+            let endpoint = self
+                .exchange_endpoint(roster.roster.owner.device_id, &roster.roster.owner.endpoint);
             self.spawn_network_exchange(
                 roster.roster.owner.device_id,
-                roster.roster.owner.endpoint.clone(),
+                endpoint,
                 NetworkOperation::Query {
                     network_id: roster.roster.network_id,
                     epoch: roster.roster.epoch,
@@ -1944,6 +1985,34 @@ mod recovery_tests {
         assert!(state.periodic_exchange_due(peer, now));
         assert_eq!(state.exchange_failed(peer, now), (1, 5));
         state.stop();
+        assert!(state.periodic_exchange_due(peer, now));
+    }
+
+    #[test]
+    fn roster_sync_follows_local_network_changes() {
+        let peer = LocalIdentity::from_bytes(&[99; 32]).unwrap().device_id();
+        let mut state = DeviceNetworkState::default();
+        // 无法观察网络：沿用 5 秒同步。
+        assert_eq!(state.observe_local_network(None), ROSTER_SYNC_INTERVAL_MS);
+        state.last_sync = 42;
+        // 首次能观察到网络也算变化，立即同步，此后放宽到兜底间隔。
+        assert_eq!(
+            state.observe_local_network(Some(1)),
+            ROSTER_SYNC_FALLBACK_MS
+        );
+        assert_eq!(state.last_sync, 0);
+        state.last_sync = 42;
+        let now = tokio::time::Instant::now();
+        state.exchange_failed(peer, now);
+        assert_eq!(
+            state.observe_local_network(Some(1)),
+            ROSTER_SYNC_FALLBACK_MS
+        );
+        assert_eq!(state.last_sync, 42);
+        assert!(!state.periodic_exchange_due(peer, now));
+        // 拔掉雷电线：旧地址的退避作废并立即同步。
+        state.observe_local_network(Some(2));
+        assert_eq!(state.last_sync, 0);
         assert!(state.periodic_exchange_due(peer, now));
     }
 

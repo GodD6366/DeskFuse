@@ -6,8 +6,12 @@ struct ProbeTransport {
     alive: Arc<Mutex<BTreeSet<DeviceId>>>,
     hanging: Arc<Mutex<BTreeSet<DeviceId>>>,
     started: Arc<AtomicUsize>,
+    network: Arc<Mutex<Option<u64>>>,
 }
 impl TransportProvider for ProbeTransport {
+    fn local_network_fingerprint(&self) -> Option<u64> {
+        *self.network.lock().unwrap()
+    }
     fn control_generation(&self, peer: DeviceId) -> Option<u64> {
         self.inner.control_generation(peer)
     }
@@ -852,4 +856,81 @@ async fn only_advertised_peers_stay_on_the_short_retry_ladder() {
     actor.observe_peer_discovery(peer);
     assert!(actor.peer_present(peer));
     assert_eq!(retry_backoff_for(8, true), Duration::from_secs(30));
+}
+
+#[tokio::test]
+async fn connected_route_recheck_follows_local_network_changes_not_a_timer() {
+    let transport = ProbeTransport::default();
+    *transport.network.lock().unwrap() = Some(1);
+    let mut actor = actor(transport.clone());
+    let (peer, _) = add_peer(&mut actor, &transport, 95);
+    connect(&mut actor, peer).await;
+    // 首次观察只建立基线；网络没变时不探测。
+    actor.recovery_tick().await;
+    assert!(!actor.recovery.evaluations.contains_key(&peer));
+    let schedule = actor.evaluation_schedule(peer);
+    assert!(schedule.due - Instant::now() > ROUTE_RECHECK_INTERVAL);
+    // 插上雷电线：本机网卡集合变化，立即复查。
+    *transport.network.lock().unwrap() = Some(2);
+    actor.recovery_tick().await;
+    assert!(actor.recovery.evaluations.contains_key(&peer));
+    // 变化后的窗口内按短间隔补测，等对端监听和广播跟上。
+    let due = actor.recovery.next_evaluation[&peer].due - Instant::now();
+    assert!(due <= ROUTE_SETTLE_RECHECK);
+    actor.recovery.network_changed_at = Some(Instant::now() - ROUTE_SETTLE_WINDOW);
+    assert!(actor.evaluation_schedule(peer).due - Instant::now() > ROUTE_SETTLE_WINDOW);
+}
+
+#[tokio::test]
+async fn new_candidate_address_rechecks_connected_peer_immediately() {
+    let transport = ProbeTransport::default();
+    *transport.network.lock().unwrap() = Some(1);
+    let mut actor = actor(transport.clone());
+    let (peer, _) = add_peer(&mut actor, &transport, 96);
+    connect(&mut actor, peer).await;
+    actor.recovery_tick().await;
+    assert!(!actor.recovery.evaluations.contains_key(&peer));
+    let bridge = RouteCandidate::new(
+        Endpoint::new("127.0.0.1", 4997).unwrap(),
+        RouteSource::Manual,
+        RouteHealth::Healthy,
+        Capabilities::NETWORK,
+    );
+    actor
+        .peers
+        .get_mut(&peer)
+        .unwrap()
+        .routes
+        .insert(bridge.id, bridge);
+    actor.recovery_tick().await;
+    assert!(actor.recovery.evaluations.contains_key(&peer));
+}
+
+#[tokio::test]
+async fn local_network_change_skips_offline_retry_backoff() {
+    let transport = ProbeTransport::default();
+    *transport.network.lock().unwrap() = Some(1);
+    let mut actor = actor(transport.clone());
+    let (peer, route) = add_peer(&mut actor, &transport, 97);
+    actor.recovery_tick().await;
+    transport.inner.fail_route(route.id);
+    actor.connect_peer(peer).await;
+    complete(&mut actor).await;
+    assert!(actor.recovery.retries[&peer].due > Instant::now());
+    actor.recovery_tick().await;
+    assert!(!actor.recovery.attempts.contains_key(&peer));
+    *transport.network.lock().unwrap() = Some(2);
+    actor.recovery_tick().await;
+    assert!(actor.recovery.attempts.contains_key(&peer));
+}
+
+#[tokio::test]
+async fn unobservable_network_keeps_timed_route_recheck() {
+    let transport = ProbeTransport::default();
+    let mut actor = actor(transport.clone());
+    let (peer, _) = add_peer(&mut actor, &transport, 98);
+    connect(&mut actor, peer).await;
+    actor.recovery_tick().await;
+    let due = actor.evaluation_schedule(peer).due - Instant::now();
+    assert!(due <= ROUTE_RECHECK_INTERVAL);
 }
