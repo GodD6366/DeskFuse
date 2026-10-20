@@ -90,6 +90,9 @@ jobs:
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh dist/DeskFuse-arm64.dmg
       - name: Upload main-branch build to private draft
+        # A public source repository has no private draft to hand the package to;
+        # the DMG has already been built and verified above.
+        if: ${{ github.event.repository.private }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci-artifacts.py upload --name main-macos-arm64 dist/DeskFuse-arm64.dmg dist/release.json
