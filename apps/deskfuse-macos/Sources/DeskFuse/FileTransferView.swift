@@ -1,63 +1,16 @@
 import SwiftUI
 import AppKit
-import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
 import DeskFuseEngine
-
-/// 只读投影：服务状态与接收任务都由 Rust 侧持有，Swift 不保存偏好或历史。
-private struct LanWebProjection: Decodable {
-    let enabled: Bool
-    let running: Bool
-    let address: String?
-    let addresses: [String]
-    let listenAddress: String?
-    let port: UInt16
-    let preferredInterface: String?
-    let error: String?
-    let tasks: [UploadTask]
-
-    struct UploadTask: Decodable, Identifiable {
-        let id: String
-        let name: String
-        let state: String
-        let receivedBytes: UInt64
-        let totalBytes: UInt64?
-        let clipboardWritten: Bool?
-        let message: String
-
-        var active: Bool { state == "receiving" || state == "committing" }
-        var title: String {
-            switch state {
-            case "receiving": "正在接收"
-            case "committing": "正在保存"
-            case "done": "已保存"
-            case "error": "接收失败"
-            case "cancelled": "已取消"
-            default: "等待状态更新"
-            }
-        }
-    }
-
-    static func decode(_ json: String) throws -> Self {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(Self.self, from: Data(json.utf8))
-    }
-}
 
 /// 局域网传输：中列扫码与发送，右列任务，共用引擎的同一份暂存与传输状态。
 struct FileTransferView: View {
     @Bindable var store: AppStore
     let snapshot: EngineSnapshot
 
-    @State private var state: LanWebProjection?
-    @State private var configuring = false
-    @State private var requestGeneration = 0
-    @State private var readError: String?
-    @State private var actionError: String?
+    /// 服务状态放在会话级投影里：切换页面重建视图时沿用上次结果，不再先渲染默认值再跳回。
+    private var sharing: LanWebSharing { .shared }
     @State private var addressCopied = false
-    @State private var qrImage: NSImage?
-    @State private var selectedAddress = ""
     @State private var stagedFiles: [URL] = []
     @State private var targetPeer: String = ""
     @State private var dropTargeted = false
@@ -66,18 +19,14 @@ struct FileTransferView: View {
         snapshot.devices.filter { $0.member && $0.connected && $0.trusted && !$0.blocked }
     }
 
-    private var liveAddress: String? {
-        guard readError == nil, !configuring, state?.running == true else { return nil }
-        if state?.addresses.contains(selectedAddress) == true { return selectedAddress }
-        return state?.address
-    }
+    private var liveAddress: String? { sharing.liveAddress }
 
     var body: some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: DFSpace.l) {
-                        if let message = actionError ?? readError ?? state?.error {
+                        if let message = sharing.actionError ?? sharing.readError ?? sharing.state?.error {
                             DFNotice(tone: .warning, title: "局域网传输", message: message)
                         }
                         shareSection
@@ -93,7 +42,7 @@ struct FileTransferView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: DFSpace.xl) {
                         transferSection(compact: true)
-                        if let state, !state.tasks.isEmpty {
+                        if let state = sharing.state, !state.tasks.isEmpty {
                             receiveTaskSection(state)
                         }
                     }
@@ -105,16 +54,14 @@ struct FileTransferView: View {
             }
         }
         .task {
-            await refresh()
+            sharing.attach(store.client)
+            await sharing.refresh()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
-                await refresh()
+                await sharing.refresh()
             }
         }
-        .onChange(of: liveAddress, initial: true) { _, address in
-            qrImage = address.flatMap(makeQRCode)
-            addressCopied = false
-        }
+        .onChange(of: liveAddress) { _, _ in addressCopied = false }
         .onChange(of: connectedPeers.map(\.id), initial: true) { _, ids in
             if !ids.contains(targetPeer) { targetPeer = ids.first ?? "" }
         }
@@ -254,15 +201,15 @@ struct FileTransferView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if configuring { ProgressView().controlSize(.small) }
+                if sharing.configuring { ProgressView().controlSize(.small) }
                 Toggle("允许局域网访问", isOn: Binding(
-                    get: { state?.enabled ?? false },
-                    set: { configure(enabled: $0) }
+                    get: { sharing.state?.enabled ?? false },
+                    set: { sharing.configure(enabled: $0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                .disabled(configuring || state == nil)
+                .disabled(sharing.configuring || sharing.state == nil)
             }
             Divider()
             if let address = liveAddress {
@@ -272,19 +219,19 @@ struct FileTransferView: View {
                 }
             } else {
                 DFEmptyState(symbol: "qrcode",
-                             title: state?.enabled == true ? "等待可访问地址" : "开启后扫码传输",
-                             message: state?.enabled == true
+                             title: sharing.state?.enabled == true ? "等待可访问地址" : "开启后扫码传输",
+                             message: sharing.state?.enabled == true
                                 ? "服务成功监听局域网后，二维码和地址会显示在这里。"
                                 : "开启开关后，二维码和访问地址会显示在这里。",
-                             actionTitle: state?.enabled == true ? nil : "开启",
-                             action: state?.enabled == true ? nil : { configure(enabled: true) })
+                             actionTitle: sharing.state?.enabled == true ? nil : "开启",
+                             action: sharing.state?.enabled == true ? nil : { sharing.configure(enabled: true) })
                     .frame(maxWidth: .infinity)
             }
         }
     }
 
     @ViewBuilder private var qrCode: some View {
-        if let qrImage {
+        if let qrImage = sharing.qrImage {
             Image(nsImage: qrImage)
                 .interpolation(.none).resizable().scaledToFit()
                 .frame(width: 144, height: 144).padding(DFSpace.s)
@@ -305,10 +252,10 @@ struct FileTransferView: View {
                 .font(DFType.detail)
                 .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
-            if let state, state.addresses.count > 1 {
+            if let state = sharing.state, state.addresses.count > 1 {
                 Picker("访问地址", selection: Binding(
                     get: { liveAddress ?? "" },
-                    set: { selectedAddress = $0 }
+                    set: { sharing.selectedAddress = $0 }
                 )) {
                     ForEach(state.addresses, id: \.self) { Text($0).tag($0) }
                 }
@@ -325,12 +272,12 @@ struct FileTransferView: View {
                 Button(addressCopied ? "已复制地址" : "复制地址", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     addressCopied = NSPasteboard.general.setString(address, forType: .string)
-                    if !addressCopied { actionError = "未能写入系统剪贴板，请选择地址后手动复制。" }
+                    if !addressCopied { sharing.actionError = "未能写入系统剪贴板，请选择地址后手动复制。" }
                 }
                 .buttonStyle(.dfSecondary)
                 Button("打开网页", systemImage: "arrow.up.right.square") {
                     guard let url = URL(string: address), NSWorkspace.shared.open(url) else {
-                        actionError = "无法打开浏览器，请复制地址后手动访问。"
+                        sharing.actionError = "无法打开浏览器，请复制地址后手动访问。"
                         return
                     }
                 }
@@ -393,53 +340,6 @@ struct FileTransferView: View {
             }
         }
         .padding(.vertical, DFSpace.xs)
-    }
-
-    // MARK: - 引擎交互
-
-    @MainActor private func refresh() async {
-        guard !configuring, let client = store.client else { return }
-        let generation = requestGeneration
-        do {
-            let projection = try LanWebProjection.decode(await client.lanWebState())
-            guard !Task.isCancelled, !configuring, generation == requestGeneration else { return }
-            state = projection
-            readError = nil
-        } catch {
-            guard !Task.isCancelled, !configuring, generation == requestGeneration else { return }
-            readError = error.userFacingMessage
-        }
-    }
-
-    /// 端口与网络接口不再暴露给用户：始终由系统自动分配，沿用上次的接口选择。
-    @MainActor private func configure(enabled: Bool) {
-        guard !configuring, let client = store.client else { return }
-        configuring = true
-        requestGeneration += 1
-        actionError = nil
-        Task {
-            defer { configuring = false }
-            do {
-                state = try LanWebProjection.decode(await client.configureLanWeb(
-                    enabled: enabled,
-                    interfaceName: state?.preferredInterface,
-                    port: 0))
-                readError = nil
-            } catch {
-                actionError = error.userFacingMessage
-                // Do not keep advertising an old listener after an uncertain configuration result.
-                readError = "正在重新确认服务状态"
-            }
-        }
-    }
-
-    private func makeQRCode(_ address: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(address.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
-              let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
-        return NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height)))
     }
 }
 

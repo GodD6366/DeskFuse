@@ -155,6 +155,8 @@ import DeskFuseEngine
                 }
                 try await client.listen(relay)
                 recordStartup("listener_ready")
+                // 先取一次局域网共享状态，第一次打开文件页也能直接用已知结果渲染。
+                LanWebSharing.shared.warmUp(client)
                 transferWindow = TransferProgressWindowController(store: self)
                 transferWindow?.reconcile(snapshot?.transfers ?? [])
                 shelf = ShelfController(store: self)
