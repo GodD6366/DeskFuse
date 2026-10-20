@@ -73,8 +73,10 @@ public partial class App : Application
 
         service.Start();
         inputHelper = new InputHelperProcess(dispatcher);
-        ShowOnboardingIfNeeded();
         window.RestoreFromTray();
+        // Onboarding builds themed visuals; it needs the window shown so the
+        // theme resource chain (ActualTheme) resolves.
+        ShowOnboardingIfNeeded();
         if (Environment.GetCommandLineArgs().Any(argument => argument.Equals("--minimized", StringComparison.OrdinalIgnoreCase))) window.HideToTray();
     }
 

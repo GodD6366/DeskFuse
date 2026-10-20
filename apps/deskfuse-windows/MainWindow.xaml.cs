@@ -404,14 +404,15 @@ public sealed partial class MainWindow : Window
 
     public void ShowOnboarding(UIElement view)
     {
-        OnboardingHost.Content = view;
+        OnboardingHost.Children.Clear();
+        OnboardingHost.Children.Add(view);
         OnboardingOverlay.Visibility = Visibility.Visible;
     }
 
     public void HideOnboarding()
     {
         OnboardingOverlay.Visibility = Visibility.Collapsed;
-        OnboardingHost.Content = null;
+        OnboardingHost.Children.Clear();
     }
 
     private static Brush DFResource(string key) => (Brush)Application.Current.Resources[key];
@@ -1318,7 +1319,7 @@ public sealed partial class MainWindow : Window
             PageHost.Children.Remove(WorkflowsPage);
             WorkflowsPage.Visibility = Visibility.Collapsed;
             settings = new SettingsPage(clipboard, service, power, WorkflowsPage, () => _ = LoadWorkflowsAsync());
-            SettingsHost.Content = settings;
+            SettingsHost.Children.Add(settings);
         }
         settings.Show(category);
         Navigation.SelectedItem = null;

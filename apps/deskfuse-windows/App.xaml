@@ -142,21 +142,6 @@
       <Style x:Key="DFButtonPrimaryStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
         <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
         <Setter Property="Padding" Value="16,0" />
-        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
-      </Style>
-      <Style x:Key="DFButtonSecondaryStyle" TargetType="Button">
-        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
-        <Setter Property="Padding" Value="16,0" />
-        <Setter Property="Background" Value="{ThemeResource DFControlBrush}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource DFBorderBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
-      </Style>
-      <Style x:Key="DFButtonPlainStyle" TargetType="Button">
-        <Setter Property="MinHeight" Value="{StaticResource DFCompactHeight}" />
-        <Setter Property="Padding" Value="8,0" />
-        <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{ThemeResource DFAccentBrush}" />
       </Style>
       <Style x:Key="DFSidebarRowStyle" TargetType="ListBoxItem">
         <Setter Property="MinHeight" Value="{StaticResource DFRowHeight}" />

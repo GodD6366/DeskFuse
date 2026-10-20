@@ -77,7 +77,7 @@
 
       <!-- Pages -->
       <Grid x:Name="PageHost" Grid.Column="1">
-        <ContentControl x:Name="SettingsHost" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+        <Grid x:Name="SettingsHost" Visibility="Collapsed" />
         <ContentControl x:Name="RemoteApplicationsPage" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
         <Grid x:Name="ClipboardPage">
           <Grid.ColumnDefinitions>
@@ -393,7 +393,7 @@
 
     <!-- First-run onboarding: covers the workspace until completed. -->
     <Grid x:Name="OnboardingOverlay" Grid.RowSpan="2" Visibility="Collapsed" Background="{ThemeResource DFCanvasBrush}">
-      <ContentControl x:Name="OnboardingHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+      <Grid x:Name="OnboardingHost" />
     </Grid>
   </Grid>
 </Window>

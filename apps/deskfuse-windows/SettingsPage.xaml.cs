@@ -166,7 +166,7 @@ public sealed partial class SettingsPage : UserControl
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = "在所有设备间，自由流转", Style = (Style)Application.Current.Resources["DFDetailTextStyle"] },
+                    new TextBlock { Text = "在所有设备间，自由流转", FontSize = 12, Foreground = DFRes("DFMutedBrush"), TextWrapping = TextWrapping.Wrap },
                     new TextBlock { Text = $"DeskFuse {AppVersion.Display}" },
                 },
             }),
@@ -317,10 +317,15 @@ public sealed partial class SettingsPage : UserControl
         return new ScrollViewer { Content = content, Padding = new Thickness(24, 0, 24, 24), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
+    // Styles are applied as direct properties: styles fetched from
+    // Application.Current.Resources carry ThemeResource setters that do not
+    // resolve on code-created elements, leaving them blank at render time.
+    private static Brush DFRes(string key) => (Brush)Application.Current.Resources[key];
+
     private static TextBlock Description(string text) => new()
     {
         Text = text, TextWrapping = TextWrapping.Wrap,
-        Style = (Style)Application.Current.Resources["DFDetailTextStyle"],
+        FontSize = 12, Foreground = DFRes("DFMutedBrush"),
     };
 
     private static UIElement Section(string heading, UIElement body) => new StackPanel
@@ -328,10 +333,14 @@ public sealed partial class SettingsPage : UserControl
         Spacing = 10,
         Children =
         {
-            new TextBlock { Text = heading, Style = (Style)Application.Current.Resources["DFSectionTextStyle"] },
+            new TextBlock { Text = heading, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold },
             new Border
             {
-                Style = (Style)Application.Current.Resources["CardBorder"],
+                Background = DFRes("DFSurfaceBrush"),
+                BorderBrush = DFRes("DFLineBrush"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(16),
                 Child = body,
             },
         },
