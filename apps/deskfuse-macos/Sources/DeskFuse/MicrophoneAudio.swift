@@ -75,6 +75,19 @@ enum MicrophoneAudioDevices {
         var id: AudioDeviceID = 0; var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         return AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id) == noErr ? id : nil
     }
+    /// 设为默认前的系统默认输入，关闭共享时据此恢复。
+    static let previousDefaultKey = "microphone.previousDefaultInput"
+    /// 把 DeskFuse 虚拟麦克风设为系统默认输入，并记住原来的默认设备。
+    /// 虚拟设备刚启用、系统尚未列出时返回 false，由调用方稍后重试。
+    static func selectVirtualAsDefault() throws -> Bool {
+        guard devices().contains(where: { $0.1 == virtualUID }) else { return false }
+        if let id = defaultInput(), let uid = string(id, kAudioDevicePropertyDeviceUID) {
+            if uid == virtualUID { return true }
+            UserDefaults.standard.set(uid, forKey: previousDefaultKey)
+        }
+        try setDefault(uid: virtualUID)
+        return true
+    }
     static func setDefault(uid: String) throws {
         guard var id = devices().first(where: { $0.1 == uid })?.0 else { throw MicrophoneAudioError.message("找不到所选麦克风") }
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)

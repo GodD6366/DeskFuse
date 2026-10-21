@@ -213,10 +213,9 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         Task {
             do {
                 try await Task.detached(priority: .utility) {
-                    if let id = MicrophoneAudioDevices.defaultInput(), let uid = MicrophoneAudioDevices.string(id, kAudioDevicePropertyDeviceUID), uid != MicrophoneAudioDevices.virtualUID {
-                        UserDefaults.standard.set(uid, forKey: "microphone.previousDefaultInput")
+                    guard try MicrophoneAudioDevices.selectVirtualAsDefault() else {
+                        throw MicrophoneAudioError.message("DeskFuse 麦克风尚未就绪，请稍后重试")
                     }
-                    try MicrophoneAudioDevices.setDefault(uid: MicrophoneAudioDevices.virtualUID)
                 }.value
                 error = nil
             } catch { self.error = error.localizedDescription }
@@ -360,6 +359,8 @@ private final class MicrophoneWorker: @unchecked Sendable {
         var captureStarted = Date.distantPast
         var nextPoll = Date.distantPast
         var nextDriverCheck = Date.distantPast
+        /// 虚拟麦克风每次启用后自动设为系统默认输入；设备出现前持续重试到截止时间。
+        var autoDefaultDeadline: Date?
         func nativeError() -> String { String(cString: ud_mic_last_error()) }
         func resetSession() {
             capture?.stop(); capture = nil
@@ -372,7 +373,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
             // Respect a newer choice made by the user or another audio app.
             if let id = MicrophoneAudioDevices.defaultInput(),
                MicrophoneAudioDevices.string(id, kAudioDevicePropertyDeviceUID) == MicrophoneAudioDevices.virtualUID,
-               let uid = UserDefaults.standard.string(forKey: "microphone.previousDefaultInput") {
+               let uid = UserDefaults.standard.string(forKey: MicrophoneAudioDevices.previousDefaultKey) {
                 try? MicrophoneAudioDevices.setDefault(uid: uid)
             }
         }
@@ -412,6 +413,22 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                 if !driverEnabled {
                                     guard ud_mic_driver_set_enabled(1) == 0 else { throw MicrophoneAudioError.message(nativeError()) }
                                     driverEnabled = true
+                                    autoDefaultDeadline = Date().addingTimeInterval(10)
+                                }
+                                if let deadline = autoDefaultDeadline {
+                                    // 只在打开时设置一次；之后用户改选其他输入设备不再被覆盖。
+                                    // 失败只提示，不中断音频会话。
+                                    do {
+                                        if try MicrophoneAudioDevices.selectVirtualAsDefault() {
+                                            autoDefaultDeadline = nil
+                                        } else if Date() >= deadline {
+                                            autoDefaultDeadline = nil
+                                            failure = "DeskFuse 麦克风未及时出现，未能自动设为默认输入"
+                                        }
+                                    } catch {
+                                        autoDefaultDeadline = nil
+                                        failure = error.localizedDescription
+                                    }
                                 }
                                 let reading = ud_mic_driver_has_readers()
                                 guard reading >= 0 else { throw MicrophoneAudioError.message(nativeError()) }
@@ -423,6 +440,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                     // Restore only if our explicit default selection is still active.
                                     restoreDefaultInput()
                                     _ = ud_mic_driver_set_enabled(0); driverEnabled = false; configuredName = ""; needsDriverCleanup = false
+                                    autoDefaultDeadline = nil
                                 }
                             }
                         } else { readers = false; driverEnabled = false; configuredName = "" }
