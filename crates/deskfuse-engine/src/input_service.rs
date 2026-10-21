@@ -108,19 +108,21 @@ async fn run(
     transport
         .configure_identity(identity)
         .map_err(|e| e.to_string())?;
-    let mut discovery = PlatformDiscovery::for_input_service(child.bootstrap.authority.local)
-        .map_err(|e| e.to_string())?;
-    discovery
-        .set_advertisement(
-            ServiceRecord::v2(
-                child.bootstrap.authority.local,
-                child.bootstrap.display_name.clone(),
-                caps,
-                42425,
+    // 发现服务 shutdown 后不可再 start：每次重新打开键鼠共享都要新建实例。
+    let local = child.bootstrap.authority.local;
+    let display_name = child.bootstrap.display_name.clone();
+    let new_discovery = move || -> std::result::Result<PlatformDiscovery, String> {
+        let mut discovery =
+            PlatformDiscovery::for_input_service(local).map_err(|e| e.to_string())?;
+        discovery
+            .set_advertisement(
+                ServiceRecord::v2(local, display_name.clone(), caps, 42425)
+                    .map_err(|e| e.to_string())?,
             )
-            .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
+        Ok(discovery)
+    };
+    let mut discovery = new_discovery()?;
     let mut sharing_enabled = child.bootstrap.stored.settings.feature_enabled;
     let mut discovery_events = if sharing_enabled {
         Some(discovery.start().map_err(|e| e.to_string())?)
@@ -128,8 +130,10 @@ async fn run(
         None
     };
     let mut authority = child.authority.borrow().clone();
+    // Bonjour 发现结果单独保存，路由表每次由两路来源合并重建。
+    let mut mdns_routes = BTreeMap::new();
     let mut routes = BTreeMap::new();
-    merge_locator_hints(&authority, &mut routes);
+    rebuild_routes(&authority, &mdns_routes, &mut routes);
     let mut authorized = BTreeSet::new();
     let mut last_participants = child
         .bootstrap
@@ -244,6 +248,7 @@ async fn run(
                 if next_enabled != sharing_enabled {
                     sharing_enabled = next_enabled;
                     if sharing_enabled {
+                        discovery = new_discovery()?;
                         discovery_events = Some(discovery.start().map_err(|e| e.to_string())?);
                     } else {
                         discovery.shutdown().map_err(|e| e.to_string())?;
@@ -274,11 +279,13 @@ async fn run(
                     match discovery_events.try_recv() {
                         Ok(Some(DiscoveryEvent::Found(service) | DiscoveryEvent::Updated(service))) => {
                             let id = service.device_id();
-                            let previous = routes.entry(id).or_insert_with(Vec::new);
+                            let previous = routes.get(&id);
                             let next = service.endpoints.into_iter().filter(|e|e.port == 42425).map(|endpoint| {
-                                previous.iter().find(|r|r.endpoint==endpoint).cloned().unwrap_or_else(||RouteCandidate::new(endpoint,RouteSource::Mdns,RouteHealth::Unknown,caps))
+                                previous.and_then(|p| p.iter().find(|r|r.endpoint==endpoint)).cloned().unwrap_or_else(||RouteCandidate::new(endpoint,RouteSource::Mdns,RouteHealth::Unknown,caps))
                             }).collect();
-                            *previous = next; changed = true;
+                            mdns_routes.insert(id, next);
+                            rebuild_routes(&authority, &mdns_routes, &mut routes);
+                            changed = true;
                         }
                         // Discovery disappearance is not revocation and must not tear down
                         // an otherwise healthy signed input connection.
@@ -290,7 +297,7 @@ async fn run(
                 if child.authority.has_changed().unwrap_or(false) {
                     authority = child.authority.borrow_and_update().clone();
                     let before = input_route_endpoints(&routes);
-                    merge_locator_hints(&authority, &mut routes);
+                    rebuild_routes(&authority, &mdns_routes, &mut routes);
                     let after = input_route_endpoints(&routes);
                     if sharing_enabled && after != before {
                         // 主连接在新网络发现了对端地址。独立输入服务使用
@@ -414,12 +421,22 @@ fn permission_code(value: deskfuse_platform::PermissionStatus) -> u8 {
     }
 }
 
-fn merge_locator_hints(
+/// 独立输入服务的候选路由 = 自身 Bonjour 发现的 42425 地址 ∪ 主连接当前的局域网地址提示。
+/// 每次整体重建：Bonjour 更新不能抹掉主连接提示，主连接撤回的旧地址也不会残留；
+/// 已有候选沿用原对象，保留其健康状态。
+fn rebuild_routes(
     authority: &Authority,
+    mdns: &BTreeMap<DeviceId, Vec<RouteCandidate>>,
     routes: &mut BTreeMap<DeviceId, Vec<RouteCandidate>>,
 ) {
-    for peer in &authority.peers {
-        let known = routes.entry(peer.id).or_default();
+    let mut next = BTreeMap::new();
+    for peer in authority
+        .peers
+        .iter()
+        .filter(|p| p.trust == TrustState::Trusted)
+    {
+        let previous = routes.get(&peer.id);
+        let mut known = mdns.get(&peer.id).cloned().unwrap_or_default();
         for hint in &peer.routes {
             if hint.source.is_public() || hint.endpoint.host.parse::<std::net::IpAddr>().is_err() {
                 continue;
@@ -427,21 +444,23 @@ fn merge_locator_hints(
             let mut endpoint = hint.endpoint.clone();
             endpoint.port = 42425;
             if !known.iter().any(|r| r.endpoint == endpoint) && known.len() < 32 {
-                known.push(RouteCandidate::new(
-                    endpoint,
-                    RouteSource::CachedDirect,
-                    RouteHealth::Unknown,
-                    Capabilities::INPUT_SHARING,
-                ));
+                let candidate = previous
+                    .and_then(|p| p.iter().find(|r| r.endpoint == endpoint))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        RouteCandidate::new(
+                            endpoint,
+                            RouteSource::CachedDirect,
+                            RouteHealth::Unknown,
+                            Capabilities::INPUT_SHARING,
+                        )
+                    });
+                known.push(candidate);
             }
         }
+        next.insert(peer.id, known);
     }
-    routes.retain(|peer, _| {
-        authority
-            .peers
-            .iter()
-            .any(|p| p.id == *peer && p.trust == TrustState::Trusted)
-    });
+    *routes = next;
 }
 
 /// 独立输入服务当前可用于连接的对端地址集合，用来判断主连接是否刚刚
@@ -457,4 +476,88 @@ fn input_route_endpoints(
                 .map(move |route| (*peer, route.endpoint.clone()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskfuse_runtime::DeviceNetworkSnapshot;
+
+    fn candidate(host: &str, port: u16, source: RouteSource) -> RouteCandidate {
+        RouteCandidate::new(
+            Endpoint::new(host, port).unwrap(),
+            source,
+            RouteHealth::Unknown,
+            Capabilities::INPUT_SHARING,
+        )
+    }
+
+    fn authority(peer: DeviceId, hints: Vec<RouteCandidate>) -> Authority {
+        Authority {
+            local: DeviceId::from([1; 32]),
+            network: DeviceNetworkSnapshot::default(),
+            peers: vec![PeerSnapshot {
+                id: peer,
+                display_name: "peer".into(),
+                public_key: [3; 32],
+                liveness: LivenessState::Online,
+                trust: TrustState::Trusted,
+                connection: ConnectionState::Connected,
+                routes: hints,
+                selected_route: None,
+            }],
+        }
+    }
+
+    fn hosts(routes: &BTreeMap<DeviceId, Vec<RouteCandidate>>, peer: DeviceId) -> Vec<String> {
+        routes[&peer]
+            .iter()
+            .map(|r| r.endpoint.host.clone())
+            .collect()
+    }
+
+    #[test]
+    fn bonjour_update_keeps_control_route_hints() {
+        let peer = DeviceId::from([2; 32]);
+        let authority = authority(
+            peer,
+            vec![candidate("10.10.10.2", 42424, RouteSource::Mdns)],
+        );
+        let mut mdns = BTreeMap::new();
+        let mut routes = BTreeMap::new();
+        rebuild_routes(&authority, &mdns, &mut routes);
+        assert_eq!(hosts(&routes, peer), ["10.10.10.2"]);
+
+        // Bonjour 只报告另一块网卡的地址时，主连接提示仍须保留且端口改为 42425。
+        mdns.insert(peer, vec![candidate("10.0.0.9", 42425, RouteSource::Mdns)]);
+        rebuild_routes(&authority, &mdns, &mut routes);
+        assert_eq!(hosts(&routes, peer), ["10.0.0.9", "10.10.10.2"]);
+        assert!(routes[&peer].iter().all(|r| r.endpoint.port == 42425));
+    }
+
+    #[test]
+    fn withdrawn_hints_and_untrusted_peers_are_dropped() {
+        let peer = DeviceId::from([2; 32]);
+        let mut routes = BTreeMap::new();
+        let mdns = BTreeMap::new();
+        rebuild_routes(
+            &authority(peer, vec![candidate("10.0.0.9", 42424, RouteSource::Mdns)]),
+            &mdns,
+            &mut routes,
+        );
+        rebuild_routes(
+            &authority(
+                peer,
+                vec![candidate("10.10.10.2", 42424, RouteSource::Mdns)],
+            ),
+            &mdns,
+            &mut routes,
+        );
+        assert_eq!(hosts(&routes, peer), ["10.10.10.2"]);
+
+        let mut untrusted = authority(peer, vec![]);
+        untrusted.peers[0].trust = TrustState::Blocked;
+        rebuild_routes(&untrusted, &mdns, &mut routes);
+        assert!(routes.is_empty());
+    }
 }

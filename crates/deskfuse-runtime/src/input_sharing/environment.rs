@@ -10,6 +10,7 @@ struct Presence {
     controller: bool,
     ssid: Option<String>,
     preferred: Option<DeviceId>,
+    claimed_at_ms: Option<u64>,
     seen: Instant,
 }
 #[derive(Default)]
@@ -21,7 +22,7 @@ pub(super) struct Environment {
     pending: Option<(Option<String>, Instant)>,
     layout_pending: bool,
     peers: BTreeMap<DeviceId, Presence>,
-    last_sent: Option<Instant>,
+    pub(super) last_sent: Option<Instant>,
 }
 impl InputActor {
     pub(super) fn environment_layout_pending(&self) -> bool {
@@ -49,6 +50,7 @@ impl InputActor {
         controller: bool,
         ssid: Option<String>,
         preferred: Option<DeviceId>,
+        claimed_at_ms: Option<u64>,
     ) {
         if !self.environment_capable(peer, context) {
             return;
@@ -59,9 +61,36 @@ impl InputActor {
                 controller,
                 ssid,
                 preferred,
+                claimed_at_ms: claimed_at_ms.filter(|_| controller),
                 seen: Instant::now(),
             },
         );
+    }
+    /// 用户明确把本机选为主控（本机设置或远端“选择本次主控”）时刷新声明，
+    /// 使本机在多主控仲裁中成为最新声明者。
+    fn refresh_controller_claim(&mut self) {
+        if self.snapshot.settings.enabled
+            && self.snapshot.settings.role == InputShareRole::Controller
+        {
+            self.controller_claimed_at_ms = Some(crate::now_unix_ms());
+            self.environment.dirty = true;
+            self.environment.last_sent = None;
+        }
+    }
+    /// 多台主控同时在线时，最近一次被设为主控的设备胜出（声明时间相同按设备 ID）。
+    /// 没有任何声明（旧版本对端）时返回 None，沿用 Wi-Fi 场景规则。
+    fn newest_controller_claim(&self, local: DeviceId, local_controller: bool) -> Option<DeviceId> {
+        let peers = self
+            .environment
+            .peers
+            .iter()
+            .filter(|(_, presence)| presence.controller)
+            .filter_map(|(id, presence)| presence.claimed_at_ms.map(|at| (at, *id)));
+        let local = local_controller
+            .then_some(self.controller_claimed_at_ms)
+            .flatten()
+            .map(|at| (at, local));
+        peers.chain(local).max().map(|(_, id)| id)
     }
     pub(super) fn receive_controller_selection(
         &mut self,
@@ -74,9 +103,13 @@ impl InputActor {
         if !self.environment_capable(peer, context) {
             return;
         }
-        // A device the user enabled as a controller here stays the controller.
-        // A remote device cannot suspend that role; only an explicit local
-        // handover (choose_environment_controller) may do that.
+        let local = self.network.borrow().snapshot.local_device_id;
+        // 远端用户明确把本机选为主控：这是一次新的主控声明。
+        if controller == local {
+            self.refresh_controller_claim();
+        }
+        // 本机已启用的主控不接受远端改写场景选择；让位只由主控声明时间决定
+        // （见 newest_controller_claim），不会被远端保存的旧规则静默接管。
         if self.snapshot.settings.enabled
             && self.snapshot.settings.role == InputShareRole::Controller
         {
@@ -98,7 +131,6 @@ impl InputActor {
         {
             return;
         }
-        let local = self.network.borrow().snapshot.local_device_id;
         if controller != local && !self.network_allowed(controller) {
             return;
         }
@@ -112,6 +144,27 @@ impl InputActor {
         }
         self.environment.last_sent = None;
     }
+    /// 去掉指向已忘记设备的 Wi-Fi 主控规则、临时选择和暂停记录；有改动时返回 true
+    /// 并标记待保存，否则该网络会一直提示“首选主控不在线”。
+    pub(super) fn forget_environment_peer(&mut self, peer: DeviceId) -> bool {
+        let rules = self.environment.rules.len();
+        self.environment
+            .rules
+            .retain(|_, controller| *controller != peer);
+        let paused = self.paused_intents.len();
+        self.paused_intents
+            .retain(|(paused_peer, _)| *paused_peer != peer);
+        if self.environment.temporary == Some(peer) {
+            self.environment.temporary = None;
+        }
+        self.environment.peers.remove(&peer);
+        let changed = self.environment.rules.len() != rules || self.paused_intents.len() != paused;
+        if changed {
+            self.environment.dirty = true;
+            self.environment.last_sent = None;
+        }
+        changed
+    }
     pub(super) fn start_environment_save(&mut self) {
         if !self.environment.dirty
             || self.pending_policy_save.is_some()
@@ -124,6 +177,7 @@ impl InputActor {
             environment_rules: self.environment.rules.clone(),
             controller_intents: self.controller_intents.clone(),
             paused_intents: self.paused_intents.clone(),
+            controller_claimed_at_ms: self.controller_claimed_at_ms,
         };
         let store = self.store.clone();
         self.pending_policy_save = Some(tokio::task::spawn_blocking(move || {
@@ -188,6 +242,9 @@ impl InputActor {
             self.end_incoming("controller selected locally", true);
         }
         self.release_all("controller selected locally");
+        if controller == local {
+            self.refresh_controller_claim();
+        }
         self.environment.temporary = Some(controller);
         self.environment.last_sent = None;
         let peers = self.environment.peers.keys().copied().collect::<Vec<_>>();
@@ -295,7 +352,14 @@ impl InputActor {
             if pending.0 != ssid {
                 *pending = (ssid.clone(), now);
             }
-            if now.duration_since(pending.1) >= Duration::from_secs(10) && !busy {
+            // A local SSID is already an observation, not a reason to block input.
+            // Only debounce missing/peer-derived identity; keep active control intact.
+            let delay = if self.environment.observed.is_some() {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(2)
+            };
+            if now.duration_since(pending.1) >= delay && !busy {
                 self.snapshot.environment.ssid = ssid.clone();
                 self.environment.temporary = None;
                 self.environment.pending = None;
@@ -343,7 +407,6 @@ impl InputActor {
                 votes.insert(preferred);
             }
         }
-        let automatic = !self.environment.rules.is_empty();
         let conflict = (ambiguous && self.environment.temporary.is_none())
             || votes.len() > 1
             || (votes.is_empty() && candidates.len() > 1);
@@ -353,7 +416,7 @@ impl InputActor {
             votes
                 .first()
                 .copied()
-                .or_else(|| (!automatic && candidates.len() == 1).then(|| candidates[0]))
+                .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
         };
         // A locally enabled controller is handed over only by the local user.
         // A remote vote without a local saved rule surfaces as a conflict instead of a
@@ -364,6 +427,16 @@ impl InputActor {
             && requested.is_some_and(|id| id != local);
         let conflict = conflict || remote_request;
         let selected = if remote_request { None } else { requested };
+        // 设计约定：谁后被设为主控谁生效，其余主控自动让位为被控。
+        // 只要有两台以上主控在线且带有声明时间，就以最新声明覆盖场景投票，
+        // 否则两边都会拒绝对方的激活，形成谁也连不上的僵局。
+        let claim_winner = (candidates.len() > 1)
+            .then(|| self.newest_controller_claim(local, local_controller))
+            .flatten();
+        let (conflict, remote_request, selected) = match claim_winner {
+            Some(winner) => (false, false, Some(winner)),
+            None => (conflict, remote_request, selected),
+        };
         // A verified, live activation is the current controller. Wi-Fi votes
         // must not revoke its lease or switch the receiver back to a stale
         // preference; a later selection takes effect after that activation ends.
@@ -372,11 +445,10 @@ impl InputActor {
             // but an unmatched saved scene must not retain a stale controller.
             if !conflict
                 || self.snapshot.environment.selected.is_none()
-                || (automatic && own.is_none() && !remote_request)
+                || (own.is_none() && !remote_request)
             {
                 let previous = self.snapshot.environment.selected;
-                let suspended = selected.is_some_and(|id| id != local)
-                    || (automatic && selected != Some(local));
+                let suspended = selected.is_some_and(|id| id != local);
                 if previous != selected || self.snapshot.environment.local_suspended != suspended {
                     self.release_all("controller environment changed");
                     if self
@@ -391,7 +463,7 @@ impl InputActor {
                 self.snapshot.environment.local_suspended = suspended;
                 // 静默记忆：已知 Wi-Fi 上生效的主控直接成为保存的规则，
                 // 切换主控即自动更新；关闭本机主控则清除该网络的映射，
-                // 让它回到「未匹配自动暂停」语义。落盘复用 dirty + 周期 flush。
+                // 未匹配的网络沿用本机设置。落盘复用 dirty + 周期 flush。
                 if let Some(ssid) = self.snapshot.environment.ssid.clone() {
                     if !local_controller
                         && self.environment.temporary.is_none()
@@ -413,6 +485,13 @@ impl InputActor {
             }
         }
         self.snapshot.environment.candidates = candidates;
+        self.snapshot.environment.observed_ssid = self.environment.observed.clone();
+        self.snapshot.environment.peer_ssids = self
+            .environment
+            .peers
+            .iter()
+            .filter_map(|(id, presence)| presence.ssid.clone().map(|ssid| (*id, ssid)))
+            .collect();
         self.snapshot.environment.rules = self.environment.rules.clone();
         self.snapshot.environment.conflict = conflict;
         self.snapshot.environment.message = if self.environment.pending.is_some() {
@@ -423,6 +502,8 @@ impl InputActor {
             }
         } else if conflict {
             "检测到多个主控或场景规则冲突，请选择本次主控"
+        } else if local_controller && claim_winner.is_some_and(|winner| winner != local) {
+            "另一台设备最近被设为主控，本机已自动转为被控"
         } else if self
             .snapshot
             .environment
@@ -430,12 +511,10 @@ impl InputActor {
             .is_some_and(|id| !self.snapshot.environment.candidates.contains(&id))
         {
             "该 Wi-Fi 的首选主控不在线；保留本地操作，可临时选择其他主控"
-        } else if automatic && self.snapshot.environment.selected.is_none() {
-            "当前 Wi-Fi 未匹配已保存的主控规则，已暂停本机主控"
         } else if own.is_some() {
             "已应用 Wi-Fi 场景主控选择，原有主控设置与布局保持保存"
         } else {
-            "可为当前 Wi-Fi 保存主控；陌生网络出现多个主控时需要选择"
+            "沿用当前主控与布局；Wi-Fi 仅用于匹配已保存的场景"
         }
         .into();
         // Keep a deferred restore until the local controller can own its layout.
@@ -492,6 +571,9 @@ impl InputActor {
                             controller: local_controller,
                             ssid: self.environment.observed.clone(),
                             preferred: own,
+                            claimed_at_ms: self
+                                .controller_claimed_at_ms
+                                .filter(|_| local_controller),
                         },
                     );
                     break;

@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# GITHUB_TOKEN 在整个发布流程中只读：构建产物经 Actions artifacts 传递，公开
+# Release 与 Homebrew cask 只通过 RELEASE_REPOSITORY_TOKEN 写入发行仓库。
+# 签名与发行凭据存放在 `release` environment，只对 `v*` tag 开放（tag 由 ruleset
+# 限定管理员创建）；读取 secrets 的 job 必须声明 environment: release。
+# 自托管 runner 不执行未审阅代码（见 ci.yml）。
+#
 # Keep Windows out of the prerelease until Authenticode signing is available.
 # Set the DESKFUSE_INCLUDE_WINDOWS_RELEASE repository variable to `true` to
 # re-enable the Windows job and asset in a future release.
@@ -20,6 +26,7 @@ concurrency:
 
 jobs:
   preflight:
+    environment: release
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 10
     outputs:
@@ -40,6 +47,8 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - id: distribution
         run: python3 scripts/distribution-config.py --github-output "$GITHUB_OUTPUT"
       - id: release_mode
@@ -64,16 +73,12 @@ jobs:
           python3 scripts/release.py probe --tag "$RELEASE_TAG" "${probe_args[@]}"
 
   checks:
-    permissions:
-      contents: write
     needs: preflight
     if: needs.preflight.outputs.exists != 'true'
     uses: ./.github/workflows/ci.yml
 
   macos-arm64:
-    permissions:
-      contents: write
-      actions: write
+    environment: release
     needs: [preflight, checks]
     env:
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
@@ -83,6 +88,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install pinned toolchain
         run: |
           test "$(uname -m)" = arm64
@@ -133,9 +140,7 @@ jobs:
           retention-days: 1
 
   macos-x86_64:
-    permissions:
-      contents: write
-      actions: write
+    environment: release
     needs: [preflight, checks]
     env:
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
@@ -145,6 +150,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install pinned Intel toolchain
         run: |
           test "$(uname -m)" = arm64
@@ -195,9 +202,7 @@ jobs:
           retention-days: 1
 
   windows-x64:
-    permissions:
-      contents: write
-      actions: write
+    environment: release
     needs: [preflight, checks]
     if: needs.preflight.outputs.exists != 'true' && needs.preflight.outputs.include_windows == 'true'
     name: Windows x64 installer
@@ -209,6 +214,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Require NSIS and Authenticode signing tools
         shell: pwsh
         run: |
@@ -310,6 +316,7 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'deskfuse-authenticode.pfx') -Force -ErrorAction SilentlyContinue
 
   publish:
+    environment: release
     needs: [preflight, macos-arm64, macos-x86_64, windows-x64]
     if: >-
       always() &&
@@ -328,10 +335,12 @@ jobs:
     # time for both DMGs before the public inventory is assembled.
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
       actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Download complete release archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -385,8 +394,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # A public tag points only at the distribution tree. Never push source
-          # tags/commits from this private repository into the public repository.
+          # The release repository tag points only at its distribution tree. Never
+          # push source tags/commits from the source repository into it.
           if ! gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
             public_sha="$(gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
             gh api --method POST "repos/$DESKFUSE_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$public_sha" > /dev/null
@@ -399,6 +408,7 @@ jobs:
   # refreshed only after @publish confirms the GitHub assets are public. The
   # cask is written only to the public distribution repository.
   cask:
+    environment: release
     needs: [preflight, publish]
     if: >-
       always() &&
@@ -411,12 +421,11 @@ jobs:
       CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 15
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: source
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ env.DESKFUSE_RELEASE_REPOSITORY }}

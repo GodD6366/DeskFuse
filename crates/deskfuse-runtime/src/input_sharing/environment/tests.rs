@@ -78,14 +78,14 @@ fn wifi_rules_enter_leave_and_restore_controller_without_rewriting_settings() {
     assert_eq!(actor.snapshot.environment.selected, Some(local));
     assert!(actor.snapshot.effective_settings().enabled);
     settle(&mut actor, Some("unknown"));
-    assert_eq!(actor.snapshot.environment.selected, None);
-    assert!(actor.snapshot.environment.local_suspended);
-    assert!(!actor.snapshot.effective_settings().enabled);
+    assert_eq!(actor.snapshot.environment.selected, Some(local));
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert!(actor.snapshot.effective_settings().enabled);
     settle(&mut actor, Some("office"));
     assert_eq!(actor.snapshot.environment.selected, Some(peer));
     assert!(!actor.snapshot.effective_settings().enabled);
     settle(&mut actor, None);
-    assert!(actor.snapshot.environment.local_suspended);
+    assert!(!actor.snapshot.environment.local_suspended);
     settle(&mut actor, Some("home"));
     assert_eq!(actor.snapshot.environment.selected, Some(local));
     assert!(!actor.snapshot.environment.local_suspended);
@@ -103,7 +103,7 @@ fn wifi_layout_restores_after_disconnected_transition_resumes_controller() {
 
     settle(&mut actor, Some("home"));
     settle(&mut actor, None);
-    assert!(actor.snapshot.environment.local_suspended);
+    assert!(!actor.snapshot.environment.local_suspended);
     settle(&mut actor, Some("office"));
 
     assert!(!actor.snapshot.environment.local_suspended);
@@ -154,8 +154,15 @@ fn wifi_transition_does_not_save_new_topology_into_previous_network_scene() {
     actor.tick_environment();
     actor.snapshot.settings.placements[0].x = -1000.0;
 
-    assert!(!actor.refresh_environment_scene());
+    assert!(actor.refresh_environment_scene());
     assert_eq!(actor.snapshot.scenes[0].settings.placements, home);
+    let office = actor
+        .snapshot
+        .scenes
+        .iter()
+        .find(|s| s.ssid.as_deref() == Some("office"))
+        .unwrap();
+    assert_eq!(office.settings.placements[0].x, -1000.0);
 }
 
 #[test]
@@ -170,26 +177,26 @@ fn wifi_authorization_and_matching_rule_never_enable_the_sharing_switch() {
 }
 
 #[test]
-fn wifi_change_waits_for_stability_and_active_input_to_end() {
+fn wifi_change_waits_only_for_active_input_to_end() {
     let (mut actor, peer, _, _, _) = setup(true);
     let local = actor.network.borrow().snapshot.local_device_id;
     actor.environment.rules.insert("home".into(), local);
     settle(&mut actor, Some("home"));
-    actor.observe_environment(Some("unknown".into()));
-    actor.tick_environment();
-    assert_eq!(actor.snapshot.environment.selected, Some(local));
+    actor.environment.rules.insert("office".into(), peer);
     actor.request(peer, "display".into());
     assert!(!actor.leases.is_empty());
     for lease in actor.leases.values_mut() {
         lease.entered = true;
     }
-    settle(&mut actor, Some("unknown"));
+    actor.observe_environment(Some("office".into()));
+    actor.tick_environment();
+    assert!(actor.environment.pending.is_some());
     assert_eq!(actor.snapshot.environment.selected, Some(local));
     for lease in actor.leases.values_mut() {
         lease.entered = false;
     }
     actor.tick_environment();
-    assert_eq!(actor.snapshot.environment.selected, None);
+    assert_eq!(actor.snapshot.environment.selected, Some(peer));
     assert!(actor.leases.is_empty());
 }
 
@@ -199,7 +206,7 @@ async fn wifi_cannot_save_a_rule_for_the_old_network_during_transition() {
     let local = actor.network.borrow().snapshot.local_device_id;
     actor.environment.rules.insert("home".into(), peer);
     settle(&mut actor, Some("home"));
-    actor.observe_environment(Some("office".into()));
+    actor.observe_environment(None);
     actor.tick_environment();
     assert!(actor.environment.pending.is_some());
     actor.choose_environment_controller(local, true).await;
@@ -219,7 +226,7 @@ async fn wifi_temporary_override_expires_on_the_next_network() {
     // 静默记忆：本次生效的主控自动成为当前 Wi-Fi 的保存规则。
     assert_eq!(actor.environment.rules.get("unknown"), Some(&local));
     settle(&mut actor, Some("another"));
-    assert!(actor.snapshot.environment.local_suspended);
+    assert!(!actor.snapshot.environment.local_suspended);
     assert!(actor.environment.temporary.is_none());
 }
 
@@ -256,6 +263,7 @@ fn remote_wifi_vote_cannot_override_local_controller_without_local_rule() {
             controller: true,
             ssid: Some("home".into()),
             preferred: Some(peer),
+            claimed_at_ms: None,
             seen: Instant::now(),
         },
     );
@@ -263,4 +271,170 @@ fn remote_wifi_vote_cannot_override_local_controller_without_local_rule() {
     assert_eq!(actor.snapshot.environment.selected, Some(local));
     assert!(!actor.snapshot.environment.local_suspended);
     assert!(actor.snapshot.environment.conflict);
+}
+
+fn claim_presence(actor: &mut InputActor, peer: DeviceId, claimed_at_ms: u64) {
+    actor.environment.peers.insert(
+        peer,
+        Presence {
+            controller: true,
+            ssid: Some("home".into()),
+            preferred: Some(peer),
+            claimed_at_ms: Some(claimed_at_ms),
+            seen: Instant::now(),
+        },
+    );
+}
+
+#[test]
+fn later_controller_claim_demotes_the_earlier_controller() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.controller_claimed_at_ms = Some(1_000);
+    settle(&mut actor, Some("home"));
+    // 对端更晚被设为主控：本机自动让位，不再形成双主控僵局。
+    claim_presence(&mut actor, peer, 2_000);
+    actor.tick_environment();
+    let environment = &actor.snapshot.environment;
+    assert_eq!(environment.selected, Some(peer));
+    assert!(environment.local_suspended);
+    assert!(!environment.conflict);
+    assert!(!actor.snapshot.effective_settings().enabled);
+    // 本机随后再次被设为主控，重新夺回。
+    actor.controller_claimed_at_ms = Some(3_000);
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.environment.selected, Some(local));
+    assert!(!actor.snapshot.environment.local_suspended);
+}
+
+#[test]
+fn earlier_remote_claim_cannot_take_over_the_newer_controller() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.controller_claimed_at_ms = Some(5_000);
+    settle(&mut actor, Some("home"));
+    claim_presence(&mut actor, peer, 4_000);
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.environment.selected, Some(local));
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert!(!actor.snapshot.environment.conflict);
+}
+
+#[test]
+fn snapshot_separates_local_observation_from_peer_reported_ssids() {
+    let (mut actor, peer, context, transport, _) = setup(false);
+    transport.capabilities.lock().unwrap().insert(
+        context.session_id,
+        Capabilities::INPUT_SHARING
+            | Capabilities::INPUT_ACTIVATION
+            | Capabilities::INPUT_ENVIRONMENT,
+    );
+    // 本机读不到 SSID（缺少定位授权或走有线）时，场景判定可采用对端上报的唯一标识，
+    // 但快照必须如实保留本机未读取到的事实，界面才能区分两者。
+    actor.observe_environment(None);
+    crate::input_sharing::tests::receive(
+        &mut actor,
+        peer,
+        &context,
+        InputShareMessage::ControllerPresence {
+            controller: true,
+            ssid: Some("office".into()),
+            preferred: Some(peer),
+            claimed_at_ms: None,
+        },
+    );
+    actor.tick_environment();
+    let environment = &actor.snapshot.environment;
+    assert_eq!(environment.observed_ssid, None);
+    assert_eq!(
+        environment.peer_ssids,
+        BTreeMap::from([(peer, "office".to_owned())])
+    );
+
+    settle(&mut actor, Some("home"));
+    let environment = &actor.snapshot.environment;
+    assert_eq!(environment.observed_ssid.as_deref(), Some("home"));
+    assert_eq!(environment.ssid.as_deref(), Some("home"));
+    assert_eq!(
+        environment.peer_ssids.get(&peer).map(String::as_str),
+        Some("office")
+    );
+}
+
+#[tokio::test]
+async fn forgetting_a_peer_removes_every_input_sharing_reference() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    let placements = bind_layout(&mut actor, peer, "office", -1000.0);
+    actor.snapshot.settings.placements = placements;
+    actor.environment.rules.insert("office".into(), peer);
+    actor.environment.rules.insert("home".into(), local);
+    assert!(actor.snapshot.settings.participants.contains(&peer));
+    assert!(actor.controller_intents.contains_key(&peer));
+
+    actor
+        .command(RuntimeCommand::ForgetInputPeer { peer_id: peer })
+        .await;
+
+    let settings = &actor.snapshot.settings;
+    assert!(!settings.participants.contains(&peer));
+    assert!(
+        settings
+            .placements
+            .iter()
+            .all(|p| p.display.device_id != peer)
+    );
+    assert!(!actor.controller_intents.contains_key(&peer));
+    assert!(actor.snapshot.scenes.iter().all(|scene| {
+        !scene.settings.participants.contains(&peer)
+            && scene
+                .settings
+                .placements
+                .iter()
+                .all(|p| p.display.device_id != peer)
+    }));
+    // 指向已忘记设备的主控规则被删除，其他网络的规则保留。
+    assert_eq!(
+        actor.environment.rules,
+        BTreeMap::from([("home".to_owned(), local)])
+    );
+    let persisted = actor.store.get_input_activation_policy().unwrap().unwrap();
+    assert!(!persisted.controller_intents.contains_key(&peer));
+    assert!(persisted.environment_rules.values().all(|id| *id != peer));
+}
+
+#[tokio::test]
+async fn forgetting_an_unreferenced_peer_leaves_settings_untouched() {
+    let (mut actor, _, _, _, _) = setup(true);
+    let before = actor.snapshot.settings.clone();
+    let stranger = DeviceId::from_public_key([42; 32]).unwrap();
+    actor
+        .command(RuntimeCommand::ForgetInputPeer { peer_id: stranger })
+        .await;
+    assert_eq!(actor.snapshot.settings, before);
+}
+
+#[test]
+fn local_wifi_applies_immediately_without_blocking_layout() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let expected = bind_layout(&mut actor, peer, "home", -1000.0);
+    actor.observe_environment(Some("home".into()));
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.environment.ssid.as_deref(), Some("home"));
+    assert!(!actor.environment_layout_pending());
+    assert!(actor.snapshot.can_configure_layout());
+    assert_eq!(actor.snapshot.settings.placements, expected);
+}
+
+#[test]
+fn wired_startup_with_wifi_rules_keeps_controller_and_layout() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    actor.environment.rules.insert("office".into(), peer);
+    let settings = actor.snapshot.settings.clone();
+    actor.observe_environment(None);
+    actor.tick_environment();
+    assert!(actor.snapshot.can_configure_layout());
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert_eq!(actor.snapshot.settings, settings);
+    assert!(!actor.environment_layout_pending());
 }

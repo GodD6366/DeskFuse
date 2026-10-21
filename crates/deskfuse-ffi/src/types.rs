@@ -449,6 +449,12 @@ pub struct EnvironmentRule {
     pub ssid: String,
     pub controller: String,
 }
+/// 对端经输入链路上报的 Wi-Fi 标识。
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PeerSsid {
+    pub device_id: String,
+    pub ssid: String,
+}
 #[derive(Clone, Debug, uniffi::Record)]
 #[allow(clippy::struct_excessive_bools)] // Independent native status flags.
 pub struct InputState {
@@ -465,6 +471,9 @@ pub struct InputState {
     pub scenes: Vec<Scene>,
     pub environment_message: String,
     pub ssid: Option<String>,
+    /// 本机实际读到的 SSID，`ssid` 则是场景判定采用的值（可能来自对端）。
+    pub observed_ssid: Option<String>,
+    pub peer_ssids: Vec<PeerSsid>,
     pub environment_conflict: bool,
     pub candidates: Vec<String>,
     pub rules: Vec<EnvironmentRule>,
@@ -717,6 +726,10 @@ pub enum ExportOutcome {
     Failed,
 }
 
+fn input_quality_cutoff(now_ms: u128) -> u128 {
+    (now_ms / 1_000 * 1_000).saturating_sub(60_000)
+}
+
 impl From<&EngineState> for EngineSnapshot {
     #[allow(clippy::too_many_lines)] // Single field-by-field native snapshot projection.
     fn from(s: &EngineState) -> Self {
@@ -730,7 +743,9 @@ impl From<&EngineState> for EngineSnapshot {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let cutoff = now_ms.saturating_sub(60_000);
+        // Align buckets to wall-clock seconds so refreshing the snapshot cannot
+        // regroup historical samples and change their median.
+        let cutoff = input_quality_cutoff(now_ms);
         let mut quality = deskfuse_platform::timing::InputQualityWindow::default();
         let mut observed_seconds = std::collections::BTreeSet::new();
         let mut samples = std::collections::BTreeMap::<i64, (Vec<f64>, u32, u32)>::new();
@@ -1077,6 +1092,16 @@ impl From<&EngineState> for EngineSnapshot {
                     .collect(),
                 environment_message: input.environment.message.clone(),
                 ssid: input.environment.ssid.clone(),
+                observed_ssid: input.environment.observed_ssid.clone(),
+                peer_ssids: input
+                    .environment
+                    .peer_ssids
+                    .iter()
+                    .map(|(id, ssid)| PeerSsid {
+                        device_id: id.to_string(),
+                        ssid: ssid.clone(),
+                    })
+                    .collect(),
                 environment_conflict: input.environment.conflict,
                 candidates: input
                     .environment
@@ -1206,6 +1231,15 @@ pub fn preview_display_move(
 #[cfg(test)]
 mod input_quality_tests {
     use super::*;
+
+    #[test]
+    fn curve_buckets_only_move_horizontally_at_second_boundaries() {
+        let records = [65_100u128, 65_900, 66_100];
+        let buckets = |now| records.map(|at| (at - input_quality_cutoff(now)) / 1_000);
+        assert_eq!(buckets(70_100), [55, 55, 56]);
+        assert_eq!(buckets(70_999), [55, 55, 56]);
+        assert_eq!(buckets(71_000), [54, 54, 55]);
+    }
 
     fn now() -> u128 {
         std::time::SystemTime::now()

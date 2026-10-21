@@ -1,8 +1,9 @@
-//! macOS replacement runs outside the application. Only authenticated release
-//! bytes enter staging; a durable journal precedes every destructive step.
+//! macOS replacement runs outside the application. Only digest-checked bytes
+//! whose bundle matches the running app's signing requirement enter staging;
+//! a durable journal precedes every destructive step.
 use crate::{
-    ArtifactDescriptor, GitHubPeerArtifact, PackageKind, ReleaseVersion, SignedReleaseManifest,
-    Target, UpdateStatus, VerifiedRelease, pinned_release_key, verify_artifact, write_json_atomic,
+    ArtifactDescriptor, PackageKind, PeerAppArtifact, ReleaseVersion, Target, UpdateStatus,
+    write_json_atomic,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -97,31 +98,33 @@ fn bundle_update_channel(bundle: &Path) -> Result<String> {
     Ok(channel.trim().to_owned())
 }
 
-/// Zip the running GitHub-channel app so a peer can install the exact bytes.
-/// Reuses a previous archive when the installed release and SHA-256 still match.
+/// 打包本机正在运行的应用，供同一通道的局域网设备按原始字节安装。
+/// 已安装版本和 SHA-256 未变时复用上次的压缩包。
 ///
 /// # Errors
 /// Returns a packaging, signature, or filesystem failure.
-pub fn package_running_app(dest: &Path) -> Result<GitHubPeerArtifact> {
+pub fn package_running_app(dest: &Path) -> Result<PeerAppArtifact> {
     let bundle = current_bundle()?;
-    if bundle_update_channel(&bundle)? != "github" {
-        return Err("只有公开发行版会把本机应用打包给局域网设备".into());
+    let channel = bundle_update_channel(&bundle)?;
+    if !PeerAppArtifact::CHANNELS.contains(&channel.as_str()) {
+        return Err("该发行版不会把本机应用打包给局域网设备".into());
     }
     let release = installed_release(&bundle)?;
     let _ = signature_requirement(&bundle)?;
     private_dir(dest)?;
-    let zip = dest.join(GitHubPeerArtifact::FILE_NAME);
+    let zip = dest.join(PeerAppArtifact::FILE_NAME);
     let meta = dest.join("artifact.json");
     if meta.is_file()
         && zip.is_file()
-        && let Ok(existing) = read_json::<GitHubPeerArtifact>(&meta)
+        && let Ok(existing) = read_json::<PeerAppArtifact>(&meta)
         && existing.validate().is_ok()
+        && existing.channel == channel
         && existing.release == release
         && digest_file(&zip, existing.artifact.size, &existing.artifact.sha256).is_ok()
     {
         return Ok(existing);
     }
-    let tmp = dest.join(format!("{}.part", GitHubPeerArtifact::FILE_NAME));
+    let tmp = dest.join(format!("{}.part", PeerAppArtifact::FILE_NAME));
     let _ = fs::remove_file(&tmp);
     command(
         Command::new("/usr/bin/ditto")
@@ -154,13 +157,13 @@ pub fn package_running_app(dest: &Path) -> Result<GitHubPeerArtifact> {
         }
         hex::encode(digest.finalize())
     };
-    let offer = GitHubPeerArtifact {
-        channel: "github".into(),
+    let offer = PeerAppArtifact {
+        channel,
         release,
         artifact: ArtifactDescriptor {
             target: Target::MacosArm64,
             kind: PackageKind::MacosAppZip,
-            file_name: GitHubPeerArtifact::FILE_NAME.into(),
+            file_name: PeerAppArtifact::FILE_NAME.into(),
             size,
             sha256,
             minimum_os: semver::Version::new(14, 0, 0),
@@ -247,93 +250,12 @@ fn persist(root: &Path, journal: &InstallJournal) -> Result<()> {
     write_json_atomic(&root.join("install.json"), journal).map_err(|e| e.to_string())
 }
 
-/// Staging is repeatable while user work continues. No installed bundle or DB is modified.
-/// # Errors
-/// Returns a verification, storage, or platform operation failure.
-pub fn prepare(release: &VerifiedRelease, payload: &Path, status: &UpdateStatus) -> Result<()> {
-    if release.manifest().release != status.release
-        || release.artifact(Target::MacosArm64) != Some(&status.artifact)
-    {
-        return Err("安装任务不匹配".into());
-    }
-    let target = current_bundle()?;
-    if target.starts_with("/Volumes") {
-        return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
-    }
-    let installed = installed_release(&target)?;
-    if !release.manifest().release.precedence(&installed).is_gt() {
-        return Err("更新版本不高于已安装版本".into());
-    }
-    let requirement = signature_requirement(&target)?;
-    let root = update_root()?;
-    private_dir(&root)?;
-    let mut journal = InstallJournal {
-        status: status.clone(),
-        target,
-        phase: Phase::Prepared,
-        parent_pid: std::process::id(),
-        failure: None,
-    };
-    journal.status.phase = crate::UpdatePhase::Staged;
-    let (stage, _, candidate) = paths(&root, &journal)?;
-    if stage.exists() || candidate.exists() {
-        return Err("更新暂存目录已存在".into());
-    }
-    private_dir(&stage)?;
-    persist(&root, &journal)?;
-    let result = (|| {
-        let zip = stage.join(&status.artifact.file_name);
-        fs::copy(payload, &zip).map_err(|e| e.to_string())?;
-        verify_artifact(release, Target::MacosArm64, &zip).map_err(|e| e.to_string())?;
-        write_json_atomic(&stage.join("manifest.json"), release.signed())
-            .map_err(|e| e.to_string())?;
-        // Reject traversal before ditto sees the archive. The signature authorizes
-        // the publisher, but is not permission to write outside the staging tree.
-        let entries = Command::new("/usr/bin/unzip")
-            .args(["-Z", "-1"])
-            .arg(&zip)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !entries.status.success()
-            || !String::from_utf8_lossy(&entries.stdout).lines().all(|p| {
-                !p.starts_with('/')
-                    && !p.split('/').any(|c| c == "..")
-                    && (p.starts_with("DeskFuse.app/") || p.starts_with("__MACOSX/"))
-            })
-        {
-            return Err("更新压缩包包含无效路径".into());
-        }
-        command(
-            Command::new("/usr/bin/ditto")
-                .args(["-x", "-k"])
-                .arg(&zip)
-                .arg(&stage),
-        )?;
-        verify_bundle(&stage.join("DeskFuse.app"), &status.release, &requirement)?;
-        command(
-            Command::new("/usr/bin/ditto")
-                .arg(stage.join("DeskFuse.app"))
-                .arg(&candidate),
-        )?;
-        verify_bundle(&candidate, &status.release, &requirement)?;
-        fs::write(stage.join("requirement.txt"), requirement).map_err(|e| e.to_string())?;
-        fs::copy(
-            journal.target.join("Contents/MacOS/deskfuse-update-helper"),
-            stage.join("deskfuse-update-helper"),
-        )
-        .map_err(|e| e.to_string())?;
-        persist(&root, &journal)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&candidate);
-        let _ = fs::remove_dir_all(&stage);
-    }
-    result
-}
+/// 暂存目录里的来源证明文件名。
+const INSTALL_SOURCE: &str = "install-source.json";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GitHubInstallSource {
+struct InstallSource {
     sha256: String,
     file_name: String,
 }
@@ -375,48 +297,30 @@ fn digest_file(path: &Path, size: u64, sha256: &str) -> Result<()> {
     Ok(())
 }
 
+/// 暂存包的来源证明只有一种：记录下载时确认过的文件名与 SHA-256。
 fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
-    let github = stage.join("github-source.json");
-    let lan = stage.join("manifest.json");
-    match (github.is_file(), lan.is_file()) {
-        (true, false) => {
-            let source: GitHubInstallSource = read_json(&github)?;
-            let expected_kind = match source.file_name.as_str() {
-                "DeskFuse-arm64.dmg" => PackageKind::MacosDmg,
-                GitHubPeerArtifact::FILE_NAME => PackageKind::MacosAppZip,
-                _ => return Err("GitHub 安装证明不匹配".into()),
-            };
-            if source.file_name != journal.status.artifact.file_name
-                || source.sha256 != journal.status.artifact.sha256
-                || journal.status.artifact.kind != expected_kind
-                || journal.status.artifact.target != Target::MacosArm64
-            {
-                return Err("GitHub 安装证明不匹配".into());
-            }
-            digest_file(
-                &stage.join(source.file_name),
-                journal.status.artifact.size,
-                &source.sha256,
-            )
-        }
-        (false, true) => {
-            if journal.status.artifact.kind != PackageKind::MacosAppZip {
-                return Err("局域网安装包类型无效".into());
-            }
-            let signed: SignedReleaseManifest = read_json(&lan)?;
-            let release = signed
-                .verify(&pinned_release_key().map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            verify_artifact(
-                &release,
-                Target::MacosArm64,
-                &stage.join(&journal.status.artifact.file_name),
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        _ => Err("安装暂存缺少唯一的来源证明".into()),
+    let proof = stage.join(INSTALL_SOURCE);
+    if !proof.is_file() {
+        return Err("安装暂存缺少来源证明".into());
     }
+    let source: InstallSource = read_json(&proof)?;
+    let expected_kind = match source.file_name.as_str() {
+        "DeskFuse-arm64.dmg" => PackageKind::MacosDmg,
+        PeerAppArtifact::FILE_NAME => PackageKind::MacosAppZip,
+        _ => return Err("安装来源证明不匹配".into()),
+    };
+    if source.file_name != journal.status.artifact.file_name
+        || source.sha256 != journal.status.artifact.sha256
+        || journal.status.artifact.kind != expected_kind
+        || journal.status.artifact.target != Target::MacosArm64
+    {
+        return Err("安装来源证明不匹配".into());
+    }
+    digest_file(
+        &stage.join(source.file_name),
+        journal.status.artifact.size,
+        &source.sha256,
+    )
 }
 
 /// Public GitHub DMGs are not LAN-signed. Trust is SHA-256 plus the already-running
@@ -466,8 +370,8 @@ pub fn prepare_github(
         fs::copy(payload, &dmg).map_err(|e| e.to_string())?;
         digest_file(&dmg, status.artifact.size, &status.artifact.sha256)?;
         write_json_atomic(
-            &stage.join("github-source.json"),
-            &GitHubInstallSource {
+            &stage.join(INSTALL_SOURCE),
+            &InstallSource {
                 sha256: status.artifact.sha256.clone(),
                 file_name: status.artifact.file_name.clone(),
             },
@@ -513,11 +417,11 @@ pub fn prepare_github(
     result
 }
 
-/// GitHub LAN packages are the running app, zipped. Trust is SHA-256 plus the
-/// already-running app's designated requirement, never a LAN Ed25519 manifest.
+/// 局域网设备发来的是对端正在运行的应用压缩包。不校验发布密钥；信任来自
+/// 已配对设备、SHA-256，以及与本机一致的代码签名要求和更新通道。
 /// # Errors
 /// Returns a verification, storage, or platform operation failure.
-pub fn prepare_github_zip(
+pub fn prepare_peer_zip(
     payload: &Path,
     release: &ReleaseVersion,
     status: &UpdateStatus,
@@ -525,7 +429,7 @@ pub fn prepare_github_zip(
     if status.release != *release
         || status.artifact.kind != PackageKind::MacosAppZip
         || status.artifact.target != Target::MacosArm64
-        || status.artifact.file_name != GitHubPeerArtifact::FILE_NAME
+        || status.artifact.file_name != PeerAppArtifact::FILE_NAME
     {
         return Err("安装任务不匹配".into());
     }
@@ -534,8 +438,9 @@ pub fn prepare_github_zip(
     if target.starts_with("/Volumes") {
         return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
     }
-    if bundle_update_channel(&target)? != "github" {
-        return Err("只有公开发行版会从局域网安装本机打包的 GitHub 更新".into());
+    let channel = bundle_update_channel(&target)?;
+    if !PeerAppArtifact::CHANNELS.contains(&channel.as_str()) {
+        return Err("该发行版不从局域网设备安装更新".into());
     }
     let installed = installed_release(&target)?;
     if !release.precedence(&installed).is_gt() {
@@ -563,8 +468,8 @@ pub fn prepare_github_zip(
         fs::copy(payload, &zip).map_err(|e| e.to_string())?;
         digest_file(&zip, status.artifact.size, &status.artifact.sha256)?;
         write_json_atomic(
-            &stage.join("github-source.json"),
-            &GitHubInstallSource {
+            &stage.join(INSTALL_SOURCE),
+            &InstallSource {
                 sha256: status.artifact.sha256.clone(),
                 file_name: status.artifact.file_name.clone(),
             },
@@ -591,8 +496,8 @@ pub fn prepare_github_zip(
                 .arg(&stage),
         )?;
         let app = stage.join("DeskFuse.app");
-        if bundle_update_channel(&app)? != "github" {
-            return Err("局域网更新包不是公开发行版".into());
+        if bundle_update_channel(&app)? != channel {
+            return Err("局域网更新包与本机发行通道不一致".into());
         }
         verify_bundle(&app, &status.release, &requirement)?;
         command(Command::new("/usr/bin/ditto").arg(&app).arg(&candidate))?;
@@ -1041,33 +946,32 @@ mod tests {
         }
     }
     #[test]
-    fn github_zip_source_is_accepted_without_a_lan_manifest() {
+    fn peer_zip_source_is_accepted_with_its_digest() {
         let (_dir, root, mut journal) = fixture(Phase::Prepared);
-        journal.status.artifact.file_name = GitHubPeerArtifact::FILE_NAME.into();
+        journal.status.artifact.file_name = PeerAppArtifact::FILE_NAME.into();
         journal.status.artifact.kind = crate::PackageKind::MacosAppZip;
         journal.status.artifact.size = 4;
         journal.status.artifact.sha256 = hex::encode(Sha256::digest(b"test"));
         let (stage, _, _) = paths(&root, &journal).unwrap();
-        fs::write(stage.join(GitHubPeerArtifact::FILE_NAME), b"test").unwrap();
+        fs::write(stage.join(PeerAppArtifact::FILE_NAME), b"test").unwrap();
         fs::write(
-            stage.join("github-source.json"),
+            stage.join(INSTALL_SOURCE),
             format!(
                 r#"{{"sha256":"{}","file_name":"{}"}}"#,
                 journal.status.artifact.sha256,
-                GitHubPeerArtifact::FILE_NAME
+                PeerAppArtifact::FILE_NAME
             ),
         )
         .unwrap();
         verify_staged_payload(&stage, &journal).unwrap();
     }
     #[test]
-    fn staged_payload_requires_exactly_one_source() {
+    fn staged_payload_requires_a_matching_source_proof() {
         let (_dir, _root, journal) = fixture(Phase::Prepared);
         let (stage, _, _) = paths(&_root, &journal).unwrap();
         assert!(verify_staged_payload(&stage, &journal).is_err());
-        fs::write(stage.join("manifest.json"), b"{}").unwrap();
         fs::write(
-            stage.join("github-source.json"),
+            stage.join(INSTALL_SOURCE),
             br#"{"sha256":"0","file_name":"DeskFuse-arm64.dmg"}"#,
         )
         .unwrap();

@@ -75,15 +75,15 @@ fn starting() -> (tempfile::TempDir, UpdateTransaction) {
 }
 
 #[test]
-fn github_peer_artifact_rejects_lan_channel_and_dmg() {
+fn peer_artifact_accepts_lan_and_github_but_rejects_other_channels_and_dmg() {
     let release = release(3);
-    let mut offer = GitHubPeerArtifact {
+    let mut offer = PeerAppArtifact {
         channel: "github".into(),
         release: release.clone(),
         artifact: ArtifactDescriptor {
             target: Target::MacosArm64,
             kind: PackageKind::MacosAppZip,
-            file_name: GitHubPeerArtifact::FILE_NAME.into(),
+            file_name: PeerAppArtifact::FILE_NAME.into(),
             size: 4,
             sha256: hex::encode(Sha256::digest(b"test")),
             minimum_os: Version::new(14, 0, 0),
@@ -91,8 +91,10 @@ fn github_peer_artifact_rejects_lan_channel_and_dmg() {
     };
     offer.validate().unwrap();
     let bytes = serde_json::to_vec(&offer).unwrap();
-    assert_eq!(GitHubPeerArtifact::from_slice(&bytes).unwrap(), offer);
+    assert_eq!(PeerAppArtifact::from_slice(&bytes).unwrap(), offer);
     offer.channel = "lan".into();
+    offer.validate().unwrap();
+    offer.channel = "manual".into();
     assert!(offer.validate().is_err());
     offer.channel = "github".into();
     offer.artifact.kind = PackageKind::MacosDmg;

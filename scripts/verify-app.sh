@@ -40,15 +40,11 @@ done
 
 [[ -f "$CONTENTS_DIR/Resources/update-channel" ]] || { echo "error: update channel missing" >&2; exit 1; }
 UPDATE_CHANNEL="$(cat "$CONTENTS_DIR/Resources/update-channel")"
+# 局域网更新改为设备间互传正在运行的应用，任何通道都不再内嵌更新包。
 case "$UPDATE_CHANNEL" in
-  lan)
-    [[ -f "$CONTENTS_DIR/Resources/LanUpdate/manifest.json" ]] || {
-      echo "error: LAN package is missing its signed update payload" >&2; exit 1;
-    }
-    ;;
-  github|manual)
+  lan|github|manual)
     [[ ! -e "$CONTENTS_DIR/Resources/LanUpdate" ]] || {
-      echo "error: $UPDATE_CHANNEL package contains a LAN update payload" >&2; exit 1;
+      echo "error: $UPDATE_CHANNEL package contains an embedded update payload" >&2; exit 1;
     }
     ;;
   *) echo "error: invalid update channel" >&2; exit 1 ;;
@@ -187,29 +183,6 @@ if not uuid.UUID(release["release_id"]).int:
 print(f"release: {release['version']} build {release['build_number']} ({release['release_id']})")
 PYMETA
 
-if [[ "$UPDATE_CHANNEL" == "lan" ]]; then
-  EMBEDDED_UPDATE="$CONTENTS_DIR/Resources/LanUpdate"
-  python3 - "$CONTENTS_DIR/Resources/release.json" "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE/DeskFuse-$MACOS_ARCH-update.zip" <<'PYSEED'
-import json, pathlib, sys, zipfile
-release = json.loads(pathlib.Path(sys.argv[1]).read_text())
-manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())["manifest"]
-if manifest["release"] != release:
-    raise SystemExit("error: embedded update release differs from installed app")
-with zipfile.ZipFile(sys.argv[3]) as payload:
-    if json.loads(payload.read("DeskFuse.app/Contents/Resources/release.json")) != release:
-        raise SystemExit("error: update payload release differs from installed app")
-    if any(name.startswith("DeskFuse.app/Contents/Resources/LanUpdate/") for name in payload.namelist()):
-        raise SystemExit("error: recursive embedded update payload")
-print("LAN distribution: installed app carries the exact verified release payload")
-PYSEED
-  if [[ -n "${DESKFUSE_RELEASE_TOOL:-}" && -x "${DESKFUSE_RELEASE_TOOL:-}" ]]; then
-    "$DESKFUSE_RELEASE_TOOL" verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" \
-      "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE"
-  else
-    echo "error: DESKFUSE_RELEASE_TOOL is required to verify the LAN manifest" >&2
-    exit 1
-  fi
-fi
 
 SIGNING_INFO="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
 SIGNING_AUTHORITY="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Authority=//p' | head -n 1)"

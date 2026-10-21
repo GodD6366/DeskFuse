@@ -17,11 +17,11 @@
 
 ## 首次启用 GitHub
 
-源码与 CI 位于私有仓库 `GodD6366/DeskFuse`；公开仓库 `GodD6366/deskfuse-release` 只维护下载说明、Homebrew cask 和 Release 安装包。原源码仓库直接改为私有，原提交、tag、Release 和 Apple secrets 保持不变。公开安装包仓库使用独立的说明文档历史，不复制源码对象。
+源码与 CI 位于公开源码仓库 `GodD6366/DeskFuse`；发行仓库 `GodD6366/deskfuse-release` 只维护下载说明、Homebrew cask 和 Release 安装包，使用独立的说明文档历史，不复制源码对象。源码仓库公开后，Actions 触发与权限必须遵守 [参与开发](../CONTRIBUTING.md#ci-与-actions-规则) 中的规则。
 
 原仓库已有的六项 [公证凭据](NOTARIZE.md) 无需重新设置。跨仓库发布新增 `RELEASE_REPOSITORY_TOKEN`：仅授予公开仓库 Contents read/write 的 fine-grained PAT 或 GitHub App token。仓库自带的 `GITHUB_TOKEN` 无权写另一个仓库。迁移保留原仓库身份及 secrets，不导出密钥。
 
-源码 tag 仅推送到私有仓库。发布工作流在公开仓库 main 的发行说明提交上创建同名 tag，绝不向公开仓库推送私有源码或源码 tag；`build-info.json` 的 commit 仍记录真正的私有源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/deskfuse.rb`。
+源码 tag 仅推送到源码仓库。发布工作流在发行仓库 main 的发行说明提交上创建同名 tag，绝不向发行仓库推送源码提交或源码 tag；`build-info.json` 的 commit 记录真正的源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/deskfuse.rb`。
 
 迁移不重新推送原有源码 tag，不重跑历史发行。首次跨仓库发布前需配置 `RELEASE_REPOSITORY_TOKEN`，且按现有流程运行全部 CI 门禁。
 
@@ -178,17 +178,17 @@ git commit -m 'chore(cask): pin v0.4.0 DMG checksum'
 - 同 tag 已公开：只校验已有资产；冲突则失败，不覆盖、不移动 tag。修复应用需新版本和新发行号。
 - 撤回有问题的预发行版：由维护者取消其公开发行并在说明中标明原因；不自动降级用户、不删除用户身份。已下载旧包的行为需另行沟通。
 
-GitHub CI 用 Actions secrets 持有 Developer ID 与公证凭据，不持有 LAN 发行私钥，不发布自动安装用的签名清单。本机签名与 LAN 分发流程见下文；Apple 凭据操作见 [公证凭据](NOTARIZE.md)。
+GitHub CI 用 Actions secrets 持有 Developer ID 与公证凭据。LAN 分发流程见下文；Apple 凭据操作见 [公证凭据](NOTARIZE.md)。
 
 
 ## 本机 LAN 自动更新
 
-本机协调端的发行私钥固定存于 `~/Library/Application Support/DeskFuse-release/signing-key.hex`（0600），公钥固定编译自 `resources/deskfuse-release-public-key.hex`。不要重新生成或自动轮换；密钥不随源码或 DMG 分发。`DESKFUSE_RELEASE_KEY` 仅用于指定同一发行密钥的位置。
+局域网更新不再使用 Ed25519 发行清单。每台 Mac 启动后把正在运行的 `DeskFuse.app` 打包到 `~/Library/Application Support/DeskFuse/updates/self-package/`，经已配对、同一物理局域网的可信连接通告给对端；对端只接受同一更新通道（`lan` 或 `github`）且版本更高的包，下载到 `updates/peer-packages/` 后核对 SHA-256。`package-macos.sh` 不再签署发布清单，App 与 DMG 也不再内嵌 `LanUpdate/`、`.updates/` 种子；开发包 build 0 不充当安装目标。
 
-`package-macos.sh` 构建并嵌入 `deskfuse-update-helper`，先保留现有 Apple Development 签名，再生成 ZIP、签署并验证发布清单。DMG 内 `.updates/` 保留原始 ZIP 和清单；包完整性验证通过后，完整资源目录原子发布到 `~/Library/Application Support/DeskFuse/updates/inbox/`。运行中的正式应用自动导入并向已配对的物理局域网设备分发。开发包 build 0 不充当安装目标。
+信任边界：任何已配对设备都能推送可安装的新版，因此只与自己控制的设备配对。安装器仍要求新包与当前应用的代码签名要求（同一证书身份与 bundle ID）和更新通道一致，临时签名或他人证书签署的包会被拒绝。
 
-首次升级到支持此协议的基础包，需要每台 Mac 手动安装一次。之后没有更新开关或逐次确认：下载、验签、安全点安装和重启自动进行；在「设置 → 传输与存储 → 版本与自动更新」查看本机进度、对端版本和真实安装回执。版本列表尚未返回时显示未取得状态。
+从签名清单协议升级到自打包协议的第一个版本，需要每台 Mac 手动安装一次（旧版只认签名清单）。之后没有更新开关或逐次确认：下载、校验、安全点安装和重启自动进行；在「设置 → 传输与存储 → 版本与自动更新」查看本机进度、对端版本和真实安装回执。版本列表尚未返回时显示未取得状态。
 
 安装器在旧进程退出后备份应用及 SQLite/WAL/SHM，验证相同应用签名要求后替换。新进程先独立运行数据库迁移与 SwiftUI 窗口自检，60 秒内通过后才启动正常业务；失败恢复旧应用和数据库，并隔离该发行。网络断开不会撤销本机成功安装，回执会在重连后重试。应用必须位于可写目录；DMG 或无写权限时保留原安装并展示错误。
 
-`updates/` 是应用自有独立目录，更新缓存限额 4 GiB，保护当前安装、候选和正在发送的包。回执包含事务、版本、build、release ID、目标和 SHA-256，与已发送任务精确匹配；跨重启复用缓存或本机导入时，另以当前安装库存和本地已验签原始包共同核对。恢复流程不删除或重建设备身份与配对数据。
+`updates/` 是应用自有独立目录，只保留本机当前版本的自打包和高于当前版本的已下载包；旧签名缓存（`cache/`、`inbox/`）在启动时删除。回执包含事务、版本、build、release ID、目标和 SHA-256，与已发送任务精确匹配；跨重启复用已下载包时，另以当前安装库存和本地包共同核对。恢复流程不删除或重建设备身份与配对数据。

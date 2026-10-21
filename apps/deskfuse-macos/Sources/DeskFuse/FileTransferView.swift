@@ -33,7 +33,8 @@ struct FileTransferView: View {
                         sendSection
                     }
                     .padding(DFSpace.l)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    // 发送区撑满左栏剩余高度；窗口过矮时保留最小高度并滚动。
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -70,64 +71,140 @@ struct FileTransferView: View {
     // MARK: - 发送区
 
     private var sendSection: some View {
-        DFSection("发送文件", footer: "也可以把文件拖到菜单栏图标或按 ⇧⌘D 呼出暂存区。") {
-            VStack(alignment: .leading, spacing: DFSpace.m) {
-                HStack(spacing: DFSpace.m) {
-                    Image(systemName: "tray.and.arrow.up")
-                        .font(DFType.icon(.large))
-                        .dfSecondaryText()
-                    VStack(alignment: .leading, spacing: DFSpace.xxs) {
-                        Text(stagedFiles.isEmpty ? "拖入文件，或选择要发送的内容" : "已选择 \(stagedFiles.count) 个文件")
-                            .font(DFType.bodyMedium)
-                        Text(stagedFiles.isEmpty
-                             ? "文件只会发送给你选中的、当前在线的电脑。"
-                             : byteCount(stagedFiles.reduce(0) { $0 + fileSize($1) }))
-                            .font(DFType.detail)
-                            .dfSecondaryText()
-                    }
+        VStack(alignment: .leading, spacing: DFSpace.s) {
+            HStack(alignment: .firstTextBaseline) {
+                DFSectionLabel("发送文件")
+                Spacer(minLength: DFSpace.s)
+                Text("也可拖到菜单栏图标，或按 ⇧⌘D 呼出暂存区")
+                    .font(DFType.caption)
+                    .dfSecondaryText()
+            }
+            VStack(spacing: 0) {
+                Group {
+                    if stagedFiles.isEmpty { dropPrompt } else { stagedList }
                 }
-                .padding(DFSpace.l)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .dfControlSurface(radius: DFRadius.card)
-                .overlay {
-                    RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
-                        .strokeBorder(dropTargeted ? DFPalette.accent : .clear, lineWidth: 1.5)
-                }
+                .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
+                .padding(DFSpace.m)
                 .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
                     loadFiles(from: providers)
                     return true
                 }
-                VStack(alignment: .leading, spacing: DFSpace.m) {
-                    if connectedPeers.isEmpty {
-                        Text("还没有已连接的电脑；先到设备页添加。")
-                            .font(DFType.detail)
-                            .dfSecondaryText()
-                    } else {
-                        Picker("发送到", selection: $targetPeer) {
-                            ForEach(connectedPeers, id: \.id) { device in
-                                Text(device.name).tag(device.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: 260)
-                    }
-                    HStack(spacing: DFSpace.s) {
-                        Button("选择文件…", action: chooseFiles)
-                            .buttonStyle(.dfSecondary)
-                        Spacer(minLength: 0)
-                        if !stagedFiles.isEmpty {
-                            Button("加入暂存区") {
-                                store.shelf?.append(stagedFiles)
-                                stagedFiles = []
-                            }
-                            .buttonStyle(.dfPlain)
-                        }
-                        Button("发送") { send() }
-                            .buttonStyle(.dfPrimary)
-                            .disabled(stagedFiles.isEmpty || targetPeer.isEmpty)
+                Divider()
+                sendBar
+                    .padding(.horizontal, DFSpace.l)
+                    .padding(.vertical, DFSpace.m)
+            }
+            .frame(maxHeight: .infinity)
+            .dfCard()
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    /// 空态：整块虚线区域既是拖放目标，也是「选择文件」按钮。
+    private var dropPrompt: some View {
+        Button(action: chooseFiles) {
+            VStack(spacing: DFSpace.s) {
+                Image(systemName: "tray.and.arrow.up")
+                    .font(DFType.icon(.hero, weight: .light))
+                    .foregroundStyle(dropTargeted ? DFPalette.accent : Color.secondary)
+                Text(dropTargeted ? "松开即可添加" : "拖入文件或文件夹")
+                    .font(DFType.bodyMedium)
+                Text("或点击选择 · 只会发送给下方选中的在线电脑")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(DropZoneStyle(targeted: dropTargeted))
+        .help("选择要发送的文件")
+    }
+
+    /// 已选文件：逐个显示名称与大小，可单独移除；拖入区域仍可继续追加。
+    private var stagedList: some View {
+        VStack(alignment: .leading, spacing: DFSpace.s) {
+            HStack(spacing: DFSpace.s) {
+                Text("\(stagedFiles.count) 个项目 · \(byteCount(stagedFiles.reduce(0) { $0 + fileSize($1) }))")
+                    .font(DFType.bodyMedium)
+                Spacer(minLength: DFSpace.s)
+                Button("添加", systemImage: "plus", action: chooseFiles)
+                    .buttonStyle(.dfPlain)
+                Button("清空") { stagedFiles = [] }
+                    .buttonStyle(.dfPlain)
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(stagedFiles, id: \.self) { url in
+                        stagedRow(url)
+                        if url != stagedFiles.last { Divider() }
                     }
                 }
             }
+            .background(dropTargeted ? DFPalette.accent.opacity(DFOpacity.soft) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: DFRadius.control))
+        }
+    }
+
+    private func stagedRow(_ url: URL) -> some View {
+        HStack(spacing: DFSpace.s) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                .resizable()
+                .frame(width: 24, height: 24)
+                .accessibilityHidden(true)
+            Text(url.lastPathComponent)
+                .font(DFType.body)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: DFSpace.s)
+            Text(url.hasDirectoryPath ? "文件夹" : byteCount(fileSize(url)))
+                .font(DFType.detail)
+                .dfSecondaryText()
+                .monospacedDigit()
+            Button {
+                stagedFiles.removeAll { $0 == url }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("移除")
+            .accessibilityLabel("移除 \(url.lastPathComponent)")
+        }
+        .padding(.vertical, DFSpace.xs + 2)
+    }
+
+    /// 底栏：目标电脑在左，操作在右，单行对齐。
+    private var sendBar: some View {
+        HStack(spacing: DFSpace.s) {
+            if connectedPeers.isEmpty {
+                Text("还没有已连接的电脑")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+                Button("去添加") { store.selectedPage = .devices }
+                    .buttonStyle(.dfPlain)
+            } else {
+                Text("发送到")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+                Picker("发送到", selection: $targetPeer) {
+                    ForEach(connectedPeers, id: \.id) { device in
+                        Text(device.name).tag(device.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+            }
+            Spacer(minLength: DFSpace.s)
+            if !stagedFiles.isEmpty {
+                Button("加入暂存区") {
+                    store.shelf?.append(stagedFiles)
+                    stagedFiles = []
+                }
+                .buttonStyle(.dfSecondary)
+            }
+            Button(stagedFiles.isEmpty ? "发送" : "发送 \(stagedFiles.count) 个项目") { send() }
+                .buttonStyle(.dfPrimary)
+                .disabled(stagedFiles.isEmpty || targetPeer.isEmpty)
         }
     }
 
@@ -439,5 +516,37 @@ extension Transfer {
         case .cancelled: "已取消"
         case .failed: "失败"
         }
+    }
+}
+
+/// 发送区拖放面板：整块可点击选择文件，虚线描边，拖入时强调。
+private struct DropZoneStyle: ButtonStyle {
+    var targeted: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        DropZoneBody(configuration: configuration, targeted: targeted)
+    }
+}
+
+private struct DropZoneBody: View {
+    let configuration: ButtonStyleConfiguration
+    let targeted: Bool
+    @Environment(\.colorScheme) private var scheme
+    @State private var hovering = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+        configuration.label
+            .padding(DFSpace.l)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(targeted ? DFPalette.accent.opacity(DFOpacity.soft)
+                        : hovering ? Color.primary.opacity(0.03) : DFPalette.control(scheme), in: shape)
+            .overlay {
+                shape.strokeBorder(targeted ? DFPalette.accent : DFPalette.line(scheme),
+                                   style: StrokeStyle(lineWidth: targeted ? 1.5 : 1, dash: [6, 4]))
+            }
+            .contentShape(shape)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .onHover { hovering = $0 }
     }
 }

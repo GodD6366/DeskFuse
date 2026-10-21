@@ -19,6 +19,8 @@ pub(super) struct Links {
     next: u64,
     active: BTreeMap<DeviceId, Attempt>,
     retries: BTreeMap<DeviceId, Retry>,
+    /// 最近一次建链失败的原因，链路恢复或设备不再需要链路时清除。
+    pub(super) failures: BTreeMap<DeviceId, InputLinkFailure>,
     checked: BTreeMap<DeviceId, Instant>,
     retired: Vec<tokio::task::JoinHandle<()>>,
     tx: mpsc::UnboundedSender<Completion>,
@@ -31,6 +33,7 @@ impl Default for Links {
             next: 0,
             active: BTreeMap::new(),
             retries: BTreeMap::new(),
+            failures: BTreeMap::new(),
             checked: BTreeMap::new(),
             retired: Vec::new(),
             tx,
@@ -114,6 +117,16 @@ impl InputActor {
         for peer in obsolete_retries {
             self.links.retries.remove(&peer);
         }
+        let stale_failures = self
+            .links
+            .failures
+            .keys()
+            .filter(|peer| !self.link_desired(**peer))
+            .copied()
+            .collect::<Vec<_>>();
+        for peer in stale_failures {
+            self.links.failures.remove(&peer);
+        }
         let obsolete = self
             .links
             .active
@@ -161,6 +174,7 @@ impl InputActor {
                         .any(ConnectionContext::input_eligible)
                     {
                         self.links.retries.remove(&done.peer);
+                        self.links.failures.remove(&done.peer);
                     } else {
                         // A provider acknowledgement is not yet an eligible
                         // physical LAN link. Avoid an immediate retry loop.
@@ -184,6 +198,11 @@ impl InputActor {
                     let delay = (1u64 << retry.failures.min(5)).min(30);
                     retry.failures = retry.failures.saturating_add(1);
                     retry.due = Instant::now() + Duration::from_secs(delay);
+                    let failure = match &error {
+                        RuntimeError::InputLinkUnavailable { failure, .. } => *failure,
+                        _ => InputLinkFailure::Other,
+                    };
+                    self.links.failures.insert(done.peer, failure);
                     self.activation_diagnostic(done.peer, "input_link_recovery_failed", || {
                         format!(
                             "generation={} retry_after_secs={delay} error={error}",

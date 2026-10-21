@@ -118,7 +118,7 @@ case "$MACOS_ARCH" in
     EXPECTED_ARCH="x86_64"
     ARTIFACT_SUFFIX="x86_64"
     if [[ "$PACKAGE_MODE" == lan ]]; then
-      echo "error: Intel packages require --homebrew or --manual; LAN update manifests currently target arm64 only" >&2
+      echo "error: Intel packages require --homebrew or --manual; LAN peer updates currently target arm64 only" >&2
       exit 2
     fi
     ;;
@@ -182,12 +182,6 @@ if [[ "${DESKFUSE_REQUIRE_NOTARIZE:-0}" == "1" ]]; then
   fi
 fi
 
-# Fail before the multi-minute compile when the local flow cannot finish.
-RELEASE_KEY="${DESKFUSE_RELEASE_KEY:-$HOME/Library/Application Support/DeskFuse-release/signing-key.hex}"
-if [[ "$PACKAGE_MODE" == lan && ! -f "$RELEASE_KEY" ]]; then
-  echo "error: LAN release signing key unavailable: $RELEASE_KEY" >&2
-  exit 1
-fi
 if [[ "$AUTO_INSTALL" == 1 && ! -w /Applications ]]; then
   echo "error: --auto requires a writable /Applications" >&2
   exit 1
@@ -376,7 +370,6 @@ CARGO_OUTPUT_DIR="$TARGET_DIR"
 UPDATE_HELPER="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper"
 HISTORY_FILES="$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files"
 OCR_HELPER="$CARGO_OUTPUT_DIR/native-macos/release/deskfuse-ocr-helper"
-RELEASE_TOOL="$CARGO_OUTPUT_DIR/debug/deskfuse-release"
 # Cargo owns incremental invalidation for the packaging helpers too; a helper
 # fingerprint here would only duplicate (and desynchronise) its bookkeeping.
 deskfuse_stage helpers
@@ -497,11 +490,10 @@ deskfuse_codesign \
   "$APP_BUNDLE"
 deskfuse_stage_done
 
-# The app is verified once, after the LAN payload (Resources/LanUpdate) has been
-# embedded and the outer bundle has been re-signed. An intermediate deep verify
+# The app is verified once in the verify-app stage; an intermediate deep verify
 # here only repeats that work.
 
-# Preserve the exact signed bundle for later release signing and LAN forwarding.
+# Preserve the exact signed bundle as the downloadable update payload.
 deskfuse_stage update-payload
 UPDATE_ZIP="$STAGING_DIR/$UPDATE_ASSET"
 if [[ "$FAST_MODE" == 1 ]]; then
@@ -511,46 +503,6 @@ else
   ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
 fi
 
-# Release authorization is independent of pairing and platform code signing.
-# CI can ship a homebrew DMG without the private LAN release key; it cannot
-# publish an automatically installable release until the coordinator signs it.
-release_tool() {
-  if [[ -x "$RELEASE_TOOL" ]]; then
-    "$RELEASE_TOOL" "$@"
-  else
-    cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- "$@"
-  fi
-}
-SIGNED_UPDATE=0
-if [[ "$PACKAGE_MODE" == lan && -f "$RELEASE_KEY" ]]; then
-  python3 - "$RELEASE_METADATA" "$UPDATE_ZIP" "$STAGING_DIR/unsigned-manifest.json" <<'PYMANIFEST'
-import hashlib,json,pathlib,sys
-release=json.loads(pathlib.Path(sys.argv[1]).read_text())
-payload=pathlib.Path(sys.argv[2])
-manifest={"schema_version":1,"application_id":"com.deskfuse.app","release":release,"protocol_major":2,"minimum_update_protocol":1,"artifacts":[{"target":"macos_arm64","kind":"macos_app_zip","file_name":payload.name,"size":payload.stat().st_size,"sha256":hashlib.file_digest(payload.open("rb"),"sha256").hexdigest(),"minimum_os":"14.0.0"}]}
-pathlib.Path(sys.argv[3]).write_text(json.dumps(manifest))
-PYMANIFEST
-  release_tool sign "$RELEASE_KEY" "$STAGING_DIR/unsigned-manifest.json" "$STAGING_DIR" "$STAGING_DIR/manifest.json"
-  release_tool verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$STAGING_DIR/manifest.json" "$STAGING_DIR"
-  export DESKFUSE_RELEASE_TOOL="$RELEASE_TOOL"
-mkdir -p "$DMG_SOURCE_DIR/.updates"
-  cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$DMG_SOURCE_DIR/.updates/"
-  # Finder copies only the .app. Carry the exact signed payload with that copy
-  # so a manually installed peer can serve updates after ejecting its DMG.
-  # The payload is the already-signed base app, not this distribution wrapper:
-  # embedding the wrapper in its own ZIP would create a recursive artifact.
-  mkdir -p "$CONTENTS_DIR/Resources/LanUpdate"
-  cp "$UPDATE_ZIP" "$STAGING_DIR/manifest.json" "$CONTENTS_DIR/Resources/LanUpdate/"
-  # Only Resources changed. Nested code is already signed, so sign the outer
-  # bundle once more without a second deep traversal.
-  deskfuse_codesign \
-    --entitlements "$ROOT_DIR/resources/DeskFuse.entitlements" \
-    "$APP_BUNDLE"
-  SIGNED_UPDATE=1
-elif [[ "$PACKAGE_MODE" == lan ]]; then
-  echo "error: LAN release signing key unavailable: $RELEASE_KEY" >&2
-  exit 1
-fi
 deskfuse_stage_done
 
 deskfuse_stage verify-app
@@ -672,12 +624,8 @@ if [[ "$SKIP_DMG" == 0 ]]; then
   mv "$FINAL_DMG" "$DMG_PATH"
 fi
 mv "$UPDATE_ZIP" "$DIST_DIR/$UPDATE_ASSET"
-if [[ "$SIGNED_UPDATE" == "1" ]]; then
-  cp "$STAGING_DIR/manifest.json" "$DIST_DIR/manifest.json"
-else
-  # Never leave a prior signed manifest next to an unrelated homebrew payload.
-  rm -f "$DIST_DIR/manifest.json"
-fi
+# 局域网设备直接互传正在运行的应用，不再生成签名清单；清掉旧版本留下的清单。
+rm -f "$DIST_DIR/manifest.json"
 if [[ ! "$RELEASE_METADATA" -ef "$DIST_DIR/release.json" ]]; then
   cp "$RELEASE_METADATA" "$DIST_DIR/release.json"
 fi
@@ -694,9 +642,6 @@ fi
   if [[ "$SKIP_DMG" == 0 ]]; then
     checksum_files=("${DMG_PATH#"$DIST_DIR/"}" "${checksum_files[@]}")
   fi
-  if [[ "$SIGNED_UPDATE" == "1" ]]; then
-    checksum_files+=(manifest.json)
-  fi
   shasum -a 256 "${checksum_files[@]}"
 ) > "$STAGING_DIR/SHA256SUMS"
 mv "$STAGING_DIR/SHA256SUMS" "$DIST_DIR/SHA256SUMS"
@@ -707,28 +652,6 @@ if [[ "$SKIP_DMG" == 0 ]]; then
   shasum -a 256 "$DMG_PATH"
 else
   printf 'created: (DMG skipped in fast mode)\n'
-fi
-deskfuse_stage_done
-
-# Seed the running coordinator only after the full package passes verification.
-# Move a complete sidecar directory; readers never observe a partial manifest.
-deskfuse_stage seed
-if [[ "$SIGNED_UPDATE" == "1" && "${CI:-false}" != "true" ]]; then
-  UPDATE_ROOT="$HOME/Library/Application Support/DeskFuse/updates"
-  mkdir -p "$UPDATE_ROOT"
-  chmod 700 "$UPDATE_ROOT"
-  SEED_STAGE="$(mktemp -d "$UPDATE_ROOT/.seed-XXXXXX")"
-  cp "$DIST_DIR/$UPDATE_ASSET" "$DIST_DIR/manifest.json" "$SEED_STAGE/"
-  python3 - "$SEED_STAGE" "$UPDATE_ROOT/inbox" <<'PYSEED'
-import pathlib,sys,shutil
-stage,destination=map(pathlib.Path,sys.argv[1:])
-previous=destination.with_name(".inbox-previous")
-if previous.exists(): shutil.rmtree(previous)
-if destination.exists(): destination.rename(previous)
-stage.rename(destination)
-if previous.exists(): shutil.rmtree(previous)
-PYSEED
-  echo "LAN update seed: $UPDATE_ROOT/inbox"
 fi
 deskfuse_stage_done
 

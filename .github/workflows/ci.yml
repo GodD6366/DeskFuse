@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# 公开仓库的触发边界（修改前先读 CONTRIBUTING.md 的「CI 与 Actions 规则」）：
+# - 自托管 runner 同时承担 Developer ID 签名与发布，只执行可信代码：
+#   push main、tag 调用、维护者手动触发，以及同仓库分支（非 Dependabot）的 PR。
+# - fork PR 与 Dependabot PR 只在 GitHub-hosted runner 上做静态检查；维护者审阅
+#   代码后如需完整验证，把分支推到本仓库或手动 workflow_dispatch。
+# - 禁止引入 pull_request_target / workflow_run 等以基础仓库权限运行 PR 代码的触发器。
+#
 # Windows CI is opt-in while the Windows installer remains Beta. Set the
 # DESKFUSE_RUN_WINDOWS_CI repository variable to `true` to re-enable it.
 concurrency:
@@ -17,14 +24,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  untrusted-pr:
+    name: Fork PR static checks (GitHub-hosted)
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+       github.event.pull_request.user.login == 'dependabot[bot]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Workflow lint and credential scan
+        run: ./scripts/check-ci.sh
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
   macos:
     name: macOS arm64 checks
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install pinned toolchain
         run: |
           test "$(uname -m)" = arm64
@@ -57,14 +87,14 @@ jobs:
         run: ./scripts/check.sh
 
   macos-build:
-    permissions:
-      contents: write
     name: macOS arm64 DMG
     if: github.event_name != 'workflow_call' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install pinned toolchain
         run: |
           test "$(uname -m)" = arm64
@@ -89,21 +119,16 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh dist/DeskFuse-arm64.dmg
-      - name: Upload main-branch build to private draft
-        # A public source repository has no private draft to hand the package to;
-        # the DMG has already been built and verified above.
-        if: ${{ github.event.repository.private }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci-artifacts.py upload --name main-macos-arm64 dist/DeskFuse-arm64.dmg dist/release.json
 
   windows:
     name: Windows adapters, service, and catalog checks
     if: vars.DESKFUSE_RUN_WINDOWS_CI == 'true'
-    runs-on: windows-2022
+    runs-on: windows-2022 # GitHub-hosted；不要给自托管 runner 添加同名标签
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install pinned toolchain
         run: |
           rustup show active-toolchain

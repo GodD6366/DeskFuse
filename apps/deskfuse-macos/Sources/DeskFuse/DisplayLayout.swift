@@ -80,8 +80,11 @@ struct DisplayLayout: View {
                             .fill(outline.opacity(dragging == display.deviceId ? 0.09 : (display.ready ? 0.025 : 0.06)))
                             .overlay {
                                 RoundedRectangle(cornerRadius: DFRadius.small)
-                                    .strokeBorder(outline, style: StrokeStyle(
-                                        lineWidth: contrast == .increased || dragging == display.deviceId ? 3 : 2,
+                                    // 屏幕边缘只用中性细线勾勒，不再用设备色描边；拖动或未就绪时才加强。
+                                    .strokeBorder(Color.primary.opacity(
+                                        dragging == display.deviceId || !display.ready || contrast == .increased ? 0.35 : 0.12
+                                    ), style: StrokeStyle(
+                                        lineWidth: contrast == .increased || dragging == display.deviceId ? 2 : 1,
                                         dash: display.ready ? [] : [6, 4]
                                     ))
                             }

@@ -407,6 +407,99 @@ pub enum TransportError {
     /// 对端用户主动断开了与本机的连接，对端拒绝本机的控制会话。
     #[error("peer {0} has paused connections with this device")]
     PeerSuspended(DeviceId),
+    /// 独立输入链路的全部候选路径都失败；`failure` 是归纳后的原因。
+    #[error("input link unavailable ({failure:?}): {detail}")]
+    InputLinkUnavailable {
+        failure: deskfuse_core::InputLinkFailure,
+        detail: String,
+    },
+}
+
+/// 单条输入候选路径的失败类别。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum InputPathFailure {
+    /// 已通过物理链路检查，但对端身份探测失败。
+    Probe,
+    /// 身份探测成功，正式连接失败。
+    Connect,
+    /// 路由经过 VPN/代理隧道等覆盖网络。
+    Overlay,
+    /// 路由不经过监听所在的物理接口。
+    Route,
+    Other,
+}
+
+/// 汇总输入链路全部候选路径的失败：每类都计数，每类只保留最近一条明细，
+/// 避免路径较多时关键原因（例如探测超时）被后来的路由拒绝挤掉。
+#[derive(Default)]
+struct InputLinkFailures {
+    latest: BTreeMap<InputPathFailure, String>,
+    counts: BTreeMap<InputPathFailure, usize>,
+}
+
+impl InputLinkFailures {
+    /// 单条明细上限：三类明细加前缀仍落在运行时 1024 字节的日志字段内。
+    const DETAIL_BYTES: usize = 200;
+    const DETAIL_KINDS: usize = 3;
+
+    fn record(&mut self, kind: InputPathFailure, mut detail: String) {
+        if detail.len() > Self::DETAIL_BYTES {
+            let mut end = Self::DETAIL_BYTES;
+            while !detail.is_char_boundary(end) {
+                end -= 1;
+            }
+            detail.truncate(end);
+        }
+        *self.counts.entry(kind).or_default() += 1;
+        self.latest.insert(kind, detail);
+    }
+
+    fn count(&self, kind: InputPathFailure) -> usize {
+        self.counts.get(&kind).copied().unwrap_or(0)
+    }
+
+    fn classify(
+        &self,
+        listeners: usize,
+        input_endpoints: usize,
+        candidates: usize,
+    ) -> deskfuse_core::InputLinkFailure {
+        use deskfuse_core::InputLinkFailure as Failure;
+        if listeners == 0 {
+            Failure::NoLocalLan
+        } else if input_endpoints == 0 {
+            Failure::NoPeerEndpoints
+        } else if candidates > 0
+            && self.count(InputPathFailure::Probe) + self.count(InputPathFailure::Connect) > 0
+        {
+            Failure::PeerUnresponsive
+        } else if self.count(InputPathFailure::Overlay) > 0
+            && self.count(InputPathFailure::Route) == 0
+            && self.count(InputPathFailure::Other) == 0
+        {
+            Failure::OverlayOnly
+        } else if self.count(InputPathFailure::Overlay) + self.count(InputPathFailure::Route) > 0 {
+            Failure::NoLanRoute
+        } else {
+            Failure::Other
+        }
+    }
+
+    fn summary(&self) -> String {
+        let counts = self
+            .counts
+            .iter()
+            .map(|(kind, count)| format!("{kind:?}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        // BTreeMap 按类别顺序排列：探测/连接失败优先于路由拒绝。
+        let details = self
+            .latest
+            .values()
+            .take(Self::DETAIL_KINDS)
+            .collect::<Vec<_>>();
+        format!("failures=[{counts}] details={details:?}")
+    }
 }
 
 /// An opaque control session.  No Quinn or rustls types appear in this API.
@@ -1769,26 +1862,11 @@ impl QuinnTransport {
             .map_err(|_| TransportError::Closed)?
             .clone();
         // Keep the reason each physical path was rejected instead of returning
-        // only "closed". Bound details even when many stale addresses exist.
-        let mut failures = std::collections::VecDeque::new();
-        let mut failure_count = 0;
-        let mut record_failure = |mut detail: String| {
-            failure_count += 1;
-            // Leave room for the runtime's prefix in its 1024-byte log field.
-            if detail.len() > 256 {
-                let mut end = 256;
-                while !detail.is_char_boundary(end) {
-                    end -= 1;
-                }
-                detail.truncate(end);
-            }
-            if failures.len() == 2 {
-                failures.pop_front();
-            }
-            failures.push_back(detail);
-        };
+        // only "closed": every path is counted, details stay bounded.
+        let mut failures = InputLinkFailures::default();
         let mut candidates = Vec::new();
         let endpoint_count = endpoints.len();
+        let mut input_endpoint_count = 0;
         for remote in endpoints.into_iter().filter_map(|e| {
             e.host
                 .parse::<std::net::IpAddr>()
@@ -1798,6 +1876,7 @@ impl QuinnTransport {
             if remote.port() != 42425 {
                 continue;
             }
+            input_endpoint_count += 1;
             for (local, (interface, endpoint)) in &listeners {
                 if local.is_ipv4() != remote.is_ipv4() {
                     continue;
@@ -1814,13 +1893,21 @@ impl QuinnTransport {
                 })
                 .await;
                 let Ok((context, inspection_error)) = context else {
-                    record_failure(format!(
-                        "local={local} remote={remote} inspection_worker_unavailable"
-                    ));
+                    failures.record(
+                        InputPathFailure::Other,
+                        format!("local={local} remote={remote} inspection_worker_unavailable"),
+                    );
                     continue;
                 };
                 if !context.input_eligible() || context.interface_name.as_ref() != Some(interface) {
-                    record_failure(format!(
+                    let kind = if context.scope == deskfuse_core::LinkScope::Overlay
+                        || context.interface_kind == deskfuse_core::InterfaceKind::Vpn
+                    {
+                        InputPathFailure::Overlay
+                    } else {
+                        InputPathFailure::Route
+                    };
+                    failures.record(kind, format!(
                         "local={local} remote={remote} bound_interface={interface} route_interface={:?} kind={:?} scope={:?} inspection_error={inspection_error:?}",
                         context.interface_name, context.interface_kind, context.scope,
                     ));
@@ -1852,9 +1939,10 @@ impl QuinnTransport {
             }
             // A disposable signed identity probe is never promoted into a live connection.
             let Some(probe_endpoint) = input_dialer(&self.config, local) else {
-                record_failure(format!(
-                    "local={local} remote={remote} stage=create_probe failed"
-                ));
+                failures.record(
+                    InputPathFailure::Other,
+                    format!("local={local} remote={remote} stage=create_probe failed"),
+                );
                 continue;
             };
             let mut probe = self.clone();
@@ -1876,7 +1964,7 @@ impl QuinnTransport {
                         Err(_) => "timeout (1s)".into(),
                         _ => unreachable!(),
                     };
-                    record_failure(format!(
+                    failures.record(InputPathFailure::Probe, format!(
                         "local={local} remote={remote} interface={interface} stage=identity_probe error={error}"
                     ));
                     continue;
@@ -1894,7 +1982,7 @@ impl QuinnTransport {
                         Err(_) => "timeout (3s)".into(),
                         _ => unreachable!(),
                     };
-                    record_failure(format!(
+                    failures.record(InputPathFailure::Connect, format!(
                         "local={local} remote={remote} interface={interface} stage=connect error={error}"
                     ));
                 }
@@ -1904,11 +1992,14 @@ impl QuinnTransport {
         if self.input.contexts(peer).iter().any(|c| c.input_eligible()) {
             Ok(())
         } else {
-            Err(TransportError::Quic(format!(
-                "input link unavailable: endpoints={endpoint_count} listeners={} eligible_candidates={candidate_count} failures_total={failure_count} last_failures={:?}",
-                listeners.len(),
-                failures,
-            )))
+            Err(TransportError::InputLinkUnavailable {
+                failure: failures.classify(listeners.len(), input_endpoint_count, candidate_count),
+                detail: format!(
+                    "endpoints={endpoint_count} listeners={} eligible_candidates={candidate_count} {}",
+                    listeners.len(),
+                    failures.summary(),
+                ),
+            })
         }
     }
 
@@ -3790,6 +3881,66 @@ mod tests {
     use super::*;
     use rcgen::generate_simple_self_signed;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn input_link_failures_keep_every_path_category_and_classify_the_cause() {
+        use deskfuse_core::InputLinkFailure as Failure;
+        // 笔记本 → 公司电脑：一条路径路由不一致被拒，两条局域网路径探测超时。
+        let mut failures = InputLinkFailures::default();
+        failures.record(
+            InputPathFailure::Route,
+            "local=172.18.172.190 route=bridge0".into(),
+        );
+        failures.record(
+            InputPathFailure::Probe,
+            "remote=10.10.10.2 stage=identity_probe".into(),
+        );
+        failures.record(
+            InputPathFailure::Probe,
+            "remote=172.18.175.223 stage=identity_probe".into(),
+        );
+        assert_eq!(failures.classify(3, 2, 2), Failure::PeerUnresponsive);
+        let summary = failures.summary();
+        assert!(
+            summary.contains("Probe=2") && summary.contains("Route=1"),
+            "{summary}"
+        );
+        // 后来的路由拒绝不会挤掉探测失败的明细。
+        assert!(
+            summary.contains("172.18.175.223") && summary.contains("bridge0"),
+            "{summary}"
+        );
+
+        // 笔记本 → 家里设备：所有路由都经过代理 TUN。
+        let mut overlay = InputLinkFailures::default();
+        overlay.record(InputPathFailure::Overlay, "route=utun8 kind=Vpn".into());
+        overlay.record(InputPathFailure::Overlay, "route=utun8 kind=Vpn".into());
+        assert_eq!(overlay.classify(3, 2, 0), Failure::OverlayOnly);
+        overlay.record(InputPathFailure::Route, "route=en0".into());
+        assert_eq!(overlay.classify(3, 2, 0), Failure::NoLanRoute);
+
+        let empty = InputLinkFailures::default();
+        assert_eq!(empty.classify(0, 2, 0), Failure::NoLocalLan);
+        assert_eq!(empty.classify(2, 0, 0), Failure::NoPeerEndpoints);
+        assert_eq!(empty.classify(2, 2, 0), Failure::Other);
+    }
+
+    #[test]
+    fn input_link_failure_details_stay_bounded() {
+        let mut failures = InputLinkFailures::default();
+        for kind in [
+            InputPathFailure::Probe,
+            InputPathFailure::Connect,
+            InputPathFailure::Overlay,
+            InputPathFailure::Route,
+            InputPathFailure::Other,
+        ] {
+            failures.record(kind, "界".repeat(400));
+        }
+        let summary = failures.summary();
+        // 三条明细（每条截断到 200 字节以内）加计数，仍远小于 1024 字节的日志字段。
+        assert!(summary.len() < 760, "{}", summary.len());
+    }
 
     #[test]
     fn lan_fingerprint_tracks_interface_addresses_not_order_or_port() {

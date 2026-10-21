@@ -21,7 +21,7 @@ pub struct ReleaseInventory {
     /// Each entry is a bounded signed manifest; the receiver verifies its pinned key.
     #[prost(bytes = "vec", repeated, tag = "5")]
     pub signed_manifests: Vec<Vec<u8>>,
-    /// GitHub-channel self-packages. JSON `GitHubPeerArtifact` values.
+    /// GitHub-channel self-packages. JSON `PeerAppArtifact` values.
     /// Trust is Developer ID of the contained app, never LAN Ed25519.
     #[prost(bytes = "vec", repeated, tag = "6")]
     pub github_artifacts: Vec<Vec<u8>>,

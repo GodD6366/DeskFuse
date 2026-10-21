@@ -22,6 +22,9 @@ use activation::{Activation, RetiredActivation};
 use hybrid::HybridLease;
 const TTL: Duration = Duration::from_millis(1500);
 const RENEW: Duration = Duration::from_millis(250);
+/// 控制连接换线（如拔掉雷电线后改走 Wi-Fi）是先断后连，期间设备并未离线。
+/// 输入链路已在新线路存活时，在该窗口内保留激活，避免鼠标先通后断再通。
+const CONTROL_MIGRATION_GRACE: Duration = Duration::from_secs(8);
 // Bound work per select turn so motion bursts cannot starve lease/network processing.
 const MAX_MOTION_COMMAND_DRAIN: usize = 64;
 
@@ -73,6 +76,33 @@ impl Lease {
         self.deadline = Instant::now() + TTL;
         self.continuous_deadline_ms = lease_now_ms().checked_add(1500).unwrap_or(0);
     }
+}
+/// 去掉设置中对某台设备的引用；未引用时返回 `None`。
+/// `layout_profiles` 是按设备记忆的排布，保留它以便同一设备重新配对后恢复位置。
+fn settings_without_peer(
+    settings: &InputSharingSettings,
+    peer: DeviceId,
+) -> Option<InputSharingSettings> {
+    let referenced = settings.participants.contains(&peer)
+        || settings.authorized_controller == Some(peer)
+        || settings
+            .placements
+            .iter()
+            .any(|placement| placement.display.device_id == peer);
+    if !referenced {
+        return None;
+    }
+    let mut settings = settings.clone();
+    settings
+        .participants
+        .retain(|participant| *participant != peer);
+    settings
+        .placements
+        .retain(|placement| placement.display.device_id != peer);
+    if settings.authorized_controller == Some(peer) {
+        settings.authorized_controller = None;
+    }
+    Some(settings)
 }
 fn lease_now_ms() -> u64 {
     #[cfg(target_os = "macos")]
@@ -128,6 +158,9 @@ struct InputActor {
     retired_activations: std::collections::VecDeque<RetiredActivation>,
     paused_intents: std::collections::BTreeSet<(DeviceId, InputActivationId)>,
     controller_intents: BTreeMap<DeviceId, InputActivationId>,
+    controller_claimed_at_ms: Option<u64>,
+    /// 各设备控制连接最近一次处于 Connected 的时刻，用于换线宽限。
+    control_seen: BTreeMap<DeviceId, Instant>,
     activation_policy_error: Option<String>,
     pending_policy_save: Option<tokio::task::JoinHandle<std::result::Result<(), RuntimeError>>>,
     recent_managed_intent: Option<(DeviceId, InputActivationId)>,
@@ -188,6 +221,8 @@ pub(crate) async fn run(
         retired_activations: std::collections::VecDeque::new(),
         paused_intents: std::collections::BTreeSet::new(),
         controller_intents: BTreeMap::new(),
+        controller_claimed_at_ms: None,
+        control_seen: BTreeMap::new(),
         activation_policy_error: None,
         pending_policy_save: None,
         recent_managed_intent: None,
@@ -397,7 +432,11 @@ impl InputActor {
                     // to the same device session. A live 42425 socket must
                     // not keep mouse sharing active after the device's
                     // 42424 control session has gone offline.
-                    && p.connection == ConnectionState::Connected
+                    && (p.connection == ConnectionState::Connected
+                        || (p.connection != ConnectionState::Failed
+                            && self.control_seen.get(&peer).is_some_and(|at| {
+                                at.elapsed() < CONTROL_MIGRATION_GRACE
+                            })))
                     && p.routes
                         .iter()
                         .any(|r| r.capabilities.contains(Capabilities::INPUT_SHARING))
@@ -616,6 +655,29 @@ impl InputActor {
             },
         );
     }
+    /// 清理场景副本、Wi-Fi 主控规则与暂停记录中对已忘记设备的引用。
+    async fn forget_peer_references(&mut self, peer: DeviceId) {
+        let mut scenes_changed = false;
+        let scenes = self
+            .snapshot
+            .scenes
+            .iter()
+            .cloned()
+            .map(|mut scene| {
+                if let Some(settings) = settings_without_peer(&scene.settings, peer) {
+                    scene.settings = settings;
+                    scenes_changed = true;
+                }
+                scene
+            })
+            .collect::<Vec<_>>();
+        if scenes_changed {
+            self.save_scenes(scenes).await;
+        }
+        if self.forget_environment_peer(peer) {
+            self.persist_environment_if_dirty().await;
+        }
+    }
     async fn save_scenes(&mut self, scenes: Vec<InputSharingScene>) {
         if let Err(e) = InputSharingScene::validate_list(&scenes) {
             self.error(e.to_string());
@@ -683,6 +745,14 @@ impl InputActor {
                 };
                 let mut settings = scene.settings.clone();
                 settings.feature_enabled = self.snapshot.settings.feature_enabled;
+                RuntimeCommand::SetInputSharingSettings(settings)
+            }
+            RuntimeCommand::ForgetInputPeer { peer_id } => {
+                self.forget_peer_references(peer_id).await;
+                // 当前设置未引用该设备时不重写设置，避免无谓地释放租约。
+                let Some(settings) = settings_without_peer(&self.snapshot.settings, peer_id) else {
+                    return;
+                };
                 RuntimeCommand::SetInputSharingSettings(settings)
             }
             command => command,
@@ -800,6 +870,11 @@ impl InputActor {
                 {
                     Ok(Ok(())) => {
                         self.controller_intents = policy.controller_intents;
+                        if self.controller_claimed_at_ms != policy.controller_claimed_at_ms {
+                            self.controller_claimed_at_ms = policy.controller_claimed_at_ms;
+                            // 立即广播新的主控声明，让较早的主控尽快让位。
+                            self.environment.last_sent = None;
+                        }
                         if settings.enabled && settings.role == InputShareRole::Controller {
                             self.end_incoming("local controller enabled", true);
                         }
@@ -1097,8 +1172,14 @@ impl InputActor {
                         controller,
                         ssid,
                         preferred,
+                        claimed_at_ms,
                     } => self.receive_controller_presence(
-                        peer_id, &context, controller, ssid, preferred,
+                        peer_id,
+                        &context,
+                        controller,
+                        ssid,
+                        preferred,
+                        claimed_at_ms,
                     ),
                     InputShareMessage::ControllerSelection {
                         controller,
@@ -1625,12 +1706,27 @@ impl InputActor {
             _ => {}
         }
     }
+    /// 记录控制连接在线时刻；必须在本轮任何 network_allowed 判定之前执行，
+    /// 这样刚断开的连接仍保留上一轮的在线时刻。
+    fn observe_control_connections(&mut self) {
+        let now = Instant::now();
+        let view = self.network.borrow();
+        for peer in &view.snapshot.peers {
+            if peer.connection == ConnectionState::Connected {
+                self.control_seen.insert(peer.id, now);
+            }
+        }
+        drop(view);
+        self.control_seen
+            .retain(|_, at| now.saturating_duration_since(*at) < CONTROL_MIGRATION_GRACE);
+    }
     fn tick(&mut self) {
         if !self.snapshot.settings.feature_enabled {
             self.snapshot.remote_topologies.clear();
             self.snapshot.remote_wallpapers.clear();
             return;
         }
+        self.observe_control_connections();
         self.tick_links();
         // 只有整个设备网络换了身份（换网、换主人、签名失效）才全部释放。
         // 单个成员的增删、阻止或连接说明变化由 network_allowed 逐设备判定；
@@ -2033,6 +2129,8 @@ mod tests {
                 } else {
                     BTreeMap::new()
                 },
+                controller_claimed_at_ms: None,
+                control_seen: BTreeMap::new(),
                 activation_policy_error: None,
                 pending_policy_save: None,
                 recent_managed_intent: if controller {
@@ -2077,6 +2175,62 @@ mod tests {
         actor.network = network;
         assert!(!actor.network_allowed(peer));
     }
+    #[test]
+    fn control_route_migration_keeps_input_only_within_grace() {
+        let (mut actor, peer, _, _, _) = setup(true);
+        // 控制连接在线时被记录；随后换线导致短暂断开。
+        actor.observe_control_connections();
+        let mut view = actor.network.borrow().clone();
+        view.snapshot.peers[0].connection = ConnectionState::Disconnected;
+        let (_, network) = watch::channel(view.clone());
+        actor.network = network;
+        actor.observe_control_connections();
+        assert!(actor.network_allowed(peer), "换线期间不应拆掉已恢复的输入");
+        // 超过宽限仍未恢复，按离线处理。
+        actor
+            .control_seen
+            .insert(peer, Instant::now() - CONTROL_MIGRATION_GRACE);
+        assert!(!actor.network_allowed(peer));
+        // 认证失败不享受宽限。
+        actor.control_seen.insert(peer, Instant::now());
+        view.snapshot.peers[0].connection = ConnectionState::Failed;
+        let (_, network) = watch::channel(view);
+        actor.network = network;
+        assert!(!actor.network_allowed(peer));
+    }
+    #[test]
+    fn only_becoming_a_controller_creates_a_new_claim() {
+        let (mut actor, _, _, _, _) = setup(true);
+        let mut settings = actor.snapshot.settings.clone();
+        // 升级前已是主控：没有声明时间时按最早处理。
+        assert_eq!(
+            actor
+                .policy_for_settings(&settings)
+                .controller_claimed_at_ms,
+            Some(0)
+        );
+        actor.controller_claimed_at_ms = Some(42);
+        settings.switch_mode = EdgeSwitchMode::Instant;
+        assert_eq!(
+            actor
+                .policy_for_settings(&settings)
+                .controller_claimed_at_ms,
+            Some(42)
+        );
+        settings.role = InputShareRole::Disabled;
+        assert_eq!(
+            actor
+                .policy_for_settings(&settings)
+                .controller_claimed_at_ms,
+            None
+        );
+        actor.snapshot.settings = settings.clone();
+        settings.role = InputShareRole::Controller;
+        let claimed = actor
+            .policy_for_settings(&settings)
+            .controller_claimed_at_ms;
+        assert!(claimed.is_some_and(|at| at > 42));
+    }
     #[tokio::test]
     async fn local_controller_choice_preempts_existing_receiver() {
         let (mut actor, _, _, _, _) = setup(false);
@@ -2105,6 +2259,7 @@ mod tests {
                 controller: true,
                 ssid: Some("Home".into()),
                 preferred: Some(peer),
+                claimed_at_ms: None,
             },
         );
         receive(

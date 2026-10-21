@@ -586,6 +586,10 @@ pub enum InputShareMessage {
         controller: bool,
         ssid: Option<String>,
         preferred: Option<DeviceId>,
+        /// 本机最近一次被用户设为主控的 Unix 毫秒时间；多台主控同时在线时
+        /// 以最新声明者为准。旧版本不发送该字段，按“没有声明”处理。
+        #[serde(default)]
+        claimed_at_ms: Option<u64>,
     },
     ControllerSelection {
         controller: DeviceId,
@@ -886,6 +890,42 @@ pub struct InputPeerStatus {
     pub reason: Option<String>,
     pub control_session: Option<InputSessionId>,
 }
+/// 独立输入链路（UDP 42425）无法建立的原因分类，由传输层按各候选路径的结果归纳。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum InputLinkFailure {
+    /// 本机没有绑定在物理局域网接口上的输入监听。
+    NoLocalLan,
+    /// 还没有拿到对端的输入服务地址。
+    NoPeerEndpoints,
+    /// 到对端的路由全部经过 VPN/代理隧道等覆盖网络。
+    OverlayOnly,
+    /// 到对端的路由不经过与监听一致的物理局域网接口。
+    NoLanRoute,
+    /// 存在可用的局域网路径，但对端输入服务没有应答。
+    PeerUnresponsive,
+    /// 其他传输错误或恢复超时。
+    Other,
+}
+
+impl InputLinkFailure {
+    /// 面向用户的中文原因，直接作为激活状态的说明展示。
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::NoLocalLan => "本机没有可用的局域网接口（Wi-Fi、以太网或雷雳）",
+            Self::NoPeerEndpoints => "尚未获得对端输入服务地址，请确认对端已开启键鼠共享",
+            Self::OverlayOnly => {
+                "对端只能经 VPN/代理隧道到达，键鼠共享需要同一局域网；请让该网段绕过代理 TUN"
+            }
+            Self::NoLanRoute => "到对端的路由没有经过可用的局域网接口",
+            Self::PeerUnresponsive => {
+                "对端输入服务无响应，请检查对端「本地网络」权限、防火墙与 DeskFuse 是否运行"
+            }
+            Self::Other => "输入链路暂不可用，正在重试",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum InputActivationStatus {
     Preparing,
@@ -933,6 +973,9 @@ pub struct InputActivationPolicy {
     pub controller_intents: BTreeMap<DeviceId, InputActivationId>,
     /// The most recent local emergency pause for each controller device.
     pub paused_intents: BTreeSet<(DeviceId, InputActivationId)>,
+    /// 本机最近一次被用户设为主控的 Unix 毫秒时间，仅在本机为主控时存在。
+    #[serde(default)]
+    pub controller_claimed_at_ms: Option<u64>,
 }
 impl InputActivationPolicy {
     pub fn validate(&self) -> Result<()> {
@@ -961,6 +1004,13 @@ impl InputActivationPolicy {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ControllerEnvironmentSnapshot {
     pub ssid: Option<String>,
+    /// 本机实际读到的 SSID；`None` 表示未连接 Wi-Fi 或缺少定位授权。
+    /// 与 `ssid`（场景判定实际采用的值，可能来自对端）分开，便于界面区分。
+    #[serde(default)]
+    pub observed_ssid: Option<String>,
+    /// 各在线对端通过输入链路上报的 SSID，只包含已上报非空值的设备。
+    #[serde(default)]
+    pub peer_ssids: BTreeMap<DeviceId, String>,
     pub rules: BTreeMap<String, DeviceId>,
     pub candidates: Vec<DeviceId>,
     pub selected: Option<DeviceId>,

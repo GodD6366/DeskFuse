@@ -122,10 +122,22 @@ impl InputActor {
         &self,
         settings: &InputSharingSettings,
     ) -> InputActivationPolicy {
+        let is_controller =
+            |s: &InputSharingSettings| s.enabled && s.role == InputShareRole::Controller;
+        // 只有“从非主控变为主控”才是一次新的主控声明；修改其他设置保留原声明。
+        // 升级前已是主控的设备没有声明时间，按最早（0）处理，仍能打破双主控僵局。
+        let controller_claimed_at_ms = if !is_controller(settings) {
+            None
+        } else if is_controller(&self.snapshot.settings) {
+            self.controller_claimed_at_ms.or(Some(0))
+        } else {
+            Some(crate::now_unix_ms())
+        };
         let mut policy = InputActivationPolicy {
             environment_rules: self.environment.rules.clone(),
             controller_intents: self.controller_intents.clone(),
             paused_intents: self.paused_intents.clone(),
+            controller_claimed_at_ms,
         };
         let desired = if settings.feature_enabled
             && settings.enabled
@@ -157,9 +169,11 @@ impl InputActor {
                 self.environment.rules = policy.environment_rules;
                 self.controller_intents = policy.controller_intents;
                 self.paused_intents = policy.paused_intents;
+                self.controller_claimed_at_ms = policy.controller_claimed_at_ms;
                 let reconciled = self.policy_for_settings(&self.snapshot.settings);
                 if existing.as_ref() != Some(&reconciled) {
                     self.controller_intents = reconciled.controller_intents;
+                    self.controller_claimed_at_ms = reconciled.controller_claimed_at_ms;
                     self.persist_activation_policy().await;
                 }
             }
@@ -184,6 +198,7 @@ impl InputActor {
             environment_rules: self.environment.rules.clone(),
             controller_intents: self.controller_intents.clone(),
             paused_intents: self.paused_intents.clone(),
+            controller_claimed_at_ms: self.controller_claimed_at_ms,
         };
         let store = self.store.clone();
         match tokio::task::spawn_blocking(move || store.set_input_activation_policy(policy)).await {
@@ -837,7 +852,16 @@ impl InputActor {
                     .find(|context| self.activation_capable(peer, context))
             });
             let Some(context) = context else {
-                if !self.transport.input_contexts(peer).is_empty() {
+                if self.transport.input_contexts(peer).is_empty() {
+                    // 输入链路还没建立：有建链失败记录时如实展示原因，
+                    // 不能停在初始的 Preparing 让界面一直显示“正在准备”。
+                    // 链路恢复后首次发送会把状态重置回 Preparing。
+                    if let Some(failure) = self.links.failures.get(&peer).copied() {
+                        let activation = self.outgoing.get_mut(&peer).unwrap();
+                        activation.status = InputActivationStatus::Unavailable;
+                        activation.reason = Some(failure.describe().into());
+                    }
+                } else {
                     let activation = self.outgoing.get_mut(&peer).unwrap();
                     activation.status = InputActivationStatus::Unavailable;
                     activation.reason =
@@ -1081,6 +1105,42 @@ mod tests {
         let retry = &actor.outgoing[&peer];
         assert_eq!(retry.unanswered, 0);
         assert!(retry.renew_at <= Instant::now());
+    }
+
+    #[test]
+    fn missing_input_link_shows_recovery_failure_instead_of_preparing() {
+        let (mut actor, peer, context, transport, _) = setup(true);
+        let saved = std::mem::take(&mut *transport.contexts.lock().unwrap());
+        actor.outgoing.remove(&peer);
+        actor.tick_activations();
+        // 还没有任何建链结果时维持 Preparing，不提前判定失败。
+        assert_eq!(
+            actor.outgoing[&peer].status,
+            InputActivationStatus::Preparing
+        );
+        assert_eq!(actor.outgoing[&peer].reason, None);
+
+        actor
+            .links
+            .failures
+            .insert(peer, InputLinkFailure::PeerUnresponsive);
+        actor.tick_activations();
+        let activation = &actor.outgoing[&peer];
+        assert_eq!(activation.status, InputActivationStatus::Unavailable);
+        assert_eq!(
+            activation.reason.as_deref(),
+            Some(InputLinkFailure::PeerUnresponsive.describe())
+        );
+        assert!(!activation.sent);
+
+        // 链路恢复后首次发送重新进入 Preparing，等待对端应答。
+        *transport.contexts.lock().unwrap() = saved;
+        actor.tick_activations();
+        let activation = &actor.outgoing[&peer];
+        assert!(activation.sent);
+        assert_eq!(activation.context.as_ref(), Some(&context));
+        assert_eq!(activation.status, InputActivationStatus::Preparing);
+        assert_eq!(activation.reason, None);
     }
 
     fn offer(

@@ -513,6 +513,13 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         if let loopback { for _ in 0..<8 { guard let packet = loopback.feedback() else { break }; try channel.send(bytes: packet) } }
                     }
                 } catch {
+                    // 引擎因读取方停止、切换来源等原因已主动结束会话时，旧通道的
+                    // 断开错误是预期结果：只清理本地会话，不当作故障上报。
+                    if currentID != 0, (try? engine.microphoneChannel())??.sessionId() != currentID {
+                        resetSession()
+                        nextPoll = .distantPast
+                        return
+                    }
                     failure = error.userFacingMessage
                     recordInitializationError(failure, generation: generation)
                     if currentID != 0 { engine.failMicrophoneSession(id: currentID, detail: failure) }

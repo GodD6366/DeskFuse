@@ -934,3 +934,24 @@ async fn unobservable_network_keeps_timed_route_recheck() {
     let due = actor.evaluation_schedule(peer).due - Instant::now();
     assert!(due <= ROUTE_RECHECK_INTERVAL);
 }
+
+#[test]
+fn failed_current_route_switches_only_right_after_a_local_network_change() {
+    let fast = Some(Duration::from_millis(3));
+    // 拔线后旧线路探测失败、新线路可达：立即换线。
+    assert!(should_switch_active_route(fast, None, true));
+    // 网络没有变化时，单次探测失败不足以证明当前会话已坏。
+    assert!(!should_switch_active_route(fast, None, false));
+    // 两条线路都可测时仍按延迟比较。
+    assert!(should_switch_active_route(
+        fast,
+        Some(Duration::from_millis(20)),
+        false
+    ));
+    assert!(!should_switch_active_route(
+        fast,
+        Some(Duration::from_millis(5)),
+        true
+    ));
+    assert!(!should_switch_active_route(None, None, true));
+}

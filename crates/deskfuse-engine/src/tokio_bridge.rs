@@ -2949,20 +2949,14 @@ async fn run_worker(
                     if !staged
                         && stage_task.is_none()
                         && !updater.install_abandoned()
+                        && let Some((offer, path)) = updater.ready()
+                        && let Some(status) = updater.snapshot().status
                     {
-                        if let Some((release, path)) = updater.ready()
-                            && let Some(status) = updater.snapshot().status
-                        {
-                            stage_task = Some(crate::app_update::stage(release, path, status));
-                        } else if let Some((offer, path)) = updater.github_ready()
-                            && let Some(status) = updater.snapshot().status
-                        {
-                            stage_task = Some(crate::app_update::stage_github_zip(
-                                offer.release,
-                                path,
-                                status,
-                            ));
-                        }
+                        stage_task = Some(crate::app_update::stage_peer_zip(
+                            offer.release,
+                            path,
+                            status,
+                        ));
                     }
                 }
                 let github_dmg_ready = github_updater
@@ -2970,7 +2964,7 @@ async fn run_worker(
                     .is_some_and(|updater| updater.ready() && !updater.install_abandoned());
                 let lan_payload_ready = updater.as_ref().is_some_and(|updater| {
                     !updater.install_abandoned()
-                        && (updater.ready().is_some() || updater.github_ready().is_some())
+                        && updater.ready().is_some()
                 });
                 if github_dmg_ready {
                     let github = github_updater.as_mut().expect("github updater");
@@ -5061,7 +5055,7 @@ fn merge_update_view(
                         | UpdatePhase::Installing
                 )
             });
-        let lan_active = lan.github_ready().is_some()
+        let lan_active = lan.ready().is_some()
             || lan_view.checking
             || lan_view.status.as_ref().is_some_and(|status| {
                 matches!(

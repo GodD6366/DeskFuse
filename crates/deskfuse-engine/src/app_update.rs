@@ -46,21 +46,6 @@ pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
     let installed = installer::installed_release(&bundle)?;
     let root = installer::update_root()?;
     let os = macos_version()?;
-    let mut seed_dirs = vec![
-        bundle.join("Contents/Resources/LanUpdate"),
-        root.join("inbox"),
-    ];
-    // Manual installations carry the original signed ZIP inside the app.
-    // Network installations retain it in the verified cache. Mounted installers
-    // remain an additional source, not a requirement for peer distribution.
-    if let Ok(volumes) = std::fs::read_dir("/Volumes") {
-        seed_dirs.extend(
-            volumes
-                .flatten()
-                .filter(|v| v.file_name().to_string_lossy().starts_with("DeskFuse "))
-                .map(|v| v.path().join(".updates")),
-        );
-    }
     LanUpdater::start(
         runtime,
         LanUpdateConfig {
@@ -68,8 +53,6 @@ pub fn start(runtime: RuntimeHandle) -> Result<LanUpdater, String> {
             target: Target::MacosArm64,
             os,
             root,
-            seed_dirs,
-            key: deskfuse_update::pinned_release_key().map_err(|e| e.to_string())?,
             receipt: lan_receipt(&installed)?,
             previous_failure: installer::previous_failure()?,
             channel: UpdateChannel::Lan,
@@ -101,8 +84,6 @@ pub fn start_github_with_trigger(
             target: Target::MacosArm64,
             os: macos_version()?,
             root,
-            seed_dirs: Vec::new(),
-            key: deskfuse_update::pinned_release_key().map_err(|e| e.to_string())?,
             receipt: lan_receipt(&installed)?,
             previous_failure: installer::previous_failure()?,
             channel: UpdateChannel::GitHub,
@@ -133,20 +114,12 @@ pub fn acknowledge_startup(status: &deskfuse_update::UpdateStatus) -> Result<(),
 
 pub type StageTask = tokio::task::JoinHandle<Result<(), String>>;
 #[cfg(not(windows))]
-pub fn stage(
-    release: deskfuse_update::VerifiedRelease,
-    payload: PathBuf,
-    status: deskfuse_update::UpdateStatus,
-) -> StageTask {
-    tokio::task::spawn_blocking(move || installer::prepare(&release, &payload, &status))
-}
-#[cfg(not(windows))]
-pub fn stage_github_zip(
+pub fn stage_peer_zip(
     release: deskfuse_update::ReleaseVersion,
     payload: PathBuf,
     status: deskfuse_update::UpdateStatus,
 ) -> StageTask {
-    tokio::task::spawn_blocking(move || installer::prepare_github_zip(&payload, &release, &status))
+    tokio::task::spawn_blocking(move || installer::prepare_peer_zip(&payload, &release, &status))
 }
 
 #[cfg(all(not(test), windows))]
@@ -189,18 +162,7 @@ pub fn acknowledge_startup(_status: &deskfuse_update::UpdateStatus) -> Result<()
 }
 
 #[cfg(windows)]
-pub fn stage(
-    _release: deskfuse_update::VerifiedRelease,
-    _payload: PathBuf,
-    _status: deskfuse_update::UpdateStatus,
-) -> StageTask {
-    tokio::task::spawn_blocking(|| {
-        Err("Windows transactional payload unavailable; NSIS is first-install only".into())
-    })
-}
-
-#[cfg(windows)]
-pub fn stage_github_zip(
+pub fn stage_peer_zip(
     _release: deskfuse_update::ReleaseVersion,
     _payload: PathBuf,
     _status: deskfuse_update::UpdateStatus,

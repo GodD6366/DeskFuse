@@ -112,6 +112,12 @@ pub enum RuntimeError {
     Discovery(String),
     #[error("transport operation failed: {0}")]
     Transport(String),
+    /// 独立输入链路无法建立；`failure` 是传输层归纳的原因。
+    #[error("transport operation failed: input link unavailable ({failure:?}): {detail}")]
+    InputLinkUnavailable {
+        failure: deskfuse_core::InputLinkFailure,
+        detail: String,
+    },
     #[error("trust store operation failed: {0}")]
     Store(String),
     #[error("unknown peer {0}")]
@@ -1122,6 +1128,11 @@ pub enum RuntimeCommand {
     RestartInputActivation {
         peer_id: DeviceId,
     },
+    /// 设备被忘记后，清理键鼠共享中对它的引用：参与设备、屏幕摆放、
+    /// 场景副本与 Wi-Fi 主控规则。由运行时在忘记成功后自动发出。
+    ForgetInputPeer {
+        peer_id: DeviceId,
+    },
     MoveInputDevice {
         device_id: DeviceId,
         display_id: DisplayId,
@@ -1235,6 +1246,7 @@ impl RuntimeCommand {
                 | Self::DeleteInputSharingScene { .. }
                 | Self::SetInputSharingSettings(_)
                 | Self::RestartInputActivation { .. }
+                | Self::ForgetInputPeer { .. }
                 | Self::RefreshNativeObserver
                 | Self::MoveInputDevice { .. }
                 | Self::SetManagedInputAvailability { .. }
@@ -2349,7 +2361,19 @@ impl Actor {
                     match command {
                         Some(RuntimeCommand::Shutdown) | None => break,
                         Some(command) if command.is_input() => {let _=input_tx.send(command).await;},
-                        Some(command) => {self.handle_command(command).await;self.delivery_tick().await;},
+                        Some(command) => {
+                            let forgetting = match &command {
+                                RuntimeCommand::ForgetPeer { peer_id } => Some(*peer_id),
+                                _ => None,
+                            };
+                            self.handle_command(command).await;
+                            self.delivery_tick().await;
+                            // 忘记成功后同步清理键鼠共享里的残留引用，否则已忘记的设备
+                            // 仍留在参与列表和主控规则中，界面却已看不到它。
+                            if let Some(peer_id) = forgetting.filter(|peer| !self.peers.contains_key(peer)) {
+                                let _ = input_tx.send(RuntimeCommand::ForgetInputPeer { peer_id }).await;
+                            }
+                        },
                     }
                 }
                 event = self.provider_rx.recv() => {
@@ -4583,7 +4607,13 @@ where
             inner
                 .ensure_input_link(peer, endpoints)
                 .await
-                .map_err(|e| RuntimeError::Transport(e.to_string()))
+                .map_err(|error| match error {
+                    deskfuse_transport::TransportError::InputLinkUnavailable {
+                        failure,
+                        detail,
+                    } => RuntimeError::InputLinkUnavailable { failure, detail },
+                    error => RuntimeError::Transport(error.to_string()),
+                })
         })
     }
     fn register_peer_identity(

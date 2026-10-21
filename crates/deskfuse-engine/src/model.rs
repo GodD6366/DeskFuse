@@ -738,6 +738,7 @@ impl AppModel {
                 if !matches!(
                     error,
                     deskfuse_runtime::RuntimeError::Transport(_)
+                        | deskfuse_runtime::RuntimeError::InputLinkUnavailable { .. }
                         | deskfuse_runtime::RuntimeError::Protocol(_)
                         | deskfuse_runtime::RuntimeError::UnknownPeer(_)
                         | deskfuse_runtime::RuntimeError::UnknownPairingRequest(_)

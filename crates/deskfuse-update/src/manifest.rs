@@ -188,44 +188,46 @@ impl SignedReleaseManifest {
     }
 }
 
-/// A GitHub-channel device's self-packaged app. Not Ed25519-signed; installers
-/// re-check Developer ID on the contained bundle before replacing anything.
+/// 设备把正在运行的应用打包给局域网对端。不带 Ed25519 签名；安装前仍复核
+/// 包内应用的代码签名要求与更新通道。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GitHubPeerArtifact {
+pub struct PeerAppArtifact {
     pub channel: String,
     pub release: ReleaseVersion,
     pub artifact: ArtifactDescriptor,
 }
-impl GitHubPeerArtifact {
+impl PeerAppArtifact {
     pub const FILE_NAME: &'static str = "DeskFuse-arm64-update.zip";
+    /// 会自打包并互相分发的发行通道。
+    pub const CHANNELS: [&'static str; 2] = ["lan", "github"];
 
     ///
     /// # Errors
-    /// Rejects a non-github channel, LAN package kinds, or malformed metadata.
+    /// Rejects unknown channels, non-ZIP package kinds, or malformed metadata.
     pub fn validate(&self) -> Result<(), UpdateError> {
-        if self.channel != "github" {
-            return Err(UpdateError::Invalid("github peer channel"));
+        if !Self::CHANNELS.contains(&self.channel.as_str()) {
+            return Err(UpdateError::Invalid("peer package channel"));
         }
         if self.release.build_number == 0 || self.release.release_id.is_nil() {
-            return Err(UpdateError::Invalid("github peer release"));
+            return Err(UpdateError::Invalid("peer package release"));
         }
         self.artifact.validate()?;
         if self.artifact.target != Target::MacosArm64
             || self.artifact.kind != PackageKind::MacosAppZip
             || self.artifact.file_name != Self::FILE_NAME
         {
-            return Err(UpdateError::Invalid("github peer artifact"));
+            return Err(UpdateError::Invalid("peer package artifact"));
         }
         Ok(())
     }
 
     ///
     /// # Errors
-    /// Rejects oversized or structurally invalid GitHub peer descriptors.
+    /// Rejects oversized or structurally invalid peer package descriptors.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, UpdateError> {
         if bytes.is_empty() || bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(UpdateError::Invalid("github peer bounds"));
+            return Err(UpdateError::Invalid("peer package bounds"));
         }
         let offer: Self = serde_json::from_slice(bytes)?;
         offer.validate()?;

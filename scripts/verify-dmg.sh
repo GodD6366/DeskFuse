@@ -96,15 +96,11 @@ PYSOURCES
 # The signed distribution marker selects the updater, independent of install path.
 [[ -f "$CONTENTS_DIR/Resources/update-channel" ]] || { echo "error: update channel missing" >&2; exit 1; }
 UPDATE_CHANNEL="$(cat "$CONTENTS_DIR/Resources/update-channel")"
+# 局域网更新改为设备间互传正在运行的应用，任何通道都不再内嵌更新包。
 case "$UPDATE_CHANNEL" in
-  lan)
-    [[ -f "$MOUNT_POINT/.updates/manifest.json" && -f "$CONTENTS_DIR/Resources/LanUpdate/manifest.json" ]] || {
-      echo "error: LAN package is missing its signed update payload" >&2; exit 1;
-    }
-    ;;
-  github|manual)
+  lan|github|manual)
     [[ ! -e "$MOUNT_POINT/.updates" && ! -e "$CONTENTS_DIR/Resources/LanUpdate" ]] || {
-      echo "error: $UPDATE_CHANNEL package contains a LAN update payload" >&2; exit 1;
+      echo "error: $UPDATE_CHANNEL package contains an embedded update payload" >&2; exit 1;
     }
     ;;
   *) echo "error: invalid update channel" >&2; exit 1 ;;
@@ -219,31 +215,6 @@ for binary in sys.argv[1:]:
         raise SystemExit("error: native SwiftUI framework dependency missing")
     print(f"Mach-O: {binary.rsplit('/', 1)[-1]} minimum macOS {versions[0]}, SDK {sdks[0] if sdks else 'unknown'}")
 PYNATIVE
-if [[ -f "$MOUNT_POINT/.updates/manifest.json" ]]; then
-  if [[ -n "${DESKFUSE_RELEASE_TOOL:-}" && -x "${DESKFUSE_RELEASE_TOOL:-}" ]]; then
-    "$DESKFUSE_RELEASE_TOOL" verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
-  else
-    cargo run --locked --quiet -p deskfuse-update --bin deskfuse-release -- verify "$ROOT_DIR/resources/deskfuse-release-public-key.hex" "$MOUNT_POINT/.updates/manifest.json" "$MOUNT_POINT/.updates"
-  fi
-  EMBEDDED_UPDATE="$CONTENTS_DIR/Resources/LanUpdate"
-  cmp "$MOUNT_POINT/.updates/manifest.json" "$EMBEDDED_UPDATE/manifest.json"
-  cmp "$MOUNT_POINT/.updates/DeskFuse-$ARTIFACT_SUFFIX-update.zip" "$EMBEDDED_UPDATE/DeskFuse-$ARTIFACT_SUFFIX-update.zip"
-  python3 - "$CONTENTS_DIR/Resources/release.json" "$EMBEDDED_UPDATE/manifest.json" "$EMBEDDED_UPDATE/DeskFuse-$ARTIFACT_SUFFIX-update.zip" <<'PYSEED'
-import json, pathlib, sys, zipfile
-release = json.loads(pathlib.Path(sys.argv[1]).read_text())
-manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())["manifest"]
-if manifest["release"] != release:
-    raise SystemExit("error: embedded update release differs from installed app")
-with zipfile.ZipFile(sys.argv[3]) as payload:
-    if json.loads(payload.read("DeskFuse.app/Contents/Resources/release.json")) != release:
-        raise SystemExit("error: update payload release differs from installed app")
-    if any(name.endswith("roc-microphone-sources.tar.gz") for name in payload.namelist()):
-        raise SystemExit("error: full microphone sources duplicated inside update payload")
-    if any(name.startswith("DeskFuse.app/Contents/Resources/LanUpdate/") for name in payload.namelist()):
-        raise SystemExit("error: recursive embedded update payload")
-print("LAN distribution: installed app carries the exact verified release payload")
-PYSEED
-fi
 SIGNING_INFO="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
 SIGNING_AUTHORITY="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Authority=//p' | head -n 1)"
 TEAM_ID="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"

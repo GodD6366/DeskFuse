@@ -1141,15 +1141,11 @@ impl Actor {
         }
         let current_rtt = rtt.get(&(current.host.clone(), current.port)).copied();
         let best_rtt = rtt.get(&(best.host.clone(), best.port)).copied();
-        // A failed independent probe does not prove the live route is slower.
-        // Keep the healthy session until both routes can be compared.
-        let switch = match (best_rtt, current_rtt) {
-            (Some(best_delay), Some(current_delay)) => {
-                best_delay + Duration::from_millis(5) < current_delay
-            }
-            _ => false,
-        };
-        if switch {
+        let network_just_changed = self
+            .recovery
+            .network_changed_at
+            .is_some_and(|at| at.elapsed() < ROUTE_SETTLE_WINDOW);
+        if should_switch_active_route(best_rtt, current_rtt, network_just_changed) {
             self.restart_after_active_route_change(peer, true).await;
         }
     }
@@ -1172,6 +1168,24 @@ impl Actor {
         for peer in self.peers.keys().copied().collect::<Vec<_>>() {
             self.start_reconnect(peer).await;
         }
+    }
+}
+
+/// A failed independent probe does not prove the live route is slower:
+/// keep the healthy session until both routes can be compared.
+/// 例外：本机网卡刚变化（拔雷电线/网线）后当前线路探测失败而其他线路可达，
+/// 说明旧线路已随网卡消失；立即换线，不再等两轮控制心跳超时（约 10 秒）。
+fn should_switch_active_route(
+    best_rtt: Option<Duration>,
+    current_rtt: Option<Duration>,
+    network_just_changed: bool,
+) -> bool {
+    match (best_rtt, current_rtt) {
+        (Some(best_delay), Some(current_delay)) => {
+            best_delay + Duration::from_millis(5) < current_delay
+        }
+        (Some(_), None) => network_just_changed,
+        _ => false,
     }
 }
 

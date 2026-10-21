@@ -1942,6 +1942,7 @@ mod input_store_tests {
             environment_rules: Default::default(),
             controller_intents: std::collections::BTreeMap::from([(peer, intent)]),
             paused_intents: std::collections::BTreeSet::from([(peer, InputActivationId::new())]),
+            controller_claimed_at_ms: Some(1_700_000_000_000),
         };
         store.set_input_activation_policy(policy.clone()).unwrap();
         assert_eq!(

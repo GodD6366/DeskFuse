@@ -2,7 +2,7 @@
 
 公开 GitHub 预发行必须用 **Developer ID Application** 签名、打开 hardened runtime，再交给 Apple `notarytool` 公证并 staple。贡献者本机和 main 分支的 Homebrew artifact 仍可显式 `CODESIGN_IDENTITY=-`，不需要这些凭据。
 
-把下面 6 个值加到私有源码仓库 `GodD6366/DeskFuse` 的 **Settings → Secrets and variables → Actions**。不要提交到 Git，不要写进 issue 或 PR。本机调试可放在被忽略的 `.env`（变量名见根目录 `.env.example`）。
+把下面 6 个值加到源码仓库 `GodD6366/DeskFuse` 的 **Settings → Environments → release → Environment secrets**（仅 `v*` tag 可部署），不要放在仓库级 secrets。不要提交到 Git，不要写进 issue 或 PR。本机调试可放在被忽略的 `.env`（变量名见根目录 `.env.example`）。
 
 ## 先决条件
 
@@ -140,4 +140,3 @@ DESKFUSE_DMG_FINDER_LAYOUT=0 \
 - **不要**把 Apple ID 主密码放进 secret。
 - **不要**用 Apple Development 证书做公证。
 - **不要**把 `.p12` / `.p8` / 专用密码提交到 Git 或 Actions artifact。
-- LAN 自动更新的 Ed25519 发行私钥（`signing-key.hex`）与 Apple 公证无关，继续只放在协调端本机。

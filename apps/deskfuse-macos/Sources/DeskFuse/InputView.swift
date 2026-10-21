@@ -15,7 +15,7 @@ struct InputView: View {
     @State private var retryingInput = false
     @State private var reconnectingDevices: Set<String> = []
     @State private var openSuggestionId: String?
-    @State private var latencyScale = InputLatencyChartScale()
+    @State private var showQualityDetail = false
     @State private var windowVisible = false
 
     private var chartVisible: Bool { windowVisible && store.selectedPage == .input }
@@ -44,14 +44,13 @@ struct InputView: View {
                         }
                     }
                     if snapshot.input.locked { Label("鼠标已锁定在当前设备", systemImage: "lock").foregroundStyle(DFPalette.warning) }
+                    // 排布卡片吃掉页头以下的全部高度；窗口过矮时保留最小高度并允许滚动。
                     layout
-                        .frame(height: layoutHeight(in: geometry.size))
-                    if chartVisible && snapshot.input.settings.controller && snapshot.input.settings.enabled && !snapshot.input.managed {
-                        qualityChart
-                    }
+                        .frame(minHeight: 320, maxHeight: .infinity)
                     }
                     .padding(.horizontal, DFMetrics.pageInset)
                     .padding(.vertical, DFMetrics.pageTopInset)
+                    .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
@@ -78,8 +77,6 @@ struct InputView: View {
         }
         .dfCanvas()
         .background(WindowVisibilityObserver { windowVisible = $0 })
-        .onAppear { latencyScale.include(peak: latencyPeak) }
-        .onChange(of: latencyPeak) { _, peak in latencyScale.include(peak: peak) }
         .sheet(isPresented: $showAddDevice) {
             InputDevicePicker(snapshot: snapshot, adding: updatingSettings, error: store.error, onAdd: { id in
                 setParticipant(id, included: true)
@@ -116,16 +113,80 @@ struct InputView: View {
 
     private var compactQuality: Bool { !snapshot.input.canConfigure }
 
+    /// 本机作为主控且共享开启时才有流畅度采样。
+    private var showsQuality: Bool {
+        snapshot.input.settings.controller && snapshot.input.settings.enabled && !snapshot.input.managed
+    }
+
+    /// 排布卡片左上角的流畅度摘要：迷你趋势线、典型延迟和状态，点击展开完整面板。
+    private var qualityBadge: some View {
+        let quality = snapshot.input.quality
+        let sampledPoints = latencyPoints(quality)
+        let points = sampledPoints
+        let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0
+        let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? sampledPoints.last?.rttMs
+        let ceiling = 100.0
+        let series = latencySeriesColor(quality.rttP95Ms ?? typical)
+        let status = inputBlockedReason != nil
+            ? ("暂不可用", DFPalette.warning) : qualityStatus(quality, hasSignal: hasSignal)
+        return Button {
+            showQualityDetail.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                Chart(points) { point in
+                    LineMark(
+                        x: .value("时间", point.second),
+                        y: .value("往返", min(point.rttMs, ceiling)),
+                        series: .value("段", point.series)
+                    )
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(series)
+                }
+                .chartXScale(domain: 0.0...60.0)
+                .chartYScale(domain: 0.0...(ceiling * 1.15))
+                .chartXAxis(.hidden)
+                .chartYAxis(.hidden)
+                .chartLegend(.hidden)
+                .frame(width: 72, height: 22)
+                .help("固定刻度 0–100 ms；超过 100 ms 的采样显示在上限处")
+                Text(milliseconds(typical))
+                    .font(DFType.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                HStack(spacing: 4) {
+                    Circle().fill(status.1).frame(width: 6, height: 6)
+                    Text(status.0).font(DFType.caption.weight(.semibold))
+                }
+                .foregroundStyle(status.1)
+                datagramChannelBadge
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(0.04), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("流畅度：最近 60 秒往返延迟趋势，点击查看详情")
+        .accessibilityLabel("流畅度 \(status.0)，典型往返延迟 \(milliseconds(typical))")
+        .popover(isPresented: $showQualityDetail, arrowEdge: .bottom) {
+            qualityChart
+                .frame(width: 520)
+                .dfFloating()
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
     private var qualityChart: some View {
         let quality = snapshot.input.quality
         let peak = latencyPeak
         let sampledPoints = latencyPoints(quality)
-        let points = InputLatencyTrend.smooth(sampledPoints.isEmpty
-            ? [LatencyPoint(second: 60, rttMs: 0, series: 0)] : sampledPoints)
+        let points = sampledPoints
         let hitches = hitchTicks(quality)
         let hasSignal = quality.rttP50Ms != nil || quality.rttP95Ms != nil || quality.hitchesPerMinute > 0
         let typical = quality.rttP50Ms ?? quality.rttP95Ms ?? sampledPoints.last?.rttMs
-        let ceiling = max(latencyScale.ceiling, InputLatencyChartScale.requiredCeiling(for: peak))
+        let ceiling = 100.0
         let series = latencySeriesColor(quality.rttP95Ms ?? typical)
         let status = qualityStatus(quality, hasSignal: hasSignal)
         let blocked = inputBlockedReason
@@ -138,12 +199,12 @@ struct InputView: View {
                 if !compactQuality, let typical {
                     latencyHero(typical: typical, peak: showsPeak ? peak : nil)
                 }
-                InputLatencyTransitionView(points: points, active: chartVisible) { displayed in
-                    latencyChart(points: displayed,
-                        runCount: Dictionary(grouping: displayed, by: \.series).mapValues(\.count),
-                        series: series, ceiling: ceiling, calloutSecond: latencyCalloutSecond(displayed),
-                        typical: typical, hitchTicks: hitches)
-                }
+                latencyChart(points: points,
+                    runCount: Dictionary(grouping: points, by: \.series).mapValues(\.count),
+                    series: series, ceiling: ceiling, calloutSecond: latencyCalloutSecond(points),
+                    typical: typical, hitchTicks: hitches)
+                Text("固定刻度 0–100 ms；超过上限的点显示在上限处，数值仍为实际延迟。")
+                    .font(DFType.caption).dfSecondaryText()
             }
             Divider()
             HStack(spacing: 16) {
@@ -193,7 +254,6 @@ struct InputView: View {
             }
         }
         .padding(compactQuality ? 10 : 18)
-        .dfCard()
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -252,9 +312,6 @@ struct InputView: View {
                 .font(DFType.icon(.regular).weight(.semibold))
                 .fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 8)
-            Text(pointerModeLabel)
-                .font(DFType.caption)
-                .dfSecondaryText()
             datagramChannelBadge
             HStack(spacing: 5) {
                 Circle()
@@ -322,10 +379,10 @@ struct InputView: View {
                 if (runCount[point.series] ?? 0) >= 2 {
                     AreaMark(
                         x: .value("时间", point.second),
-                        y: .value("往返", point.rttMs),
+                        y: .value("往返", min(point.rttMs, ceiling)),
                         series: .value("段", point.series)
                     )
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(
                         LinearGradient(
                             colors: [series.opacity(0.30), series.opacity(0.03)],
@@ -335,17 +392,17 @@ struct InputView: View {
                     )
                     LineMark(
                         x: .value("时间", point.second),
-                        y: .value("往返", point.rttMs),
+                        y: .value("往返", min(point.rttMs, ceiling)),
                         series: .value("段", point.series)
                     )
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(series)
                 } else if points.count == 1 {
                     RuleMark(
                         x: .value("时间", point.second),
                         yStart: .value("往返", 0.0),
-                        yEnd: .value("往返", point.rttMs)
+                        yEnd: .value("往返", min(point.rttMs, ceiling))
                     )
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
                     .foregroundStyle(series)
@@ -355,7 +412,7 @@ struct InputView: View {
                 if calloutSecond == point.second as Double? {
                     PointMark(
                         x: .value("时间", point.second),
-                        y: .value("往返", point.rttMs)
+                        y: .value("往返", min(point.rttMs, ceiling))
                     )
                     .symbolSize(points.count == 1 ? 64 : 28)
                     .foregroundStyle(series)
@@ -371,7 +428,7 @@ struct InputView: View {
                 } else if points.count <= 8 || (runCount[point.series] ?? 0) == 1 || points.last?.second == point.second as Double? {
                     PointMark(
                         x: .value("时间", point.second),
-                        y: .value("往返", point.rttMs)
+                        y: .value("往返", min(point.rttMs, ceiling))
                     )
                     .symbolSize(28)
                     .foregroundStyle(series)
@@ -503,7 +560,9 @@ struct InputView: View {
         var series = 0
         var previous: Double?
         return quality.samples.compactMap { sample in
-            guard let rtt = sample.rttMs, rtt.isFinite, rtt >= 0 else { return nil }
+            // The current second is still accumulating samples; only draw finalized buckets.
+            guard sample.second < 60,
+                  let rtt = sample.rttMs, rtt.isFinite, rtt >= 0 else { return nil }
             let second = Double(sample.second)
             if let previous, second - previous > 2 {
                 series += 1
@@ -622,38 +681,47 @@ struct InputView: View {
                 Button(snapshot.input.settings.controller ? "本次使用此 Mac 作为主控" : "在此 Mac 启用主控") { enableAsController() }
                     .buttonStyle(.dfPrimary)
             }
+            wifiIdentity(message: nil)
         }.frame(maxWidth: 520)
+    }
+
+    /// 本机与对端的 Wi-Fi 标识，用于确认主控场景是否按同一网络判定。
+    private func wifiIdentity(message: String?) -> some View {
+        InputWifiIdentityView(
+            identity: InputWifiIdentity(
+                input: snapshot.input,
+                devices: snapshot.devices,
+                localId: snapshot.localId,
+                wifiGranted: store.permissions.isGranted(.wifi)
+            ),
+            message: message,
+            onAuthorize: { store.permissionPrompt.authorize(.wifi) }
+        )
     }
 
     private var heading: some View {
         /// 标题与开关行视作页头的一组：行间距对齐 SystemSettingsPageHeader
         /// 标题与说明沿用主窗口的统一层级。
-        VStack(alignment: .leading, spacing: 10) {
-            Text("当前屏幕排布").font(DFType.title).fixedSize()
-            sharingSetting
-        }
+        Text("当前屏幕排布").font(DFType.title).fixedSize()
     }
 
     private var sharingSetting: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Toggle("使用此 Mac 作为主控", isOn: Binding(
-                get: { snapshot.input.settings.controller && snapshot.input.settings.enabled },
-                set: { setSharingEnabled($0) }
-            ))
-            .font(DFType.detail.weight(.medium))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .disabled(updatingSettings || snapshot.input.managed)
-            Text("由这台 Mac 管理屏幕排布，并使用本机键鼠控制已添加的设备。")
-                .font(DFType.caption)
-                .dfSecondaryText()
-        }
-        .help("当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复，未匹配的网络自动暂停。")
+        Toggle("此 Mac 作为主控", isOn: Binding(
+            get: { snapshot.input.settings.controller && snapshot.input.settings.enabled },
+            set: { setSharingEnabled($0) }
+        ))
+        .font(DFType.detail.weight(.medium))
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .disabled(updatingSettings || snapshot.input.managed)
+        .help("由这台 Mac 管理屏幕排布，并使用本机键鼠控制已添加的设备。当前 Wi-Fi 会记住主控与屏幕排布；回到该 Wi-Fi 时自动恢复；未匹配或没有 Wi-Fi 时仍可使用和保存当前布局。")
     }
 
     private var headerActions: some View {
         NativeGlassGroup {
             HStack(alignment: .center, spacing: 12) {
+                sharingSetting
+                wifiIdentity(message: snapshot.input.environmentMessage)
                 DFActionButton("添加设备", systemImage: "plus", kind: .primary) {
                     showAddDevice = true
                 }
@@ -722,9 +790,13 @@ struct InputView: View {
     private var layout: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
-                Text("\(snapshot.input.displays.count) 个屏幕")
-                    .font(DFType.detail.weight(.medium))
-                    .dfSecondaryText()
+                if showsQuality {
+                    qualityBadge
+                } else {
+                    Text("\(snapshot.input.displays.count) 个屏幕")
+                        .font(DFType.detail.weight(.medium))
+                        .dfSecondaryText()
+                }
                 Spacer(minLength: 8)
                 Text("拖动屏幕以匹配实际摆放位置 · pt 为 macOS 逻辑尺寸")
                     .font(DFType.caption).dfSecondaryText()
@@ -740,22 +812,6 @@ struct InputView: View {
         }
         .frame(maxWidth: .infinity)
         .dfCard()
-    }
-
-    /// The user requested twice the previous canvas height so vertically
-    /// arranged screens have enough space to remain large and readable.
-    private func layoutHeight(in size: CGSize) -> CGFloat {
-        let displays = snapshot.input.displays
-        guard !displays.isEmpty else { return min(300, max(220, size.height - 430)) * 2 }
-        let minX = displays.map(\.x).min() ?? 0
-        let minY = displays.map(\.y).min() ?? 0
-        let maxX = displays.map { $0.x + $0.width }.max() ?? 1
-        let maxY = displays.map { $0.y + $0.height }.max() ?? 1
-        let aspect = max(0.5, (maxX - minX) / max(1, maxY - minY))
-        let contentWidth = max(320, size.width - DFMetrics.pageInset * 2 - 64)
-        let aspectHeight = contentWidth / aspect + 110
-        let availableHeight = max(220, min(400, size.height - 430))
-        return min(max(220, aspectHeight), availableHeight) * 2
     }
 
 }

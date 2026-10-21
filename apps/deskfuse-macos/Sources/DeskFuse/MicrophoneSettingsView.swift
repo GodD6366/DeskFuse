@@ -75,6 +75,19 @@ struct MicrophoneSettingsView: View {
             }
         }
         .animation(DFMotion.snappy, value: model.error)
+        // 运行期瞬时异常悬浮在页面底部，出现或消失都不推挤页面内容。
+        .overlay(alignment: .bottom) {
+            if let notice = transientNotice {
+                DFNotice(tone: .warning, title: notice.title, message: notice.message)
+                    .background(Color(nsColor: .windowBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+                    .frame(maxWidth: DFMetrics.focusMaxWidth)
+                    .padding(DFMetrics.pageInset)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(DFMotion.snappy, value: transientNotice?.title)
         .disabled(model.saving || model.managingDriver)
         .onAppear {
             model.ensureStarted(engine: store.engine)
@@ -156,22 +169,25 @@ struct MicrophoneSettingsView: View {
         completionNotice(state, role: role)
     }
 
-    /// 运行期异常：来源不可用、连接中断、后台连接异常。权限与驱动问题由各自的设置区展示。
+    /// 持久配置异常：原来源设备不可用。权限与驱动问题由各自的设置区展示。
     @ViewBuilder private func runtimeNotices(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
         if role == .receiver && !state.settings.source.isEmpty && !peers.isEmpty
             && !peers.contains(where: { $0.id == state.settings.source }) {
             DFNotice(tone: .warning, title: "原来源设备不可用",
                      message: "重新配对来源设备，或点击“声音来源”换一台 Mac。")
         }
+    }
+
+    /// 运行期瞬时异常（连接中断、后台连接异常），仅在已配置屏以底部悬浮卡片展示。
+    private var transientNotice: (title: String, message: String)? {
+        guard let state = model.snapshot, let role = resolvedRole(state), !editingRole else { return nil }
         if state.settings.enabled && state.phase == "failed" {
-            DFNotice(tone: .warning, title: "连接暂时中断",
-                     message: statusText(state, role: role))
+            return ("连接暂时中断", statusText(state, role: role))
         }
-        if let connectionError = model.connectionError,
-           !connectionErrorHandled(state, role: role) {
-            DFNotice(tone: .warning, title: "后台连接暂时异常",
-                     message: MicrophoneErrorText.friendly(connectionError))
+        if let connectionError = model.connectionError, !connectionErrorHandled(state, role: role) {
+            return ("后台连接暂时异常", MicrophoneErrorText.friendly(connectionError))
         }
+        return nil
     }
 
     // MARK: - 身份

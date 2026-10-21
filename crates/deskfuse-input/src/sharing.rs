@@ -247,6 +247,24 @@ impl SharingController {
     pub fn buttons_pressed(&self) -> bool {
         !self.buttons.is_empty()
     }
+    /// Sampled by the coordinator, never emitted for every motion event.
+    /// Neighbor availability is evaluated at the current along-edge position;
+    /// it does not imply that the pointer has reached that edge.
+    pub fn routing_diagnostic(&self) -> String {
+        let neighbors = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom]
+            .map(|edge| (edge, self.neighbor(edge, false).map(|(key, _)| key)));
+        format!(
+            "active={:?} remote={} locked={} buttons_held={} mode={:?} disabled_corners={} corner_size={} pending_edge={:?} neighbors={neighbors:?}",
+            self.active,
+            self.is_remote(),
+            self.locked,
+            self.buttons.len(),
+            self.mode,
+            self.disabled_corners,
+            self.corner_size,
+            self.attempt.as_ref().map(|a| a.edge),
+        )
+    }
     pub fn reclaim(&mut self) {
         self.active = None;
         self.attempt = None;

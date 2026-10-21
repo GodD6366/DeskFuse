@@ -298,6 +298,8 @@ struct State {
     last_capture_at: Option<Instant>,
     crossing_started: Option<Instant>,
     last_slow_capture: Option<Instant>,
+    last_routing_diagnostic: Option<Instant>,
+    last_stale_diagnostic: Option<Instant>,
     ui: UnboundedSender<UiEvent>,
     local: DeviceId,
     policy: SharingController,
@@ -373,6 +375,21 @@ impl MotionCadence {
         };
         let max = gaps.last().copied().unwrap_or_default();
         Some((count, at(0.5), at(0.99), max))
+    }
+}
+/// 捕获邮箱只在“空→非空”时发出唤醒，消费端未出队就跳过一轮会吞掉这次唤醒：
+/// 之后的鼠标移动都会合并进队尾样本而不再通知，路由将永久停摆。
+/// 门控跳过时记下欠账，维护轮次结束后重新唤醒消费端。
+#[derive(Default)]
+struct DeferredCaptureWake(bool);
+impl DeferredCaptureWake {
+    fn defer(&mut self) {
+        self.0 = true;
+    }
+    fn rearm(&mut self, ready: &tokio::sync::Notify) {
+        if std::mem::take(&mut self.0) {
+            ready.notify_one();
+        }
     }
 }
 impl State {
@@ -980,6 +997,8 @@ async fn run(
         last_capture_at: None,
         crossing_started: None,
         last_slow_capture: None,
+        last_routing_diagnostic: None,
+        last_stale_diagnostic: None,
         ui: ui.clone(),
         platform: platform.clone(),
         local,
@@ -1018,6 +1037,7 @@ async fn run(
     let mut recording_active = false;
     let started = Instant::now();
     let mut next_refresh = Instant::now();
+    let mut deferred_capture = DeferredCaptureWake::default();
     let mut remote_application_paused = false;
     // Housekeeping/dwell/lease checks only. Mouse delivery is notification-driven.
     let mut timer = tokio::time::interval(Duration::from_millis(20));
@@ -1183,6 +1203,7 @@ async fn run(
                         }
                     }
                     RuntimeEvent::InputControlReleased {session_id,reason,..} => {
+                        timing::record!("routing_control_released", Duration::ZERO, format!("session={session_id:?} reason={reason} outbound={} inbound={}", state.outbound.as_ref().is_some_and(|p| p.session == session_id), state.inbound.as_ref().is_some_and(|p| p.session == session_id)));
                         if !reason.contains("left display") { state.retired.insert(session_id); }
                         if state.outbound.as_ref().is_some_and(|p|p.session==session_id) { state.outbound=None; state.policy.reclaim(); let _=ui.unbounded_send(UiEvent::InputLockStatus(false)); let _=state.capture.exit_remote(Some(state.anchor)); }
                         if state.inbound.as_ref().is_some_and(|p|p.session==session_id) { state.inbound=None; if let Some(injector)=&state.injector {let _=injector.release_all_nowait();} }
@@ -1211,6 +1232,20 @@ async fn run(
                 }
             }
             _ = capture_ready.notified() => {
+                // Bound diagnostics before the gates so a blocked capture path
+                // remains observable without logging individual input events.
+                if timing::enabled() && state.last_routing_diagnostic.is_none_or(|last| last.elapsed() >= Duration::from_secs(5)) {
+                    state.last_routing_diagnostic = Some(Instant::now());
+                    timing::record!("routing_state", Duration::ZERO, format!(
+                        "available={} enabled={} capture_started={} permitted={} emergency={} recording={} role={:?} live_synced={} outbound={:?} inbound={:?} policy=[{}] links={:?}",
+                        state.available, state.effective.enabled, state.capture_started,
+                        observations.borrow().as_ref().is_some_and(NativeObservation::permits_input),
+                        emergency.load(Ordering::Acquire), recording_active, state.effective.role,
+                        state.live_synced, state.outbound.as_ref().map(|p| p.session),
+                        state.inbound.as_ref().map(|p| p.session), state.policy.routing_diagnostic(),
+                        state.snapshot.links.iter().map(|l| (l.peer_id, l.ready, l.control_session, &l.reason)).collect::<Vec<_>>()
+                    ));
+                }
                 // Do not route a pending sample after a user pause/emergency or
                 // while the observer is stale. Maintenance applies the new gate.
                 if emergency.load(Ordering::Acquire)
@@ -1218,6 +1253,7 @@ async fn run(
                     || !state.capture_started
                     || !observations.borrow().as_ref().is_some_and(NativeObservation::permits_input)
                 {
+                    deferred_capture.defer();
                     timer.reset_immediately();
                     continue;
                 }
@@ -1227,6 +1263,11 @@ async fn run(
                         || effective_native_settings(&live, &state.paused_activations) != state.effective
                 };
                 if stale {
+                    if timing::enabled() && state.last_stale_diagnostic.is_none_or(|last| last.elapsed() >= Duration::from_secs(5)) {
+                        state.last_stale_diagnostic = Some(Instant::now());
+                        timing::record!("routing_snapshot_stale", Duration::ZERO, "waiting for maintenance".into());
+                    }
+                    deferred_capture.defer();
                     timer.reset_immediately();
                     continue;
                 }
@@ -1447,6 +1488,11 @@ async fn run(
                 native_snapshot.settings = effective.clone();
                 let layout = layout_displays(&native_snapshot,local,true);
                 if configuration_changed || layout != state.layout || (!enabled && (state.capture_started || state.outbound.is_some() || state.inbound.is_some())) {
+                    timing::record!("routing_layout_resolved", Duration::ZERO, format!(
+                        "enabled={enabled} configuration_changed={configuration_changed} active_changed={} displays={:?}",
+                        active_layout_changed(&state.layout, &layout, state.policy.active_display()),
+                        layout.iter().map(|d| (&d.key, d.x, d.y, d.display.width, d.display.height, d.ready)).collect::<Vec<_>>()
+                    ));
                     if configuration_changed || !enabled || active_layout_changed(&state.layout,&layout,state.policy.active_display()) {
                         state.reclaim(&runtime, Some(state.anchor)).await;
                     }
@@ -1465,6 +1511,8 @@ async fn run(
                 state.effective=effective;
                 state.snapshot=snapshot;
                 state.live_synced=true;
+                // 快照已同步，补发门控期间被吞掉的捕获唤醒。
+                deferred_capture.rearm(&capture_ready);
                 let mut expired=false;
                 for (lease, outbound) in [(&mut state.outbound,true),(&mut state.inbound,false)] {
                     if let Some(progress)=lease {
@@ -1544,6 +1592,32 @@ pub(crate) fn helper_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn deferred_capture_wake_is_restored_after_maintenance() {
+        let ready = tokio::sync::Notify::new();
+        let mut deferred = DeferredCaptureWake::default();
+        // 未跳过时不制造多余唤醒。
+        deferred.rearm(&ready);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), ready.notified())
+                .await
+                .is_err()
+        );
+        // 跳过一轮后，维护轮次必须补发且只补发一次。
+        deferred.defer();
+        deferred.rearm(&ready);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), ready.notified())
+                .await
+                .is_ok()
+        );
+        deferred.rearm(&ready);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), ready.notified())
+                .await
+                .is_err()
+        );
+    }
     #[test]
     fn shutdown_does_not_join_a_blocked_native_observer() {
         let (release, query) = std::sync::mpsc::channel();

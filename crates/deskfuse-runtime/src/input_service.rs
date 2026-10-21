@@ -534,6 +534,7 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::DeleteInputSharingScene { .. }
             | RuntimeCommand::SetInputSharingSettings(_)
             | RuntimeCommand::RestartInputActivation { .. }
+            | RuntimeCommand::ForgetInputPeer { .. }
             | RuntimeCommand::RefreshNativeObserver
             | RuntimeCommand::PublishDisplayWallpaper { .. }
             | RuntimeCommand::MoveInputDevice { .. }
@@ -545,6 +546,15 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
 #[test]
 fn wifi_observation_can_cross_host_input_ipc() {
     let command = RuntimeCommand::ObserveWifiEnvironment { ssid: None };
+    assert!(command.is_input());
+    assert!(host_command_allowed(&command));
+}
+#[cfg(test)]
+#[test]
+fn forgotten_peer_cleanup_can_cross_host_input_ipc() {
+    let command = RuntimeCommand::ForgetInputPeer {
+        peer_id: DeviceId::from_public_key([7; 32]).unwrap(),
+    };
     assert!(command.is_input());
     assert!(host_command_allowed(&command));
 }
