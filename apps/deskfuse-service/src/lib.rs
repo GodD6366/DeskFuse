@@ -30,3 +30,5 @@ pub mod policy;
 pub mod protocol;
 
 pub mod remote_app_catalog;
+
+pub mod remote_rdp_protocol;

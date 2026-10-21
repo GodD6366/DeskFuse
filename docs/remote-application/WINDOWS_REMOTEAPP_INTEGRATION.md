@@ -1,88 +1,92 @@
-# Windows 远程应用（Mac 主控 → Windows 被控）实施状态与打包测试
+# Windows 远程应用（Mac 主控 → Windows 被控）实施状态
 
-方向已确认：**核心是 Mac↔Windows，先做 Mac 控制 Windows**；Mac 端内嵌 **FreeRDP**（方向 A）。
+方向：**Mac 控制 Windows**，Mac 端内嵌 FreeRDP。当前完成 P0 和 P1 的代码与自动测试；P1 实机验收和 P2–P7 尚未完成，进度以 `RDP_COMPLETION_PLAN.md` 为准。
 
 ## 架构
 
 ```
-Mac (主控 A)                              Windows (被控 B)
-────────────                              ────────────────
-RemoteRdpSession ──JSON catalog/launch──▶ deskfuse-service (Rust)
-   │  (已认证 QUIC RemoteSession 流)         ├─ remote_app.rs: TSAppAllowList 注册表 + 目录 + .rdp
-   │                                        └─ network.rs: REMOTE_APPLICATION 能力 + 授权门禁
+Mac (主控 A)                                   Windows (被控 B)
+────────────                                    ────────────────
+RemoteRdpSession ──JSON catalog/prepare v2──▶ deskfuse-service (Rust)
+   │  (已认证 QUIC 目录流)                        ├─ remote_app.rs: 预检 + TSAppAllowList + 目录 + .rdp
+   │                                              └─ network.rs: 票据校验 + 回环 RDP 连接
    │
-   └─ RemoteRdpBridge ──RDP(3389)────────▶ Windows RemoteApp (rdpinit → 单个应用)
-        (RdpBridge.c + FreeRDP 静态库)        注册在 TSAppAllowList 的应用
+   └─ RdpBridge.c / FreeRDP ──socketpair──▶ Rust 隧道 ──QUIC RemoteRdpTunnel──▶ 127.0.0.1:<RDP 端口>
+        (TLS/NLA 端到端，DeskFuse 只转发密文)              Windows RemoteApp
 ```
 
-真正的 RDP 字节流不经过 DeskFuse QUIC；Mac 拿到 `.rdp` 后直连 `Windows:3389`。
+RDP 字节流经过 DeskFuse 的 QUIC 隧道，不再直连 `Windows:3389`，也不需要为局域网开放 RDP 防火墙端口。隧道只允许连接 Windows 服务本机的 RDP 监听端口，端口从注册表读取。
 
-## 已实现（本分支）
+## 已实现
 
 ### Windows 服务侧（Rust，`apps/deskfuse-service/`）
-- `src/native/remote_app.rs`：`TSAppAllowList` 注册表读写（`register_app`/`unregister_app`/`list_remote_apps`）、`App Paths` 应用枚举、Home/Core 版检测、`.rdp` 生成、**JSON 目录协议 + `serve()` 会话循环**。
-- `src/native/network.rs`：控制 HELLO 加 `REMOTE_APPLICATION` 能力位；`serve_remote_applications()` + `remote_app_authorized()`（配对+信任+未阻止）。
-- `src/native/mod.rs`：主循环 `desktop_tick` 轮询并服务远程应用会话。
-- `src/desktop_protocol.rs`：`remote_app` 能力位 + `ListRemoteApps`/`ListInstalledApps`/`RegisterRemoteApp`/`UnregisterRemoteApp`/`RemoteAppConnection` 命令（Windows GUI 本地管理用）。
-- 协议契约：`docs/remote-application/WINDOWS_RDP_CATALOG.md`。
+
+- `src/remote_rdp_protocol.rs`：目录协议 v2 schema、64 KiB 请求上限、版本/应用名校验，跨平台单测。
+- `src/native/remote_app.rs`：`TSAppAllowList` 注册表读写、`App Paths` 应用枚举、Home/Core 检测、`.rdp` 生成、`rdp_port()`、`host_status()`（版本/`fDenyTSConnections`/监听端口/证书指纹）、`serve()` 目录循环。
+- `src/native/network.rs`：控制 HELLO 的 `REMOTE_APPLICATION_RDP` 能力；目录会话和隧道都经过配对+信任+未阻止门禁；撤销授权时隧道在 100 ms 内关闭。
+- `src/native/mod.rs`：服务主循环轮询目录会话和隧道。
 
 ### Mac 侧（C + Swift）
-- `scripts/build-freerdp-macos.sh`：构建 FreeRDP 3.14.1（headless、静态、仅 RemoteApp 相关 channel）+ 编译 RdpBridge → `apps/deskfuse-macos/RemoteApplication/Vendor/FreeRDP/lib/libdeskfuse-rdp.a`（本机已验证，见下）。
-- `RemoteApplication/Sources/DeskFuseRemoteApplication/RdpBridge/RdpBridge.c` / `.h`：FreeRDP 无头客户端桥（连接线程、GDI 帧缓冲拷贝、鼠标/键盘/Unicode 注入、证书指纹 pinning、NLA 凭据回调）。
-- `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpBridge.swift`：`RdpBridge.c` 的 Swift 包装（帧拷贝 + 输入 + 状态）。
-- `RemoteApplication/Sources/DeskFuseRemoteApplication/RemoteRdpCatalog.swift`：目录协议 JSON 类型（`RemoteRdpMessage`/`RemoteRdpRequest`/`RemoteRdpApp`）。
-- `Sources/DeskFuse/RemoteRdpSession.swift`：主控端编排（取目录 → 发 launch → 收 `.rdp` → 替换 `{host}` → 启动桥）。
-- `Package.swift`（主 app + spike）：`CDeskFuseRdp` systemLibrary；FreeRDP、WinPR、OpenSSL 和 json-c 合并为一个静态库，仅链接 macOS 系统库/框架，不依赖 Homebrew dylib。
 
-## 早期验证记录（不代表当前完整验收）
+- `RdpBridge.c`：FreeRDP 3.14.1 无头客户端；通过 `freerdp_set_io_callbacks` 替换 `TCPConnect`/`ConnectLayer`，只使用 `socketpair`；证书只接受服务端下发的 SHA-256；关闭网关、代理、UDP multitransport、自动重连和重定向；提供 `rdp_bridge_take_tunnel_fd()` 与 `rdp_bridge_execute()`。
+- `RemoteRdpBridge.swift`：创建会话、交出隧道 fd、启动、帧拷贝、输入、RAIL 追加启动。
+- `RemoteRdpCatalog.swift`：协议 v2 类型（`RemoteRdpHost`/`RemoteRdpHostCheck`/`RemoteRdpMessage`/`RemoteRdpRequest`）。
+- `RemoteRdpSession.swift`：目录/预检浏览；`prepare` 返回一次性票据。
+- `RemoteRdpHostConnection.swift`：**每台 Windows 只保留一条 RDP 连接**；第一个应用用 `.rdp` 启动，后续应用用 RAIL `ClientExecute` 在同一会话启动。
+- `RemoteApplicationManager.swift` / `RemoteRdpViews.swift`：每台 Windows 一个 RDP 窗口；删除 `peerHost`、`windowsHost()`、`{host}` 替换、手动证书信任和 Keychain 指纹条目。
+
+### 已验证的自动测试（2026-10-21）
 
 | 项 | 结果 |
 | --- | --- |
-| FreeRDP 3.14.1 静态构建 | ✅ 通过（trim 后仅 3 个 .a，见脚本） |
-| `RdpBridge.c` 编译 | ✅ 0 警告 |
-| 组合 `libdeskfuse-rdp.a` + 链接测试 | ✅ 链接并运行（create/parse/free） |
-| `swift build --target DeskFuseRemoteApplication` | ✅ 通过（含 RemoteRdpBridge/RemoteRdpCatalog） |
+| `cargo check --locked --workspace` | 通过 |
+| `cargo test --workspace --all-targets --locked` | 通过 |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 通过 |
+| `build-freerdp-macos.sh --test` | 通过（证书 pin、RAIL 握手的单次启动、错误回调、socketpair fd 一次性交接、GDI 帧边界、重复清理） |
+| `test-remote-application.py` | 44 个 Swift 测试逐个通过（含目录 v2、票长、预检、指纹测试） |
 
-上述记录来自早期环境。当前构建需完整 Xcode 27+；Windows 服务、真实 NLA 登录、RemoteApp 画面和输入仍需 Windows/MSVC 及双设备验收，不由本地桥接测试替代。
+### 尚未完成（按里程碑）
+
+- P1 实机项：Windows 防火墙关闭 3389 仍可连接；记事本+画图共用一条连接；雷电/Wi-Fi 切换。
+- P2：RAIL 窗口表与一窗一 Mac 窗口、脏区/IOSurface、几何换算、窗口拖动/缩放/层级。
+- P3：完整扫描码/输入法/⌘ 映射、滚轮和光标。
+- P4：cliprdr、声音、RDPGFX/disp 画质。
+- P5：自动重连、睡眠唤醒、错误分类、凭据重新输入、本机会话占用提示。
+- P6：开始菜单/用户级/Store 发现、真实图标、注册表清理、Windows 一键开启。
+- P7：设置页、诊断事件、文档与发布验收。
 
 ## 打包测试步骤
 
-### 1. Windows（被控 B）
+### Windows（被控 B）
+
 ```powershell
 .\scripts\snapshot-windows-source.ps1 -OutputPath "$env:TEMP\deskfuse-source.json"
 .\scripts\package-windows.ps1 -SourceSnapshot "$env:TEMP\deskfuse-source.json"
 ```
-安装后：确认 Windows 为 Pro/Enterprise/Server（Home 不支持）。服务会在目录启动时重新发现本机应用，并在首次 Launch 前按需写入 `TSAppAllowList`；已有人工注册仍可通过桌面 IPC 管理。
 
-### 2. Mac（主控 A）
+安装后确认 Windows 为 Pro/Enterprise/Server。远程桌面未开启时会出现在目录的 `host.checks` 中；P6 的一键开启尚未实现，目前需在 Windows 本机设置中开启。
+
+### Mac（主控 A）
+
 ```sh
-./scripts/build-native-macos.sh release   # 自动准备 RDP 依赖并构建主程序
-./scripts/package-macos.sh --lan           # 正常打包，不自动安装
-./scripts/build-freerdp-macos.sh --test     # 原生 RAIL/GDI 回归测试
+./scripts/build-native-macos.sh release
+./scripts/package-macos.sh --lan
+./scripts/build-freerdp-macos.sh --test
+python3 scripts/test-remote-application.py
 ```
 
-## 已接入主 UI（RDP 与媒体能力的边界）
+## UI 与能力边界
 
-- `Device` 的活动路由能力宣告包含 `REMOTE_APPLICATION_RDP` 时，`RemoteApplicationManager` 进入 Windows RDP picker；没有该能力的设备继续使用 Mac↔Mac PropertyList 媒体会话。不会根据设备名猜测平台，也不会把两种首帧协议混在一条会话中。
-- `RemoteRdpPicker` 展示 Windows 注册目录、NLA 用户名/密码字段和可用性错误；每个应用建立自己的 `RemoteRdpSession` 与原生 RDP 窗口。RDP framebuffer 按服务端实际 resize 动态分配并在 C mutex 下复核尺寸。
-- RDP 输入映射包含鼠标、滚轮、键盘扫描码和 Unicode；凭据只传给本次 FreeRDP 连接，不写入 DeskFuse。RDP 证书不会因 DeskFuse 配对而自动信任；未知证书默认拒绝，UI 展示规范化指纹，用户明确点击信任后按配对设备保存 pin，证书变化时再次拒绝。当前 RemoteApp 只支持配对 Windows 主机的直连 `:3389`；FreeRDP 的 RDP 重定向请求会被拒绝，避免重定向目标绕过该主机的证书 pin。
-
-RDP RemoteApp 是 Windows 原生 `rdpinit.exe`/NLA 会话，不等价于 Mac↔Mac 的 ScreenCaptureKit 编码流：没有媒体协议的暂停、HEVC/H.264 偏好、Surface layout 或共享控制租约。UI 明确标注该差异，不能宣称跨平台能力完全相同。
-
-Windows 桌面端通过 `RemoteAppWindow` 调用受认证的服务 IPC 管理 `TSAppAllowList`，不会由普通用户 GUI 直接写 HKLM。
-5. **`{host}` 解析**：`RemoteRdpSession.peerHost` 由调用方从 `Device.endpoint`/route 去掉端口得到。
-
-## 已知边界
-
-- RDP 证书不继承 QUIC 配对信任；首次连接需用户核对并明确 pin 指纹，保存于 macOS 钥匙串的独立条目。
-- Home/Core 版 Windows 不支持 RemoteApp（服务端 `availability()` 返回不支持并拒绝目录）。
-- RDP 凭据只由 Mac 端 RDP 客户端处理，DeskFuse 服务不读 Windows 账户凭据。
+- `Device` 的活动路由能力包含 `REMOTE_APPLICATION_RDP` 时进入 Windows picker；否则使用 Mac↔Mac 媒体会话。
+- 凭据只传给本次 FreeRDP 连接；用户明确启用“记住凭据”时保存在本机 macOS Keychain，不经过 Windows 服务或 QUIC 目录协议。
+- RDP 证书指纹来自 Windows 服务的监听证书查询；Mac 自动固定，证书变化直接拒绝，没有手动放行入口。
+- 当前仍是一个 RDP 会话对应一个 Mac 窗口，多个远程应用在一个画布内显示；P2 才会拆成一远端窗口对应一个 Mac 原生窗口。
+- RDP RemoteApp 不等价于 Mac↔Mac 的 ScreenCaptureKit 媒体流：没有媒体协议的暂停、HEVC/H.264 偏好、Surface layout 或共享控制租约。
 
 ## 可复现的 macOS RDP 依赖构建
 
-- 需要完整 Xcode、CMake、Git、Perl、Make；首次准备需访问上游 Git 仓库。不要求安装 Homebrew 的 OpenSSL、json-c 或 libusb。
-- FreeRDP 3.14.1、OpenSSL 3.6.5、json-c 0.18 均固定上游提交；按 `DESKFUSE_MACOS_ARCH=arm64|x86_64`、SDK 和 macOS 14.0 部署目标构建。缓存默认在 `~/.cache/deskfuse-freerdp`，可用 `FREERDP_CACHE_DIR` 修改。
-- `build-native-macos.sh` 和独立 spike 入口先准备静态依赖；Swift 构建缓存包含 RDP 指纹。依赖升级、桥接源码或工具链改变后自动重建。
-- 未实现的 USB、音频等重定向通道不启用；没有通过关闭 RDP target 绕过构建。RAIL 握手发送应用启动请求，通道事件接入 GDI graphics pipeline，保留 bitmap/glyph 解码。
-- `--test` 使用真实 FreeRDP 库检查 `.rdp` 解析、RAIL 两种握手及失败回调、GDI 帧拷贝边界和重复清理，不连接 Windows、不使用账户凭据。
-- 打包拒绝非系统 dylib 依赖，并携带 `THIRD_PARTY_RDP.txt` 中的原生库许可证。公开发布、签名公证和双设备功能验证分别判定。
+- 需要完整 Xcode 27+、CMake、Git、Perl、Make；首次准备需访问上游 Git 仓库，不要求 Homebrew 的 OpenSSL、json-c 或 libusb。
+- FreeRDP 3.14.1、OpenSSL、json-c 固定上游提交；按 `DESKFUSE_MACOS_ARCH=arm64|x86_64`、SDK 和 macOS 14.0 部署目标构建。缓存默认在 `~/.cache/deskfuse-freerdp`。
+- 桥接源码变化只重编译 `RdpBridge.c`，不会让固定版本的 FreeRDP 编译缓存失效。
+- 未实现的 USB、音频、打印机等重定向通道不启用；RAIL、DISP、RDPGFX、CLIPRDR 已编进静态库，但 P3/P4 尚未接入。
+- 打包拒绝非系统 dylib 依赖，并携带第三方许可证。签名、公证、公开发布和双设备功能验收分别判定。

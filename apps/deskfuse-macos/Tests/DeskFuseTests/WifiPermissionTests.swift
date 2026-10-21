@@ -5,9 +5,9 @@ import Testing
 @Suite @MainActor struct WifiPermissionTests {
     @Test func wifiHasItsOwnUnifiedPermissionEntry() {
         #expect(LaunchPermission.allCases.contains(.wifi))
-        #expect(LaunchPermission.wifi.pane == nil)
         #expect(LaunchPermission.wifi.title == "Wi-Fi 名称（定位）")
-        #expect(LaunchPermission.wifi.purpose.contains("不采集位置"))
+        #expect(LaunchPermission.wifi.purpose.contains("不会获取位置"))
+        #expect(!LaunchPermission.wifi.requiresRelaunch)
     }
 
     @Test func wifiAuthorizationIsNotInferredFromAnSSID() {

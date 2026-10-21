@@ -24,7 +24,7 @@ private struct LifetimeKey: EnvironmentKey {
 
     func testPresentationValuesCrossBoundary() {
         var parent = EnvironmentValues()
-        parent.quietWorkspace = true
+        parent.dfOpaque = true
         parent.colorScheme = .dark
         parent.controlSize = .small
         parent.font = .system(size: 13)

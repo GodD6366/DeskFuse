@@ -142,3 +142,59 @@ impl Engine {
             .control_problem(device(&peer_id)?, &session, generation))
     }
 }
+
+#[derive(uniffi::Object)]
+pub struct RemoteRdpTunnelConnection {
+    #[cfg(unix)]
+    connection: Arc<deskfuse_engine::remote_application::RdpTunnelConnection>,
+}
+#[uniffi::export]
+impl RemoteRdpTunnelConnection {
+    pub fn close(&self) {
+        #[cfg(unix)]
+        self.connection.close();
+    }
+    pub fn closed_reason(&self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            self.connection.closed_reason()
+        }
+        #[cfg(not(unix))]
+        {
+            Some("此平台不支持原生 RDP 隧道".into())
+        }
+    }
+}
+#[uniffi::export]
+impl Engine {
+    /// Takes ownership of fd on every path, including invalid ticket/peer errors.
+    /// The native bridge transfers this socketpair endpoint exactly once.
+    pub fn open_remote_rdp_tunnel(
+        &self,
+        peer_id: String,
+        ticket: Vec<u8>,
+        fd: i32,
+    ) -> Result<Arc<RemoteRdpTunnelConnection>, EngineError> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::FromRawFd;
+            if fd < 0 {
+                return Err(failure("无效的 RDP 隧道描述符"));
+            }
+            // SAFETY: the in-process C bridge transfers a uniquely owned socketpair fd.
+            #[allow(unsafe_code)]
+            let socket = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+            self.active()?;
+            let service = service().map_err(failure)?;
+            let connection = service
+                .open_rdp_tunnel(device(&peer_id)?, ticket, socket)
+                .map_err(failure)?;
+            Ok(Arc::new(RemoteRdpTunnelConnection { connection }))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (peer_id, ticket, fd);
+            Err(failure("此平台不支持原生 RDP 隧道"))
+        }
+    }
+}

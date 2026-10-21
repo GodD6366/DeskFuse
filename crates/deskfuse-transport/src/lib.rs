@@ -20,6 +20,7 @@ pub mod input_executor;
 pub mod microphone;
 pub mod motion_diag;
 mod network;
+pub mod rdp_tunnel;
 pub mod remote_application;
 mod session_auth;
 pub use network::{NetworkTransportRequest, NetworkTransportStream};
@@ -1633,6 +1634,7 @@ struct QuinnShared {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
+    rdp: rdp_tunnel::RdpHub,
     microphone: microphone::MicrophoneHub,
     stopping: Arc<AtomicBool>,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -1699,6 +1701,7 @@ pub struct QuinnTransport {
     identity: Arc<RwLock<Option<Arc<LocalIdentity>>>>,
     network: network::NetworkHub,
     remote_app: remote_application::RemoteHub,
+    rdp: rdp_tunnel::RdpHub,
     microphone: microphone::MicrophoneHub,
     lan_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     lan_endpoints: Arc<Mutex<LanEndpoints>>,
@@ -1773,6 +1776,7 @@ impl QuinnTransport {
             identity: self.identity.clone(),
             network: self.network.clone(),
             remote_app: self.remote_app.clone(),
+            rdp: self.rdp.clone(),
             microphone: self.microphone.clone(),
             lan_tasks: self.lan_tasks.clone(),
             stopping: self.shutdown_started.clone(),
@@ -1806,6 +1810,7 @@ impl QuinnTransport {
             identity: Arc::default(),
             network: network::NetworkHub::new(),
             remote_app: remote_application::RemoteHub::new(),
+            rdp: rdp_tunnel::RdpHub::new(),
             microphone: microphone::MicrophoneHub::new(),
             lan_tasks: Arc::default(),
             lan_endpoints: Arc::default(),
@@ -2050,6 +2055,7 @@ impl QuinnTransport {
         }
         let network = network::NetworkHub::new();
         let remote_app = remote_application::RemoteHub::new();
+        let rdp = rdp_tunnel::RdpHub::new();
         let microphone = microphone::MicrophoneHub::new();
         let identity = Arc::default();
         let bound_addr = endpoint
@@ -2092,6 +2098,7 @@ impl QuinnTransport {
             identity: Arc::clone(&identity),
             network: network.clone(),
             remote_app: remote_app.clone(),
+            rdp: rdp.clone(),
             microphone: microphone.clone(),
             lan_tasks: lan_tasks.clone(),
             stopping: stopping.clone(),
@@ -2160,6 +2167,7 @@ impl QuinnTransport {
             identity,
             network,
             remote_app,
+            rdp,
             microphone,
             lan_tasks,
             lan_endpoints,
@@ -3523,6 +3531,13 @@ async fn serve_connection(
                                 });
                             }
                         }
+                        Some(Message::RemoteRdpTunnel(open)) => {
+                            pending.insert(ordinal, None);
+                            if negotiated.contains(Capabilities::REMOTE_APPLICATION_RDP) && !shared.is_revoked(peer).unwrap_or(true) {
+                                let hub = shared.rdp.clone();
+                                tokio::spawn(async move { hub.accept(peer, open.ticket, send, recv).await; });
+                            }
+                        }
                         Some(Message::RemoteApplicationOpen(_)) => {
                             pending.insert(ordinal, None);
                             if negotiated.contains(Capabilities::REMOTE_APPLICATION) && !shared.is_revoked(peer).unwrap_or(true) {
@@ -3654,7 +3669,11 @@ async fn read_control_frame(
     let envelope = read_frame(recv, timeout).await?;
     if matches!(
         envelope.message,
-        Some(Message::RemoteApplicationOpen(_) | Message::MicrophoneOpen(_))
+        Some(
+            Message::RemoteApplicationOpen(_)
+                | Message::MicrophoneOpen(_)
+                | Message::RemoteRdpTunnel(_)
+        )
     ) {
         return Ok(envelope);
     }

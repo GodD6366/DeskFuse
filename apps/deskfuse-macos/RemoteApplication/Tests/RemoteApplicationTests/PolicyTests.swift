@@ -4,7 +4,9 @@ import Testing
 
 @Test func nativeSixKIsNotCappedAndPortraitBudgetKeepsAspect() throws {
     let sixK = PixelSize(width: 6016, height: 3384)
-    let profile = try VideoProfile.requested(native: sixK, sourceHz: 120, preferences: VideoPreferences())
+    var preference = VideoPreferences()
+    preference.refresh = .hz120
+    let profile = try VideoProfile.requested(native: sixK, sourceHz: 120, preferences: preference)
     #expect(profile.pixels == sixK)
     #expect(profile.framesPerSecond == 120)
     #expect(profile.reason == nil)

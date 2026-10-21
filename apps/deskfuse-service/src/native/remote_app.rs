@@ -9,13 +9,16 @@
 //!
 //! This module owns only the registry surface and the installed-app catalog. The
 //! RDP connection itself is terminated by the peer (a DeskFuse Mac running an RDP
-//! client) against the standard Remote Desktop listener; this service never
-//! proxies RDP bytes and never reads the user's Windows account credentials.
+//! client) over an authenticated QUIC tunnel to loopback; this service never
+//! decrypts RDP bytes or reads the user's Windows account credentials.
 #![allow(unsafe_code)]
 
 use super::security;
+use crate::remote_rdp_protocol::{
+    CatalogApp, HostCheck, RdpHost, RemoteAppMessage, RemoteAppRequest, VERSION, parse_request,
+};
+use deskfuse_transport::QuinnTransport;
 use deskfuse_transport::remote_application::RemoteSession;
-use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
 use windows_sys::Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
@@ -33,8 +36,119 @@ pub const TS_APP_ALLOW_LIST: &str =
 const APP_PATHS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths";
 /// CurrentVersion key carrying the edition identifier used for the capability gate.
 const CURRENT_VERSION: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
-/// Token replaced by the controller with the resolved peer IPv4 before connecting.
-pub const RDP_HOST_TOKEN: &str = "{host}";
+/// Read the local RDP listener port; never accept a destination from the peer.
+pub fn rdp_port() -> Option<u16> {
+    let key = open_key(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
+        KEY_READ,
+    )?;
+    let value = read_dword(key, "PortNumber")
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0);
+    unsafe { RegCloseKey(key) };
+    value
+}
+
+pub fn host_status() -> RdpHost {
+    let supported = availability() == Availability::Available;
+    let key = open_key(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Terminal Server",
+        KEY_READ,
+    );
+    let enabled = key.and_then(|key| {
+        let value = read_dword(key, "fDenyTSConnections");
+        unsafe { RegCloseKey(key) };
+        value
+    }) == Some(0);
+    let port = rdp_port().unwrap_or(0);
+    let certificate = listener_fingerprint();
+    RdpHost {
+        port,
+        certificate_sha256: certificate.clone(),
+        checks: vec![
+            HostCheck {
+                name: "edition".into(),
+                passed: supported,
+                message: if supported {
+                    "Windows 版本支持远程桌面"
+                } else {
+                    "请使用 Windows Pro、Enterprise 或 Server"
+                }
+                .into(),
+            },
+            HostCheck {
+                name: "rdp_enabled".into(),
+                passed: enabled,
+                message: if enabled {
+                    "远程桌面已开启"
+                } else {
+                    "请在 Windows 本机的设置中开启远程桌面"
+                }
+                .into(),
+            },
+            HostCheck {
+                name: "listener".into(),
+                passed: port > 0 && certificate.is_some(),
+                message: if certificate.is_some() {
+                    "已读取 RDP 监听证书"
+                } else {
+                    "无法读取 RDP 监听证书，请在 Windows 本机检查 Remote Desktop Services"
+                }
+                .into(),
+            },
+        ],
+    }
+}
+
+// Query the listener's actual SHA-1 binding (not an arbitrary certificate in the
+// store), then hash that certificate's DER as SHA-256. No credentials or remote
+// command strings enter this fixed, local-only query.
+fn listener_fingerprint() -> Option<String> {
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let script = r#"$ErrorActionPreference='Stop'; $h=(Get-CimInstance -Namespace root/cimv2/terminalservices -ClassName Win32_TSGeneralSetting -Filter "TerminalName='RDP-tcp'").SSLCertificateSHA1Hash; if(-not $h){exit 1}; $c=$null; foreach($s in @('Remote Desktop','My')) { $p='Cert:\LocalMachine\'+$s+'\'+$h; if(Test-Path -LiteralPath $p){$c=Get-Item -LiteralPath $p; break} }; if(-not $c){exit 1}; $sha=[System.Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash($c.RawData)).Replace('-',':') } finally {$sha.Dispose()}"#;
+    let executable = std::path::PathBuf::from(std::env::var_os("SystemRoot")?)
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let mut child = Command::new(executable)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    let fingerprint = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    crate::remote_rdp_protocol::valid_fingerprint(&fingerprint).then_some(fingerprint)
+}
 
 /// Why RemoteApp cannot be hosted on this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,8 +330,8 @@ fn launchable_apps() -> Vec<RemoteAppEntry> {
     merge_catalog(registered, installed)
 }
 
-/// Render a RemoteApp `.rdp` file. `full address` carries [`RDP_HOST_TOKEN`], to
-/// be replaced by the controller with the resolved peer IPv4 (plus `:3389`).
+/// Render a RemoteApp document. The logical hostname cannot be dialed; the
+/// native bridge always supplies a socketpair-backed QUIC transport.
 #[must_use]
 pub fn rdp_file(app: &RemoteAppEntry) -> io::Result<String> {
     // Callers may construct entries directly. Do not rely on debug assertions:
@@ -229,7 +343,7 @@ pub fn rdp_file(app: &RemoteAppEntry) -> io::Result<String> {
         ));
     }
     let mut lines = Vec::new();
-    lines.push(format!("full address:s:{RDP_HOST_TOKEN}:3389"));
+    lines.push("full address:s:deskfuse-rdp.invalid".into());
     lines.push("prompt for credentials on client:i:1".into());
     lines.push("remoteapplicationmode:i:2".into());
     lines.push(format!("remoteapplicationprogram:s:||{}", app.name));
@@ -462,17 +576,6 @@ fn set_dword(hkey: HKEY, name: &str, value: u32) -> io::Result<()> {
 // --- [`RemoteAppRequest`] and receives [`RemoteAppMessage`]; both are externally
 // --- tagged `type` JSON documents so Rust and Swift can share the same schema.
 
-/// Catalog entry sent to a controller.
-#[derive(Clone, Serialize)]
-pub struct CatalogApp {
-    pub name: String,
-    pub display_name: String,
-    pub path: String,
-    pub command_line: String,
-    pub icon_path: String,
-    pub icon_index: u32,
-}
-
 impl From<RemoteAppEntry> for CatalogApp {
     fn from(entry: RemoteAppEntry) -> Self {
         Self {
@@ -486,47 +589,21 @@ impl From<RemoteAppEntry> for CatalogApp {
     }
 }
 
-/// Server → controller messages.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RemoteAppMessage {
-    Catalog {
-        version: u32,
-        available: bool,
-        reason: Option<String>,
-        apps: Vec<CatalogApp>,
-    },
-    Rdp {
-        version: u32,
-        rdp: String,
-    },
-    Error {
-        version: u32,
-        code: String,
-        message: String,
-    },
-}
-
-/// Controller → server messages.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RemoteAppRequest {
-    Catalog { version: u32 },
-    Launch { version: u32, name: String },
-}
-
-const MAX_REMOTE_APP_REQUEST_BYTES: usize = 64 * 1024;
-
 /// Serve one authenticated remote-app stream: advertise the catalog, then answer
 /// `catalog` (resend) and `launch` (return the `.rdp` file) requests until the
 /// peer closes the stream. Runs on a blocking thread; `receive` waits at most
 /// 250 ms per poll and never touches the Tokio worker.
-pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
+pub fn serve(
+    session: Arc<RemoteSession>,
+    transport: QuinnTransport,
+    authorized: impl Fn() -> bool,
+) {
     if !authorized() {
         session.close();
         return;
     }
     let availability = availability();
+    let host = host_status();
     let (available, reason) = match &availability {
         Availability::Available => (true, None),
         Availability::UnsupportedEdition { edition } => (
@@ -535,9 +612,12 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
         ),
     };
     let catalog = || RemoteAppMessage::Catalog {
-        version: 1,
-        available,
-        reason: reason.clone(),
+        version: VERSION,
+        available: available && host.available(),
+        host: host.clone(),
+        reason: reason
+            .clone()
+            .or_else(|| (!host.available()).then(|| "请先按预检提示设置 Windows 远程桌面".into())),
         apps: if available {
             launchable_apps()
                 .into_iter()
@@ -560,40 +640,40 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                 if !authorized() {
                     break;
                 }
-                if data.len() > MAX_REMOTE_APP_REQUEST_BYTES {
-                    let _ = send(
-                        &session,
-                        &RemoteAppMessage::Error {
-                            version: 1,
-                            code: "request_too_large".into(),
-                            message: "远程应用请求超过大小限制".into(),
-                        },
-                    );
-                    continue;
-                }
-                let Ok(request) = serde_json::from_slice::<RemoteAppRequest>(&data) else {
-                    let _ = send(
-                        &session,
-                        &RemoteAppMessage::Error {
-                            version: 1,
-                            code: "invalid_request".into(),
-                            message: "无法解析请求".into(),
-                        },
-                    );
-                    continue;
+                let request = match parse_request(&data) {
+                    Ok(request) => request,
+                    Err(code) => {
+                        let _ = send(
+                            &session,
+                            &RemoteAppMessage::Error {
+                                version: VERSION,
+                                code: code.into(),
+                                message: if code == "unsupported_version" {
+                                    "请将两端 DeskFuse 升级到支持 Windows 目录 v2 的版本"
+                                } else {
+                                    "远程应用请求无效或超过大小限制"
+                                }
+                                .into(),
+                            },
+                        );
+                        continue;
+                    }
                 };
                 match request {
-                    RemoteAppRequest::Catalog { version: 1 } => {
+                    RemoteAppRequest::Catalog { version: VERSION } => {
                         if send(&session, &catalog()).is_err() {
                             break;
                         }
                     }
-                    RemoteAppRequest::Launch { version: 1, name } => {
+                    RemoteAppRequest::Prepare {
+                        version: VERSION,
+                        name,
+                    } => {
                         if !available {
                             let _ = send(
                                 &session,
                                 &RemoteAppMessage::Error {
-                                    version: 1,
+                                    version: VERSION,
                                     code: "unavailable".into(),
                                     message: reason.clone().unwrap_or_default(),
                                 },
@@ -607,7 +687,7 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                             let _ = send(
                                 &session,
                                 &RemoteAppMessage::Error {
-                                    version: 1,
+                                    version: VERSION,
                                     code: "not_found".into(),
                                     message: "应用已移除或不在当前可用目录中，请刷新列表".into(),
                                 },
@@ -626,7 +706,7 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                                 let _ = send(
                                     &session,
                                     &RemoteAppMessage::Error {
-                                        version: 1,
+                                        version: VERSION,
                                         code: "registration_failed".into(),
                                         message: format!("自动注册应用失败：{error}"),
                                     },
@@ -634,10 +714,36 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                                 continue;
                             }
                         }
-                        match rdp_file(&entry) {
-                            Ok(rdp) => {
-                                if send(&session, &RemoteAppMessage::Rdp { version: 1, rdp })
-                                    .is_err()
+                        let host = host_status();
+                        if !host.available() || !authorized() {
+                            let _ = send(
+                                &session,
+                                &RemoteAppMessage::Error {
+                                    version: VERSION,
+                                    code: "preflight_failed".into(),
+                                    message: "Windows 远程桌面预检未通过，请在本机完成设置后刷新"
+                                        .into(),
+                                },
+                            );
+                            continue;
+                        }
+                        match rdp_file(&entry).map_err(|e| e.to_string()).and_then(|rdp| {
+                            transport
+                                .issue_remote_rdp_ticket(session.peer)
+                                .map(|ticket| (rdp, ticket))
+                        }) {
+                            Ok((rdp, ticket)) => {
+                                if send(
+                                    &session,
+                                    &RemoteAppMessage::Ready {
+                                        version: VERSION,
+                                        name,
+                                        ticket,
+                                        rdp,
+                                        host,
+                                    },
+                                )
+                                .is_err()
                                 {
                                     break;
                                 }
@@ -646,9 +752,9 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                                 let _ = send(
                                     &session,
                                     &RemoteAppMessage::Error {
-                                        version: 1,
-                                        code: "invalid_entry".into(),
-                                        message: "应用注册信息无效，请刷新目录".into(),
+                                        version: VERSION,
+                                        code: "prepare_failed".into(),
+                                        message: "无法准备远程应用，请刷新目录后重试".into(),
                                     },
                                 );
                             }
@@ -658,7 +764,7 @@ pub fn serve(session: Arc<RemoteSession>, authorized: impl Fn() -> bool) {
                         let _ = send(
                             &session,
                             &RemoteAppMessage::Error {
-                                version: 1,
+                                version: VERSION,
                                 code: "unsupported_version".into(),
                                 message: "不支持的 Windows 远程应用协议版本".into(),
                             },

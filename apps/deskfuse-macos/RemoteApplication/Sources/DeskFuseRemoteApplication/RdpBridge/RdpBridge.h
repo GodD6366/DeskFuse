@@ -41,6 +41,13 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username,
 /* 0 on success; spawns the connect/event-loop thread. */
 int rdp_bridge_start(rdp_bridge* bridge);
 
+/* Transfers the socketpair's pump end to the caller exactly once. The caller
+ * must close it or transfer ownership to Rust before starting FreeRDP. */
+int rdp_bridge_take_tunnel_fd(rdp_bridge* bridge);
+
+/* Queues an additional registered alias on the existing RAIL session. */
+int rdp_bridge_execute(rdp_bridge* bridge, const char* name);
+
 /* Requests disconnect and joins the background thread. Safe to call repeatedly. */
 void rdp_bridge_stop(rdp_bridge* bridge);
 

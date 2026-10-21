@@ -277,6 +277,7 @@ impl RemoteHub {
 impl QuinnTransport {
     pub fn set_remote_application_enabled(&self, enabled: bool) {
         self.remote_app.set_enabled(enabled);
+        self.rdp.set_enabled(enabled);
     }
     pub fn take_remote_application(&self) -> Option<Arc<RemoteSession>> {
         self.remote_app.take()

@@ -38,8 +38,8 @@ pub use wire::envelope::Message;
 pub use wire::{
     ClipboardUpdate, DisplayInfo, Envelope, Error, Goodbye, Hello, HelloAck, InputEndpoints,
     InputEvent, InputEventBatch, InputSharing, MicrophoneOpen, NetworkControl, PairingDecision,
-    PairingRequest, PeerInfo, Ping, Pong, RemoteApplicationOpen, SessionProof, WorkflowSync,
-    envelope, input_event,
+    PairingRequest, PeerInfo, Ping, Pong, RemoteApplicationOpen, RemoteRdpTunnel, SessionProof,
+    WorkflowSync, envelope, input_event,
 };
 
 /// ALPN protocol identifier.
@@ -93,6 +93,13 @@ impl Envelope {
 
 fn validate_message(message: &Message) -> Result<(), ProtocolError> {
     match message {
+        Message::RemoteRdpTunnel(open) => {
+            if open.version == 1 && (open.ticket.is_empty() || open.ticket.len() == 32) {
+                Ok(())
+            } else {
+                Err(ProtocolError::InvalidPayload("RDP tunnel version/ticket"))
+            }
+        }
         Message::MicrophoneOpen(open) => {
             if (open.version == 1 && open.status <= 5) || (open.version == 2 && open.status <= 2) {
                 Ok(())

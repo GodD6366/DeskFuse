@@ -27,7 +27,7 @@ pub struct Envelope {
     /// The message carried by this envelope.
     #[prost(
         oneof = "envelope::Message",
-        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, 44, 45, 46, 47, 48"
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49"
     )]
     pub message: Option<envelope::Message>,
 }
@@ -37,8 +37,8 @@ pub mod envelope {
         ClipboardUpdate, DisplayInfo, Error, Goodbye, Hello, HelloAck, InputEndpoints,
         InputEventBatch, InputSharing, MicrophoneOpen, NetworkControl, PairingDecision,
         PairingRequest, PeerInfo, Ping, Pong, ReleaseInventory, RemoteApplicationOpen,
-        SessionProof, UpdateCancel, UpdateChunk, UpdateCommand, UpdateCommandAck, UpdateReceipt,
-        UpdateRequest, UpdateStatus, WorkflowSync,
+        RemoteRdpTunnel, SessionProof, UpdateCancel, UpdateChunk, UpdateCommand, UpdateCommandAck,
+        UpdateReceipt, UpdateRequest, UpdateStatus, WorkflowSync,
     };
     use prost::Oneof;
 
@@ -101,6 +101,8 @@ pub mod envelope {
         UpdateCommand(UpdateCommand),
         #[prost(message, tag = "48")]
         UpdateCommandAck(UpdateCommandAck),
+        #[prost(message, tag = "49")]
+        RemoteRdpTunnel(RemoteRdpTunnel),
     }
 }
 
@@ -561,6 +563,16 @@ mod motion_control_tests {
 pub struct RemoteApplicationOpen {
     #[prost(uint32, tag = "1")]
     pub version: u32,
+}
+
+/// Opens an opaque RDP byte stream on the authenticated control connection.
+/// Requests carry a single-use 256-bit ticket; the successful ack has no ticket.
+#[derive(Clone, PartialEq, Message)]
+pub struct RemoteRdpTunnel {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub ticket: Vec<u8>,
 }
 
 /// A dedicated microphone stream. Status: 0=request, 1=accepted, 2=disabled,

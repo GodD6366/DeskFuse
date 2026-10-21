@@ -191,14 +191,10 @@ struct RemoteRdpPicker: View {
                             }
                         }
                     }
-                    Text("Windows 主机需已启用远程桌面和相应防火墙规则。")
+                    Text("Windows 主机需已开启远程桌面；画面和输入通过 DeskFuse 加密隧道转发，无需额外开放防火墙端口。")
                         .font(DFType.caption)
                         .dfSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
-                    if let selected, session.launchedName == selected.name {
-                        Text("正在打开：\(selected.displayName.isEmpty ? selected.name : selected.displayName)")
-                            .font(DFType.caption).dfSecondaryText()
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 16)
@@ -379,10 +375,10 @@ struct RemoteRdpPicker: View {
 
 @available(macOS 14.2, *)
 @MainActor final class RemoteRdpWindow: NSWindowController, NSWindowDelegate {
-    let session: RemoteRdpSession
+    let host: RemoteRdpHostConnection
     var onClose: (() -> Void)?
-    init(session: RemoteRdpSession, title: String) {
-        self.session = session
+    init(host: RemoteRdpHostConnection, title: String) {
+        self.host = host
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = title
@@ -390,75 +386,43 @@ struct RemoteRdpPicker: View {
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
-        window.contentViewController = NSHostingController(rootView: RemoteRdpViewer(session: session))
+        window.contentViewController = NSHostingController(rootView: RemoteRdpViewer(host: host))
         window.center()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { session.stop(); onClose?() }
+    func windowWillClose(_ notification: Notification) { host.stop(); onClose?() }
 }
 
 @available(macOS 14.2, *)
 private struct RemoteRdpViewer: View {
-    @Bindable var session: RemoteRdpSession
+    @Bindable var host: RemoteRdpHostConnection
     var body: some View {
         ZStack {
-            RemoteRdpCanvas(session: session)
-            if let fingerprint = session.certificateFingerprint,
-               case .failed = session.bridgeState {
-                certificateNotice(fingerprint)
-            } else if case .failed(let message) = session.phase { notice(message) }
-            else if case .failed(let message) = session.bridgeState { notice(message) }
-            else if session.bridgeState == .disconnected { notice("RDP 已断开。关闭此窗口后从应用列表重新打开。") }
-            else if session.bridgeState != .connected { ProgressView("正在连接 Windows RDP…").padding().background(.regularMaterial) }
+            RemoteRdpCanvas(host: host)
+            if case .failed(let message) = host.phase { notice(message) }
+            else if case .failed(let message) = host.bridgeState { notice(message) }
+            else if host.bridgeState == .disconnected { notice("RDP 已断开。关闭此窗口后从应用列表重新打开。") }
+            else if host.bridgeState != .connected { ProgressView("正在连接 Windows RDP…").padding().background(.regularMaterial) }
         }
     }
     private func notice(_ text: String) -> some View {
         Text(text).textSelection(.enabled).padding().background(.regularMaterial)
     }
-
-    private func certificateNotice(_ fingerprint: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Windows RDP 服务器证书未获信任")
-                .font(DFType.section)
-            Text("目标：\(session.peerHost):3389")
-                .font(DFType.caption)
-            Text("请确认这是目标 Windows 主机的证书指纹。信任后会按此指纹固定，证书变化时连接会再次拒绝。")
-                .fixedSize(horizontal: false, vertical: true)
-            Text(fingerprint)
-                .font(DFType.caption.monospaced())
-                .textSelection(.enabled)
-            if let saved = session.savedCertificateFingerprint, saved.caseInsensitiveCompare(fingerprint) != .orderedSame {
-                Text("已保存的指纹：\(saved)")
-                    .font(DFType.caption.monospaced())
-                    .textSelection(.enabled)
-                Text("证书已变化；只有在确认 Windows 主机更换证书后，才替换已保存指纹。")
-                    .font(DFType.caption)
-                    .foregroundStyle(DFPalette.warning)
-            }
-            if let error = session.certificateTrustError { Text(error).foregroundStyle(DFPalette.warning) }
-            Button(session.savedCertificateFingerprint == nil ? "核对后信任并重试" : "核对后替换指纹并重试") { session.trustCurrentCertificate() }
-                .buttonStyle(.dfPrimary)
-                .disabled(session.certificateTrustInProgress)
-        }
-        .padding()
-        .frame(maxWidth: 560)
-        .background(.regularMaterial)
-    }
 }
 
 @available(macOS 14.2, *)
 private struct RemoteRdpCanvas: NSViewRepresentable {
-    let session: RemoteRdpSession
+    let host: RemoteRdpHostConnection
     func makeNSView(context: Context) -> RemoteRdpCanvasView {
-        let view = RemoteRdpCanvasView(); view.session = session; return view
+        let view = RemoteRdpCanvasView(); view.host = host; return view
     }
-    func updateNSView(_ view: RemoteRdpCanvasView, context: Context) { view.session = session }
+    func updateNSView(_ view: RemoteRdpCanvasView, context: Context) { view.host = host }
     static func dismantleNSView(_ view: RemoteRdpCanvasView, coordinator: ()) { view.stop() }
 }
 
 @available(macOS 14.2, *)
 @MainActor private final class RemoteRdpCanvasView: NSView {
-    weak var session: RemoteRdpSession?
+    weak var host: RemoteRdpHostConnection?
     private var image: NSImage?
     private var timer: Timer?
     private var pressed = Set<UInt16>()
@@ -483,7 +447,7 @@ private struct RemoteRdpCanvas: NSViewRepresentable {
     override func resignFirstResponder() -> Bool { releaseInput(); return super.resignFirstResponder() }
     private func releaseInput() {
         for code in pressed { sendKey(code, down: false) }; pressed.removeAll()
-        for flag in buttons { session?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flag) }; buttons.removeAll()
+        for flag in buttons { host?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flag) }; buttons.removeAll()
     }
     private var imageRect: NSRect {
         guard let image else { return .zero }
@@ -496,7 +460,7 @@ private struct RemoteRdpCanvas: NSViewRepresentable {
         image?.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1)
     }
     private func refreshFrame() {
-        guard let session, let frame = session.frame() else { return }
+        guard let host, let frame = host.frame() else { return }
         guard let provider = CGDataProvider(data: frame.bytes as CFData),
               let cgImage = CGImage(width: frame.width, height: frame.height, bitsPerComponent: 8,
                 bitsPerPixel: 32, bytesPerRow: frame.width * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -523,16 +487,16 @@ private struct RemoteRdpCanvas: NSViewRepresentable {
         if down {
             if sendMouse(event, flags: flag | 0x8000) { buttons.insert(flag) }
         } else if buttons.remove(flag) != nil {
-            session?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flag)
+            host?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flag)
         }
     }
     private func sendMouse(_ event: NSEvent, flags: UInt16) -> Bool {
-        guard let image, window?.isKeyWindow == true, session?.bridgeState == .connected else { return false }
+        guard let image, window?.isKeyWindow == true, host?.bridgeState == .connected else { return false }
         let point = convert(event.locationInWindow, from: nil), rect = imageRect
         guard rect.width > 0, rect.height > 0, rect.contains(point) || !buttons.isEmpty else { return false }
         lastPoint = (UInt16(max(0, min(image.size.width - 1, (point.x - rect.minX) / rect.width * image.size.width))),
                      UInt16(max(0, min(image.size.height - 1, (rect.maxY - point.y) / rect.height * image.size.height))))
-        session?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flags); return true
+        host?.mouse(x: lastPoint.0, y: lastPoint.1, flags: flags); return true
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self else { return false }
@@ -557,7 +521,7 @@ private struct RemoteRdpCanvas: NSViewRepresentable {
     }
     private func sendKey(_ code: UInt16, down: Bool) {
         guard let scan = Self.scancodes[code] else { return }
-        session?.key(flags: (down ? 0 : 0x8000) | (scan > 0xff ? 0x100 : 0), scancode: UInt8(scan & 0xff))
+        host?.key(flags: (down ? 0 : 0x8000) | (scan > 0xff ? 0x100 : 0), scancode: UInt8(scan & 0xff))
     }
     // macOS hardware positions -> PC set-1 codes. Windows owns the keyboard
     // layout/IME; no characters are guessed from the Mac's active layout.

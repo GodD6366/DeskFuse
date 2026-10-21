@@ -33,3 +33,7 @@ printf '== ui tokens ==\n'
 
 "$ROOT_DIR/scripts/build-native-macos.sh" debug
 "$ROOT_DIR/scripts/test-microphone-native.sh" --built
+printf '== RDP bridge regression ==\n'
+"$ROOT_DIR/scripts/build-freerdp-macos.sh" --test
+printf '== RemoteApplication Swift tests ==\n'
+python3 "$ROOT_DIR/scripts/test-remote-application.py"

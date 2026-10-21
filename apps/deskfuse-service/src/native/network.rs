@@ -208,14 +208,45 @@ impl Network {
             let peer = session.peer;
             if self.remote_app_authorized(peer) {
                 let runtime = self.runtime.clone();
+                let transport = self.remote_app_transport.clone();
                 tokio::task::spawn_blocking(move || {
-                    remote_app::serve(session, || {
+                    remote_app::serve(session, transport, || {
                         remote_app_authorized(&runtime.snapshot_view(), peer)
                     });
                 });
             } else {
                 session.close();
             }
+        }
+        while let Some(tunnel) = self.remote_app_transport.take_remote_rdp_tunnel() {
+            let runtime = self.runtime.clone();
+            let peer = tunnel.peer;
+            if !self.remote_app_authorized(peer) {
+                continue;
+            }
+            tokio::spawn(async move {
+                let Some(port) = remote_app::rdp_port() else {
+                    return;
+                };
+                let Ok(Ok(socket)) = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)),
+                )
+                .await
+                else {
+                    return;
+                };
+                let _ = socket.set_nodelay(true);
+                let forwarding = tunnel.forward(socket);
+                tokio::pin!(forwarding);
+                let mut check = tokio::time::interval(std::time::Duration::from_millis(100));
+                loop {
+                    tokio::select! {
+                        _ = &mut forwarding => break,
+                        _ = check.tick() => if !remote_app_authorized(&runtime.snapshot_view(), peer) { break; },
+                    }
+                }
+            });
         }
     }
 

@@ -19,6 +19,7 @@ quinn.workspace = true
 rustls.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 deskfuse-core = { path = "../deskfuse-core" }
 deskfuse-identity = { path = "../deskfuse-identity" }

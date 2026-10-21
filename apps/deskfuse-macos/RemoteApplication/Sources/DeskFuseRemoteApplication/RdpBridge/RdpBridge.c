@@ -14,11 +14,18 @@
 #include <freerdp/channels/channels.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/transport_io.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <errno.h>
 
 #include <winpr/crt.h>
 #include <winpr/assert.h>
 #include <winpr/thread.h>
 #include <winpr/synch.h>
+#include <winpr/winsock.h>
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -42,6 +49,13 @@ struct rdp_bridge
 	rdpContext* context;
 	freerdp* instance;
 	HANDLE thread;
+	int tunnel_fd;
+	int transport_fd;
+	RailClientContext* rail;
+	int rail_ready;
+	char pending_program[16][132];
+    unsigned pending_count;
+	pthread_mutex_t command_lock;
 
 	char* rdp_file;
 	char* username;
@@ -53,6 +67,7 @@ struct rdp_bridge
 
 	atomic_int connected;
 	atomic_int stop_requested;
+	atomic_int certificate_rejected;
 
 	pthread_mutex_t lock;
 	uint8_t* pixels; /* bridge-owned copy of the composed frame */
@@ -96,17 +111,73 @@ static int fingerprints_match(const char* expected, const char* actual)
 	return valid_fingerprint(expected) && valid_fingerprint(actual) && _stricmp(expected, actual) == 0;
 }
 
-static BOOL bridge_set_certificate_store_path(rdpSettings* settings)
+/* FreeRDP 3.14's default ConnectLayer bypasses TCPConnect. Override both:
+ * all I/O must use this socketpair, even if a proxy is set in the environment. */
+typedef struct { int fd; HANDLE event; } bridgeSocket;
+
+static int bridge_tcp_connect(rdpContext* context, rdpSettings* settings,
+                              const char* host, int port, DWORD timeout)
 {
-	const char* home = getenv("HOME");
-	char path[PATH_MAX];
-	int length;
-	if (!home || !*home)
-		return TRUE;
-	length = snprintf(path, sizeof(path), "%s/Library/Application Support/DeskFuse/remote-rdp", home);
-	if (length <= 0 || (size_t)length >= sizeof(path))
-		return FALSE;
-	return freerdp_settings_set_string(settings, FreeRDP_ConfigPath, path);
+    WINPR_UNUSED(settings); WINPR_UNUSED(host); WINPR_UNUSED(port); WINPR_UNUSED(timeout);
+    rdp_bridge* bridge = ((bridgeContext*)context)->bridge;
+    int fd = bridge->transport_fd;
+    bridge->transport_fd = -1;
+    return fd;
+}
+static int bridge_socket_read(void* data, void* buffer, int size)
+{
+    bridgeSocket* socket = data;
+    WSAResetEvent(socket->event);
+    int n = (int)recv(socket->fd, buffer, (size_t)size, 0);
+    if (n == 0) return -1;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    return n;
+}
+static int bridge_socket_write(void* data, const void* buffer, int size)
+{
+    bridgeSocket* socket = data;
+    int n = (int)send(socket->fd, buffer, (size_t)size, 0);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    return n;
+}
+static BOOL bridge_socket_close(void* data)
+{
+    bridgeSocket* socket = data;
+    if (socket->fd >= 0) { shutdown(socket->fd, SHUT_RDWR); close(socket->fd); socket->fd = -1; }
+    if (socket->event) { WSACloseEvent(socket->event); socket->event = NULL; }
+    return TRUE;
+}
+static BOOL bridge_socket_wait(void* data, BOOL write, DWORD timeout)
+{
+    bridgeSocket* socket = data;
+    struct pollfd item = { .fd = socket->fd, .events = write ? POLLOUT : POLLIN };
+    int result;
+    do { result = poll(&item, 1, timeout == INFINITE ? -1 : (int)timeout); } while (result < 0 && errno == EINTR);
+    return result > 0 && !(item.revents & (POLLERR | POLLNVAL));
+}
+static HANDLE bridge_socket_event(void* data) { return ((bridgeSocket*)data)->event; }
+static rdpTransportLayer* bridge_connect_layer(rdpTransport* transport, const char* host,
+                                               int port, DWORD timeout)
+{
+    rdpContext* context = transport_get_context(transport);
+    rdpTransportLayer* layer = transport_layer_new(transport, sizeof(bridgeSocket));
+    if (!layer) return NULL;
+    bridgeSocket* socket = layer->userContext;
+    socket->fd = -1;
+    layer->Close = bridge_socket_close;
+    socket->fd = freerdp_get_io_callbacks(context)->TCPConnect(context, context->settings, host, port, timeout);
+    if (socket->fd < 0) goto fail;
+    socket->event = WSACreateEvent();
+    if (!socket->event || WSAEventSelect(socket->fd, socket->event, FD_READ | FD_CLOSE)) goto fail;
+    layer->Read = bridge_socket_read;
+    layer->Write = bridge_socket_write;
+    layer->Wait = bridge_socket_wait;
+    layer->GetEvent = bridge_socket_event;
+    return layer;
+fail:
+    bridge_socket_close(socket);
+    transport_layer_free(layer);
+    return NULL;
 }
 
 /* --- certificate / authentication ------------------------------------- */
@@ -133,11 +204,15 @@ static int bridge_verify_x509_certificate(freerdp* instance, const BYTE* data, s
 	if (certificate)
 		fingerprint = freerdp_certificate_get_fingerprint(certificate);
 	if (fingerprints_match(bridge->certificate_fingerprint, fingerprint))
+	{
+		atomic_store(&bridge->certificate_rejected, 0);
 		result = 2; /* accept for this session; the app owns the persistent pin */
+	}
 	else
 	{
+		atomic_store(&bridge->certificate_rejected, 1);
 		notify_detail(bridge, RDP_EVENT_CERTIFICATE_REJECTED,
-		              "RDP 服务器证书未获信任，请核对指纹后重试", fingerprint);
+		              "RDP 证书与已配对 Windows 下发的指纹不一致，请刷新目录后重试", fingerprint);
 	}
 	free(fingerprint);
 	freerdp_certificate_free(certificate);
@@ -259,13 +334,21 @@ static BOOL bridge_desktop_resize(rdpContext* context)
 static UINT bridge_rail_handshake(RailClientContext* context, const RAIL_HANDSHAKE_ORDER* order)
 {
 	WINPR_UNUSED(order);
-	return client_rail_server_start_cmd(context);
+	rdp_bridge* bridge = context->custom;
+    if (bridge->rail_ready) return CHANNEL_RC_OK;
+    UINT result = client_rail_server_start_cmd(context);
+    if (result == CHANNEL_RC_OK) bridge->rail_ready = 1;
+    return result;
 }
 
 static UINT bridge_rail_handshake_ex(RailClientContext* context, const RAIL_HANDSHAKE_EX_ORDER* order)
 {
 	WINPR_UNUSED(order);
-	return client_rail_server_start_cmd(context);
+	rdp_bridge* bridge = context->custom;
+    if (bridge->rail_ready) return CHANNEL_RC_OK;
+    UINT result = client_rail_server_start_cmd(context);
+    if (result == CHANNEL_RC_OK) bridge->rail_ready = 1;
+    return result;
 }
 
 static UINT bridge_rail_execute_result(RailClientContext* context, const RAIL_EXEC_RESULT_ORDER* result)
@@ -286,6 +369,8 @@ static void bridge_channel_connected(void* context, const ChannelConnectedEventA
 	{
 		RailClientContext* rail = event->pInterface;
 		rail->custom = client->bridge;
+        client->bridge->rail = rail;
+        client->bridge->rail_ready = 0;
 		rail->ServerHandshake = bridge_rail_handshake;
 		rail->ServerHandshakeEx = bridge_rail_handshake_ex;
 		rail->ServerExecuteResult = bridge_rail_execute_result;
@@ -299,7 +384,9 @@ static void bridge_channel_disconnected(void* context, const ChannelDisconnected
 	if (strcmp(event->name, RAIL_SVC_CHANNEL_NAME) == 0)
 	{
 		RailClientContext* rail = event->pInterface;
-		rail->custom = NULL;
+		((bridgeContext*)context)->bridge->rail = NULL;
+        ((bridgeContext*)context)->bridge->rail_ready = 0;
+        rail->custom = NULL;
 		rail->ServerHandshake = NULL;
 		rail->ServerHandshakeEx = NULL;
 		rail->ServerExecuteResult = NULL;
@@ -315,8 +402,7 @@ static BOOL bridge_pre_connect(freerdp* instance)
 	if (!freerdp_settings_set_bool(settings, FreeRDP_ExternalCertificateManagement, TRUE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, FALSE) ||
-	    !freerdp_settings_set_string(settings, FreeRDP_CertificateAcceptedFingerprints, NULL) ||
-	    !bridge_set_certificate_store_path(settings))
+	    !freerdp_settings_set_string(settings, FreeRDP_CertificateAcceptedFingerprints, NULL))
 		return FALSE;
 	PubSub_SubscribeChannelConnected(instance->context->pubSub, bridge_channel_connected);
 	PubSub_SubscribeChannelDisconnected(instance->context->pubSub, bridge_channel_disconnected);
@@ -392,6 +478,44 @@ static int bridge_entry(RDP_CLIENT_ENTRY_POINTS* entry)
 	return 0;
 }
 
+/* Launch commands are consumed only on FreeRDP's event-loop thread. */
+static void bridge_drain_execute(rdp_bridge* bridge)
+{
+    if (!bridge->rail || !bridge->rail_ready) return;
+    char program[132] = {0};
+    pthread_mutex_lock(&bridge->command_lock);
+    if (bridge->pending_count) {
+        memcpy(program, bridge->pending_program[0], sizeof(program));
+        bridge->pending_count--;
+        memmove(bridge->pending_program, bridge->pending_program + 1,
+                bridge->pending_count * sizeof(bridge->pending_program[0]));
+    }
+    pthread_mutex_unlock(&bridge->command_lock);
+    if (!program[0]) return;
+    RAIL_EXEC_ORDER order = {0};
+    order.flags = RAIL_EXEC_FLAG_EXPAND_ARGUMENTS;
+    order.RemoteApplicationProgram = program;
+    order.RemoteApplicationWorkingDir = "";
+    order.RemoteApplicationArguments = "";
+    if (bridge->rail->ClientExecute(bridge->rail, &order) != CHANNEL_RC_OK)
+        notify(bridge, RDP_EVENT_ERROR, "Windows 远程应用启动请求发送失败，请重试");
+}
+
+int rdp_bridge_execute(rdp_bridge* bridge, const char* name)
+{
+    if (!bridge || !name || !*name || strlen(name) > 128) return -1;
+    for (const unsigned char* p = (const unsigned char*)name; *p; p++)
+        if (*p < 32 || *p == 127 || *p == '/' || *p == '\\' || *p == ':' || *p == '"') return -1;
+    pthread_mutex_lock(&bridge->command_lock);
+    int result = -1;
+    if (bridge->pending_count < 16) {
+        snprintf(bridge->pending_program[bridge->pending_count++], 132, "||%s", name);
+        result = 0;
+    }
+    pthread_mutex_unlock(&bridge->command_lock);
+    return result;
+}
+
 /* --- connection thread ------------------------------------------------- */
 
 static DWORD bridge_thread(LPVOID arg)
@@ -403,7 +527,9 @@ static DWORD bridge_thread(LPVOID arg)
 	if (!freerdp_connect(instance))
 	{
 		status = freerdp_get_last_error(instance->context);
-		notify(bridge, RDP_EVENT_ERROR, "RDP 连接失败");
+		/* The certificate callback already emitted the actionable message. */
+		if (!atomic_load(&bridge->certificate_rejected))
+			notify(bridge, RDP_EVENT_ERROR, "RDP 连接失败");
 		return status;
 	}
 
@@ -412,7 +538,8 @@ static DWORD bridge_thread(LPVOID arg)
 
 	while (!atomic_load(&bridge->stop_requested) && !freerdp_shall_disconnect_context(instance->context))
 	{
-		HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
+		bridge_drain_execute(bridge);
+        HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
 		DWORD count = freerdp_get_event_handles(instance->context, handles, MAXIMUM_WAIT_OBJECTS);
 
 		if (count == 0)
@@ -451,7 +578,17 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
 	if (!bridge)
 		return NULL;
 
+	bridge->tunnel_fd = -1;
+    bridge->transport_fd = -1;
 	pthread_mutex_init(&bridge->lock, NULL);
+    pthread_mutex_init(&bridge->command_lock, NULL);
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) goto fail;
+    bridge->transport_fd = pair[0]; bridge->tunnel_fd = pair[1];
+    for (int i = 0; i < 2; i++) {
+        fcntl(pair[i], F_SETFD, FD_CLOEXEC);
+        int enabled = 1; setsockopt(pair[i], SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+    }
 	bridge->rdp_file = _strdup(rdp_file);
 	bridge->username = username ? _strdup(username) : NULL;
 	bridge->password = password ? _strdup(password) : NULL;
@@ -475,6 +612,20 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
 	if (bridge->password)
 		freerdp_settings_set_string(bridge->context->settings, FreeRDP_Password, bridge->password);
 	bridge->instance = bridge->context->instance;
+    rdpTransportIo io = *freerdp_get_io_callbacks(bridge->context);
+    io.TCPConnect = bridge_tcp_connect;
+    io.ConnectLayer = bridge_connect_layer;
+    if (!freerdp_set_io_callbacks(bridge->context, &io)) goto fail;
+    /* No gateway, proxy, UDP or redirection can escape the authenticated tunnel. */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_GatewayEnabled, FALSE);
+    freerdp_settings_set_uint32(bridge->context->settings, FreeRDP_ProxyType, 0);
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_AutoReconnectionEnabled, FALSE);
+    /* The server must not initiate an out-of-band RDP-UDP transport: only the
+     * socketpair-backed TCP stream is reachable from this process. */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_SupportMultitransport, FALSE);
+    freerdp_settings_set_uint32(bridge->context->settings, FreeRDP_MultitransportFlags, 0);
+    /* Cliprdr is compiled in but only wired during P4; do not half-enable it. */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_RedirectClipboard, FALSE);
 	return bridge;
 
 fail:
@@ -482,12 +633,19 @@ fail:
 	return NULL;
 }
 
+int rdp_bridge_take_tunnel_fd(rdp_bridge* bridge)
+{
+    if (!bridge) return -1;
+    int fd = bridge->tunnel_fd; bridge->tunnel_fd = -1; return fd;
+}
+
 int rdp_bridge_start(rdp_bridge* bridge)
 {
-	if (!bridge || !bridge->context || bridge->thread)
+	if (!bridge || !bridge->context || bridge->thread || !valid_fingerprint(bridge->certificate_fingerprint))
 		return -1;
 	atomic_store(&bridge->stop_requested, 0);
 	atomic_store(&bridge->connected, 0);
+	atomic_store(&bridge->certificate_rejected, 0);
 	if (freerdp_client_start(bridge->context) != 0)
 		return -1;
 	bridge->thread = CreateThread(NULL, 0, bridge_thread, bridge, 0, NULL);
@@ -622,15 +780,21 @@ void rdp_bridge_free(rdp_bridge* bridge)
 
     if (bridge->context)
     {
+        const char* stored_password = freerdp_settings_get_string(bridge->context->settings, FreeRDP_Password);
+        if (stored_password) SecureZeroMemory((void*)stored_password, strlen(stored_password));
         freerdp_client_context_free(bridge->context);
         bridge->context = NULL;
     }
 
 	free(bridge->rdp_file);
 	free(bridge->username);
+	if (bridge->password) SecureZeroMemory(bridge->password, strlen(bridge->password));
 	free(bridge->password);
 	free(bridge->certificate_fingerprint);
 	free(bridge->pixels);
 	pthread_mutex_destroy(&bridge->lock);
+    pthread_mutex_destroy(&bridge->command_lock);
+    if (bridge->tunnel_fd >= 0) close(bridge->tunnel_fd);
+    if (bridge->transport_fd >= 0) close(bridge->transport_fd);
 	free(bridge);
 }

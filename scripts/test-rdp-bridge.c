@@ -115,6 +115,9 @@ int main(void)
         "test", "not-a-real-password", NULL, event, NULL);
     assert(bridge);
     assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RemoteApplicationMode));
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_SupportMultitransport));
+    assert(freerdp_settings_get_uint32(bridge->context->settings, FreeRDP_MultitransportFlags) == 0);
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RedirectClipboard));
     assert(!rdp_bridge_connected(bridge));
     assert(bridge_pre_connect(bridge->instance));
     assert(freerdp_settings_get_bool(bridge->context->settings,
@@ -135,6 +138,7 @@ int main(void)
                bridge->instance, (const BYTE*)pem, pem_length, "windows.test", 3389, 0) == 0);
     assert(certificate_rejections == 1 && !rejected_fingerprint_was_null);
     assert(strcasecmp(rejected_fingerprint, expected_fingerprint) == 0);
+    assert(atomic_load(&bridge->certificate_rejected));
 
     bridge->certificate_fingerprint = _strdup(expected_fingerprint);
     assert(bridge->certificate_fingerprint);
@@ -142,6 +146,7 @@ int main(void)
     assert(bridge->instance->VerifyX509Certificate(
                bridge->instance, (const BYTE*)pem, pem_length, "windows.test", 3389, 0) == 2);
     assert(certificate_rejections == 0);
+    assert(!atomic_load(&bridge->certificate_rejected));
 
     memcpy(different_fingerprint, expected_fingerprint, sizeof(different_fingerprint));
     different_fingerprint[0] = different_fingerprint[0] == '0' ? '1' : '0';
@@ -192,7 +197,11 @@ int main(void)
     assert(rail.custom == bridge && rail.ServerHandshake && rail.ServerHandshakeEx);
     assert(rail.ServerHandshake(&rail, NULL) == CHANNEL_RC_OK);
     assert(rail.ServerHandshakeEx(&rail, NULL) == CHANNEL_RC_OK);
-    assert(information_calls == 2 && system_calls == 2 && execute_calls == 2);
+    assert(information_calls == 1 && system_calls == 1 && execute_calls == 1);
+    assert(rdp_bridge_execute(bridge, "notepad") == 0);
+    assert(rdp_bridge_execute(bridge, "../bad") != 0);
+    bridge_drain_execute(bridge);
+    assert(execute_calls == 2);
     RAIL_EXEC_RESULT_ORDER result = { 0 };
     result.execResult = RAIL_EXEC_S_OK;
     assert(rail.ServerExecuteResult(&rail, &result) == CHANNEL_RC_OK);
@@ -225,7 +234,24 @@ int main(void)
     bridge_post_disconnect(bridge->instance);
     rdp_bridge_stop(bridge);
     rdp_bridge_stop(bridge);
+
+    /* The bridge hands its QUIC pump end to the engine once; FreeRDP receives
+     * the other end through the overridden TCPConnect and can never dial. */
+    int pump = rdp_bridge_take_tunnel_fd(bridge);
+    assert(pump >= 0);
+    assert(rdp_bridge_take_tunnel_fd(bridge) == -1);
+    int transport = bridge_tcp_connect(bridge->context, bridge->context->settings,
+                                       "ignored.invalid", 3389, 0);
+    assert(transport >= 0);
+    assert(bridge_tcp_connect(bridge->context, bridge->context->settings,
+                              "ignored.invalid", 3389, 0) == -1);
+    char marker = 'x', echoed = 0;
+    assert(write(pump, &marker, 1) == 1);
+    assert(read(transport, &echoed, 1) == 1 && echoed == marker);
+    close(pump);
+    close(transport);
+
     rdp_bridge_free(bridge);
-    puts("RDP bridge: certificate pinning, RAIL launch/error, GDI frame bounds and cleanup passed");
+    puts("RDP bridge: certificate pinning, RAIL launch/error, tunnel fd, GDI frame bounds and cleanup passed");
     return 0;
 }

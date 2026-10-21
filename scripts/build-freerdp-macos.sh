@@ -88,7 +88,9 @@ echo "==> Preparing FreeRDP $FREERDP_VERSION"
 SRC="$CACHE_DIR/FreeRDP-$FREERDP_VERSION"
 checkout https://github.com/FreeRDP/FreeRDP.git "$FREERDP_VERSION" 4019dcd4097d550d02dd6b70ee88b6a1189be26c "$SRC"
 
-BUILD="$CACHE_DIR/build-$FREERDP_VERSION-$ARCH-$FINGERPRINT"
+# Bridge edits must not invalidate the pinned third-party compilation cache.
+FREERDP_KEY="$( { shasum -a 256 "$0" "${DEPENDENCIES[@]}" | awk '{print $1}'; printf '%s\n' "$ARCH" "$SDK" "$MACOSX_DEPLOYMENT_TARGET"; "$CLANG" --version; } | shasum -a 256 | awk '{print $1}')"
+BUILD="$CACHE_DIR/build-$FREERDP_VERSION-$ARCH-$FREERDP_KEY"
 echo "==> Configuring FreeRDP (headless, static, RemoteApp-only channels)"
 cmake -B "$BUILD" -S "$SRC" \
   -DCMAKE_BUILD_TYPE=Release \

@@ -194,3 +194,68 @@ impl Service {
             .remote_application(packet)
     }
 }
+
+/// Cancellation is tied to the owner, not to a worker holding the owner alive.
+#[cfg(unix)]
+pub struct RdpTunnelConnection {
+    cancel: tokio::sync::watch::Sender<bool>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+#[cfg(unix)]
+impl RdpTunnelConnection {
+    pub fn close(&self) {
+        let _ = self.cancel.send(true);
+    }
+    pub fn closed_reason(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+#[cfg(unix)]
+impl Drop for RdpTunnelConnection {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+#[cfg(unix)]
+impl Service {
+    pub fn open_rdp_tunnel(
+        self: &Arc<Self>,
+        peer: DeviceId,
+        ticket: Vec<u8>,
+        socket: std::os::unix::net::UnixStream,
+    ) -> Result<Arc<RdpTunnelConnection>, String> {
+        self.require_viewer_allowed()?;
+        if !self.authorized(peer) {
+            return Err("RDP 设备信任已撤销".into());
+        }
+        socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
+        let failure = Arc::new(Mutex::new(None));
+        let result = Arc::new(RdpTunnelConnection {
+            cancel,
+            failure: failure.clone(),
+        });
+        let service = self.clone();
+        self.executor.spawn(async move {
+            let future = async {
+                let socket = tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())?;
+                let tunnel = service.transport.open_remote_rdp_tunnel(peer, ticket).await?;
+                tunnel.forward(socket).await.map(|_| ())
+            };
+            tokio::pin!(future);
+            let mut check = tokio::time::interval(std::time::Duration::from_millis(100));
+            let reason = loop {
+                tokio::select! {
+                    _ = cancelled.changed() => break "RDP 隧道已关闭".to_string(),
+                    result = &mut future => break result.err().unwrap_or_else(|| "RDP 连接已结束".into()),
+                    _ = check.tick() => if !service.authorized(peer) || service.require_viewer_allowed().is_err() { break "RDP 访问授权已撤销".into(); },
+                }
+            };
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+        });
+        Ok(result)
+    }
+}

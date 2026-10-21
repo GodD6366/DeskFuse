@@ -863,6 +863,7 @@ pub(crate) fn hotkey_bindings(settings: &InputSharingSettings) -> HotkeyBindings
             chord(&shortcuts.down),
         ],
         lock: chord(&shortcuts.lock),
+        emergency: chord(&shortcuts.emergency),
     }
 }
 

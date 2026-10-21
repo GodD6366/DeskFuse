@@ -26,6 +26,7 @@ import DeskFuseRemoteApplication
     @ObservationIgnored private var pickers: [String: RemoteApplicationPickerWindow] = [:]
     @ObservationIgnored private var rdpPickers: [String: RemoteRdpPickerWindow] = [:]
     @ObservationIgnored private var rdpWindows: [String: RemoteRdpWindow] = [:]
+    @ObservationIgnored private var rdpHosts: [String: RemoteRdpHostConnection] = [:]
     @ObservationIgnored private var rdpCatalogs = NSHashTable<RemoteRdpSession>.weakObjects()
     @ObservationIgnored private var catalogs: [UUID: RemoteApplicationSession] = [:]
     @ObservationIgnored private var viewerOwner: UUID?
@@ -117,18 +118,12 @@ import DeskFuseRemoteApplication
         guard enabled else { error = Self.disabledMessage; return }
         guard device.trusted, device.connected, !device.blocked else { error = "请先连接已配对设备"; return }
         if device.remoteAppRdp {
-            openWindowsPicker(peerID: device.id, peerName: device.name,
-                              endpoint: device.routes.first(where: \.active)?.endpoint ?? device.endpoint)
+            openWindowsPicker(peerID: device.id, peerName: device.name)
         } else {
             openPicker(peerID: device.id, peerName: device.name)
         }
     }
-    private func windowsHost(_ endpoint: String) -> String {
-        let value = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasPrefix("[") { return value.split(separator: "]", maxSplits: 1).first.map { String($0) + "]" } ?? value }
-        return value.split(separator: ":", maxSplits: 1).first.map(String.init) ?? value
-    }
-    private func openWindowsPicker(peerID: String, peerName: String, endpoint: String) {
+    private func openWindowsPicker(peerID: String, peerName: String) {
         guard enabled else { error = Self.disabledMessage; return }
         guard let engine else { error = "远程应用引擎尚未就绪"; return }
         if let picker = rdpPickers[peerID] {
@@ -136,7 +131,7 @@ import DeskFuseRemoteApplication
             picker.session.refresh()
             return
         }
-        let session = RemoteRdpSession(engine: engine, peerID: peerID, peerHost: windowsHost(endpoint))
+        let session = RemoteRdpSession(engine: engine, peerID: peerID, peerName: peerName)
         let picker = RemoteRdpPickerWindow(session: session, peerName: peerName)
         picker.launch = { [weak self] app, username, password in
             guard let self else { return }
@@ -147,26 +142,33 @@ import DeskFuseRemoteApplication
     }
     func makeWindowsCatalog(for device: Device) -> RemoteRdpSession? {
         guard enabled, let engine, device.remoteAppRdp, device.trusted, device.connected, !device.blocked else { return nil }
-        let session = RemoteRdpSession(engine: engine, peerID: device.id,
-            peerHost: windowsHost(device.routes.first(where: \.active)?.endpoint ?? device.endpoint))
+        let session = RemoteRdpSession(engine: engine, peerID: device.id, peerName: device.name)
         rdpCatalogs.add(session)
         return session
     }
     func openWindowsApplication(_ app: RemoteRdpApp, session: RemoteRdpSession,
                                 username: String?, password: String?) {
         guard allowViewer() else { return }
-        let key = "\(session.peerID):\(app.name)"
-        if let existing = rdpWindows[key] {
-            existing.showWindow(nil); existing.window?.deminiaturize(nil); existing.window?.makeKeyAndOrderFront(nil)
-            return
+        let peerID = session.peerID
+        let host: RemoteRdpHostConnection
+        if let existing = rdpHosts[peerID] {
+            host = existing
+        } else {
+            host = RemoteRdpHostConnection(engine: session.engine, peerID: peerID, peerName: session.peerName)
+            rdpHosts[peerID] = host
         }
-        let viewer = RemoteRdpSession(engine: session.engine, peerID: session.peerID, peerHost: session.peerHost)
-        let window = RemoteRdpWindow(session: viewer,
-                                      title: "\(app.displayName.isEmpty ? app.name : app.displayName) — Windows")
-        window.onClose = { [weak self] in self?.rdpWindows.removeValue(forKey: key) }
-        rdpWindows[key] = window
-        window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil)
-        Task { await viewer.connect(); viewer.launch(app, username: username, password: password) }
+        if let window = rdpWindows[peerID] {
+            window.showWindow(nil); window.window?.deminiaturize(nil); window.window?.makeKeyAndOrderFront(nil)
+        } else {
+            let window = RemoteRdpWindow(host: host, title: "Windows 应用 — \(session.peerName)")
+            window.onClose = { [weak self] in
+                self?.rdpWindows.removeValue(forKey: peerID)
+                self?.rdpHosts.removeValue(forKey: peerID)
+            }
+            rdpWindows[peerID] = window
+            window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil)
+        }
+        Task { await host.open(app, username: username, password: password) }
     }
     func openPicker(peerID: String, peerName: String) {
         guard allowViewer() else { return }
@@ -336,6 +338,8 @@ import DeskFuseRemoteApplication
         hostPreparation?.cancel(); hostPreparation = nil
         let rdpSessions = rdpPickers.values.map(\.session) + rdpCatalogs.allObjects
         rdpCatalogs.removeAllObjects()
+        for host in Array(rdpHosts.values) { host.stop() }
+        rdpHosts.removeAll()
         for window in Array(rdpWindows.values) { window.close() }
         rdpWindows.removeAll()
         for session in rdpSessions { session.stop() }

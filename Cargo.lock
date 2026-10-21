@@ -932,6 +932,7 @@ dependencies = [
  "socket2",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
