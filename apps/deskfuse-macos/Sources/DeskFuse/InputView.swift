@@ -53,23 +53,8 @@ struct InputView: View {
                     .frame(minHeight: geometry.size.height, alignment: .top)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if !snapshot.input.settings.enabled && !snapshot.input.settings.controller {
-                FeatureGateView(
-                    symbol: "rectangle.on.rectangle",
-                    title: "键鼠共享",
-                    message: "用一套键鼠控制多台电脑。",
-                    bullets: [
-                        "鼠标穿越屏幕边缘切换设备",
-                        "剪贴板随焦点设备自动跟随",
-                        "紧急收回快捷键随时可用",
-                    ],
-                    permission: .accessibility,
-                    actionTitle: "启用键鼠共享",
-                    action: { setSharingEnabled(true) }
-                )
-                .padding(28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // 总开关已开：本机未设主控时就是等待被控，引导页只在总开关关闭时出现。
                 receiverState
                     .padding(28)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

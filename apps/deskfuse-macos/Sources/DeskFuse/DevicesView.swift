@@ -447,24 +447,8 @@ struct DevicesView: View {
 
     @ViewBuilder private var applicationPane: some View {
         if #available(macOS 14.2, *) {
-            if !RemoteApplicationManager.shared.enabled {
-                FeatureGateView(
-                    symbol: "square.grid.2x2",
-                                        title: "远程应用",
-                    message: "在这台 Mac 上打开另一台电脑的应用窗口。",
-                    bullets: [
-                        "应用窗口像本地窗口一样显示与操作",
-                        "可同时打开多台设备的应用",
-                        "支持 macOS 与 Windows 远端",
-                    ],
-                    permission: .screenRecording,
-                    actionTitle: "启用远程应用",
-                    action: { RemoteApplicationManager.shared.enabled = true },
-                    secondaryTitle: "打开设置",
-                    secondaryAction: { store.openSettings(tab: SettingsCategory.general.rawValue) }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !snapshot.input.canOperateRemoteApplications {
+            // 远程应用关闭时由 MainContentView 统一显示引导页，这里只处理已开启的情况。
+            if !snapshot.input.canOperateRemoteApplications {
                 ContentUnavailableView("当前无法操作远程应用", systemImage: "keyboard",
                     description: Text(RemoteApplicationManager.viewerRestriction))
             } else if let device = snapshot.devices.first(where: { $0.id == selected }) {

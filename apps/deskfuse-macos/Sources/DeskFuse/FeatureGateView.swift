@@ -17,6 +17,8 @@ struct FeatureGateView: View {
     let action: () -> Void
     var secondaryTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
+    /// 功能演示插画；提供时替代顶部图标。
+    var illustration: AnyView? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
@@ -28,12 +30,16 @@ struct FeatureGateView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: symbol)
-                .font(DFType.title)
-                .foregroundStyle(tone.color)
-                .frame(width: 56, height: 56)
-                .modifier(NativeGlassSurface(cornerRadius: DFRadius.panel))
-                .accessibilityHidden(true)
+            if let illustration {
+                illustration
+            } else {
+                Image(systemName: symbol)
+                    .font(DFType.title)
+                    .foregroundStyle(tone.color)
+                    .frame(width: 56, height: 56)
+                    .modifier(NativeGlassSurface(cornerRadius: DFRadius.panel))
+                    .accessibilityHidden(true)
+            }
             Text(title)
                 .font(DFType.title)
             Text(message)

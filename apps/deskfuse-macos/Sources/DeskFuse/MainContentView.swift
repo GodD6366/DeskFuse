@@ -56,8 +56,8 @@ struct MainContentView: View {
             Color.clear
         } else if let snapshot = store.snapshot {
             if store.featureEnabled(for: page) == false {
-                DFEmptyState(symbol: page.symbol, title: "\(page.rawValue)已关闭",
-                             message: "相关后台任务已停止。打开右上角总开关即可继续使用。")
+                // 每个功能只有这一种“未开启”状态：总开关关闭时直接给出动画引导。
+                FeatureOnboardingView(store: store, page: page)
             } else {
                 switch page {
                 case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)

@@ -213,15 +213,17 @@ struct MouseSettingsView: View {
             }
             Text("支持左键、右键、中键及前进、后退键。侧键需鼠标具备对应按键并发送标准鼠标事件。")
                 .font(DFType.caption).foregroundStyle(.secondary)
-            DisclosureGroup("组合键设置") {
-                HStack {
-                    Text("按住这些键时使用独立映射").foregroundStyle(.secondary)
-                    Spacer()
-                    modifier("⌘", 0x100000); modifier("⇧", 0x20000)
-                    modifier("⌥", 0x80000); modifier("⌃", 0x40000)
-                }.padding(.vertical, 8)
-                Text("未设置的组合沿用默认映射。").font(DFType.caption).foregroundStyle(.secondary)
-            }.font(DFType.detail)
+            DFDisclosure("组合键设置") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("按住这些键时使用独立映射").foregroundStyle(.secondary)
+                        Spacer()
+                        modifier("⌘", 0x100000); modifier("⇧", 0x20000)
+                        modifier("⌥", 0x80000); modifier("⌃", 0x40000)
+                    }
+                    Text("未设置的组合沿用默认映射。").font(DFType.caption).foregroundStyle(.secondary)
+                }.font(DFType.detail)
+            }
         }
     }
 
@@ -259,19 +261,19 @@ struct MouseSettingsView: View {
 
     private var notes: some View {
         DFSection {
-            DisclosureGroup("设备状态与使用说明") {
+            DFDisclosure("设备状态与使用说明") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(controller.hidStatus)
                     Text("列表只展示当前识别到的鼠标；未适配型号自动使用通用映射。如已连接但未显示，请检查输入监控权限。")
                     Text("G502 的原有 DPI、配置切换或 G HUB 动作会继续执行。实体键编号按实际识别为准；不要同时绑定同一按键的通用事件和实体事件。机械滚轮解锁键无法识别。")
                     Text("切换桌面需要对应方向存在桌面，且系统键盘快捷键已启用。MX 与 G502 原生按键暂不支持修饰键分层。")
                     Button("打开输入监控设置") { controller.openInputMonitoringSettings() }
-                }.font(DFType.caption).foregroundStyle(.secondary).padding(.top, 10)
+                }.font(DFType.caption).foregroundStyle(.secondary)
             }
             Divider().padding(.vertical, 4)
-            DisclosureGroup("Mac 间自动同步") {
+            DFDisclosure("Mac 间自动同步") {
                 Text("配置自动同步到已配对、已连接且支持此功能的 Mac。离线修改在重连后按逻辑版本同步整套配置，不逐个合并按键；权限需在每台 Mac 单独授予。Windows 不参与。")
-                    .font(DFType.caption).foregroundStyle(.secondary).padding(.top, 8)
+                    .font(DFType.caption).foregroundStyle(.secondary)
             }
         }
     }
