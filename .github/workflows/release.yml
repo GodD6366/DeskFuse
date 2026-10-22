@@ -46,7 +46,7 @@ jobs:
             echo "::error::Select an existing vX.Y.Z tag when running this workflow manually; branches cannot be released. Use gh workflow run release.yml --ref vX.Y.Z."
             exit 1
           fi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: distribution
@@ -87,7 +87,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install pinned toolchain
@@ -98,7 +98,7 @@ jobs:
           rustup component add rust-src
           source scripts/rust-toolchain-env.sh
           dirname "$(command -v cargo)" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: deskfuse-macos
           key: release-arm64
@@ -129,7 +129,7 @@ jobs:
         if: always()
         run: ./scripts/cleanup-developer-id.sh
       - name: Store release-macos-arm64 for publish
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-arm64
           path: |
@@ -149,7 +149,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Cross-compiles the Intel target with the same macOS 27 SDK
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install pinned Intel toolchain
@@ -160,7 +160,7 @@ jobs:
           rustup component add rust-src
           source scripts/rust-toolchain-env.sh
           dirname "$(command -v cargo)" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: deskfuse-macos
           key: release-x86_64
@@ -191,7 +191,7 @@ jobs:
         if: always()
         run: ./scripts/cleanup-developer-id.sh
       - name: Store release-macos-x86_64 for publish
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-x86_64
           path: |
@@ -211,7 +211,7 @@ jobs:
     env:
       WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -297,7 +297,7 @@ jobs:
           if ($manifest.release_signed -ne $true) { throw 'Windows installer payload is not fully Authenticode-signed; refusing to publish.' }
           if ($manifest.installer_sha256 -ne $targetHash) { throw 'Windows installer manifest hash does not match the renamed release asset.' }
       - name: Store release-windows-x64 for publish
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows-x64
           path: |
@@ -338,22 +338,22 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Download complete release archives
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-macos-arm64
           path: dist/arm64
       - name: Download Intel release archive
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-macos-x86_64
           path: dist/x86_64
       - name: Download Windows release archive
         if: env.INCLUDE_WINDOWS == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-windows-x64
           path: dist/windows
@@ -422,11 +422,11 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: source
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.DESKFUSE_RELEASE_REPOSITORY }}
           token: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
