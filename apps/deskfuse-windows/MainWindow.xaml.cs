@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window
     private string? selectedDeviceId;
     private string? remoteSelectedDeviceId;
     private string lastDeviceSnapshot = "";
+    private string lastErrorNotice = "";
     private JsonElement? latest;
     private bool busy;
     private bool updatingInputSettings;
@@ -1257,7 +1258,8 @@ public sealed partial class MainWindow : Window
             BuildNavigation();
         }
         string error = snapshot.String("last_error");
-        if (error.Length > 0) Notify(error);
+        if (error.Length > 0 && error != lastErrorNotice) Notify(error);
+        lastErrorNotice = error;
         settings?.RefreshService(snapshot);
     }
 
@@ -1277,6 +1279,7 @@ public sealed partial class MainWindow : Window
             ReclaimInputButton.IsEnabled = false;
             ClearInputQuality();
             lastDeviceSnapshot = "";
+            lastErrorNotice = "";
             RebuildDevices();
             if (wasConnected) Notify(message);
         }
