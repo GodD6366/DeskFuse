@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "release_repository": "GodD6366/DeskFuse",
+  "legacy_release_repository": "GodD6366/deskfuse-release",
+  "fallback_release_repository": "GodD6366/deskfuse-release",
+  "homebrew_tap": "godd6366/deskfuse",
+  "cask_token": "deskfuse",
+  "assets": {
+    "arm64": "DeskFuse-arm64.dmg",
+    "x86_64": "DeskFuse-x86_64.dmg",
+    "windows_x64": "DeskFuse-windows-x64-setup.exe"
+  },
+  "fallback_release_tag": "v0.7.2"
+}
