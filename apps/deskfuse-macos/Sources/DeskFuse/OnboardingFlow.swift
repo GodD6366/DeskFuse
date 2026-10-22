@@ -18,6 +18,12 @@ final class OnboardingController {
 
     func present() { isPresented = true }
 
+    /// 调试用：清除完成标记并立即重走引导，中途退出后下次启动会继续，与全新安装一致。
+    func restart() {
+        UserDefaults.standard.removeObject(forKey: Self.completedKey)
+        isPresented = true
+    }
+
     func complete() {
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         isPresented = false
@@ -96,58 +102,54 @@ enum OnboardingFeatureKind: String, CaseIterable, Identifiable {
     }
 }
 
-/// 功能卡片：动画在上、开关与说明在下。关闭时压暗演示，打开后恢复高亮。
-private struct OnboardingFeatureCard: View {
+extension OnboardingFeatureKind {
+    /// 与功能页引导共用同一套演示，首次引导和功能页看到的是同一段动画。
+    @ViewBuilder var demo: some View {
+        switch self {
+        case .clipboard: ClipboardSyncDemo()
+        case .input: InputCrossingDemo()
+        case .remoteApplications: RemoteWindowDemo()
+        case .mouseButtons: MouseSideButtonDemo()
+        case .microphone: MicrophoneRelayDemo()
+        }
+    }
+}
+
+/// 功能列表行：点选后在右侧预览演示，开关决定完成设置后是否开启。
+private struct OnboardingFeatureRow: View {
     let kind: OnboardingFeatureKind
+    let selected: Bool
     @Binding var isOn: Bool
-    @Environment(\.colorScheme) private var scheme
+    let onSelect: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
-                    .fill(DFPalette.control(scheme))
-                OnboardingFeatureDemo(kind: kind)
-                    .padding(.horizontal, DFSpace.s)
-                    .opacity(isOn ? 1 : 0.6)
-            }
-            .frame(height: 112)
-            .padding(DFSpace.m)
-
-            VStack(alignment: .leading, spacing: DFSpace.xs) {
-                HStack(spacing: DFSpace.s) {
-                    Image(systemName: kind.symbol)
-                        .font(DFType.icon(.regular, weight: .medium))
-                        .foregroundStyle(isOn ? DFPalette.accent : Color.secondary)
-                        .frame(width: 18)
-                        .accessibilityHidden(true)
-                    Text(kind.title).font(DFType.title)
-                    if let badge = kind.badge { DFBadge(badge) }
-                    Spacer(minLength: DFSpace.s)
-                    Toggle(kind.title, isOn: $isOn)
-                        .labelsHidden()
-                        .toggleStyle(OnboardingSwitchStyle())
-                        .accessibilityLabel(kind.title)
-                        .accessibilityValue(isOn ? "已开启" : "已关闭")
-                }
-                Text(kind.detail)
-                    .font(DFType.detail)
-                    .dfSecondaryText()
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, DFMetrics.cardPadding)
-            .padding(.bottom, DFMetrics.cardPadding)
+        let shape = RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+        HStack(spacing: DFSpace.m) {
+            Image(systemName: kind.symbol)
+                .font(DFType.icon(.regular, weight: .medium))
+                .foregroundStyle(isOn ? DFPalette.accent : Color.secondary)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(kind.title).font(DFType.bodyMedium)
+            if let badge = kind.badge { DFBadge(badge) }
+            Spacer(minLength: DFSpace.s)
+            Toggle(kind.title, isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(OnboardingSwitchStyle())
+                .accessibilityLabel(kind.title)
+                .accessibilityValue(isOn ? "已开启" : "已关闭")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .dfCard()
-        .overlay {
-            RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
-                .strokeBorder(DFPalette.accent.opacity(isOn ? DFOpacity.strong : 0),
-                              lineWidth: DFMetrics.selectionStroke)
-                .allowsHitTesting(false)
-        }
+        .padding(.horizontal, DFSpace.m)
+        .frame(minHeight: 44)
+        .background(selected ? DFPalette.selection : hovering ? DFPalette.hover : .clear, in: shape)
+        .contentShape(shape)
+        .onTapGesture(perform: onSelect)
+        .onHover { hovering = $0 }
         .animation(DFMotion.snappy, value: isOn)
         .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityAction(named: "查看演示", onSelect)
     }
 }
 
@@ -187,6 +189,8 @@ struct OnboardingFlow: View {
 
     @State private var step: Step
     @State private var enabled = OnboardingFeatureKind.initialEnabled
+    /// 右侧预览的功能；同一时间只播放这一段演示，其余功能只显示为列表行。
+    @State private var previewed: OnboardingFeatureKind = .clipboard
     /// 已从现有设置读取过的功能；用户手动改过的项不再被后续读取覆盖。
     @State private var seededChoices: Set<OnboardingFeatureKind> = []
     @State private var editedChoices: Set<OnboardingFeatureKind> = []
@@ -516,12 +520,16 @@ struct OnboardingFlow: View {
 
     private var featuresStep: some View {
         VStack(alignment: .leading, spacing: DFSpace.xl) {
-            featureSection(title: "默认开启",
-                           caption: "建议保留，完成设置后即可跨 Mac 使用。",
-                           kinds: OnboardingFeatureKind.allCases.filter { $0.isAvailable && $0.isDefaultOn })
-            featureSection(title: "按需开启",
-                           caption: "保持关闭不影响日常使用，需要时再打开。",
-                           kinds: OnboardingFeatureKind.allCases.filter { $0.isAvailable && !$0.isDefaultOn })
+            HStack(alignment: .top, spacing: DFSpace.l) {
+                VStack(alignment: .leading, spacing: DFSpace.l) {
+                    featureGroup(title: "默认开启", symbol: "checkmark.circle",
+                                 kinds: OnboardingFeatureKind.allCases.filter { $0.isAvailable && $0.isDefaultOn })
+                    featureGroup(title: "按需开启", symbol: "plus.circle",
+                                 kinds: OnboardingFeatureKind.allCases.filter { $0.isAvailable && !$0.isDefaultOn })
+                }
+                .frame(width: 280)
+                featurePreview
+            }
 
             if !missingPermissions.isEmpty {
                 DFNotice(tone: .warning,
@@ -538,21 +546,57 @@ struct OnboardingFlow: View {
         }
     }
 
-    private func featureSection(title: String, caption: String, kinds: [OnboardingFeatureKind]) -> some View {
-        VStack(alignment: .leading, spacing: DFSpace.m) {
-            DFSectionLabel(title, symbol: title == "默认开启" ? "checkmark.circle" : "plus.circle")
-            Text(caption)
-                .font(DFType.detail)
-                .dfSecondaryText()
-                .padding(.leading, DFSpace.xs)
-            LazyVGrid(columns: [
-                GridItem(.adaptive(minimum: 280, maximum: 460), spacing: DFSpace.m, alignment: .top)
-            ], alignment: .leading, spacing: DFSpace.m) {
+    private func featureGroup(title: String, symbol: String, kinds: [OnboardingFeatureKind]) -> some View {
+        VStack(alignment: .leading, spacing: DFSpace.s) {
+            DFSectionLabel(title, symbol: symbol)
+            VStack(spacing: DFSpace.xxs) {
                 ForEach(kinds) { kind in
-                    OnboardingFeatureCard(kind: kind, isOn: binding(for: kind))
+                    OnboardingFeatureRow(kind: kind, selected: kind == previewed,
+                                         isOn: binding(for: kind),
+                                         onSelect: { withMotion(DFMotion.snappy) { previewed = kind } })
                 }
             }
+            .padding(DFSpace.xs)
+            .dfCard()
         }
+    }
+
+    /// 选中功能的演示与说明；关闭的功能压暗演示，打开后恢复高亮。
+    private var featurePreview: some View {
+        let kind = previewed
+        let isOn = enabled[kind] ?? kind.isDefaultOn
+        return VStack(alignment: .leading, spacing: DFSpace.m) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+                    .fill(DFPalette.control(scheme))
+                kind.demo
+                    .opacity(isOn ? 1 : 0.6)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 168)
+
+            VStack(alignment: .leading, spacing: DFSpace.xs) {
+                HStack(spacing: DFSpace.s) {
+                    Text(kind.title).font(DFType.title)
+                    if let badge = kind.badge { DFBadge(badge) }
+                    Spacer(minLength: DFSpace.s)
+                    Text(isOn ? "完成后开启" : "保持关闭")
+                        .font(DFType.detail)
+                        .foregroundStyle(isOn ? DFPalette.accent : Color.secondary)
+                }
+                Text(kind.detail)
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(DFMetrics.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dfCard()
+        .id(kind)
+        .transition(.opacity)
+        .animation(DFMotion.snappy, value: isOn)
+        .accessibilityElement(children: .contain)
     }
 
     private func binding(for kind: OnboardingFeatureKind) -> Binding<Bool> {
@@ -560,7 +604,10 @@ struct OnboardingFlow: View {
             get: { enabled[kind] ?? kind.isDefaultOn },
             set: { value in
                 editedChoices.insert(kind)
-                withMotion(DFMotion.snappy) { enabled[kind] = value }
+                withMotion(DFMotion.snappy) {
+                    enabled[kind] = value
+                    previewed = kind
+                }
             }
         )
     }

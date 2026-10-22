@@ -206,6 +206,7 @@ impl RdpTunnelConnection {
     pub fn close(&self) {
         let _ = self.cancel.send(true);
     }
+    /// 隧道异常结束的原因；仍在转发、本地关闭或正常结束时为 None。
     pub fn closed_reason(&self) -> Option<String> {
         self.failure
             .lock()
@@ -240,21 +241,32 @@ impl Service {
         });
         let service = self.clone();
         self.executor.spawn(async move {
-            let future = async {
-                let socket = tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())?;
-                let tunnel = service.transport.open_remote_rdp_tunnel(peer, ticket).await?;
-                tunnel.forward(socket).await.map(|_| ())
-            };
-            tokio::pin!(future);
-            let mut check = tokio::time::interval(std::time::Duration::from_millis(100));
-            let reason = loop {
-                tokio::select! {
-                    _ = cancelled.changed() => break "RDP 隧道已关闭".to_string(),
-                    result = &mut future => break result.err().unwrap_or_else(|| "RDP 连接已结束".into()),
-                    _ = check.tick() => if !service.authorized(peer) || service.require_viewer_allowed().is_err() { break "RDP 访问授权已撤销".into(); },
+            // 套接字活到失败原因写入之后：FreeRDP 读到 EOF 时，界面已能取到隧道的真实原因。
+            let mut socket = match tokio::net::UnixStream::from_std(socket) {
+                Ok(socket) => socket,
+                Err(error) => {
+                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+                    return;
                 }
             };
-            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+            let reason = {
+                let future = async {
+                    let tunnel = service.transport.open_remote_rdp_tunnel(peer, ticket).await?;
+                    tunnel.forward(&mut socket).await.map(|_| ())
+                };
+                tokio::pin!(future);
+                let mut check = tokio::time::interval(std::time::Duration::from_millis(100));
+                loop {
+                    tokio::select! {
+                        // 本地关闭与对端正常结束都不是隧道故障。
+                        _ = cancelled.changed() => break None,
+                        result = &mut future => break result.err(),
+                        _ = check.tick() => if !service.authorized(peer) || service.require_viewer_allowed().is_err() { break Some("RDP 访问授权已撤销".into()); },
+                    }
+                }
+            };
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) = reason;
+            drop(socket);
         });
         Ok(result)
     }

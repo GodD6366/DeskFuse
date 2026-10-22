@@ -8,8 +8,8 @@ use deskfuse_core::{
 };
 use deskfuse_protocol::{
     Envelope, FrameCodec, Hello, MAX_FRAME_SIZE, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, Ping,
-    ProtocolError, REQUEST_ID_SIZE, decode_frame, device_id_for_public_key, encode_frame,
-    envelope_from_core_pairing_request, hello_from_core_pairing_request, sign_hello,
+    ProtocolError, REQUEST_ID_SIZE, RemoteRdpTunnel, decode_frame, device_id_for_public_key,
+    encode_frame, envelope_from_core_pairing_request, hello_from_core_pairing_request, sign_hello,
     sign_hello_in_place, verify_hello,
 };
 
@@ -178,6 +178,20 @@ fn unknown_oneof_payload_is_rejected() {
         decode_frame(&frame),
         Err(ProtocolError::UnknownPayload)
     ));
+}
+
+/// 每个 oneof 变体都必须通过未知 tag 白名单；RDP 隧道（tag 49）曾被误拒，
+/// 导致 Windows 静默丢弃所有隧道请求。
+#[test]
+fn rdp_tunnel_open_and_ack_roundtrip() {
+    for ticket in [vec![0x42; 32], Vec::new()] {
+        let open = envelope(Message::RemoteRdpTunnel(RemoteRdpTunnel {
+            version: 1,
+            ticket,
+        }));
+        let frame = encode_frame(&open).expect("encode");
+        assert_eq!(decode_frame(&frame).expect("tag 49 must decode"), open);
+    }
 }
 
 #[test]

@@ -19,13 +19,14 @@ struct FeatureDemoTests {
     }
 
     @Test func inputCursorCrossesTheSharedEdge() {
-        let frame = { CrossingFrame(progress: $0, screen: self.screen, gap: 0) }
+        let gap = DemoStage.gap
+        let frame = { CrossingFrame(progress: $0, screen: self.screen, gap: gap) }
         #expect(!frame(0.3).onRemote)
         #expect(frame(0.6).onRemote)
         for p in steps {
             let current = frame(p)
             // 光标始终落在当前所属屏幕之内。
-            let range = current.onRemote ? screen.width...screen.width * 2 : 0...screen.width
+            let range = current.onRemote ? screen.width + gap...screen.width * 2 + gap : 0...screen.width
             #expect(range.contains(current.cursor.x))
             #expect((0...screen.height).contains(current.cursor.y))
         }

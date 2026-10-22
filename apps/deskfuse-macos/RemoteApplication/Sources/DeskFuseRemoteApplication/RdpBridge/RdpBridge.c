@@ -68,6 +68,8 @@ struct rdp_bridge
 	atomic_int connected;
 	atomic_int stop_requested;
 	atomic_int certificate_rejected;
+	/* Windows 下发 LOGON_MSG_BUMP_OPTIONS：已有其他会话，需挤占才能登录。 */
+	atomic_int logon_bump_requested;
 
 	pthread_mutex_t lock;
 	uint8_t* pixels; /* bridge-owned copy of the composed frame */
@@ -431,6 +433,19 @@ static void bridge_post_disconnect(freerdp* instance)
 	gdi_free(instance);
 }
 
+/* RemoteApp 模式没有可见的登录界面，记录登录提示以便会话结束时给出原因。 */
+static int bridge_logon_error_info(freerdp* instance, UINT32 data, UINT32 type)
+{
+	WINPR_UNUSED(data);
+	if (!instance || !instance->context)
+		return 1;
+	rdp_bridge* bridge = ((bridgeContext*)instance->context)->bridge;
+	/* errorNotificationType 携带 LOGON_MSG_*，data 是对应的失败码或会话号。 */
+	if (bridge && type == LOGON_MSG_BUMP_OPTIONS)
+		atomic_store(&bridge->logon_bump_requested, 1);
+	return 1;
+}
+
 static BOOL bridge_client_new(freerdp* instance, rdpContext* context)
 {
 	WINPR_UNUSED(context);
@@ -443,6 +458,7 @@ static BOOL bridge_client_new(freerdp* instance, rdpContext* context)
 	instance->VerifyX509Certificate = bridge_verify_x509_certificate;
 	instance->Authenticate = bridge_authenticate;
 	instance->Redirect = bridge_redirect;
+	instance->LogonErrorInfo = bridge_logon_error_info;
 	return TRUE;
 }
 
@@ -516,6 +532,43 @@ int rdp_bridge_execute(rdp_bridge* bridge, const char* name)
     return result;
 }
 
+/* 把 FreeRDP 错误码翻译成可操作的中文原因，并附上错误名便于从日志定位。 */
+static const char* connect_failure_reason(UINT32 code)
+{
+	switch (code)
+	{
+		case FREERDP_ERROR_AUTHENTICATION_FAILED:
+		case FREERDP_ERROR_CONNECT_LOGON_FAILURE:
+		case FREERDP_ERROR_CONNECT_WRONG_PASSWORD:
+		case FREERDP_ERROR_CONNECT_NO_OR_MISSING_CREDENTIALS:
+			return "Windows 登录失败：用户名或密码不正确。Microsoft 账户请填写完整邮箱和账户密码（不是 PIN）";
+		case FREERDP_ERROR_CONNECT_PASSWORD_EXPIRED:
+		case FREERDP_ERROR_CONNECT_PASSWORD_CERTAINLY_EXPIRED:
+		case FREERDP_ERROR_CONNECT_PASSWORD_MUST_CHANGE:
+			return "Windows 账户密码已过期或需要修改，请先在 Windows 上更新密码";
+		case FREERDP_ERROR_CONNECT_ACCOUNT_DISABLED:
+		case FREERDP_ERROR_CONNECT_ACCOUNT_LOCKED_OUT:
+		case FREERDP_ERROR_CONNECT_ACCOUNT_EXPIRED:
+			return "Windows 账户已被禁用、锁定或过期";
+		case FREERDP_ERROR_INSUFFICIENT_PRIVILEGES:
+		case FREERDP_ERROR_CONNECT_ACCESS_DENIED:
+		case FREERDP_ERROR_CONNECT_ACCOUNT_RESTRICTION:
+		case FREERDP_ERROR_CONNECT_LOGON_TYPE_NOT_GRANTED:
+		case FREERDP_ERROR_SERVER_DENIED_CONNECTION:
+			return "该账户没有远程桌面登录权限：请在 Windows 上将其加入“Remote Desktop Users”，或使用管理员账户";
+		case FREERDP_ERROR_SECURITY_NEGO_CONNECT_FAILED:
+		case FREERDP_ERROR_TLS_CONNECT_FAILED:
+			return "与 Windows 远程桌面的安全协商失败，请确认 Windows 已开启远程桌面并允许网络级身份验证";
+		case FREERDP_ERROR_CONNECT_TRANSPORT_FAILED:
+		case FREERDP_ERROR_CONNECT_FAILED:
+			return "无法通过 DeskFuse 隧道连接 Windows 远程桌面服务，请确认 Windows 已开启远程桌面";
+		case FREERDP_ERROR_CONNECT_ACTIVATION_TIMEOUT:
+			return "Windows 远程桌面响应超时，请稍后重试";
+		default:
+			return "RDP 连接失败";
+	}
+}
+
 /* --- connection thread ------------------------------------------------- */
 
 static DWORD bridge_thread(LPVOID arg)
@@ -529,7 +582,14 @@ static DWORD bridge_thread(LPVOID arg)
 		status = freerdp_get_last_error(instance->context);
 		/* The certificate callback already emitted the actionable message. */
 		if (!atomic_load(&bridge->certificate_rejected))
-			notify(bridge, RDP_EVENT_ERROR, "RDP 连接失败");
+		{
+			/* 回调同步拷贝字符串，栈缓冲区在 notify 返回前有效。 */
+			char message[512];
+			const char* name = freerdp_get_last_error_name(status);
+			snprintf(message, sizeof(message), "%s（%s）", connect_failure_reason(status),
+			         name ? name : "UNKNOWN");
+			notify(bridge, RDP_EVENT_ERROR, message);
+		}
 		return status;
 	}
 
@@ -551,9 +611,26 @@ static DWORD bridge_thread(LPVOID arg)
 
 		if (!freerdp_check_event_handles(instance->context))
 		{
-			if (freerdp_get_last_error(instance->context) != FREERDP_ERROR_SUCCESS)
-				notify(bridge, RDP_EVENT_ERROR, "RDP 会话传输失败");
 			break;
+		}
+	}
+
+	/* 服务端结束会话时把原因翻译给用户；本地主动停止不算错误。 */
+	const UINT32 last_error = freerdp_get_last_error(instance->context);
+	if (!atomic_load(&bridge->stop_requested))
+	{
+		if (atomic_load(&bridge->logon_bump_requested))
+			notify(bridge, RDP_EVENT_ERROR,
+			       "Windows 上已有另一个登录会话，远程应用登录被拒绝（Windows 专业版同一时间只允许一个会话）。"
+			       "请先在 Windows 上注销或断开当前会话后重试");
+		else if (last_error == FREERDP_ERROR_LOGOFF_BY_USER)
+			notify(bridge, RDP_EVENT_ERROR, "Windows 已注销该远程会话，请重新打开应用");
+		else if (last_error != FREERDP_ERROR_SUCCESS)
+		{
+			char message[256];
+			const char* name = freerdp_get_last_error_name(last_error);
+			snprintf(message, sizeof(message), "RDP 会话传输失败（%s）", name ? name : "UNKNOWN");
+			notify(bridge, RDP_EVENT_ERROR, message);
 		}
 	}
 
@@ -624,6 +701,12 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
      * socketpair-backed TCP stream is reachable from this process. */
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_SupportMultitransport, FALSE);
     freerdp_settings_set_uint32(bridge->context->settings, FreeRDP_MultitransportFlags, 0);
+    /* FreeRDP 默认开启网络自动探测与心跳 PDU，并据此强制启用 rdpdr 设备重定向；
+     * 本构建未编入 rdpdr 插件，加载失败会让每次连接都以 PRE_CONNECT_FAILED 结束。
+     * 隧道内只有单条 TCP 流，两者都不需要，也不开放任何设备重定向。 */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_NetworkAutoDetect, FALSE);
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_SupportHeartbeatPdu, FALSE);
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_DeviceRedirection, FALSE);
     /* Cliprdr is compiled in but only wired during P4; do not half-enable it. */
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_RedirectClipboard, FALSE);
 	return bridge;
@@ -646,6 +729,7 @@ int rdp_bridge_start(rdp_bridge* bridge)
 	atomic_store(&bridge->stop_requested, 0);
 	atomic_store(&bridge->connected, 0);
 	atomic_store(&bridge->certificate_rejected, 0);
+	atomic_store(&bridge->logon_bump_requested, 0);
 	if (freerdp_client_start(bridge->context) != 0)
 		return -1;
 	bridge->thread = CreateThread(NULL, 0, bridge_thread, bridge, 0, NULL);

@@ -21,6 +21,7 @@ struct SettingsView: View, Equatable {
     @State private var clearHistory = false
     @State private var clearCache = false
     @State private var exportingDiagnostics = false
+    @State private var uninstalling = false
 
     private var selectedTab: String { destination.category.rawValue }
     private var clipboardSegment: Binding<String> {
@@ -48,6 +49,7 @@ struct SettingsView: View, Equatable {
         }
         .onChange(of: cacheLimit) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
         .onChange(of: downloadDirectory) { _, _ in if filesDirty { fileSaveStatus = nil; fileSaveFailure = nil } }
+        .sheet(isPresented: $uninstalling) { UninstallSheet(store: store) }
         .confirmationDialog("清空所有剪贴板历史？", isPresented: $clearHistory) {
             Button("清空历史", role: .destructive) { store.send(.clearHistory) }
         } message: {
@@ -169,11 +171,19 @@ struct SettingsView: View, Equatable {
 
     private var advancedSettings: some View {
         DFScrollPage {
-            DFSection("功能", footer: "工作流属于进阶功能；关闭后所有入口隐藏，已注册的全局快捷键也会停用。") {
+            DFSection("功能", footer: "进阶功能默认关闭。关闭工作流后所有入口隐藏，已注册的全局快捷键也会停用；关闭 Windows 远程应用会断开已打开的 Windows 应用窗口。") {
                 DFToggleRow("启用工作流",
                             detail: "在剪贴板里串联多个动作并绑定全局快捷键。",
                             isOn: Binding(get: { store.workflowsEnabled },
                                           set: { store.workflowsEnabled = $0 }))
+                if #available(macOS 14.2, *) {
+                    Divider()
+                    DFToggleRow("启用 Windows 远程应用",
+                                detail: "在远程应用中打开已配对 Windows 电脑上的应用。功能仍在完善中。",
+                                badge: "Beta",
+                                isOn: Binding(get: { RemoteApplicationManager.shared.windowsEnabled },
+                                              set: { RemoteApplicationManager.shared.windowsEnabled = $0 }))
+                }
             }
             DFSection("剪贴板") {
                 DFSettingRow(title: "跨设备索引与排除 App",
@@ -203,6 +213,39 @@ struct SettingsView: View, Equatable {
                     DFValueRow(title: "构建号", value: Self.buildLabel)
                 }
             }
+            DFSection("调试", footer: "重走初次设置会沿用当前的功能开关与权限，不会清除任何数据。") {
+                DFSettingRow(title: "重走初次设置",
+                             detail: "重新显示权限说明与功能选择引导。") {
+                    Button("开始") { store.onboarding.restart() }
+                        .buttonStyle(.dfSecondary)
+                }
+                Divider()
+                DFSettingRow(title: "日志文件夹",
+                             detail: Self.logsDirectory.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")) {
+                    Button("在访达中显示") { revealLogs() }
+                        .buttonStyle(.dfSecondary)
+                }
+            }
+            DFSection("卸载", footer: "可选择删除剪贴板历史与本机数据、缓存、偏好设置、钥匙串账号、登录项、系统权限记录与麦克风驱动，并把应用移到废纸篓。剪贴板历史默认保留，执行前会再次确认。") {
+                DFSettingRow(title: "彻底卸载 DeskFuse",
+                             detail: "删除所选内容后退出，无法恢复。") {
+                    Button("卸载…", role: .destructive) { uninstalling = true }
+                }
+            }
+        }
+    }
+
+    /// 与引擎 `diagnostics_file.rs` 写入的位置一致。
+    private static let logsDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/DeskFuse", isDirectory: true)
+
+    private func revealLogs() {
+        do {
+            // 尚未写过日志时目录可能不存在，先创建再打开，避免访达报错。
+            try FileManager.default.createDirectory(at: Self.logsDirectory, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(Self.logsDirectory)
+        } catch {
+            store.error = error.userFacingMessage
         }
     }
 

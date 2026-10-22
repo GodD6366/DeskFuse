@@ -152,7 +152,10 @@ impl ChildConnection {
                         _ => break,
                     }
                 }
-                reclaim.store(true, Ordering::Release);
+                // 退出（Q）或父进程消失（EOF）不能复用紧急收回标志：协调器会把它
+                // 当成用户收回，向主控回复 PausedByUser 并持久化，主控随即永久抑制
+                // 自动激活，对方重启后只能手动点“重连”。本机输入由协调器在
+                // stopping 后的 reclaim 释放。
                 signal.store(true, Ordering::Release);
                 // EOF is parent death, not a missed heartbeat. Give native
                 // cleanup and the 1.5s leases a grace period, then guarantee

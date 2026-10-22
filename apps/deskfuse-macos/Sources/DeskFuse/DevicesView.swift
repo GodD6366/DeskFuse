@@ -461,6 +461,15 @@ struct DevicesView: View {
                 } else if !device.connected {
                     ContentUnavailableView("设备未连接", systemImage: "network.slash",
                         description: Text("等待 \(device.name) 连接后，将自动加载应用列表。"))
+                } else if device.remoteAppRdp, !RemoteApplicationManager.shared.windowsEnabled {
+                    ContentUnavailableView {
+                        Label("Windows 远程应用未开启", systemImage: "pc")
+                    } description: {
+                        Text("该功能仍在完善中，默认关闭。可在“设置 › 高级”中开启。")
+                    } actions: {
+                        Button("打开设置") { store.openSettings(tab: SettingsCategory.advanced.rawValue) }
+                            .buttonStyle(.dfSecondary)
+                    }
                 } else {
                     RemoteApplicationCatalog(device: device).id(device.id)
                 }

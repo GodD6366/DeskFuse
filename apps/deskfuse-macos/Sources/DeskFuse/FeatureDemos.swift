@@ -9,9 +9,8 @@ import SwiftUI
 struct InputCrossingDemo: View {
     var body: some View {
         DemoLoop(period: 4.2, still: 0.72) { progress in
-            let frame = CrossingFrame(progress: progress, screen: DemoStage.screen, gap: 0)
+            let frame = CrossingFrame(progress: progress, screen: DemoStage.screen, gap: DemoStage.gap)
             DemoPair(
-                gap: 0,
                 leftTitle: "此 Mac", rightTitle: "另一台电脑",
                 leftActive: !frame.onRemote, rightActive: frame.onRemote,
                 left: { DemoScreen(tint: DemoStage.localTint, active: !frame.onRemote).overlay(alignment: .trailing) { edgeGlow(frame.glow, offset: 1.5) } },

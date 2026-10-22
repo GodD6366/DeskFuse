@@ -56,7 +56,7 @@ final class RemotePeer: @unchecked Sendable {
     }
     func send(_ message: RemoteMessage) {
         var message = message
-        var requestKeyFrame = false
+        var requestKeyFrame = false, overflow = false
         let wake = lock.withLock { () -> Bool in
             guard !stopped else { return false }
             let frameBytes = message.frame?.bytes.count ?? 0
@@ -98,14 +98,25 @@ final class RemotePeer: @unchecked Sendable {
                 }
                 pending.removeAll { $0.kind == message.kind && $0.identity == message.identity }
             }
-            // Keep a finite control queue under pathological input bursts. A
-            // move is superseded by newer pointer state; lifecycle messages
-            // remain protected and are retried by their caller.
+            // 控制队列有上限：优先淘汰可被新指针状态覆盖的 move，其次丢弃排队视频帧并
+            // 重建关键帧；仍无空间时关闭会话，绝不静默丢弃按键/按钮边沿或生命周期消息。
             if pending.count >= 128 {
-                guard let staleMove = pending.firstIndex(where: {
+                if let staleMove = pending.firstIndex(where: {
                     $0.kind == .input && $0.input?.kind == .move
-                }) else { return false }
-                pending.remove(at: staleMove)
+                }) {
+                    pending.remove(at: staleMove)
+                } else if pending.contains(where: { $0.frame != nil }) {
+                    pending.removeAll { $0.frame != nil }
+                    queuedBytes = 0; waitingKey = true
+                    if !keyFrameRequestPending { keyFrameRequestPending = true; requestKeyFrame = true }
+                    // 参考链已断开：当前若是非关键帧也必须丢弃，关键帧则直接作为新链起点。
+                    if let frame = message.frame {
+                        guard frame.keyFrame else { return false }
+                        waitingKey = false; keyFrameRequestPending = false; requestKeyFrame = false
+                    }
+                } else {
+                    overflow = true; return false
+                }
             }
             queuedBytes += frameBytes
             // Heartbeats, presentation ACKs, input and release messages must
@@ -120,6 +131,7 @@ final class RemotePeer: @unchecked Sendable {
             guard !scheduled else { return false }; scheduled = true; return true
         }
         if requestKeyFrame { keyFrameNeeded() }
+        if overflow { fail("远程应用控制队列超限，连接已关闭以避免按键卡住"); return }
         if wake { writer.async { [weak self] in self?.drain() } }
     }
     private func drain() {

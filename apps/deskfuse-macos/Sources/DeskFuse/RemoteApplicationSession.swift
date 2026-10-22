@@ -6,6 +6,8 @@ import DeskFuseRemoteApplication
 
 /// Media/input data plane never traverses observable UI state or main-actor tasks.
 final class SessionDataPlane: @unchecked Sendable {
+    /// 对端无任何消息超过该时长才视为链路中断（心跳间隔 250 ms，需容忍大关键帧的队头阻塞）。
+    static let peerTimeout = 3.0
     let frames = LatestVideoFrame()
     let input: RemoteInputRelay
     private let engine: Engine
@@ -89,13 +91,13 @@ final class SessionDataPlane: @unchecked Sendable {
         requestRemoteKey(surface.identity)
     }
     func receive(_ message: RemoteMessage, host: Bool) -> Bool {
-        if message.kind == .input { lock.withLock { receivedInput += 1 } }
-        if message.kind == .heartbeat {
-            lock.withLock {
-                lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime
-                if let diagnostics = message.diagnostics {
-                    remoteDiagnostics = diagnostics; remoteDiagnosticsAt = lastPeerHeartbeat
-                }
+        // 任何完整消息都证明链路存活：多 MB 关键帧传输期间心跳会排在其后，
+        // 只看心跳会把正常的大帧传输误判为链路中断。
+        lock.withLock {
+            lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime
+            if message.kind == .input { receivedInput += 1 }
+            if message.kind == .heartbeat, let diagnostics = message.diagnostics {
+                remoteDiagnostics = diagnostics; remoteDiagnosticsAt = lastPeerHeartbeat
             }
         }
         if host {
@@ -109,7 +111,7 @@ final class SessionDataPlane: @unchecked Sendable {
             }
         } else {
             if message.kind == .frame, let frame = message.frame { lock.withLock { decoder }?.submit(frame); return true }
-            if message.kind == .heartbeat { lock.withLock { lastPeerHeartbeat = ProcessInfo.processInfo.systemUptime }; return true }
+            if message.kind == .heartbeat { return true }
         }
         return false
     }
@@ -125,7 +127,7 @@ final class SessionDataPlane: @unchecked Sendable {
     func event(_ event: RemoteInputEvent, surface: SurfaceIdentity) {
         let message = lock.withLock { () -> RemoteMessage? in
             guard enabled, identity == surface, presentedSequence > 0,
-                  ProcessInfo.processInfo.systemUptime - lastPeerHeartbeat < 1 else { return nil }
+                  ProcessInfo.processInfo.systemUptime - lastPeerHeartbeat < Self.peerTimeout else { return nil }
             sequence += 1
             var message = RemoteMessage(.input); message.identity = surface; message.sequence = sequence; message.input = event
             return message
@@ -137,7 +139,7 @@ final class SessionDataPlane: @unchecked Sendable {
         }
     }
     var connectionHealthy: Bool {
-        lock.withLock { ProcessInfo.processInfo.systemUptime - lastPeerHeartbeat < 1 }
+        lock.withLock { ProcessInfo.processInfo.systemUptime - lastPeerHeartbeat < Self.peerTimeout }
     }
     func startHeartbeats(host: Bool) {
         let timer = DispatchSource.makeTimerSource(queue: heartbeatQueue)
@@ -145,7 +147,7 @@ final class SessionDataPlane: @unchecked Sendable {
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             var (message, peer, healthy) = self.lock.withLock { () -> (RemoteMessage, RemotePeer?, Bool) in
-                let healthy = ProcessInfo.processInfo.systemUptime - self.lastPeerHeartbeat < 1
+                let healthy = ProcessInfo.processInfo.systemUptime - self.lastPeerHeartbeat < Self.peerTimeout
                 if !healthy { self.enabled = false }
                 var message = RemoteMessage(.heartbeat)
                 message.identity = self.identity; message.sequence = self.presentedSequence
@@ -408,7 +410,6 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                     incoming?.close()
                     throw RemoteApplicationError.permission("请在被控 Mac 上允许 DeskFuse 屏幕录制权限")
                 }
-                applications = catalog.applications().filter { $0.processID != ProcessInfo.processInfo.processIdentifier }
             }
             let channel: RemoteApplicationChannel
             if let incoming { channel = incoming }
@@ -569,7 +570,9 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
                 applications = catalog.applications().filter { $0.processID != ProcessInfo.processInfo.processIdentifier }
                 var value = RemoteMessage(.applications); value.applications = applications; plane.send(value)
             case .launch:
-                guard !busy, let application = message.application else { return }
+                guard let application = message.application else { return }
+                // 忙碌时必须回复，否则 A 端会一直停留在“正在启动远端应用”。
+                guard !busy else { sendError("远端正在切换应用，请稍后重新选择"); return }
                 busy = true; defer { busy = false }
                 await stopCapture()
                 guard operation == token else { return }
@@ -757,6 +760,16 @@ enum RemoteApplicationRole: String, CaseIterable { case viewer = "A 端 · 控�
         var message = RemoteMessage(.launch); message.application = selected; message.preferences = preferences
         message.displayMode = displayMode; plane.send(message)
         status = "正在启动远端应用"
+        // B 端等待首个窗口最长 30 秒后会回报错误；这里兜底消息丢失或对端无响应。
+        // 收到 surface 时该任务会被首帧监视替换，stop() 时取消。
+        let token = operation
+        firstFrameWatch?.cancel()
+        firstFrameWatch = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(40)) } catch { return }
+            guard let self, self.operation == token, !self.running, self.failure == nil else { return }
+            self.status = "远端应用启动超时，请重新选择应用"; self.failure = self.status
+            self.diagnostic("launch_timeout")
+        }
     }
     func changePreferences() {
         guard role == .viewer, connected else { return }

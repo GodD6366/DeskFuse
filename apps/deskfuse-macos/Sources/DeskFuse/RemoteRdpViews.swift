@@ -70,37 +70,47 @@ struct RemoteRdpPicker: View {
         case favorites = "收藏"
     }
 
+    /// 登录方式：使用账号库中的账号，或临时输入一套新账号。
+    private enum AccountChoice: Hashable {
+        case saved(UUID)
+        case manual
+    }
+
     @Bindable var session: RemoteRdpSession
     var embedded = false
-    var launch: (RemoteRdpApp, String?, String?) -> Void
+    var launch: (RemoteRdpApp, String, String) -> Void
+    private let accounts = RemoteRDPAccountStore.shared
+    @State private var accountChoice = AccountChoice.manual
     @State private var username = ""
     @State private var password = ""
-    @State private var rememberCredentials = true
+    @State private var saveManualAccount = true
+    @State private var manualAccountName = ""
+    @State private var managingAccounts = false
     @State private var credentialsMessage: String?
     @State private var selected: RemoteRdpApp?
     @State private var searchText = ""
-    @State private var showsCredentialInfo = false
     @State private var appScope = AppScope.all
     @State private var favoriteAppIDs = Set<String>()
     @State private var systemAppsAreExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "windowslogo")
-                    .font(DFType.pageTitle)
-                    .dfSecondaryText()
-                Text("Windows 远程应用").font(DFType.title)
-                DFBadge()
-                Spacer()
-                if session.phase == .connecting { ProgressView() }
-                if !embedded {
+            // 嵌入设备页时外层已有设备名与刷新按钮，不再重复标题。
+            if !embedded {
+                HStack(spacing: 10) {
+                    Image(systemName: "windowslogo")
+                        .font(DFType.pageTitle)
+                        .dfSecondaryText()
+                    Text("Windows 远程应用").font(DFType.title)
+                    DFBadge()
+                    Spacer()
+                    if session.phase == .connecting { ProgressView() }
                     Button("刷新") { session.refresh() }
                         .disabled(session.phase == .connecting)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Divider().padding(.top, 14)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Divider().padding(.top, 14)
             content
         }
         .padding(.horizontal, embedded ? 20 : 24)
@@ -108,13 +118,16 @@ struct RemoteRdpPicker: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             favoriteAppIDs = Set(UserDefaults.standard.stringArray(forKey: favoritesKey) ?? [])
-            if let credential = session.savedCredential {
-                username = credential.username
-                password = credential.password
-                rememberCredentials = true
-            }
+            accountChoice = defaultAccountChoice
             if session.phase == .idle { await session.connect() }
         }
+        .onChange(of: accounts.accounts) { _, current in
+            // 账号在管理面板中被删除后回落到默认选择，避免指向不存在的账号。
+            if case .saved(let id) = accountChoice, !current.contains(where: { $0.id == id }) {
+                accountChoice = defaultAccountChoice
+            }
+        }
+        .sheet(isPresented: $managingAccounts) { RemoteRDPAccountManager() }
     }
 
     @ViewBuilder private var content: some View {
@@ -133,32 +146,13 @@ struct RemoteRdpPicker: View {
                 message: "Windows 尚未提供可用应用。新版服务会自动发现应用并在首次打开时注册；旧版服务仍需手动注册。")
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    credentials
-                    HStack {
-                        Text("选择应用")
-                            .font(DFType.section)
-                        Spacer()
-                        Picker("应用范围", selection: $appScope) {
-                            ForEach(AppScope.allCases, id: \.self) { scope in
-                                Text(scope.rawValue).tag(scope)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 132)
-                        TextField("搜索 Windows 应用", text: $searchText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 240)
-                    }
-                    .padding(.top, 4)
-                    if !credentialsAreReady {
-                        Label("请先填写 Windows 用户名和账户密码，之后才能打开应用。", systemImage: "lock.fill")
+                VStack(alignment: .leading, spacing: 14) {
+                    toolbar
+                    if accountChoice == .manual { manualAccountCard }
+                    if let credentialsMessage {
+                        Label(credentialsMessage, systemImage: "exclamationmark.triangle")
                             .font(DFType.detail)
-                            .dfSecondaryText()
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: DFRadius.control))
+                            .foregroundStyle(DFPalette.warning)
                     }
                     if visibleApps.isEmpty {
                         if appScope == .favorites, searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -191,51 +185,97 @@ struct RemoteRdpPicker: View {
                             }
                         }
                     }
-                    Text("Windows 主机需已开启远程桌面；画面和输入通过 DeskFuse 加密隧道转发，无需额外开放防火墙端口。")
+                    Text("画面与输入经 DeskFuse 加密隧道转发，Windows 只需开启远程桌面。")
                         .font(DFType.caption)
                         .dfSecondaryText()
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 16)
+                .padding(.top, embedded ? 4 : 16)
                 .padding(.bottom, 8)
             }
         }
     }
 
-    private var credentials: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Windows 用户名", text: $username)
-                .textFieldStyle(.roundedBorder)
-            SecureField("Windows 密码", text: $password)
-                .textFieldStyle(.roundedBorder)
-            HStack(spacing: 6) {
-                Text("使用 Windows 账户密码，而不是 PIN。")
-                    .font(DFType.caption)
-                    .dfSecondaryText()
-                Button {
-                    showsCredentialInfo.toggle()
-                } label: {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.plain)
-                .help("查看凭据安全说明")
-                .popover(isPresented: $showsCredentialInfo) {
-                    Text("用户名和密码仅用于连接这台 Windows 设备，不会发送到 DeskFuse 服务端。启用记住凭据后，凭据仅保存在本机的 macOS 钥匙串中。")
-                        .font(DFType.detail)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 300, alignment: .leading)
-                        .padding()
+    /// 账号、筛选与搜索合并为一行，应用网格是页面主体。
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            accountMenu
+            Spacer(minLength: 12)
+            Picker("应用范围", selection: $appScope) {
+                ForEach(AppScope.allCases, id: \.self) { scope in
+                    Text(scope.rawValue).tag(scope)
                 }
             }
-            Toggle("记住登录凭据（仅保存在本机 macOS 钥匙串）", isOn: $rememberCredentials)
-                .onChange(of: rememberCredentials) { _, remember in
-                    if !remember { RemoteRDPCredentialStore.remove(peerID: session.peerID) }
-                }
-            if let credentialsMessage {
-                Text(credentialsMessage).font(DFType.caption).foregroundStyle(DFPalette.warning)
-            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+            TextField("搜索应用", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 200)
         }
+    }
+
+    private var accountMenu: some View {
+        Menu {
+            ForEach(accounts.accounts) { account in
+                Button {
+                    accountChoice = .saved(account.id)
+                } label: {
+                    if accountChoice == .saved(account.id) {
+                        Label(account.title, systemImage: "checkmark")
+                    } else {
+                        Text(account.title)
+                    }
+                }
+            }
+            if !accounts.accounts.isEmpty { Divider() }
+            Button("使用其他账号…", systemImage: "person.badge.plus") { accountChoice = .manual }
+            Button("管理账号…", systemImage: "person.2") { managingAccounts = true }
+        } label: {
+            Label(accountMenuTitle, systemImage: "person.crop.circle")
+                .font(DFType.bodyMedium)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("选择用于登录 Windows 的账号；密码仅保存在本机 macOS 钥匙串")
+        .accessibilityLabel("登录账号：\(accountMenuTitle)")
+        .onChange(of: accountChoice) { _, _ in credentialsMessage = nil }
+    }
+
+    private var accountMenuTitle: String {
+        if case .saved(let id) = accountChoice, let account = accounts.accounts.first(where: { $0.id == id }) {
+            return account.title
+        }
+        return "使用其他账号"
+    }
+
+    /// 只有选择“使用其他账号”时出现；用户名与密码并排，保存选项紧随其后。
+    private var manualAccountCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                TextField("Windows 用户名或 Microsoft 邮箱", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("账户密码（不是 PIN）", text: $password)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 10) {
+                Toggle("保存为常用账号", isOn: $saveManualAccount)
+                    .fixedSize()
+                if saveManualAccount {
+                    TextField("备注名（可选）", text: $manualAccountName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 200)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(credentialsAreReady ? "点选下方应用即可登录。" : "填写后点选下方应用即可登录。")
+                .font(DFType.caption)
+                .dfSecondaryText()
+        }
+        .padding(14)
+        .dfCard()
     }
 
     private func appGrid(_ apps: [RemoteRdpApp]) -> some View {
@@ -264,17 +304,7 @@ struct RemoteRdpPicker: View {
 
     private func appButton(_ app: RemoteRdpApp) -> some View {
         Button {
-            selected = app
-            let credential = RemoteRDPCredentialStore.Credential(username: username, password: password)
-            if rememberCredentials {
-                do {
-                    try RemoteRDPCredentialStore.save(credential, peerID: session.peerID)
-                    credentialsMessage = nil
-                } catch { credentialsMessage = error.userFacingMessage }
-            } else {
-                RemoteRDPCredentialStore.remove(peerID: session.peerID)
-            }
-            launch(app, username.isEmpty ? nil : username, password.isEmpty ? nil : password)
+            open(app)
         } label: {
             VStack(spacing: 8) {
                 ZStack {
@@ -298,8 +328,51 @@ struct RemoteRdpPicker: View {
     }
 
     private var credentialsAreReady: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !password.isEmpty
+        switch accountChoice {
+        case .saved(let id): accounts.accounts.contains { $0.id == id }
+        case .manual: !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty
+        }
+    }
+
+    /// 优先使用这台设备上次登录的账号，其次账号库第一个，没有账号时进入手动输入。
+    private var defaultAccountChoice: AccountChoice {
+        if let id = accounts.lastAccountID(peerID: session.peerID) ?? accounts.accounts.first?.id {
+            return .saved(id)
+        }
+        return .manual
+    }
+
+    private func open(_ app: RemoteRdpApp) {
+        selected = app
+        switch accountChoice {
+        case .saved(let id):
+            guard let account = accounts.accounts.first(where: { $0.id == id }),
+                  let password = accounts.password(for: account) else {
+                credentialsMessage = "钥匙串中找不到该账号的密码，请在“管理账号”中重新填写。"
+                return
+            }
+            credentialsMessage = nil
+            accounts.markUsed(id, peerID: session.peerID)
+            launch(app, account.username, password)
+        case .manual:
+            let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = password
+            credentialsMessage = nil
+            if saveManualAccount {
+                // 保存失败不阻止本次登录，只提示下次需要重新输入。
+                do {
+                    let account = try accounts.save(id: nil, name: manualAccountName,
+                                                    username: username, password: password)
+                    accounts.markUsed(account.id, peerID: session.peerID)
+                    accountChoice = .saved(account.id)
+                    self.password = ""
+                    manualAccountName = ""
+                } catch {
+                    credentialsMessage = error.userFacingMessage
+                }
+            }
+            launch(app, username, password)
+        }
     }
 
     private var visibleApps: [RemoteRdpApp] {
@@ -351,7 +424,7 @@ struct RemoteRdpPicker: View {
 @available(macOS 14.2, *)
 @MainActor final class RemoteRdpPickerWindow: NSWindowController, NSWindowDelegate {
     let session: RemoteRdpSession
-    var launch: ((RemoteRdpApp, String?, String?) -> Void)?
+    var launch: ((RemoteRdpApp, String, String) -> Void)?
 
     init(session: RemoteRdpSession, peerName: String) {
         self.session = session
@@ -384,9 +457,14 @@ struct RemoteRdpPicker: View {
         window.title = title
         window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(width: 480, height: 320)
         super.init(window: window)
         window.delegate = self
-        window.contentViewController = NSHostingController(rootView: RemoteRdpViewer(host: host))
+        // 画布没有固有尺寸；默认 sizingOptions 会把窗口收缩到提示文字大小。
+        let content = NSHostingController(rootView: RemoteRdpViewer(host: host))
+        content.sizingOptions = []
+        window.contentViewController = content
+        window.setContentSize(NSSize(width: 1024, height: 720))
         window.center()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -406,7 +484,13 @@ private struct RemoteRdpViewer: View {
         }
     }
     private func notice(_ text: String) -> some View {
-        Text(text).textSelection(.enabled).padding().background(.regularMaterial)
+        Text(text)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 520)
+            .padding()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DFRadius.control))
+            .padding(24)
     }
 }
 

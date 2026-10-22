@@ -39,25 +39,28 @@ enum DemoCurve {
 }
 
 /// 循环驱动引导动画；系统开启“减弱动态效果”时停在 `still` 对应的静止画面。
+/// 每帧都要重建整棵视图树，因此限制在 30fps，并在窗口被遮挡、最小化或关闭时暂停。
 struct DemoLoop<Content: View>: View {
     let period: Double
     let still: Double
     @ViewBuilder let content: (Double) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var windowVisible = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || !windowVisible)) { context in
             content(reduceMotion ? still
                 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period)
         }
         .padding(.vertical, DFSpace.s)
+        .background(WindowVisibilityObserver { windowVisible = $0 })
     }
 }
 
 /// 引导动画里的设备尺寸与配色，所有演示共用，读起来是同一套插画。
 enum DemoStage {
     static let screen = CGSize(width: 132, height: 84)
-    /// 两台独立设备之间的距离；键鼠穿越演示两屏紧贴，不使用它。
+    /// 两台设备之间的距离，所有演示保持一致。
     static let gap: CGFloat = 40
     static let localTint = DFPalette.accent
     static let remoteTint = DFPalette.identity[1]
@@ -79,7 +82,8 @@ struct DemoScreen<Content: View>: View {
                 .fill(tint.opacity(active ? DFOpacity.strong : DFOpacity.faint))
                 .frame(height: 8)
         }
-        .frame(width: DemoStage.screen.width, height: DemoStage.screen.height)
+        // 内容为空时 ZStack 只剩菜单栏条，必须顶对齐，否则会被居中到屏幕中间。
+        .frame(width: DemoStage.screen.width, height: DemoStage.screen.height, alignment: .top)
         .background(DFPalette.surface(scheme), in: shape)
         .clipShape(shape)
         .overlay(shape.stroke(tint.opacity(active ? 0.9 : 0.25), lineWidth: DFMetrics.selectionStroke))

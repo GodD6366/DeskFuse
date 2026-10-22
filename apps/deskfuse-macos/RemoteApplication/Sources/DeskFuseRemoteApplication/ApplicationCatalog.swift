@@ -15,8 +15,14 @@ public struct RemoteApplicationInfo: Codable, Identifiable, Equatable, Sendable 
 @MainActor public final class ApplicationCatalog {
     private var urls: [UUID: URL] = [:]
     private var identifiers: [URL: UUID] = [:]
-    private let icons = NSCache<NSURL, NSData>()
-    public init() { icons.countLimit = 512; icons.totalCostLimit = 8 * 1024 * 1024 }
+    /// 进程级共享：每个应用窗口都是独立的 host 会话，逐会话缓存会在主线程上重复绘制全部图标。
+    private static let icons: NSCache<NSURL, NSData> = {
+        let cache = NSCache<NSURL, NSData>()
+        cache.countLimit = 512; cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+    private var icons: NSCache<NSURL, NSData> { Self.icons }
+    public init() {}
 
     public func applications() -> [RemoteApplicationInfo] {
         let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }

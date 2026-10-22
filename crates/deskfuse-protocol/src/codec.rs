@@ -145,14 +145,15 @@ fn reject_unknown_payload_tags(payload: &[u8]) -> Result<(), ProtocolError> {
             .ok_or(ProtocolError::MalformedProtobuf("invalid protobuf key"))?;
         let field = key >> 3;
         let wire_type = (key & 0x07) as u8;
-        // Payload oneof tags: 10..=18 (control) and 20..=22 (clipboard/input/
-        // display app messages, workflow and update control). Future unknown
-        // tags are rejected on purpose.
+        // Payload oneof tags: 10..=18 (control), 20..=22 (clipboard/input/
+        // display app messages), 30..=35 and 40..=49 (workflow, update control,
+        // RDP tunnel). Must match `envelope::Message`; future unknown tags are
+        // rejected on purpose.
         if field >= 10
             && !(10..=18).contains(&field)
             && !(20..=22).contains(&field)
             && !(30..=35).contains(&field)
-            && !(40..=48).contains(&field)
+            && !(40..=49).contains(&field)
         {
             return Err(ProtocolError::UnknownPayload);
         }

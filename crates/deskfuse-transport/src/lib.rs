@@ -3533,7 +3533,11 @@ async fn serve_connection(
                         }
                         Some(Message::RemoteRdpTunnel(open)) => {
                             pending.insert(ordinal, None);
-                            if negotiated.contains(Capabilities::REMOTE_APPLICATION_RDP) && !shared.is_revoked(peer).unwrap_or(true) {
+                            // REMOTE_APPLICATION_RDP 表示“本机是 RDP 主机”，macOS 查看端不会声明它。
+                            // 不能要求双方协商出该位，否则查看端发起的隧道会被静默丢弃。
+                            if shared.local_hello.capabilities.contains(Capabilities::REMOTE_APPLICATION_RDP)
+                                && negotiated.contains(Capabilities::REMOTE_APPLICATION)
+                                && !shared.is_revoked(peer).unwrap_or(true) {
                                 let hub = shared.rdp.clone();
                                 tokio::spawn(async move { hub.accept(peer, open.ticket, send, recv).await; });
                             }

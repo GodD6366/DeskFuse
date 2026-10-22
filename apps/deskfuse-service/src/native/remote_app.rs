@@ -603,7 +603,6 @@ pub fn serve(
         return;
     }
     let availability = availability();
-    let host = host_status();
     let (available, reason) = match &availability {
         Availability::Available => (true, None),
         Availability::UnsupportedEdition { edition } => (
@@ -611,13 +610,14 @@ pub fn serve(
             Some(format!("当前 Windows 版本（{edition}）不支持 RemoteApp")),
         ),
     };
-    let catalog = || RemoteAppMessage::Catalog {
+    // 每次目录请求都重新预检：用户按提示在 Windows 上开启远程桌面后点“刷新”应立即生效。
+    let catalog = |host: RdpHost| RemoteAppMessage::Catalog {
         version: VERSION,
         available: available && host.available(),
-        host: host.clone(),
         reason: reason
             .clone()
             .or_else(|| (!host.available()).then(|| "请先按预检提示设置 Windows 远程桌面".into())),
+        host,
         apps: if available {
             launchable_apps()
                 .into_iter()
@@ -627,7 +627,7 @@ pub fn serve(
             Vec::new()
         },
     };
-    if send(&session, &catalog()).is_err() {
+    if send(&session, &catalog(host_status())).is_err() {
         session.close();
         return;
     }
@@ -661,7 +661,7 @@ pub fn serve(
                 };
                 match request {
                     RemoteAppRequest::Catalog { version: VERSION } => {
-                        if send(&session, &catalog()).is_err() {
+                        if send(&session, &catalog(host_status())).is_err() {
                             break;
                         }
                     }

@@ -114,6 +114,12 @@ int main(void)
         "remoteapplicationprogram:s:||notepad\r\ndesktopwidth:i:800\r\ndesktopheight:i:600\r\n",
         "test", "not-a-real-password", NULL, event, NULL);
     assert(bridge);
+    /* rdpdr 未编入：这些默认开启的 RDP8 特性会强制加载 rdpdr，导致 PRE_CONNECT_FAILED。 */
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_NetworkAutoDetect));
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_SupportHeartbeatPdu));
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_DeviceRedirection));
+    assert(freerdp_client_load_addins(bridge->context->channels, bridge->context->settings));
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_DeviceRedirection));
     assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RemoteApplicationMode));
     assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_SupportMultitransport));
     assert(freerdp_settings_get_uint32(bridge->context->settings, FreeRDP_MultitransportFlags) == 0);

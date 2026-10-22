@@ -154,6 +154,7 @@ impl RemoteRdpTunnelConnection {
         #[cfg(unix)]
         self.connection.close();
     }
+    /// 隧道异常结束的原因；仍在转发、本地关闭或正常结束时为 None。
     pub fn closed_reason(&self) -> Option<String> {
         #[cfg(unix)]
         {

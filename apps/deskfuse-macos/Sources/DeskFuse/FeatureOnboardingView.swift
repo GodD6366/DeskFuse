@@ -67,7 +67,7 @@ struct FeatureOnboardingContent {
             message = "在这台 Mac 上打开另一台电脑的应用窗口。"
             bullets = [
                 "应用窗口像本地窗口一样显示与操作",
-                "支持 macOS 与 Windows 远端",
+                "Windows 远端仍在完善中，可在“设置 › 高级”中开启",
             ]
             permission = .screenRecording
             opensSettings = true

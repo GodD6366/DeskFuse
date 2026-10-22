@@ -41,15 +41,14 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
     let engine: Engine
     let peerID: String
     let peerName: String
-    var savedCredential: RemoteRDPCredentialStore.Credential? {
-        RemoteRDPCredentialStore.load(peerID: peerID)
-    }
 
     @ObservationIgnored private var channel: RemoteApplicationChannel?
     @ObservationIgnored private var reader: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var connectTask: Task<Void, Never>?
     @ObservationIgnored private var pending: PendingPrepare?
+    /// 已打开通道但还没收到首个目录：静默重连期间界面保留旧列表，调用方据此等待。
+    @ObservationIgnored private var awaitingCatalog = false
     @ObservationIgnored private let writer = DispatchQueue(label: "DeskFuse.rdp.catalog.send")
 
     private struct PendingPrepare {
@@ -64,22 +63,24 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
     }
 
     /// Coalesces picker and host-connection callers onto one QUIC stream.
+    /// 已有列表时静默重连：保留界面上的应用，只替换底层通道。
     func connect() async {
         guard RemoteApplicationManager.shared.enabled else { return }
         if let connectTask {
             await connectTask.value
             return
         }
-        let task = Task { await self.performConnect() }
+        let silent = phase == .ready
+        let task = Task { await self.performConnect(silent: silent) }
         connectTask = task
         await task.value
         connectTask = nil
     }
 
-    private func performConnect() async {
-        stop()
+    private func performConnect(silent: Bool) async {
+        if silent { dropChannel() } else { stop(); phase = .connecting }
         let token = generation
-        phase = .connecting
+        awaitingCatalog = true
         let engine = engine, peerID = peerID
         do {
             let channel = try await Task.detached { try engine.openRemoteApplication(peerId: peerID) }.value
@@ -94,7 +95,7 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
                         let message = try JSONDecoder().decode(RemoteRdpMessage.self, from: data)
                         await self?.handle(message, token: token)
                     } catch {
-                        await self?.fail(Self.displayMessage(for: error), token: token)
+                        await self?.channelLost(error, token: token)
                         return
                     }
                 }
@@ -110,19 +111,25 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
         else { Task { await connect() } }
     }
 
-    /// Registers `name` on the Windows host and returns a single-use tunnel
-    /// ticket. Repeated prepares reuse the same catalog stream.
-    func prepare(_ name: String) async throws -> RemoteRdpReady {
-        if phase != .ready { await connect() }
-        // `connect` returns once the stream is open; the initial catalog (which
-        // proves the service accepted the version) arrives asynchronously.
+    /// 等待通道就绪并收到目录；静默重连时 phase 保持 ready，靠 awaitingCatalog 判断。
+    private func waitForCatalog() async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while phase == .idle || phase == .connecting {
+        while phase == .idle || phase == .connecting || (phase == .ready && awaitingCatalog) {
             guard ContinuousClock.now < deadline else {
                 throw RemoteRdpCatalogError.unavailable("读取 Windows 应用目录超时，请刷新后重试。")
             }
             try? await Task.sleep(for: .milliseconds(50))
         }
+    }
+
+    /// Registers `name` on the Windows host and returns a single-use tunnel
+    /// ticket. Repeated prepares reuse the same catalog stream.
+    func prepare(_ name: String) async throws -> RemoteRdpReady {
+        // 目录通道空闲 30 秒会被传输层关闭，打开应用前按需重连。
+        if channel == nil || phase != .ready { await connect() }
+        // `connect` returns once the stream is open; the initial catalog (which
+        // proves the service accepted the version) arrives asynchronously.
+        try await waitForCatalog()
         guard channel != nil, case .ready = phase else {
             throw RemoteRdpCatalogError.unavailable(unavailableReason ?? "Windows 应用目录尚未就绪。")
         }
@@ -148,12 +155,33 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
     }
 
     func stop() {
+        dropChannel()
+        apps = []; unavailableReason = nil; host = nil
+        phase = .idle
+    }
+
+    /// 只关闭底层通道，保留已展示的目录。
+    private func dropChannel() {
         generation = UUID()
+        awaitingCatalog = false
         reader?.cancel(); reader = nil
         channel?.close(); channel = nil
         resumePending(throwing: RemoteRdpCatalogError.disconnected)
-        apps = []; unavailableReason = nil; host = nil
-        phase = .idle
+    }
+
+    /// 读取失败的分流：目录已就绪且没有进行中的启动请求时，通道多半是因空闲超过
+    /// 30 秒被传输层关闭（目录流没有心跳），静默丢弃即可，下次操作时自动重连；
+    /// 其余情况才作为真正的失败展示。两种情况都记录原始错误便于排查。
+    private func channelLost(_ error: Error, token: UUID) {
+        guard generation == token else { return }
+        let raw = error.userFacingMessage
+        if phase == .ready, !awaitingCatalog, pending == nil {
+            dropChannel()
+            diagnostic("rdp_catalog_channel_closed", reason: raw)
+            return
+        }
+        diagnostic("rdp_catalog_channel_failed", reason: raw)
+        fail(Self.displayMessage(for: error), token: token)
     }
 
     private func prepareTimedOut(name: String, token: UUID) {
@@ -171,6 +199,13 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
         guard generation == token else { return }
         stop()
         phase = .failed(message)
+        diagnostic("rdp_catalog_failed", reason: message)
+    }
+
+    /// 目录失败与预检不通过写入诊断日志，便于事后从日志定位，而不只停留在界面提示。
+    private func diagnostic(_ event: String, reason: String) {
+        engine.remoteApplicationDiagnostic(event: event,
+            detail: "peer=\(peerID) reason=\(String(reason.prefix(512)).replacingOccurrences(of: "\n", with: " "))")
     }
 
     private nonisolated static func displayMessage(for error: Error) -> String {
@@ -198,8 +233,10 @@ let remoteRdpDisconnectedMessage = "Windows 应用连接已断开，请点击“
         guard token == generation else { return }
         switch message {
         case .catalog(_, let available, let reason, let host, let apps):
+            awaitingCatalog = false
             self.host = host
             unavailableReason = available ? nil : (reason ?? Self.hostFailureMessage(host))
+            if let unavailableReason { diagnostic("rdp_catalog_unavailable", reason: unavailableReason) }
             self.apps = available ? apps : []
             phase = .ready
         case .ready(_, let name, let ticket, let rdp, let host):

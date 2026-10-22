@@ -74,6 +74,9 @@ struct DisplayLayout: View {
                                 .padding(.horizontal, 8).padding(.vertical, 5)
                                 .background(.black.opacity(0.48), in: Capsule())
                                 .padding(8)
+                                // 左下角是名称信息条、左上角是悬停详情，状态标签放右上角避免重叠。
+                                .frame(width: display.width * scale, height: display.height * scale,
+                                       alignment: .topTrailing)
                                 .allowsHitTesting(false)
                         }
                         RoundedRectangle(cornerRadius: DFRadius.small)

@@ -257,6 +257,87 @@ impl QuinnTransport {
 mod tests {
     use super::*;
 
+    /// macOS 查看端只声明 REMOTE_APPLICATION；Windows 主机额外声明
+    /// REMOTE_APPLICATION_RDP。隧道必须仍能建立并双向转发字节。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn viewer_without_rdp_capability_reaches_rdp_host() {
+        let identity_a = Arc::new(LocalIdentity::from_bytes(&[91; 32]).unwrap());
+        let identity_b = Arc::new(LocalIdentity::from_bytes(&[92; 32]).unwrap());
+        let viewer = Capabilities::NETWORK | Capabilities::REMOTE_APPLICATION;
+        let host = viewer | Capabilities::REMOTE_APPLICATION_RDP;
+        let hello_a = PeerHello::signed(&identity_a, "viewer", viewer, [91; 32]).unwrap();
+        let hello_b = PeerHello::signed(&identity_b, "host", host, [92; 32]).unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let config = QuinnTransportConfig::new(
+            addr,
+            addr,
+            "localhost",
+            cert.cert.der().to_vec(),
+            cert.key_pair.serialize_der(),
+            cert.cert.der().to_vec(),
+        );
+        let a = QuinnTransport::bind(hello_a.clone(), config.clone())
+            .await
+            .unwrap();
+        let b = QuinnTransport::bind(hello_b.clone(), config).await.unwrap();
+        a.configure_identity(identity_a).unwrap();
+        b.configure_identity(identity_b).unwrap();
+        a.register_peer(hello_b.clone()).unwrap();
+        b.register_peer(hello_a.clone()).unwrap();
+        a.connect_with_route(
+            hello_b.device_id,
+            Endpoint::new("127.0.0.1", b.local_addr().unwrap().port()).unwrap(),
+        )
+        .await
+        .unwrap();
+        a.set_remote_application_enabled(true);
+        b.set_remote_application_enabled(true);
+
+        let ticket = b.issue_remote_rdp_ticket(hello_a.device_id).unwrap();
+        let outbound = a
+            .open_remote_rdp_tunnel(hello_b.device_id, ticket)
+            .await
+            .expect("host must accept a viewer without the RDP host capability");
+        let inbound = time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(tunnel) = b.take_remote_rdp_tunnel() {
+                    break tunnel;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(inbound.peer, hello_a.device_id);
+
+        let (mut client, client_socket) = tokio::io::duplex(1024);
+        let (mut server, server_socket) = tokio::io::duplex(1024);
+        let client_pump = tokio::spawn(outbound.forward(client_socket));
+        let server_pump = tokio::spawn(inbound.forward(server_socket));
+        client.write_all(b"x224-request").await.unwrap();
+        let mut request = [0; 12];
+        time::timeout(Duration::from_secs(2), server.read_exact(&mut request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&request, b"x224-request");
+        server.write_all(b"x224-confirm").await.unwrap();
+        let mut confirm = [0; 12];
+        time::timeout(Duration::from_secs(2), client.read_exact(&mut confirm))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&confirm, b"x224-confirm");
+
+        drop(client);
+        drop(server);
+        let _ = time::timeout(Duration::from_secs(2), client_pump).await;
+        let _ = time::timeout(Duration::from_secs(2), server_pump).await;
+        a.shutdown().await.unwrap();
+        b.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn pump_propagates_backpressure_and_remote_eof() {
         let (mut app, socket) = tokio::io::duplex(1024);

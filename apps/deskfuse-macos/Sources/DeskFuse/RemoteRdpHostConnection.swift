@@ -103,9 +103,17 @@ import DeskFuseRemoteApplication
     func frame() -> RemoteRdpBridge.Frame? {
         guard let bridge else { return nil }
         bridgeState = bridge.state
-        if case .failed(let message) = bridgeState {
+        if case .failed(let bridgeMessage) = bridgeState {
+            // 隧道先断时 FreeRDP 只能看到 EOF 并报“安全协商失败”，真实原因记录在隧道上。
+            let message = tunnel?.closedReason().map { "DeskFuse RDP 隧道中断：\($0)" } ?? bridgeMessage
+            bridgeState = .failed(message)
             error = message
-            if phase != .failed(message) { phase = .failed(message) }
+            if phase != .failed(message) {
+                phase = .failed(message)
+                // 每次失败只记录一次，界面提示之外保留可追溯的原因。
+                engine.remoteApplicationDiagnostic(event: "rdp_bridge_failed",
+                    detail: "peer=\(peerID) apps=\(activeApps.joined(separator: ",")) reason=\(message.prefix(512))")
+            }
         }
         return bridge.frame()
     }
