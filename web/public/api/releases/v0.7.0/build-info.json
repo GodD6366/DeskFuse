@@ -1,0 +1,27 @@
+{
+  "commit": "70521cc7a0b4ba66cbc9ea309cf755c26d0b9702",
+  "release": {
+    "version": "0.7.0",
+    "build_number": 248,
+    "release_id": "9490154c-f0b9-4ad7-a600-03e410fa0edb"
+  },
+  "targets": [
+    {
+      "asset": "DeskFuse-arm64.dmg",
+      "target": "aarch64-apple-darwin",
+      "sha256": "c247db50a580be337a07f8d9088b7adb41bca6d787eaca06bc61d299a1a541f5",
+      "signing": "developer-id",
+      "notarized": true
+    },
+    {
+      "asset": "DeskFuse-x86_64.dmg",
+      "target": "x86_64-apple-darwin",
+      "sha256": "ffdec4527e44b34784993955aae4a2e3fea22354184aa3abff821dd6592d2465",
+      "signing": "developer-id",
+      "notarized": true
+    }
+  ],
+  "minimum_macos": "14.0",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "dmg_sha256": "c247db50a580be337a07f8d9088b7adb41bca6d787eaca06bc61d299a1a541f5"
+}

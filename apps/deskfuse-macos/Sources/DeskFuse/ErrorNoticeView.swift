@@ -2,8 +2,10 @@ import AppKit
 import SwiftUI
 
 /// Window-level floating notice with an opaque surface, independent of page layout.
+/// 每条错误都给出两条出路：自己复制详情，或直接带着原文反馈给开发者。
 struct ErrorNoticeView: View {
     let notice: ErrorNotice
+    let report: (String) -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -27,10 +29,13 @@ struct ErrorNoticeView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                HStack {
+                HStack(spacing: DFSpace.s) {
                     Spacer()
                     Button("复制详情", action: copyDetails)
                         .buttonStyle(.dfSecondary)
+                    Button("反馈问题…") { report(notice.rawMessage ?? message) }
+                        .buttonStyle(.dfSecondary)
+                        .help("自动附上错误原文、版本信息和诊断文件")
                 }
             }
                 .padding(DFSpace.l)

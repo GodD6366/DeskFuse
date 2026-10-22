@@ -229,6 +229,8 @@ struct MenuBarClipboardView: View {
             Button("文件暂存区") { closePanel(); store.shelf?.show() }
             Divider()
             Button("设置…") { closePanel(); store.openSettings() }
+            Button("反馈问题…") { closePanel(); SupportCenter.reportProblem(store) }
+            Divider()
             Button("退出 DeskFuse") { NSApp.terminate(nil) }
         } label: {
             Image(systemName: "ellipsis.circle")
@@ -365,7 +367,7 @@ struct MenuBarClipboardView: View {
                     .font(DFType.metric).foregroundStyle(.tertiary)
                 Text(store.client == nil ? "引擎尚未就绪" : searchError != nil ? "搜索失败" : history.isEmpty ? "还没有剪贴板记录" : "没有匹配内容")
                     .font(DFType.section)
-                Text(store.client == nil ? (store.error ?? "请稍后重试") : searchError ?? (history.isEmpty ? "复制文字、图片或文件后，会显示在这里" : "试试其他关键词，或清除筛选"))
+                Text(store.client == nil ? (store.errorNotice.message ?? "请稍后重试") : searchError ?? (history.isEmpty ? "复制文字、图片或文件后，会显示在这里" : "试试其他关键词，或清除筛选"))
                     .font(DFType.detail).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 if !history.isEmpty && (!query.isEmpty || source != nil || listID != nil) {
                     Button("清除筛选") { query = ""; source = nil; listID = nil; searchError = nil }
@@ -378,7 +380,7 @@ struct MenuBarClipboardView: View {
     private var footer: some View {
         NativeGlassGroup {
             VStack(spacing: 10) {
-                if let message = copyError ?? library.error ?? ClipboardPanelController.shared.error {
+                if let message = (copyError ?? library.error ?? ClipboardPanelController.shared.error).map(friendlyError) {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(DFType.caption).foregroundStyle(DFPalette.warning)
                         .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
@@ -399,7 +401,7 @@ struct MenuBarClipboardView: View {
                 .font(DFType.body).controlSize(.small)
                 .disabled(copying || store.client == nil)
                 WorkflowRunStatusView(compact: true)
-                if let error = store.error { Text(error).font(DFType.caption).foregroundStyle(DFPalette.danger).lineLimit(3) }
+                if let error = store.errorNotice.message { Text(error).font(DFType.caption).foregroundStyle(DFPalette.danger).lineLimit(3) }
             }
             .padding(.horizontal, 16).padding(.vertical, 13)
         }

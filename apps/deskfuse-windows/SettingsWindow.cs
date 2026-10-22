@@ -34,11 +34,17 @@ public sealed class SettingsWindow : Window
         content.Children.Add(Heading("文件与缓存"));
         content.Children.Add(new TextBlock { Text = "本地暂存只保存引用，不预读文件正文。跨设备文件按需传输已接入：远端文件完整下载并逐文件校验后落地，缓存位于服务保护目录；接收的文件在传输页选择目标位置。Explorer OLE 按完整目录 manifest 延迟下载，首次粘贴请求时才读取并校验文件正文。", Margin = new Thickness(0, 10, 0, 24), Foreground = Brushes.SlateGray });
         content.Children.Add(Heading("版本与更新"));
-        var fileVersion = System.Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
-            .Cast<System.Reflection.AssemblyFileVersionAttribute>().Single().Version;
-        var version = Version.Parse(fileVersion);
-        content.Children.Add(new TextBlock { Text = $"DeskFuse {version.Major}.{version.Minor}.{version.Build} · build {version.Revision}", Margin = new Thickness(0, 10, 0, 0) });
+        content.Children.Add(new TextBlock { Text = $"DeskFuse {SupportLinks.VersionLabel}", Margin = new Thickness(0, 10, 0, 0) });
         content.Children.Add(new TextBlock { Text = "Windows 自动更新安装通道尚未接入。请使用匹配版本的 Windows 安装包更新客户端与服务。", Margin = new Thickness(0, 10, 0, 24), Foreground = Brushes.SlateGray });
+        content.Children.Add(Heading("帮助与反馈"));
+        content.Children.Add(new TextBlock { Text = "遇到问题时打开反馈页，版本、系统和服务状态已经填好，只需描述发生了什么。", Margin = new Thickness(0, 10, 0, 12), Foreground = Brushes.SlateGray, TextWrapping = TextWrapping.Wrap });
+        var feedback = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 24) };
+        var report = new Button { Content = "反馈问题…", Padding = new Thickness(12, 4, 12, 4) };
+        report.Click += (_, _) => SupportLinks.ReportProblem(service.LatestSnapshot);
+        var known = new Button { Content = "已报告的问题", Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(10, 0, 0, 0) };
+        known.Click += (_, _) => SupportLinks.Open(SupportLinks.IssuesUrl);
+        feedback.Children.Add(report); feedback.Children.Add(known);
+        content.Children.Add(feedback);
         content.Children.Add(new TextBlock { Text = "关闭主窗口保留系统托盘；从托盘选择“退出 DeskFuse”才结束客户端。Windows 服务由系统独立管理。", FontSize = 12, Foreground = Brushes.SlateGray });
         if (service.LatestSnapshot is JsonElement snapshot) RefreshService(snapshot);
     }

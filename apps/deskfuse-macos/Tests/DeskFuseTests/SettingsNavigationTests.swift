@@ -5,20 +5,20 @@ import AppKit
 
 @MainActor final class SettingsNavigationTests: XCTestCase {
     func testDefaultAndExplicitDestinations() {
-        XCTAssertEqual(SettingsDestination(tab: nil, clipboardSegment: nil).category, .general)
-        XCTAssertEqual(SettingsDestination(tab: "permissions", clipboardSegment: nil).category, .permissions)
+        XCTAssertEqual(SettingsDestination(tab: nil).category, .general)
+        XCTAssertEqual(SettingsDestination(tab: "permissions").category, .permissions)
         XCTAssertFalse(SettingsCategory.allCases.map(\.rawValue).contains("input"))
-        XCTAssertEqual(SettingsDestination(tab: "removed-category", clipboardSegment: nil).category, .general)
+        XCTAssertEqual(SettingsDestination(tab: "removed-category").category, .general)
+        XCTAssertEqual(SettingsDestination(tab: "storage").category, .files)
     }
 
-    func testWorkflowDeepLinkAndRepeatedOpening() {
-        let workflows = SettingsDestination(tab: "clipboard", clipboardSegment: "workflows")
-        XCTAssertEqual(workflows.category, .clipboard)
-        XCTAssertEqual(workflows.clipboardSegment, "workflows")
-        XCTAssertEqual(SettingsDestination(tab: nil, clipboardSegment: nil, previous: workflows), workflows)
-        let history = SettingsDestination(tab: "clipboard", clipboardSegment: "history", previous: workflows)
-        XCTAssertEqual(history.clipboardSegment, "history")
-        XCTAssertEqual(SettingsDestination(tab: "clipboard", clipboardSegment: "invalid").clipboardSegment, "history")
+    func testWorkflowsIsItsOwnCategoryAndHiddenWhenDisabled() {
+        let workflows = SettingsDestination(tab: "workflows")
+        XCTAssertEqual(workflows.category, .workflows)
+        XCTAssertEqual(SettingsDestination(tab: nil, previous: workflows), workflows)
+        XCTAssertTrue(SettingsCategory.visible(workflowsEnabled: true).contains(.workflows))
+        XCTAssertFalse(SettingsCategory.visible(workflowsEnabled: false).contains(.workflows))
+        XCTAssertEqual(SettingsCategory.visible(workflowsEnabled: false).count, SettingsCategory.allCases.count - 1)
     }
 
     func testSettingsNavigationKeepsLastWorkspaceAndUsesMainWindow() {
@@ -27,10 +27,10 @@ import AppKit
         store.selectedPage = .clipboard
         var opens = 0
         store.showMainWindow = { opens += 1 }
-        store.openSettings(tab: "clipboard", clipboardSegment: "workflows")
+        store.openSettings(tab: "workflows")
         XCTAssertEqual(store.selectedPage, .settings)
         XCTAssertEqual(store.workspacePage, .clipboard)
-        XCTAssertEqual(store.settingsDestination.clipboardSegment, "workflows")
+        XCTAssertEqual(store.settingsDestination.category, .workflows)
         // If a main window already exists openMain raises it; otherwise it calls the opener.
         if !NSApp.windows.contains(where: { $0.identifier?.rawValue == "deskfuse-main" }) {
             XCTAssertEqual(opens, 1)

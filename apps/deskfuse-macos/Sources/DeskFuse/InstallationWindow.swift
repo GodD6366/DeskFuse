@@ -178,7 +178,7 @@ struct InstallationView: View {
             HStack(spacing: 6) {
                 Text(model.text("安装遇到问题？", "Having trouble?"))
                 Link(model.text("立即反馈", "Get help"),
-                     destination: URL(string: "https://github.com/GodD6366/deskfuse-release/issues")!)
+                     destination: SupportCenter.issuesURL)
             }
             .font(DFInstallerStyle.footer)
             .foregroundStyle(DFPalette.secondaryText(scheme))

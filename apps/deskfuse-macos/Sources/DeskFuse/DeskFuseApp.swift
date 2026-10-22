@@ -48,6 +48,18 @@ import DeskFuseEngine
                 Divider()
                 Button("刷新设备") { store.send(.refreshDevices) }
             }
+            // 系统默认的「DeskFuse 帮助」没有帮助手册，只会弹出“帮助不可用”；换成真正能联系到开发者的入口。
+            CommandGroup(replacing: .help) {
+                Button("反馈问题…") { SupportCenter.reportProblem(store) }
+                    .keyboardShortcut("?", modifiers: .command)
+                Button("导出诊断信息…") { SupportCenter.exportDiagnosticsInteractively(store) }
+                    .disabled(store.client == nil)
+                Button("复制版本与环境信息") { SupportCenter.copyEnvironment(store) }
+                Divider()
+                Button("已报告的问题") { SupportCenter.open(SupportCenter.issuesURL) }
+                Button("发行说明") { SupportCenter.open(SupportCenter.releasesURL) }
+                Button("安全问题反馈") { SupportCenter.open(SupportCenter.securityURL) }
+            }
         }
 
 

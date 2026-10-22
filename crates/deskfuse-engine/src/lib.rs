@@ -4,6 +4,7 @@ pub mod clipboard_bundle;
 pub mod diagnostics;
 #[cfg_attr(test, allow(dead_code))]
 mod diagnostics_file;
+pub mod diagnostics_redact;
 mod github_update;
 pub mod host;
 pub mod input_coordinator;

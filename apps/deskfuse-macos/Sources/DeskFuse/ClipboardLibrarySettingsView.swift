@@ -1,12 +1,12 @@
 import SwiftUI
 
+/// 剪贴板历史设置。唤起面板的快捷键在「设置 → 快捷键」统一管理，这里不再重复。
 struct ClipboardLibrarySettingsView: View {
     @Bindable private var library = ClipboardLibraryStore.shared
     @State private var draft = ClipboardLibrarySettings()
     @State private var original: ClipboardLibrarySettings?
     @State private var loading = false
     @State private var saving = false
-    @State private var recording = false
     @State private var status: String?
     @State private var failure: String?
     @AppStorage(wrappedValue: ClipboardOCRIndexer.defaultAutomaticIndexing,
@@ -14,23 +14,16 @@ struct ClipboardLibrarySettingsView: View {
     private var automaticOCR: Bool
     @State private var draftAutomaticOCR = ClipboardOCRIndexer.defaultAutomaticIndexing
     @State private var originalAutomaticOCR = ClipboardOCRIndexer.defaultAutomaticIndexing
-    private var dirty: Bool { original != nil && (draft != original || draftAutomaticOCR != originalAutomaticOCR) }
-    private var shortcut: WorkflowKey? {
-        let value = draft.shortcut ?? ClipboardLibraryShortcut()
-        return value.enabled ? WorkflowKey(key_code: value.key_code, modifiers: value.modifiers) : nil
+    /// 快捷键不在本页编辑，比较时忽略它，避免快捷键页的修改让本页显示“未保存”。
+    private var dirty: Bool {
+        guard var original else { return false }
+        original.shortcut = draft.shortcut
+        return draft != original || draftAutomaticOCR != originalAutomaticOCR
     }
 
     var body: some View {
         VStack(spacing: 0) {
             DFScrollPage {
-                DFSection("快捷键") {
-                    ClipboardShortcutSettings(store: AppStore.shared, shortcut: Binding(
-                        get: { shortcut },
-                        set: { key in
-                            draft.shortcut = ClipboardLibraryShortcut(enabled: key != nil,
-                                key_code: key?.key_code ?? 9, modifiers: key?.modifiers ?? 0x180000)
-                        }), onRecordingChange: { recording = $0 })
-                }
                 DFSection("普通历史") {
                     DFSettingRow(title: "保留天数",
                         detail: "默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。") {
@@ -82,8 +75,8 @@ struct ClipboardLibrarySettingsView: View {
                 }.padding(12)
             }
             SettingsSaveFooter(dirty: dirty, saving: saving,
-                canSave: original != nil && !recording && (dirty || failure != nil),
-                canRevert: dirty && !recording, status: status, error: failure,
+                canSave: original != nil && (dirty || failure != nil),
+                canRevert: dirty, status: status, error: failure,
                 revert: {
                     if let original { draft = original }
                     draftAutomaticOCR = originalAutomaticOCR
@@ -108,35 +101,26 @@ struct ClipboardLibrarySettingsView: View {
     }
 
     private func save() {
-        guard !saving, !recording, original != nil else { return }
+        guard !saving, original != nil else { return }
         guard draft.retention_days > 0, draft.retention_days <= Int(UInt32.max) else {
             failure = "请输入有效的保留天数（1–4294967295）。"; return
         }
-        if let conflict = ClipboardShortcutSettings.conflict(shortcut, store: AppStore.shared) {
-            failure = conflict; return
-        }
-        let submitted = draft
+        var submitted = draft
         let submittedAutomaticOCR = draftAutomaticOCR
         saving = true; failure = nil; status = nil
         Task {
             defer { saving = false }
             do {
+                // 快捷键可能已在快捷键页单独修改：沿用引擎中的最新值，避免本页的旧草稿把它覆盖回去。
+                submitted.shortcut = try await library.loadSettings().shortcut
                 let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(submitted))
-                var saved = try await library.mutate(["op": "settings", "settings": object])
-                saved.shortcut = saved.shortcut ?? ClipboardLibraryShortcut()
+                _ = try await library.mutate(["op": "settings", "settings": object])
                 // Preserve the local ordering; the backend normalizes excluded apps.
                 original = submitted
                 automaticOCR = submittedAutomaticOCR
                 originalAutomaticOCR = submittedAutomaticOCR
                 if !submittedAutomaticOCR { ClipboardOCRIndexer.shared.cancelPending() }
-                let value = saved.shortcut ?? ClipboardLibraryShortcut()
-                ClipboardPanelController.shared.configure(value.enabled
-                    ? WorkflowKey(key_code: value.key_code, modifiers: value.modifiers) : nil)
-                if let error = ClipboardPanelController.shared.error {
-                    failure = "设置已保存，但\(error)"
-                } else {
-                    status = value.enabled ? "已保存，快捷键已生效" : "已保存，快捷键已关闭"
-                }
+                status = "已保存"
             } catch { failure = error.userFacingMessage }
         }
     }

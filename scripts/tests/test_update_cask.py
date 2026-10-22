@@ -34,6 +34,12 @@ class UpdateCaskTests(unittest.TestCase):
         self.assertNotIn("caveats", rendered)
         self.assertTrue(rendered.endswith("end\n"))
 
+    def test_retap_notice_points_legacy_tap_to_source_repository(self):
+        rendered = update_cask.render("0.1.0", DIGEST, retap_notice=True)
+        self.assertIn("caveats <<~EOS", rendered)
+        self.assertIn(f"brew tap {update_cask.DISTRIBUTION['homebrew_tap']} {update_cask.HOMEPAGE}", rendered)
+        self.assertTrue(rendered.endswith("  EOS\nend\n"))
+
     def test_render_rejects_invalid_values(self):
         for version in ("1.0", "v0.1.0", "0.1.0-rc1", "", "01.0.0"):
             with self.assertRaises(ValueError):

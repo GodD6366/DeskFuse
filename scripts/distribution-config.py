@@ -30,6 +30,12 @@ def load(root: Path = ROOT) -> dict:
     for key in ("source_repository", "release_repository", "homebrew_tap"):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", active[key]):
             raise ValueError(f"invalid {key}")
+    # 过渡期：旧客户端只认旧发行仓库，过渡版本需要同时镜像过去；过渡完成后删除该字段。
+    legacy = active.get("legacy_release_repository")
+    if legacy is not None and (not isinstance(legacy, str)
+                               or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", legacy)
+                               or legacy == active["release_repository"]):
+        raise ValueError("invalid legacy_release_repository")
     if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?", active["release_feed_url"]):
         raise ValueError("invalid release_feed_url")
     for value in (*active["assets"].values(), active["app_bundle"], active["cask_token"]):
@@ -47,9 +53,13 @@ def release_tag(root: Path = ROOT) -> str:
 
 
 def website_projection(active: dict, root: Path = ROOT) -> dict:
+    legacy = active.get("legacy_release_repository", "")
     return {
         "schema_version": 1,
         "release_repository": active["release_repository"],
+        # 过渡期发行列表要合并旧仓库；回退下载链接指向确实存有该 tag 的仓库。
+        "legacy_release_repository": legacy,
+        "fallback_release_repository": legacy or active["release_repository"],
         "homebrew_tap": active["homebrew_tap"],
         "cask_token": active["cask_token"],
         "assets": active["assets"],
@@ -89,6 +99,7 @@ def main() -> None:
     if args.github_output:
         values = {
             "release_repository": active["release_repository"],
+            "legacy_release_repository": active.get("legacy_release_repository", ""),
             "arm64_asset": active["assets"]["arm64"],
             "x86_64_asset": active["assets"]["x86_64"],
             "windows_x64_asset": active["assets"]["windows_x64"],

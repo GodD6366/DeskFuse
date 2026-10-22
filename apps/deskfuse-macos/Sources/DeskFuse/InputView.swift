@@ -629,7 +629,7 @@ struct InputView: View {
 
     private var inputBlockedReason: String? {
         if let error = snapshot.input.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
-            return error
+            return friendlyError(error)
         }
         if snapshot.input.summary.contains("权限") {
             return snapshot.input.summary

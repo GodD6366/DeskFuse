@@ -51,6 +51,17 @@ class DistributionConfigTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.load()
 
+    def test_accepts_optional_legacy_release_repository(self):
+        self.assertNotIn("legacy_release_repository", self.load())
+        self.active["legacy_release_repository"] = "owner/old-release"
+        self.assertEqual(self.load()["legacy_release_repository"], "owner/old-release")
+
+    def test_rejects_invalid_or_same_legacy_release_repository(self):
+        for value in ("owner/deskfuse-release", "owner/repo\noutput=bad", "", 1):
+            self.active["legacy_release_repository"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load()
+
     def test_rejects_release_feed_url_injection(self):
         for value in ("http://deskfuse.example/api/releases.json", "https://example.com\noutput=bad"):
             self.active["release_feed_url"] = value

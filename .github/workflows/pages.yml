@@ -1,0 +1,72 @@
+name: Deploy Pages
+
+# 站点 deskfuse.godd.cc：产品页 + 更新检查的独立域名镜像（api/releases.json 与各版本元数据）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "Casks/**"
+      - ".github/workflows/pages.yml"
+  # 每天重跑一次，让 api/releases.json 在没有任何提交时也能跟上新版本
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      # 被发布流程调用时 github.ref 是 tag；站点与 cask 始终以 main 为准
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Check website distribution config
+        run: python3 scripts/distribution-config.py --website-output web/src/config/distribution.json --check
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: web
+        env:
+          # 已认证的读取配额（5000/小时），避免共享 runner IP 撞上匿名限流
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -1427,7 +1427,14 @@ impl TokioBridge {
         );
     }
 
-    pub fn export_diagnostics(&self, path: &std::path::Path) -> Result<(), String> {
+    /// 导出的诊断会被贴进公开 Issue：`extra_jsonl`（界面层诊断）与引擎记录拼接后，
+    /// 整体经过 [`crate::diagnostics_redact::Redactor`] 再写盘，返回写进 Issue 正文的摘要。
+    pub fn export_diagnostics(
+        &self,
+        path: &std::path::Path,
+        extra_jsonl: &str,
+        context: crate::diagnostics_redact::RedactionContext,
+    ) -> Result<String, String> {
         let mut contents = serde_json::json!({
             "subsystem": "diagnostic_collection",
             "debug_enabled": deskfuse_core::debug_logging::enabled(),
@@ -1500,9 +1507,19 @@ impl TokioBridge {
         }
         contents.push_str(&quality);
         contents.push('\n');
+        if !extra_jsonl.is_empty() {
+            contents.push_str(extra_jsonl);
+            if !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+        }
+        let mut redactor =
+            crate::diagnostics_redact::Redactor::new(context.with_host(self.runtime.hostname()));
+        let redacted = redactor.redact(&contents);
         self.runtime
-            .write_file(path, contents.as_bytes())
-            .map_err(|error| format!("诊断导出失败：{error}"))
+            .write_file(path, redacted.as_bytes())
+            .map_err(|error| format!("诊断导出失败：{error}"))?;
+        Ok(crate::diagnostics_redact::summary(&redacted))
     }
 
     pub fn shutdown(&self) {

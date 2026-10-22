@@ -6,7 +6,7 @@
     "slug": "deskfuse",
     "application_id": "com.deskfuse.app",
     "source_repository": "GodD6366/DeskFuse",
-    "release_repository": "GodD6366/deskfuse-release",
+    "release_repository": "GodD6366/DeskFuse",
     "app_bundle": "DeskFuse.app",
     "cask_token": "deskfuse",
     "homebrew_tap": "godd6366/deskfuse",

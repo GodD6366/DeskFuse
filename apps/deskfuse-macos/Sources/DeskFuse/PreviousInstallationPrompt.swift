@@ -170,7 +170,7 @@ struct PreviousInstallationPrompt: View {
                 Text("可以将\(controller.name)移到废纸篓。旧数据和备份会保留。")
             }
             if let error = controller.error {
-                Text(error).foregroundStyle(DFPalette.danger).textSelection(.enabled)
+                Text(friendlyError(error)).foregroundStyle(DFPalette.danger).textSelection(.enabled)
             }
             if controller.busy {
                 HStack { ProgressView().controlSize(.small); Text("正在处理，请稍候…") }

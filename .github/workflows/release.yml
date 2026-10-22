@@ -8,8 +8,10 @@ on:
 permissions:
   contents: read
 
-# GITHUB_TOKEN 在整个发布流程中只读：构建产物经 Actions artifacts 传递，公开
-# Release 与 Homebrew cask 只通过 RELEASE_REPOSITORY_TOKEN 写入发行仓库。
+# 发行版与源码在同一个公开仓库。顶层 GITHUB_TOKEN 只读；只有 publish（创建 Release）、
+# cask（提交 Casks/ 与站点配置）和 pages（触发站点部署）三个 job 单独声明写权限。
+# 过渡期内，旧发行仓库通过只授权该仓库的 RELEASE_REPOSITORY_TOKEN 镜像同一版本，
+# 让编译时写死旧仓库地址的已安装客户端也能升级到过渡版本。
 # 签名与发行凭据存放在 `release` environment，只对 `v*` tag 开放（tag 由 ruleset
 # 限定管理员创建）；读取 secrets 的 job 必须声明 environment: release。
 # 自托管 runner 不执行未审阅代码（见 ci.yml）。
@@ -32,6 +34,7 @@ jobs:
     outputs:
       exists: ${{ steps.probe.outputs.exists }}
       release_repository: ${{ steps.distribution.outputs.release_repository }}
+      legacy_release_repository: ${{ steps.distribution.outputs.legacy_release_repository }}
       arm64_asset: ${{ steps.distribution.outputs.arm64_asset }}
       x86_64_asset: ${{ steps.distribution.outputs.x86_64_asset }}
       windows_x64_asset: ${{ steps.distribution.outputs.windows_x64_asset }}
@@ -63,11 +66,15 @@ jobs:
       - id: probe
         name: Validate tag and immutable release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           DESKFUSE_RELEASE_REPOSITORY: ${{ steps.distribution.outputs.release_repository }}
+          LEGACY_RELEASE_REPOSITORY: ${{ steps.distribution.outputs.legacy_release_repository }}
+          LEGACY_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
         run: |
-          test -n "$GH_TOKEN" || { echo "Missing RELEASE_REPOSITORY_TOKEN (Contents write on public release repository)" >&2; exit 1; }
+          if [[ -n "$LEGACY_RELEASE_REPOSITORY" ]]; then
+            test -n "$LEGACY_TOKEN" || { echo "Missing RELEASE_REPOSITORY_TOKEN (Contents write on $LEGACY_RELEASE_REPOSITORY) for the transition mirror" >&2; exit 1; }
+          fi
           probe_args=()
           if [[ "$DESKFUSE_INCLUDE_WINDOWS_RELEASE" != "true" ]]; then probe_args+=(--macos-only); fi
           python3 scripts/release.py probe --tag "$RELEASE_TAG" "${probe_args[@]}"
@@ -334,8 +341,9 @@ jobs:
     # Artifact downloads on the self-hosted runner can be slow; keep enough
     # time for both DMGs before the public inventory is assembled.
     timeout-minutes: 90
+    # 创建并发布本仓库的 Release 需要 contents: write；tag 由 ruleset 限定管理员创建。
     permissions:
-      contents: read
+      contents: write
       actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,68 +398,109 @@ jobs:
           (cd dist && shasum -a 256 -c SHA256SUMS)
       - name: Verify, upload draft, then publish prerelease
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # The release repository tag points only at its distribution tree. Never
-          # push source tags/commits from the source repository into it.
-          if ! gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
-            public_sha="$(gh api "repos/$DESKFUSE_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-            gh api --method POST "repos/$DESKFUSE_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$public_sha" > /dev/null
-          fi
           publish_args=()
           if [[ "$INCLUDE_WINDOWS" != "true" ]]; then publish_args+=(--macos-only); fi
           python3 scripts/release.py publish --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" "${publish_args[@]}"
 
-  # Brew cannot install an unpublished prerelease, so the cask checksum is
-  # refreshed only after @publish confirms the GitHub assets are public. The
-  # cask is written only to the public distribution repository.
-  cask:
+  # 过渡期：把刚发布的同一批资产镜像到旧发行仓库。已安装的旧客户端只查询旧仓库，
+  # 升级到这个版本后改从本仓库检查更新。过渡完成后删除 legacy_release_repository，
+  # 这个 job 自动跳过。
+  mirror-legacy:
     environment: release
     needs: [preflight, publish]
     if: >-
       always() &&
-      needs.preflight.result == 'success' &&
       needs.publish.result == 'success' &&
-      needs.preflight.outputs.exists != 'true'
+      needs.preflight.outputs.legacy_release_repository != ''
     env:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
-      ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
-      CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
+      LEGACY_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.legacy_release_repository }}
+      INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: source
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ env.DESKFUSE_RELEASE_REPOSITORY }}
-          token: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
-          ref: main
-          path: distribution
-      - name: Refresh cask from the published arm64 DMG
+      - name: Download the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir dist
+          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --dir dist
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+      - name: Mirror to the legacy release repository
         env:
           GH_TOKEN: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: unexpected release tag: $RELEASE_TAG" >&2; exit 1; }
-          mkdir -p dist
-          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --pattern "$ARM64_ASSET" --dir dist --clobber
-          python3 source/scripts/update-cask.py --dmg "dist/$ARM64_ASSET" --version "$version" --cask "distribution/$CASK_PATH"
-          python3 source/scripts/distribution-config.py --website-output distribution/web/src/config/distribution.json
-      - name: Commit refreshed cask
+          # 旧仓库的 tag 只指向它自己的发行说明分支，不推送源码对象。
+          if ! gh api "repos/$LEGACY_RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
+            legacy_sha="$(gh api "repos/$LEGACY_RELEASE_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+            gh api --method POST "repos/$LEGACY_RELEASE_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$legacy_sha" > /dev/null
+          fi
+          publish_args=()
+          if [[ "$INCLUDE_WINDOWS" != "true" ]]; then publish_args+=(--macos-only); fi
+          python3 scripts/release.py publish --directory dist --repo "$LEGACY_RELEASE_REPOSITORY" \
+            --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" "${publish_args[@]}"
+
+  # Brew cannot install an unpublished prerelease, so the cask checksum is
+  # refreshed only after @publish confirms the GitHub assets are public.
+  cask:
+    environment: release
+    needs: [preflight, publish, mirror-legacy]
+    if: >-
+      always() &&
+      needs.preflight.result == 'success' &&
+      needs.publish.result == 'success' &&
+      (needs.mirror-legacy.result == 'success' || needs.mirror-legacy.result == 'skipped') &&
+      needs.preflight.outputs.exists != 'true'
+    env:
+      DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
+      LEGACY_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.legacy_release_repository }}
+      ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
+      CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
+    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
+    timeout-minutes: 15
+    # 把 Casks/ 与站点配置提交到本仓库 main；这是 tap 与站点读取的位置。
+    permissions:
+      contents: write
+    steps:
+      # 需要 git push：例外地保留本仓库 checkout 的凭据（见 CONTRIBUTING「凭据落盘」）。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: source
+      - name: Download the published arm64 DMG
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-          DEFAULT_BRANCH: main
         run: |
           set -euo pipefail
-          cd distribution
-          if git diff --quiet -- "$CASK_PATH" web/src/config/distribution.json && test -z "$(git ls-files --others --exclude-standard -- "$CASK_PATH" web/src/config/distribution.json)"; then
+          [[ "${RELEASE_TAG#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: unexpected release tag: $RELEASE_TAG" >&2; exit 1; }
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --pattern "$ARM64_ASSET" --dir dist --clobber
+      - name: Commit refreshed cask and website config
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd source
+          python3 scripts/update-cask.py --dmg "../dist/$ARM64_ASSET" --version "${RELEASE_TAG#v}" --cask "$CASK_PATH"
+          # 站点回退版本取自 tag 对应的 release.json，而不是 main 上可能更新的描述文件。
+          git fetch --quiet --depth 1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git show "$RELEASE_TAG:release.json" > /tmp/deskfuse-release-descriptor.json
+          cp /tmp/deskfuse-release-descriptor.json release.json
+          python3 scripts/distribution-config.py --website-output web/src/config/distribution.json
+          git checkout -- release.json
+          if git diff --quiet -- "$CASK_PATH" web/src/config/distribution.json; then
             echo "Homebrew cask already current"
             exit 0
           fi
@@ -459,4 +508,49 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$CASK_PATH" web/src/config/distribution.json
           git commit -m "chore(cask): pin $RELEASE_TAG DMG checksum"
-          git push origin "HEAD:$DEFAULT_BRANCH"
+          for attempt in 1 2 3; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "error: failed to push the refreshed cask" >&2
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.LEGACY_RELEASE_REPOSITORY != ''
+        with:
+          repository: ${{ env.LEGACY_RELEASE_REPOSITORY }}
+          token: ${{ secrets.RELEASE_REPOSITORY_TOKEN }}
+          ref: main
+          path: legacy
+      - name: Point the legacy tap at the source repository
+        if: env.LEGACY_RELEASE_REPOSITORY != ''
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 source/scripts/update-cask.py --dmg "dist/$ARM64_ASSET" --version "${RELEASE_TAG#v}" \
+            --cask "legacy/$CASK_PATH" --retap-notice
+          cd legacy
+          if git diff --quiet -- "$CASK_PATH"; then
+            echo "Legacy cask already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$CASK_PATH"
+          git commit -m "chore(cask): $RELEASE_TAG moves the tap to the source repository"
+          git push origin HEAD:main
+
+  # GITHUB_TOKEN 推送的提交不会触发 push 事件；显式在 main 上触发站点部署，
+  # 让 api/releases.json 立即包含新版本（github-pages 环境只允许 main 部署）。
+  pages:
+    needs: [cask]
+    if: always() && needs.cask.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the Pages deployment on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

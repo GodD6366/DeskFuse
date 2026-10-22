@@ -1,9 +1,12 @@
 name: CI
 
 on:
+  # 站点与 cask 有独立的 Pages workflow，不占用自托管 runner。
   push:
     branches: [main]
+    paths-ignore: ['web/**', 'Casks/**', '.github/workflows/pages.yml']
   pull_request:
+    paths-ignore: ['web/**', 'Casks/**', '.github/workflows/pages.yml']
   workflow_dispatch:
   workflow_call:
 

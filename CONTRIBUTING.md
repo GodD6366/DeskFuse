@@ -30,9 +30,9 @@ Windows：分别运行 `scripts/check-windows-native.ps1` 和 `scripts/check-win
 
 - **可信边界**：自托管 macOS runner 只执行可信代码——push main、`vX.Y.Z` tag、维护者手动 `workflow_dispatch`，以及同仓库分支且非 Dependabot 的 PR。fork PR 和 Dependabot PR 只在 GitHub-hosted runner 上跑静态检查（actionlint、Gitleaks、仓库边界、rustfmt）；维护者审阅代码后，把分支推到本仓库或手动触发 CI 完成完整验证。
 - **禁止的触发器**：不得使用 `pull_request_target`、`workflow_run` 或 `issue_comment` 等以基础仓库权限运行 PR 代码的触发方式；不得把 `github.event.*` 中的 PR 标题、分支名等外部输入直接插入 `run:`，一律经 `env:` 传入并加引号。
-- **最小权限**：workflow 顶层固定 `permissions: contents: read`，`GITHUB_TOKEN` 不写本仓库；发布写入只通过仅授权发行仓库的 `RELEASE_REPOSITORY_TOKEN`。新增 job 级写权限必须说明理由。
+- **最小权限**：workflow 顶层固定 `permissions: contents: read`。写权限只在 job 级声明并说明理由：Prerelease 的 publish、cask（`contents: write`）与 pages（`actions: write`），Pages workflow 的 deploy（`pages: write`、`id-token: write`）。过渡期镜像旧发行仓库使用仅授权该仓库的 `RELEASE_REPOSITORY_TOKEN`。
 - **发布凭据**：Apple 签名／公证 secrets 与 `RELEASE_REPOSITORY_TOKEN` 只放在 `release` environment（仅允许 `v*` tag 部署），读取它们的 job 必须声明 `environment: release`；`v*` tag 的创建、移动和删除由 ruleset 限定仓库管理员。
-- **凭据落盘**：`actions/checkout` 默认设置 `persist-credentials: false`；只有需要 `git push` 的发行仓库 checkout 例外。签名材料在 `always()` 步骤中清理。
+- **凭据落盘**：`actions/checkout` 默认设置 `persist-credentials: false`；只有 cask job 需要 `git push` 的 checkout 例外。签名材料在 `always()` 步骤中清理。
 - **依赖固定**：第三方 action 一律使用完整 commit SHA 并在注释中标注版本，由 Dependabot 升级；CI 工具下载必须校验 SHA-256。
 - **缓存**：Rust 缓存只在 push main 时写入，PR 只读。
 - **runner 标签**：新增自托管标签时同步 `.github/actionlint.yaml`；不要给自托管 runner 添加与 GitHub-hosted 镜像同名的标签（如 `windows-2022`），Windows 检查与安装包使用 GitHub-hosted runner。

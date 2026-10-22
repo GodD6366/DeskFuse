@@ -1,6 +1,6 @@
 # DeskFuse
 
-DeskFuse 使用独立的应用身份、协议和数据目录。首次启动可确认导入旧安装的剪贴板历史，导入后可选择移除旧应用；不兼容旧协议。目标发行仓库为 `GodD6366/deskfuse-release`；首次公开发行前，下方下载与 Homebrew 命令仅用于发布准备，不能作为已有安装包的承诺。
+DeskFuse 使用独立的应用身份、协议和数据目录。首次启动可确认导入旧安装的剪贴板历史，导入后可选择移除旧应用；不兼容旧协议。源码、安装包、Homebrew tap 和问题反馈都在本仓库 `GodD6366/DeskFuse`。
 
 [English](README.en.md) · [开发指南](CONTRIBUTING.md) · [发行指南](docs/RELEASING.md) · [计划与待办](TODO.md)
 
@@ -48,17 +48,17 @@ DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：
 
 ## 下载与安装
 
-下载见 [GitHub Releases](https://github.com/GodD6366/deskfuse-release/releases)。
+下载见 [GitHub Releases](https://github.com/GodD6366/DeskFuse/releases) 或 [官网](https://deskfuse.godd.cc)。v0.7.0 及更早的安装包保留在已停止更新的 [旧发行仓库](https://github.com/GodD6366/deskfuse-release/releases)。
 
 ### Homebrew（macOS 14+、Apple Silicon）
 
 ```sh
 brew trust --cask godd6366/deskfuse/deskfuse
-brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release
+brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse
 brew install --cask godd6366/deskfuse/deskfuse
 ```
 
-`brew trust` 执行一次即可（旧版本无此命令时跳过）。cask 固定对应 DMG 的 SHA-256。卸载：`brew uninstall --cask godd6366/deskfuse/deskfuse`，不再使用时 `brew untap godd6366/deskfuse`。
+`brew trust` 执行一次即可（旧版本无此命令时跳过）。之前从旧发行仓库添加过 tap 的，请先执行 `brew untap godd6366/deskfuse` 再按上面重新添加。cask 固定对应 DMG 的 SHA-256。卸载：`brew uninstall --cask godd6366/deskfuse/deskfuse`，不再使用时 `brew untap godd6366/deskfuse`。
 
 ### 更新
 

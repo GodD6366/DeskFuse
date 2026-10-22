@@ -1,0 +1,1024 @@
+[
+  {
+    "tag_name": "v0.7.0",
+    "name": "DeskFuse v0.7.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-22T03:00:06Z",
+    "created_at": "2026-10-20T20:35:55Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.7.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.7.0/build-info.json",
+        "sha256": "c123d6f261f9e63b71d5a7164184f09bdd3fe8b293e4c607826e35c4dd257157"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 38640644,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.7.0/DeskFuse-arm64.dmg",
+        "sha256": "c247db50a580be337a07f8d9088b7adb41bca6d787eaca06bc61d299a1a541f5"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 41555223,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.7.0/DeskFuse-x86_64.dmg",
+        "sha256": "ffdec4527e44b34784993955aae4a2e3fea22354184aa3abff821dd6592d2465"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.7.0/release.json",
+        "sha256": "f0b6059cdb1660172ffed86005e9230b3b866ec167dbc01135250fa1ec3bdd1d"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.7.0/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.6.2",
+    "name": "DeskFuse v0.6.2 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-20T20:35:12Z",
+    "created_at": "2026-10-19T18:30:08Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.6.2",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.2/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 38327791,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.2/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 41234853,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.2/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.2/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.2/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.6.1",
+    "name": "DeskFuse v0.6.1 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-19T18:25:12Z",
+    "created_at": "2026-10-18T18:27:59Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.6.1",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.1/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 38939215,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.1/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 41769170,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.1/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.1/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.1/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.6.0",
+    "name": "DeskFuse v0.6.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-18T18:27:19Z",
+    "created_at": "2026-10-10T04:51:49Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.6.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.0/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 38797584,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.0/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 41611143,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.0/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.0/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.6.0/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.5.2",
+    "name": "DeskFuse v0.5.2 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-10T04:51:01Z",
+    "created_at": "2026-10-08T06:32:40Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.5.2",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.2/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 27234743,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.2/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 29391834,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.2/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.2/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.2/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.5.1",
+    "name": "DeskFuse v0.5.1 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-08T06:32:05Z",
+    "created_at": "2026-10-06T08:14:01Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.5.1",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 827,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.1/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 27016481,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.1/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 29140434,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.1/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.1/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.1/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.5.0",
+    "name": "DeskFuse v0.5.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-10-06T08:10:02Z",
+    "created_at": "2026-09-24T10:31:49Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.5.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.0/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 26873856,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.0/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 28967296,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.0/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.0/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.5.0/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.5",
+    "name": "DeskFuse v0.4.5 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-24T10:12:28Z",
+    "created_at": "2026-09-22T09:46:44Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.5",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.5/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 22512628,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.5/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 24589306,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.5/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.5/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.5/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.4",
+    "name": "DeskFuse v0.4.4 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-22T09:46:19Z",
+    "created_at": "2026-09-22T07:23:59Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.4",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.4/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 22239427,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.4/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 24289231,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.4/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.4/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.4/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.3",
+    "name": "DeskFuse v0.4.3 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-22T07:22:32Z",
+    "created_at": "2026-09-22T03:26:09Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.3",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.3/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 22051962,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.3/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 24100404,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.3/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.3/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.3/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.2",
+    "name": "DeskFuse v0.4.2 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-22T03:25:44Z",
+    "created_at": "2026-09-22T02:30:57Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.2",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.2/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 21941203,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.2/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 23925951,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.2/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.2/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.2/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.1",
+    "name": "DeskFuse v0.4.1 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-21T18:03:04Z",
+    "created_at": "2026-09-21T14:55:42Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.1",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 826,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.1/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 21870091,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.1/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 23843581,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.1/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 102,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.1/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.1/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.4.0",
+    "name": "DeskFuse v0.4.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-21T14:00:15Z",
+    "created_at": "2026-09-21T03:21:55Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.4.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.0/build-info.json"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 21830305,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.0/DeskFuse-arm64.dmg"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 23809223,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.0/DeskFuse-x86_64.dmg"
+      },
+      {
+        "name": "release.json",
+        "size": 101,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.0/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 332,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.4.0/SHA256SUMS"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.3.5",
+    "name": "uniDesk v0.3.5 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-21T03:20:59Z",
+    "created_at": "2026-09-21T02:32:34Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.3.5",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.5/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.5/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 330,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.5/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 20267377,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.5/uniDesk-arm64.dmg"
+      },
+      {
+        "name": "uniDesk-x86_64.dmg",
+        "size": 22138072,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.5/uniDesk-x86_64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.3.4",
+    "name": "uniDesk v0.3.4 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-21T00:37:57Z",
+    "created_at": "2026-09-20T09:54:16Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.3.4",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.4/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.4/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 330,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.4/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 20264120,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.4/uniDesk-arm64.dmg"
+      },
+      {
+        "name": "uniDesk-x86_64.dmg",
+        "size": 22121186,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.4/uniDesk-x86_64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.3.3",
+    "name": "uniDesk v0.3.3 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-20T01:26:51Z",
+    "created_at": "2026-09-19T23:29:39Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.3.3",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.3/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.3/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 330,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.3/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 20165411,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.3/uniDesk-arm64.dmg"
+      },
+      {
+        "name": "uniDesk-x86_64.dmg",
+        "size": 22037937,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.3/uniDesk-x86_64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.3.2",
+    "name": "uniDesk v0.3.2 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-19T23:29:12Z",
+    "created_at": "2026-09-19T17:03:46Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.3.2",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.2/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.2/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 330,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.2/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 19976099,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.2/uniDesk-arm64.dmg"
+      },
+      {
+        "name": "uniDesk-x86_64.dmg",
+        "size": 21802672,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.2/uniDesk-x86_64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.3.1",
+    "name": "uniDesk v0.3.1 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-19T16:42:46Z",
+    "created_at": "2026-09-19T09:18:10Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.3.1",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 825,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.1/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 104,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.1/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 330,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.1/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 19974327,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.1/uniDesk-arm64.dmg"
+      },
+      {
+        "name": "uniDesk-x86_64.dmg",
+        "size": 21839037,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.3.1/uniDesk-x86_64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.2.3",
+    "name": "uniDesk v0.2.3 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:55:24Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.2.3",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 432,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.3/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.3/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.3/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 18510497,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.3/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.2.2",
+    "name": "uniDesk v0.2.2 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:54:30Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.2.2",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 432,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.2/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.2/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.2/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 18089897,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.2/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.2.1",
+    "name": "uniDesk v0.2.1 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:54:12Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.2.1",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 432,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.1/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.1/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.1/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 18073308,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.1/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.2.0",
+    "name": "uniDesk v0.2.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:53:16Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.2.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 432,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.0/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.0/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.0/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 18044747,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.2.0/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.5",
+    "name": "uniDesk v0.1.5 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:52:38Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.1.5",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 427,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.5/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.5/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.5/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 18001757,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.5/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.4",
+    "name": "uniDesk v0.1.4 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:51:27Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.1.4",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 438,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.4/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.4/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.4/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 49888252,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.4/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.3",
+    "name": "uniDesk v0.1.3 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:49:14Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.1.3",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 427,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.3/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.3/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.3/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 17982385,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.3/uniDesk-arm64.dmg"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.0",
+    "name": "uniDesk v0.1.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-09-18T11:47:40Z",
+    "created_at": "2026-09-18T11:45:15Z",
+    "html_url": "https://github.com/GodD6366/deskfuse-release/releases/tag/v0.1.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 425,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.0/build-info.json"
+      },
+      {
+        "name": "release.json",
+        "size": 101,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.0/release.json"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 245,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.0/SHA256SUMS"
+      },
+      {
+        "name": "uniDesk-arm64.dmg",
+        "size": 16816068,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/deskfuse-release/releases/download/v0.1.0/uniDesk-arm64.dmg"
+      }
+    ]
+  }
+]

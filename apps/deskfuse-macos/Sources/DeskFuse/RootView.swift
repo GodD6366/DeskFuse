@@ -25,7 +25,7 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(WorkspaceLoadingOverlay(isPresented: store.isEngineLoading, optimizingData: store.optimizingLocalData))
         .overlay(alignment: .bottomTrailing) {
-            ErrorNoticeView(notice: store.errorNotice)
+            ErrorNoticeView(notice: store.errorNotice) { SupportCenter.reportProblem(store, error: $0) }
                 .frame(maxWidth: 380)
                 .padding(DFMetrics.pageInset)
         }

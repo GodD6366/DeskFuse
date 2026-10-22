@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "release_repository": "GodD6366/unidesk-release",
+  "homebrew_tap": "godd6366/unidesk",
+  "cask_token": "unidesk",
+  "assets": {
+    "arm64": "uniDesk-arm64.dmg",
+    "x86_64": "uniDesk-x86_64.dmg"
+  },
+  "preferred_assets": {
+    "arm64": "DeskFuse-arm64.dmg",
+    "x86_64": "DeskFuse-x86_64.dmg"
+  },
+  "legacy_assets": {
+    "arm64": "uniDesk-arm64.dmg",
+    "x86_64": "uniDesk-x86_64.dmg"
+  },
+  "fallback_assets": {
+    "arm64": "uniDesk-arm64.dmg",
+    "x86_64": "uniDesk-x86_64.dmg"
+  },
+  "fallback_release_tag": "v0.3.3"
+}

@@ -88,7 +88,10 @@ actor EngineClient {
     func content(_ id: UInt64) async throws -> ClipboardContent {
         try await clipboardMedia.content(id)
     }
-    func exportDiagnostics(_ path: String) throws { try engine.exportDiagnostics(path: path) }
+    /// 写入脱敏后的诊断文件，返回可写进反馈正文的摘要。
+    func exportDiagnostics(_ path: String, extra: String, localNames: [String], peerNames: [String]) throws -> String {
+        try engine.exportDiagnostics(path: path, extraJsonl: extra, localNames: localNames, peerNames: peerNames).summary
+    }
     func shutdown() throws { try engine.shutdown() }
 }
 

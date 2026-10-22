@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import DeskFuseEngine
 
-/// 关于与更新：版本、更新和反馈问题集中在一页。
+/// 关于与更新：版本、更新和帮助反馈集中在一页。
 struct AboutSettingsView: View {
     let store: AppStore
     let update: UpdateState?
@@ -25,24 +25,40 @@ struct AboutSettingsView: View {
                     Text("正在读取版本信息…").font(DFType.detail).dfSecondaryText()
                 }
             }
-            DFSection("反馈问题", symbol: "lifepreserver",
-                      footer: "诊断文件只包含运行日志和设备状态，不包含剪贴板内容。导出后可附在问题反馈中。") {
-                DFSettingRow(title: "导出诊断信息", detail: "遇到连接、同步或键鼠问题时，导出给开发者分析。") {
+            DFSection("帮助与反馈", symbol: "lifepreserver",
+                      footer: "诊断文件只包含运行日志和设备状态，不包含剪贴板内容。随时可以在菜单「帮助」或侧栏底部的问号找到这些入口。") {
+                DFSettingRow(title: "反馈问题",
+                             detail: "自动导出诊断并打开反馈页，版本和系统信息已经填好，只需描述发生了什么。") {
+                    Button("反馈问题…") { SupportCenter.reportProblem(store) }
+                        .buttonStyle(.dfPrimary)
+                }
+                Divider()
+                DFSettingRow(title: "导出诊断信息", detail: "保存到指定位置，方便通过其他渠道发给开发者。") {
                     DiagnosticsExportButton(store: store)
+                }
+                Divider()
+                DFSettingRow(title: "已知问题与发行说明", detail: "先看看别人是否遇到过同样的问题，或新版本是否已修复。") {
+                    HStack(spacing: DFSpace.s) {
+                        Button("已报告的问题") { SupportCenter.open(SupportCenter.issuesURL) }
+                        Button("发行说明") { SupportCenter.open(SupportCenter.releasesURL) }
+                    }
+                    .buttonStyle(.dfSecondary)
                 }
             }
         }
     }
 }
 
-/// 导出引擎诊断 + 本机内存与鼠标按键诊断，写入同一个 JSONL 文件。
+/// 让用户自选位置导出诊断；完成后在访达中选中文件。
 struct DiagnosticsExportButton: View {
     let store: AppStore
     @State private var exporting = false
 
     var body: some View {
         Button {
-            export()
+            guard !exporting else { return }
+            exporting = true
+            SupportCenter.exportDiagnosticsInteractively(store) { exporting = false }
         } label: {
             HStack(spacing: DFSpace.xs) {
                 if exporting { ProgressView().controlSize(.small) }
@@ -51,35 +67,5 @@ struct DiagnosticsExportButton: View {
         }
         .buttonStyle(.dfSecondary)
         .disabled(exporting || store.client == nil)
-    }
-
-    private func export() {
-        guard !exporting, let client = store.client else { return }
-        exporting = true
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "DeskFuse-diagnostics.jsonl"
-        // Do not enter a nested AppKit run loop from a SwiftUI action.
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else {
-                exporting = false
-                return
-            }
-            Task { @MainActor in
-                defer { exporting = false }
-                do {
-                    try await client.exportDiagnostics(url.path)
-                    let memory = await MemoryDiagnostics.capture(
-                        ocr: ClipboardOCRIndexer.shared.diagnostics(),
-                        selectedPage: store.selectedPage.rawValue,
-                        visibleWindowCount: NSApp.windows.filter { $0.occlusionState.contains(.visible) }.count)
-                    let handle = try FileHandle(forWritingTo: url)
-                    handle.seekToEndOfFile()
-                    handle.write(memory)
-                    handle.write(MouseButtonController.shared.diagnostics())
-                    try handle.close()
-                }
-                catch { store.error = error.userFacingMessage }
-            }
-        }
     }
 }

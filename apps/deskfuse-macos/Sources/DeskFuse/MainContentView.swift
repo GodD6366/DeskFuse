@@ -94,7 +94,9 @@ struct MainContentView: View {
                          title: "无法启动",
                          message: store.error.map(friendlyError) ?? "后台服务未就绪，请重新打开 DeskFuse。",
                          actionTitle: "重试",
-                         action: { store.error = nil; store.start() })
+                         action: { store.error = nil; store.start() },
+                         secondaryTitle: "反馈问题…",
+                         secondaryAction: { SupportCenter.reportProblem(store) })
         }
     }
 }

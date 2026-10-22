@@ -17,13 +17,21 @@
 
 ## 首次启用 GitHub
 
-源码与 CI 位于公开源码仓库 `GodD6366/DeskFuse`；发行仓库 `GodD6366/deskfuse-release` 只维护下载说明、Homebrew cask 和 Release 安装包，使用独立的说明文档历史，不复制源码对象。源码仓库公开后，Actions 触发与权限必须遵守 [参与开发](../CONTRIBUTING.md#ci-与-actions-规则) 中的规则。
+源码、CI、Release 安装包、Homebrew cask（`Casks/`）和站点（`web/`）都在公开仓库 `GodD6366/DeskFuse`。Actions 触发与权限必须遵守 [参与开发](../CONTRIBUTING.md#ci-与-actions-规则) 中的规则。
 
-原仓库已有的六项 [公证凭据](NOTARIZE.md) 无需重新设置。跨仓库发布新增 `RELEASE_REPOSITORY_TOKEN`：仅授予公开仓库 Contents read/write 的 fine-grained PAT 或 GitHub App token。仓库自带的 `GITHUB_TOKEN` 无权写另一个仓库。迁移保留原仓库身份及 secrets，不导出密钥。
+六项 [公证凭据](NOTARIZE.md) 放在 `release` environment。publish、cask 两个 job 用本仓库 `GITHUB_TOKEN` 的 job 级 `contents: write` 发布 Release、提交 cask；pages job 用 `actions: write` 在 main 上触发站点部署。`RELEASE_REPOSITORY_TOKEN` 只在过渡期用于镜像到旧发行仓库。
 
-源码 tag 仅推送到源码仓库。发布工作流在发行仓库 main 的发行说明提交上创建同名 tag，绝不向发行仓库推送源码提交或源码 tag；`build-info.json` 的 commit 记录真正的源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在公开仓库更新 `Casks/deskfuse.rb`。
+Release 直接挂在源码 tag 上；`build-info.json` 的 commit 记录源码 SHA。所有产物先校验、上传 draft、下载复核，再公开。cask job 在 main 更新 `Casks/deskfuse.rb` 和 `web/src/config/distribution.json`，随后 pages job 部署站点。
 
-迁移不重新推送原有源码 tag，不重跑历史发行。首次跨仓库发布前需配置 `RELEASE_REPOSITORY_TOKEN`，且按现有流程运行全部 CI 门禁。
+### 发行仓库合并过渡
+
+已安装客户端在编译时写死了发行仓库地址（`crates/deskfuse-engine/build.rs` 读取 `config/distribution.json`），v0.7.0 及更早的客户端只查询 `GodD6366/deskfuse-release`。因此：
+
+1. `config/distribution.json` 保留 `legacy_release_repository` 期间，发布流程的 `mirror-legacy` job 把同一批资产镜像到旧仓库，cask job 给旧 tap 的 cask 加上重新 tap 的提示，站点清单合并两个仓库。
+2. 过渡版本发布并确认旧客户端能检测到更新后：删除 `legacy_release_repository`，重新生成站点配置（`python3 scripts/distribution-config.py --website-output web/src/config/distribution.json`），提交后归档旧仓库。旧仓库的 Release 下载链接在归档后仍然有效。
+3. 站点自定义域名从旧仓库移到本仓库时，先在旧仓库 Pages 移除 `deskfuse.godd.cc`，再在本仓库设置；DNS 仍指向 `godd6366.github.io`，无需修改。
+
+合并不重新推送原有源码 tag，不重跑历史发行。本仓库里 v0.1.0–v0.2.3 的早期 Release 保持不变，客户端按版本号取最高版本，不受影响。
 
 ## 准备版本（协调端，仅一次）
 
@@ -150,7 +158,7 @@ git push origin vX.Y.Z
 2. 调用 macOS 和 Windows CI 检查。Windows job 在 `windows-2022` 上运行固定 Rust/MSVC、服务与目录测试，并构建 x64 服务/桌面输入适配器；发布 job 还必须使用 `WINDOWS_AUTHENTICODE_PFX_B64` / `WINDOWS_AUTHENTICODE_PFX_PASSWORD` 签署 Windows 安装包，缺少签名会 fail closed。
 3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
 4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
-5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下）。publish 与 cask 是仅有的两个 `contents: write` job。
+5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下），pages job 随即部署站点。publish 与 cask 是仅有的两个 `contents: write` job，pages 只有 `actions: write`。
 
 当前 `xcode-27` 是 GitHub 的预览镜像，用于满足已使用的 SDK 27 API；发布前须确认该镜像可用并检查实际运行结果。
 
@@ -158,12 +166,12 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-公开安装包仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行。公开发行版运行时可以把本机应用打包传给局域网中的其他 GitHub 渠道设备，不依赖 LAN 发行私钥。
+本仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行。公开发行版运行时可以把本机应用打包传给局域网中的其他 GitHub 渠道设备，不依赖 LAN 发行私钥。
 
-cask job 下载刚发布的 DMG、重新渲染 cask 并提交到公开安装包仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
+cask job 下载刚发布的 DMG、重新渲染 cask 并提交到本仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 
 ```sh
-gh release download v0.4.0 --repo GodD6366/deskfuse-release --pattern DeskFuse-arm64.dmg --dir dist
+gh release download v0.4.0 --repo GodD6366/DeskFuse --pattern DeskFuse-arm64.dmg --dir dist
 python3 scripts/update-cask.py --dmg dist/DeskFuse-arm64.dmg --version 0.1.0
 git add Casks/deskfuse.rb
 git commit -m 'chore(cask): pin v0.4.0 DMG checksum'

@@ -835,8 +835,13 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
     #[tokio::test]
     #[ignore = "live network verification"]
     async fn live_github_release_list_is_reachable() {
+        // 发行已并入源码仓库：只确认列表可读且含正式版本号的 tag，不绑定某个历史版本。
         let releases = fetch_release_list(API).await.expect("github release list");
-        assert!(releases.iter().any(|release| release.tag_name == "v0.4.5"));
+        assert!(
+            releases
+                .iter()
+                .any(|release| release.tag_name.starts_with('v'))
+        );
     }
 
     #[tokio::test]

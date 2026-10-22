@@ -56,6 +56,7 @@ public partial class App : System.Windows.Application
         });
         menu.Items.Add("暂存区", null, (_, _) => Dispatcher.Invoke(() => clipboard.ShowShelf()));
         menu.Items.Add("设置", null, (_, _) => Dispatcher.Invoke(window.ShowSettings));
+        menu.Items.Add("反馈问题…", null, (_, _) => Dispatcher.Invoke(() => SupportLinks.ReportProblem(service.LatestSnapshot)));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出 DeskFuse", null, (_, _) => Dispatcher.Invoke(ExitApp));
         trayIcon = AppIcon.CreateTrayIcon();

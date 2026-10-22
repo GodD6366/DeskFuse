@@ -149,7 +149,7 @@ struct MouseSettingsView: View {
                 }.padding(.top, 6)
             }
             if let error = controller.error {
-                Label(error, systemImage: "exclamationmark.circle").font(DFType.caption).foregroundStyle(DFPalette.danger)
+                Label(friendlyError(error), systemImage: "exclamationmark.circle").font(DFType.caption).foregroundStyle(DFPalette.danger)
             }
         }
     }

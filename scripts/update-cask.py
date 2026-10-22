@@ -32,7 +32,17 @@ def checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
-def render(version: str, digest: str) -> str:
+# 旧 tap 指向已归档的发行仓库：过渡版本的 cask 提示用户改用源码仓库作为 tap。
+RETAP_CAVEATS = f'''
+  caveats <<~EOS
+    DeskFuse 的发行版已并入源码仓库，这个 tap 将不再更新。请重新添加 tap：
+      brew untap {DISTRIBUTION["homebrew_tap"]}
+      brew tap {DISTRIBUTION["homebrew_tap"]} {HOMEPAGE}
+  EOS
+'''
+
+
+def render(version: str, digest: str, retap_notice: bool = False) -> str:
     if not VERSION_PATTERN.fullmatch(version):
         raise ValueError("cask version must be X.Y.Z")
     if not SHA256_PATTERN.fullmatch(digest):
@@ -52,23 +62,23 @@ cask "{DISTRIBUTION["cask_token"]}" do
   depends_on arch: :arm64
 
   app "{DISTRIBUTION["app_bundle"]}"
-end
+{RETAP_CAVEATS if retap_notice else ""}end
 '''
 
 
-def expected_cask(dmg: Path, version: str | None = None, root: Path = ROOT) -> str:
+def expected_cask(dmg: Path, version: str | None = None, root: Path = ROOT, retap_notice: bool = False) -> str:
     # The post-release job runs on the default branch, which may be ahead of
     # or behind the published tag. An explicit version identifies the release;
     # only local calls without --version inherit the workspace version.
     resolved = workspace_version(root) if version is None else version
     if not dmg.is_file():
         raise FileNotFoundError(f"DMG not found: {dmg}")
-    return render(resolved, checksum(dmg))
+    return render(resolved, checksum(dmg), retap_notice)
 
 
 def update(dmg: Path, cask: Path = DEFAULT_CASK, version: str | None = None, *, check: bool = False,
-           root: Path = ROOT) -> bool:
-    content = expected_cask(dmg, version, root)
+           root: Path = ROOT, retap_notice: bool = False) -> bool:
+    content = expected_cask(dmg, version, root, retap_notice)
     if cask.is_file() and cask.read_text() == content:
         print(f"Homebrew cask already current: {cask}")
         return False
@@ -86,8 +96,9 @@ def main() -> None:
     parser.add_argument("--cask", type=Path, default=DEFAULT_CASK)
     parser.add_argument("--version", help="release version; defaults to the workspace version")
     parser.add_argument("--check", action="store_true", help="fail instead of writing when the cask is stale")
+    parser.add_argument("--retap-notice", action="store_true", help="add caveats asking legacy tap users to re-tap")
     args = parser.parse_args()
-    update(args.dmg, args.cask, args.version, check=args.check)
+    update(args.dmg, args.cask, args.version, check=args.check, retap_notice=args.retap_notice)
 
 
 if __name__ == "__main__":

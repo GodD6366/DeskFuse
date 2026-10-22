@@ -11,6 +11,11 @@ struct FeatureControls: View {
         if let enabled = store.featureEnabled(for: page) {
             HStack(spacing: DFSpace.s) {
                 if saving { ProgressView().controlSize(.small) }
+                // 开关本身不带文字，旁边直接写出当前状态，不必猜右上角这个开关管什么。
+                Text(enabled ? "已开启" : "已关闭")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+                    .accessibilityHidden(true)
                 Toggle("总开关", isOn: Binding(
                     get: { enabled },
                     set: { value in

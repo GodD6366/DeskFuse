@@ -48,17 +48,17 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 
 ## Download and install
 
-Downloads: [GitHub Releases](https://github.com/GodD6366/deskfuse-release/releases).
+Downloads: [GitHub Releases](https://github.com/GodD6366/DeskFuse/releases) or the [website](https://deskfuse.godd.cc). v0.7.0 and earlier installers stay in the retired [release repository](https://github.com/GodD6366/deskfuse-release/releases).
 
 ### Homebrew (macOS 14+, Apple Silicon)
 
 ```sh
 brew trust --cask godd6366/deskfuse/deskfuse
-brew tap godd6366/deskfuse https://github.com/GodD6366/deskfuse-release
+brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse
 brew install --cask godd6366/deskfuse/deskfuse
 ```
 
-Run `brew trust` once (skip it on older Homebrew without the command). The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/deskfuse/deskfuse`, then `brew untap godd6366/deskfuse` if unused.
+Run `brew trust` once (skip it on older Homebrew without the command). If you tapped the old release repository, run `brew untap godd6366/deskfuse` first and tap again as above. The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/deskfuse/deskfuse`, then `brew untap godd6366/deskfuse` if unused.
 
 ### Updates
 

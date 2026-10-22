@@ -643,12 +643,27 @@ impl Engine {
         }
         self.bridge.set_input_recording(enabled);
     }
+    /// 导出脱敏诊断。`extra_jsonl` 是界面层追加的诊断行；`local_names` / `peer_names`
+    /// 是需要替换为代号的本机与其他电脑名称。返回可直接写进 Issue 正文的摘要。
+    ///
     /// # Errors
     /// Returns an error if the diagnostic export cannot be written to the requested path.
-    pub fn export_diagnostics(&self, path: String) -> Result<(), EngineError> {
-        self.bridge
-            .export_diagnostics(std::path::Path::new(&path))
-            .map_err(failure)
+    pub fn export_diagnostics(
+        &self,
+        path: String,
+        extra_jsonl: String,
+        local_names: Vec<String>,
+        peer_names: Vec<String>,
+    ) -> Result<DiagnosticExport, EngineError> {
+        let context = deskfuse_engine::diagnostics_redact::RedactionContext {
+            local: local_names,
+            peers: peer_names,
+        };
+        let summary = self
+            .bridge
+            .export_diagnostics(std::path::Path::new(&path), &extra_jsonl, context)
+            .map_err(failure)?;
+        Ok(DiagnosticExport { summary })
     }
     /// # Errors
     /// Returns an error if shutdown coordination is poisoned or the worker cannot terminate.
@@ -706,6 +721,21 @@ pub fn prepare_startup(transaction: Option<String>) -> Result<bool, EngineError>
         .lock()
         .map_err(failure)? = status;
     Ok(self_test)
+}
+/// 一次诊断导出的结果。
+#[derive(uniffi::Record)]
+pub struct DiagnosticExport {
+    /// 已脱敏的紧凑摘要，用于预填问题反馈正文。
+    pub summary: String,
+}
+#[uniffi::export]
+/// 只按文本模式脱敏（IP、MAC、邮箱、用户目录、长 ID、本机主机名）。
+/// 引擎未启动、拿不到设备列表时，界面用它处理错误原文和日志片段。
+pub fn redact_diagnostic_text(text: String) -> String {
+    deskfuse_engine::diagnostics_redact::redact_with_host(
+        &text,
+        deskfuse_platform_macos::hostname(),
+    )
 }
 /// 启动前数据优化阶段的结果。
 #[derive(uniffi::Record)]

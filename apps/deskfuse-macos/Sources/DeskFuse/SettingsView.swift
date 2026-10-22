@@ -20,18 +20,17 @@ struct SettingsView: View, Equatable {
     @State private var fileSaveFailure: String?
     @State private var clearHistory = false
     @State private var clearCache = false
-    @State private var exportingDiagnostics = false
     @State private var uninstalling = false
 
-    private var selectedTab: String { destination.category.rawValue }
-    private var clipboardSegment: Binding<String> {
-        Binding(get: { store.settingsDestination.clipboardSegment },
-                set: { store.settingsDestination.clipboardSegment = $0 })
+    /// 工作流关闭后仍停在该分类时，回到剪贴板设置，而不是显示一个侧栏里已经不存在的页面。
+    private var selectedTab: String {
+        destination.category == .workflows && !store.workflowsEnabled
+            ? SettingsCategory.clipboard.rawValue : destination.category.rawValue
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            DFTopBar(section: Page.settings.section, title: destination.category.title)
+            DFTopBar(section: Page.settings.section, title: SettingsCategory(rawValue: selectedTab)?.title ?? "")
             SettingsPageContainer(selection: selectedTab, pages: SettingsCategory.allCases.map { category in
                 SettingsPageContainer.Page(id: category.rawValue,
                     content: AnyView(settingsPage(category).scrollContentBackground(.hidden)))
@@ -69,13 +68,12 @@ struct SettingsView: View, Equatable {
                 hideDockIcon: Binding(get: { store.hideDockIcon }, set: { store.setHideDockIcon($0) }),
                 keepAwake: Binding(get: { store.keepAwake }, set: { store.keepAwake = $0 }))
         case .clipboard:
-            clipboardSettings
+            ClipboardLibrarySettingsView()
+        case .workflows:
+            WorkflowSettingsView(store: store)
         case .shortcuts:
             ShortcutSettingsPage(store: store,
-                manageWorkflows: {
-                    store.settingsDestination.clipboardSegment = "workflows"
-                    store.settingsDestination.category = .clipboard
-                },
+                manageWorkflows: { store.settingsDestination.category = .workflows },
                 openInput: { store.selectedPage = .input })
         case .files:
             fileSettings
@@ -85,28 +83,6 @@ struct SettingsView: View, Equatable {
             AboutSettingsView(store: store, update: presentation.update)
         case .advanced:
             advancedSettings
-        }
-    }
-
-    // MARK: - 剪贴板
-
-    private var clipboardSettings: some View {
-        VStack(spacing: 0) {
-            if store.workflowsEnabled {
-                Picker("", selection: clipboardSegment) {
-                    Text("历史").tag("history")
-                    Text("工作流").tag("workflows")
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 320)
-                .padding(.horizontal, DFMetrics.pageInset)
-                .padding(.bottom, DFSpace.m)
-            }
-            SettingsPageContainer(selection: store.workflowsEnabled ? destination.clipboardSegment : "history", pages: [
-                .init(id: "history", content: AnyView(ClipboardLibrarySettingsView())),
-                .init(id: "workflows", content: AnyView(WorkflowSettingsView(store: store)))
-            ])
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -199,14 +175,7 @@ struct SettingsView: View, Equatable {
                     Button("清空…", role: .destructive) { clearHistory = true }
                 }
             }
-            DFSection("诊断") {
-                DFSettingRow(title: "导出诊断信息",
-                             detail: "附带进程、OCR helper 的内存占用与鼠标按键状态；不包含剪贴板内容。") {
-                    Button(exportingDiagnostics ? "正在导出…" : "导出…") { exportDiagnostics() }
-                        .buttonStyle(.dfSecondary)
-                        .disabled(store.client == nil || exportingDiagnostics)
-                }
-                Divider()
+            DFSection("版本信息", footer: "导出诊断或反馈问题，请前往「关于与更新」。") {
                 DFValueRow(title: "更新通道", value: UpdateInstallationChannel.current.title)
                 if UpdateInstallationChannel.current.isInternal {
                     Divider()
@@ -221,7 +190,7 @@ struct SettingsView: View, Equatable {
                 }
                 Divider()
                 DFSettingRow(title: "日志文件夹",
-                             detail: Self.logsDirectory.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")) {
+                             detail: SupportCenter.redacted(SupportCenter.logsDirectory.path)) {
                     Button("在访达中显示") { revealLogs() }
                         .buttonStyle(.dfSecondary)
                 }
@@ -235,15 +204,11 @@ struct SettingsView: View, Equatable {
         }
     }
 
-    /// 与引擎 `diagnostics_file.rs` 写入的位置一致。
-    private static let logsDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/DeskFuse", isDirectory: true)
-
     private func revealLogs() {
         do {
             // 尚未写过日志时目录可能不存在，先创建再打开，避免访达报错。
-            try FileManager.default.createDirectory(at: Self.logsDirectory, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(Self.logsDirectory)
+            try FileManager.default.createDirectory(at: SupportCenter.logsDirectory, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(SupportCenter.logsDirectory)
         } catch {
             store.error = error.userFacingMessage
         }
@@ -302,36 +267,6 @@ struct SettingsView: View, Equatable {
                 downloadDirectory = url.standardizedFileURL.path
                 fileSaveStatus = nil
                 fileSaveFailure = nil
-            }
-        }
-    }
-
-    private func exportDiagnostics() {
-        guard !exportingDiagnostics, let client = store.client else { return }
-        exportingDiagnostics = true
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "DeskFuse-diagnostics.jsonl"
-        // Do not enter a nested AppKit run loop from a SwiftUI action.
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else {
-                exportingDiagnostics = false
-                return
-            }
-            Task { @MainActor in
-                defer { exportingDiagnostics = false }
-                do {
-                    try await client.exportDiagnostics(url.path)
-                    let memory = await MemoryDiagnostics.capture(
-                        ocr: ClipboardOCRIndexer.shared.diagnostics(),
-                        selectedPage: store.selectedPage.rawValue,
-                        visibleWindowCount: NSApp.windows.filter { $0.occlusionState.contains(.visible) }.count)
-                    let handle = try FileHandle(forWritingTo: url)
-                    handle.seekToEndOfFile()
-                    handle.write(memory)
-                    handle.write(MouseButtonController.shared.diagnostics())
-                    try handle.close()
-                }
-                catch { store.error = error.userFacingMessage }
             }
         }
     }

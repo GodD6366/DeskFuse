@@ -382,15 +382,14 @@ import DeskFuseEngine
         UserDefaults.standard.set(hidden, forKey: AppStore.hideDockIconDefaultsKey)
         applyDockIconPolicy()
     }
-    func openSettings(tab: String? = nil, clipboardSegment: String? = nil) {
+    func openSettings(tab: String? = nil) {
         // Preserve older settings links for features now in the main sidebar.
         if tab == "input" || tab == "microphone" {
             selectedPage = tab == "microphone" ? .microphone : .input
             openMain()
             return
         }
-        settingsDestination = SettingsDestination(tab: tab, clipboardSegment: clipboardSegment,
-                                                  previous: settingsDestination)
+        settingsDestination = SettingsDestination(tab: tab, previous: settingsDestination)
         selectedPage = .settings
         openMain()
     }

@@ -61,7 +61,7 @@ struct PairingWindowView: View {
                         PairingRow(store: store, request: request)
                     }
 
-                    if let error = store.error {
+                    if let error = store.errorNotice.message {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(DFPalette.warning)
