@@ -82,6 +82,8 @@ impl Network {
         // handle so the service can serve them without the runtime's mediation.
         let remote_app_transport = control_transport.clone();
         remote_app_transport.set_remote_application_enabled(true);
+        // 预热预检缓存：桌面 IPC 只读缓存，证书指纹查询在后台线程完成。
+        let _ = remote_app::host_status_cached();
         let mut discovery = PlatformDiscovery::new(identity.device_id()).map_err(|_| stage(25))?;
         discovery
             .set_advertisement(

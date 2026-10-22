@@ -22,13 +22,13 @@ internal interface WorkflowExecutionPort
 
 internal interface FileDataObjectPort
 {
-    Task<string> CreateFileDataObjectAsync(IReadOnlyList<string> paths, long sessionEpoch, long sequence);
+    Task<string> CreateFileDataObjectAsync(IReadOnlyList<string> paths, long sessionEpoch, long sequence, string? targetPeerId = null);
 }
 
 internal static class PlatformBoundary
 {
-    internal static object CreateFileDataObject(IReadOnlyList<string> paths) =>
-        new { CreateFileDataObject = new { paths } };
+    internal static object CreateFileDataObject(IReadOnlyList<string> paths, string? targetPeerId = null) =>
+        new { CreateFileDataObject = new { paths, target_peer_id = targetPeerId } };
 
     internal static object ReadClipboardHost(ClipboardContent content, long revision)
     {

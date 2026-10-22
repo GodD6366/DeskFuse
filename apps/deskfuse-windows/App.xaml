@@ -2,10 +2,9 @@
   x:Class="DeskFuse.Windows.App"
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <!-- Design tokens mirrored from the macOS DFTokens design system (palette,
-       type ramp, metrics, component styles). They live inline because this
-       unpackaged self-contained WinUI 3 app cannot resolve merged-dictionary
-       Source URIs at startup (fail-fast before any handler runs). -->
+  <!-- Design tokens mirrored from the macOS DFTokens design system. The
+       dictionaries stay inline because this unpackaged self-contained WinUI 3
+       app cannot resolve merged-dictionary Source URIs at startup. -->
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
@@ -22,30 +21,67 @@
           <SolidColorBrush x:Key="DFControlStrongBrush" Color="#14000000" />
           <SolidColorBrush x:Key="DFLineBrush" Color="#17000000" />
           <SolidColorBrush x:Key="DFBorderBrush" Color="#14000000" />
-          <SolidColorBrush x:Key="DFMutedBrush" Color="#FF64748B" />
+          <SolidColorBrush x:Key="DFMutedBrush" Color="#FF595959" />
           <SolidColorBrush x:Key="DFOnAccentMutedBrush" Color="#CCFFFFFF" />
-          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF16A34A" />
-          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFEA8A00" />
-          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFDC2626" />
-          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#143276F3" />
-          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#1416A34A" />
+          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF34C759" />
+          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFFF9F0A" />
+          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFFF3B30" />
+          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#2E3276F3" />
+          <SolidColorBrush x:Key="DFAccentHoverBrush" Color="#0F3276F3" />
+          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#1F34C759" />
+          <SolidColorBrush x:Key="DFWarningSubtleBrush" Color="#1FFF9F0A" />
+          <SolidColorBrush x:Key="DFDangerSubtleBrush" Color="#1FFF3B30" />
+
+          <!-- Fluent text control tokens come from the framework theme
+               dictionary; overriding them here gives search fields, combo
+               boxes and editors the flat mac control surface. -->
+          <SolidColorBrush x:Key="TextControlBackground" Color="#0A000000" />
+          <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="#14000000" />
+          <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="#08000000" />
+          <SolidColorBrush x:Key="TextControlBorderBrush" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="#FF3276F3" />
+          <SolidColorBrush x:Key="TextControlForeground" Color="#FF1A1A1E" />
+          <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="#FF1A1A1E" />
+          <SolidColorBrush x:Key="TextControlForegroundFocused" Color="#FF1A1A1E" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#FF7A7A7A" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver" Color="#FF7A7A7A" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused" Color="#FF7A7A7A" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="DFAccentBrush" Color="#FF4E89FF" />
-          <SolidColorBrush x:Key="DFAccentForegroundBrush" Color="#FF0B1220" />
+          <SolidColorBrush x:Key="DFAccentForegroundBrush" Color="#FFFFFFFF" />
           <SolidColorBrush x:Key="DFCanvasBrush" Color="#FF1A1A1E" />
           <SolidColorBrush x:Key="DFSurfaceBrush" Color="#FF232327" />
           <SolidColorBrush x:Key="DFControlBrush" Color="#12FFFFFF" />
           <SolidColorBrush x:Key="DFControlStrongBrush" Color="#24FFFFFF" />
           <SolidColorBrush x:Key="DFLineBrush" Color="#24FFFFFF" />
           <SolidColorBrush x:Key="DFBorderBrush" Color="#1AFFFFFF" />
-          <SolidColorBrush x:Key="DFMutedBrush" Color="#FF94A3B8" />
-          <SolidColorBrush x:Key="DFOnAccentMutedBrush" Color="#B30B1220" />
-          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF4ADE80" />
-          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFFBBF24" />
-          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFF87171" />
-          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#264E89FF" />
-          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#264ADE80" />
+          <SolidColorBrush x:Key="DFMutedBrush" Color="#FFBFBFBF" />
+          <SolidColorBrush x:Key="DFOnAccentMutedBrush" Color="#CCFFFFFF" />
+          <SolidColorBrush x:Key="DFSuccessBrush" Color="#FF30D158" />
+          <SolidColorBrush x:Key="DFWarningBrush" Color="#FFFF9F0A" />
+          <SolidColorBrush x:Key="DFDangerBrush" Color="#FFFF453A" />
+          <SolidColorBrush x:Key="DFAccentSubtleBrush" Color="#2E4E89FF" />
+          <SolidColorBrush x:Key="DFAccentHoverBrush" Color="#0F4E89FF" />
+          <SolidColorBrush x:Key="DFSuccessSubtleBrush" Color="#1F30D158" />
+          <SolidColorBrush x:Key="DFWarningSubtleBrush" Color="#1FFF9F0A" />
+          <SolidColorBrush x:Key="DFDangerSubtleBrush" Color="#1FFF453A" />
+
+          <SolidColorBrush x:Key="TextControlBackground" Color="#12FFFFFF" />
+          <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="#1AFFFFFF" />
+          <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="#0AFFFFFF" />
+          <SolidColorBrush x:Key="TextControlBorderBrush" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="#00000000" />
+          <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="#FF4E89FF" />
+          <SolidColorBrush x:Key="TextControlForeground" Color="#FFF2F2F5" />
+          <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="#FFF2F2F5" />
+          <SolidColorBrush x:Key="TextControlForegroundFocused" Color="#FFF2F2F5" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#FF9A9AA2" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver" Color="#FF9A9AA2" />
+          <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused" Color="#FF9A9AA2" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
       <SolidColorBrush x:Key="DFBrandCyanBrush" Color="#FF22C9EA" />
@@ -72,14 +108,12 @@
       <x:Double x:Key="DFPaneWidth">340</x:Double>
       <x:Double x:Key="DFPaneMinWidth">480</x:Double>
 
-      <!-- Typography ramp. The legacy five sizes stay because existing pages
-           reference them; the DF* ramp mirrors DFType (pageTitle 20/sb,
-           title 15/sb, section 13/sb, body 13, detail 12, caption 11). -->
+      <!-- Typography ramp mirrors DFType. -->
       <x:Double x:Key="DisplayFontSize">28</x:Double>
-      <x:Double x:Key="TitleFontSize">20</x:Double>
+      <x:Double x:Key="TitleFontSize">15</x:Double>
       <x:Double x:Key="SubtitleFontSize">16</x:Double>
-      <x:Double x:Key="BodyFontSize">14</x:Double>
-      <x:Double x:Key="CaptionFontSize">12</x:Double>
+      <x:Double x:Key="BodyFontSize">13</x:Double>
+      <x:Double x:Key="CaptionFontSize">11</x:Double>
       <x:Double x:Key="DFPageTitleFontSize">20</x:Double>
       <x:Double x:Key="DFTitleFontSize">15</x:Double>
       <x:Double x:Key="DFSectionFontSize">13</x:Double>
@@ -108,12 +142,12 @@
       </Style>
       <Style x:Key="DFDetailTextStyle" TargetType="TextBlock">
         <Setter Property="FontSize" Value="{StaticResource DFDetailFontSize}" />
-        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource DFMutedBrush}" />
         <Setter Property="TextWrapping" Value="Wrap" />
       </Style>
       <Style x:Key="DFCaptionTextStyle" TargetType="TextBlock">
         <Setter Property="FontSize" Value="{StaticResource DFCaptionFontSize}" />
-        <Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource DFMutedBrush}" />
         <Setter Property="TextWrapping" Value="Wrap" />
       </Style>
       <Style x:Key="DFMetricTextStyle" TargetType="TextBlock">
@@ -122,7 +156,7 @@
         <Setter Property="TextWrapping" Value="NoWrap" />
       </Style>
 
-      <!-- Shared surfaces; CardBorder keeps its legacy key because pages use it. -->
+      <!-- Shared surfaces. -->
       <Style x:Key="CardBorder" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource DFSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource DFLineBrush}" />
@@ -133,15 +167,158 @@
       <Style x:Key="DividerBorder" TargetType="Border">
         <Setter Property="Height" Value="1" />
         <Setter Property="Background" Value="{ThemeResource DFLineBrush}" />
-        <Setter Property="Margin" Value="0,16" />
+        <Setter Property="Margin" Value="0,12" />
       </Style>
       <Style x:Key="DFControlSurface" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource DFControlBrush}" />
         <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
       </Style>
-      <Style x:Key="DFButtonPrimaryStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
+
+      <!-- Buttons use a flat mac template: no Fluent accent overlay, only
+           opacity feedback, so the palette stays identical to the mac app. -->
+      <ControlTemplate x:Key="DFContentOnlyButtonTemplate" TargetType="Button">
+        <ContentPresenter Content="{TemplateBinding Content}"
+                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+      </ControlTemplate>
+      <Style x:Key="DFTrafficLightStyle" TargetType="Button">
+        <Setter Property="Width" Value="12" />
+        <Setter Property="Height" Value="12" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Template" Value="{StaticResource DFContentOnlyButtonTemplate}" />
+      </Style>
+      <ControlTemplate x:Key="DFContentOnlyTemplate" TargetType="ToggleButton">
+        <ContentPresenter Content="{TemplateBinding Content}"
+                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+      </ControlTemplate>
+      <ControlTemplate x:Key="DFFlatButtonTemplate" TargetType="Button">
+        <Grid Background="Transparent">
+          <Border x:Name="RootBorder"
+                  Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}">
+            <ContentPresenter Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                              Padding="{TemplateBinding Padding}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+          </Border>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualState x:Name="Normal" />
+              <VisualState x:Name="PointerOver">
+                <VisualState.Setters>
+                  <Setter Target="RootBorder.Opacity" Value="0.9" />
+                </VisualState.Setters>
+              </VisualState>
+              <VisualState x:Name="Pressed">
+                <VisualState.Setters>
+                  <Setter Target="RootBorder.Opacity" Value="0.72" />
+                </VisualState.Setters>
+              </VisualState>
+              <VisualState x:Name="Disabled">
+                <VisualState.Setters>
+                  <Setter Target="RootBorder.Opacity" Value="0.45" />
+                </VisualState.Setters>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Grid>
+      </ControlTemplate>
+      <Style x:Key="DFButtonPrimaryStyle" TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource DFAccentBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource DFAccentForegroundBrush}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="12,0" />
         <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
-        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
+      </Style>
+      <Style x:Key="DFButtonSecondaryStyle" TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource DFSurfaceBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource DFLineBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
+      </Style>
+      <Style x:Key="DFButtonPlainStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource DFAccentBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="4,0" />
+        <Setter Property="MinHeight" Value="{StaticResource DFCompactHeight}" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
+      </Style>
+      <Style x:Key="DFButtonDangerStyle" TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource DFDangerBrush}" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
+      </Style>
+      <Style x:Key="DFIconButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Width" Value="28" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
+      </Style>
+      <Style x:Key="DFNavButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="Padding" Value="10,0" />
+        <Setter Property="MinHeight" Value="{StaticResource DFRowHeight}" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource DFFlatButtonTemplate}" />
       </Style>
       <Style x:Key="DFSidebarRowStyle" TargetType="ListBoxItem">
         <Setter Property="MinHeight" Value="{StaticResource DFRowHeight}" />
@@ -154,30 +331,36 @@
         <Setter Property="Padding" Value="10,0" />
         <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
       </Style>
+      <Style x:Key="DFPageButtonStyle" TargetType="Button" BasedOn="{StaticResource DFButtonPlainStyle}">
+        <Setter Property="MinHeight" Value="{StaticResource DFControlHeight}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+      </Style>
 
       <Style TargetType="TextBlock">
-        <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
         <Setter Property="TextWrapping" Value="Wrap" />
       </Style>
       <Style TargetType="Button">
-        <Setter Property="Padding" Value="16,8" />
+        <Setter Property="Padding" Value="12,8" />
         <Setter Property="MinHeight" Value="36" />
         <Setter Property="Margin" Value="0,0,8,8" />
       </Style>
       <Style TargetType="TextBox">
         <Setter Property="Padding" Value="10,7" />
-        <Setter Property="MinHeight" Value="34" />
-        <Setter Property="Margin" Value="0,0,0,10" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="CornerRadius" Value="{StaticResource DFRadiusControl}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
       </Style>
       <Style TargetType="ComboBox">
-        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="MinHeight" Value="32" />
         <Setter Property="MinWidth" Value="180" />
-        <Setter Property="Margin" Value="0,0,8,10" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
       </Style>
       <Style TargetType="CheckBox">
         <Setter Property="MinHeight" Value="32" />
-        <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
+        <Setter Property="FontSize" Value="{StaticResource DFBodyFontSize}" />
       </Style>
     </ResourceDictionary>
   </Application.Resources>

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -404,6 +405,20 @@ public sealed class NativeClipboard : IDisposable
 
     private static string StrictUtf8(byte[] bytes) => new UTF8Encoding(false, true).GetString(bytes);
 
+    /// <summary>Foreground process at copy time, used as the mac-style source label.</summary>
+    internal static string ForegroundProcessName()
+    {
+        try
+        {
+            IntPtr hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return "";
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            using var process = Process.GetProcessById((int)pid);
+            return process.ProcessName;
+        }
+        catch (Exception) { return ""; }
+    }
+
     public static void ValidateLocalFiles(IReadOnlyList<string> files)
     {
         if (files.Count == 0 || files.Count > 512) throw new InvalidOperationException("文件数量必须为 1–512");
@@ -475,6 +490,8 @@ public sealed class NativeClipboard : IDisposable
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetClipboardOwner();
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("kernel32.dll")] private static extern nuint GlobalSize(IntPtr memory);
     [DllImport("shell32.dll", EntryPoint = "DragQueryFileW", CharSet = CharSet.Unicode)] private static extern uint DragQueryFile(IntPtr drop, uint index, StringBuilder? file, uint size);
     [DllImport("ole32.dll")] private static extern int OleSetClipboard(IDataObject dataObject);

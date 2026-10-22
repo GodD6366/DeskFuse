@@ -10,7 +10,7 @@ internal static class AppVersion
         {
             var value = typeof(AppVersion).Assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
             return Version.TryParse(value, out var version)
-                ? $"{version.Major}.{version.Minor}.{version.Build} ({version.Revision})"
+                ? $"{version.Major}.{version.Minor}.{version.Build}"
                 : "—";
         }
     }

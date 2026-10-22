@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../apps/deskfuse-windows/ClipboardHistory.cs" Link="ClipboardHistory.cs" />
+    <Compile Include="../../apps/deskfuse-windows/ClipboardContent.cs" Link="ClipboardContent.cs" />
+  </ItemGroup>
+</Project>

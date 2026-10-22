@@ -10,6 +10,8 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     string SourceName, DateTimeOffset CreatedAt)
 {
     public string? CustomTitle { get; init; }
+    /// <summary>Foreground application at copy time; null for remote entries.</summary>
+    public string? SourceApp { get; init; }
     [JsonIgnore]
     public string Kind => Content.Files is { Count: > 0 } ? "files" : Content.Mime == "image/png" ? "image" : "text";
     [JsonIgnore]
@@ -17,6 +19,12 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     /// <summary>Preformatted timestamp: WinUI bindings have no StringFormat.</summary>
     [JsonIgnore]
     public string CreatedLabel => CreatedAt.LocalDateTime.ToString("g");
+    [JsonIgnore]
+    public string TimeLabel => CreatedAt.LocalDateTime.ToString("HH:mm");
+    [JsonIgnore]
+    public string SourceLabel => $"来自 {(string.IsNullOrEmpty(SourceApp) ? SourceName : SourceApp)}";
+    [JsonIgnore]
+    public string KindGlyph => Kind switch { "image" => "\uE8B9", "files" => "\uE8B7", _ => "\uE7C3" };
     [JsonIgnore]
     public string Title => !string.IsNullOrWhiteSpace(CustomTitle) ? CustomTitle : Kind switch
     {
@@ -37,6 +45,7 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
 public sealed class ClipboardHistory : IDisposable
 {
     private readonly Func<DateTimeOffset> now;
+    private readonly Func<ClipboardEntry, bool>? pinned;
     public int RetentionDays { get; private set; }
     private readonly string directory;
     private readonly string file;
@@ -55,10 +64,15 @@ public sealed class ClipboardHistory : IDisposable
 
     // Explicit storage and clock keep migration/retention checks away from user history.
     internal ClipboardHistory(string directory, int retentionDays, Func<DateTimeOffset> now)
+        : this(directory, retentionDays, now, null) { }
+
+    /// <param name="pinned">手动列表成员豁免保留期；加载时的过期清理同样遵守。</param>
+    internal ClipboardHistory(string directory, int retentionDays, Func<DateTimeOffset> now, Func<ClipboardEntry, bool>? pinned)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(retentionDays, 1);
         RetentionDays = retentionDays;
         this.now = now;
+        this.pinned = pinned;
         this.directory = directory;
         file = Path.Combine(directory, "clipboard-history-v1.json");
         try
@@ -90,11 +104,14 @@ public sealed class ClipboardHistory : IDisposable
         return entry.Content.Files is null && entry.Content.Mime is "text/plain" or "image/png" or "text/html" or "text/rtf";
     }
 
-    public ClipboardEntry Add(ClipboardContent content, string sourceId, string sourceName)
+    public ClipboardEntry Add(ClipboardContent content, string sourceId, string sourceName, string? sourceApp = null)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (content.Files is not null && sourceId != "local") throw new InvalidOperationException("远端绝对文件路径不可进入本地历史");
-        var entry = new ClipboardEntry(Guid.NewGuid().ToString("N"), content, sourceId, sourceName, now());
+        var entry = new ClipboardEntry(Guid.NewGuid().ToString("N"), content, sourceId, sourceName, now())
+        {
+            SourceApp = sourceId == "local" ? sourceApp : null,
+        };
         if (!Valid(entry)) throw new InvalidOperationException("历史内容格式无效");
         var fingerprint = content.Fingerprint();
         // Preserve source and every rich representation; repair only exact duplicates.
@@ -114,7 +131,8 @@ public sealed class ClipboardHistory : IDisposable
         }
     }
 
-    private bool Expired(ClipboardEntry entry) => (now() - entry.CreatedAt).TotalDays > RetentionDays;
+    private bool Expired(ClipboardEntry entry) =>
+        pinned?.Invoke(entry) != true && (now() - entry.CreatedAt).TotalDays > RetentionDays;
 
     public void SetRetentionDays(int days)
     {

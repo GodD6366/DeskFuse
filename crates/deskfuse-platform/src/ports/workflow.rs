@@ -428,6 +428,9 @@ pub enum PlatformCommand {
     },
     CreateFileDataObject {
         paths: Vec<String>,
+        /// 只向这台设备报价；缺省向所有文件通道就绪的设备广播。
+        #[serde(default)]
+        target_peer_id: Option<String>,
     },
     ExecuteWorkflow {
         workflow_id: String,

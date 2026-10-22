@@ -19,7 +19,14 @@ use crate::remote_rdp_protocol::{
 };
 use deskfuse_transport::QuinnTransport;
 use deskfuse_transport::remote_application::RemoteSession;
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use windows_sys::Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
     System::Registry::{
@@ -100,6 +107,51 @@ pub fn host_status() -> RdpHost {
             },
         ],
     }
+}
+
+// --- Desktop IPC reads the preflight on the service's single-threaded runtime
+// --- while holding the desktop state lock. The certificate query shells out to
+// --- PowerShell and can take seconds, so IPC handlers never call host_status()
+// --- directly: they read this cache, refreshed in the background.
+
+struct HostStatusSnapshot {
+    host: Arc<RdpHost>,
+    at: Instant,
+}
+
+static HOST_STATUS_CACHE: Mutex<Option<HostStatusSnapshot>> = Mutex::new(None);
+static HOST_STATUS_REFRESHING: AtomicBool = AtomicBool::new(false);
+
+/// How long a preflight snapshot is trusted before the next read re-verifies it
+/// in the background. RDP enablement flips are rare; a stale answer is always
+/// safe because the catalog stream re-runs `host_status()` before every `ready`.
+const HOST_STATUS_TTL: Duration = Duration::from_secs(30);
+
+/// Latest preflight result. Returns `None` only until the first background
+/// query finishes; a stale snapshot triggers a single background refresh and is
+/// returned immediately so the desktop IPC never stalls on PowerShell.
+pub fn host_status_cached() -> Option<Arc<RdpHost>> {
+    let guard = HOST_STATUS_CACHE.lock().ok()?;
+    if let Some(snapshot) = guard.as_ref()
+        && snapshot.at.elapsed() < HOST_STATUS_TTL
+    {
+        return Some(snapshot.host.clone());
+    }
+    let stale = guard.as_ref().map(|snapshot| snapshot.host.clone());
+    drop(guard);
+    if !HOST_STATUS_REFRESHING.swap(true, Ordering::AcqRel) {
+        std::thread::spawn(|| {
+            let host = Arc::new(host_status());
+            if let Ok(mut guard) = HOST_STATUS_CACHE.lock() {
+                *guard = Some(HostStatusSnapshot {
+                    host,
+                    at: Instant::now(),
+                });
+            }
+            HOST_STATUS_REFRESHING.store(false, Ordering::Release);
+        });
+    }
+    stale
 }
 
 // Query the listener's actual SHA-1 binding (not an arbitrary certificate in the

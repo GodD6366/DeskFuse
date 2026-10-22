@@ -103,6 +103,9 @@ pub enum Command {
         session_epoch: u64,
         sequence: u64,
         paths: Vec<String>,
+        /// 只向这台设备报价；缺省向所有文件通道就绪的设备广播。
+        #[serde(default)]
+        target_peer_id: Option<String>,
     },
     /// Typed platform boundary. Legacy clipboard/file commands remain
     /// wire-compatible; native host payloads stay on this authenticated pipe.
@@ -294,6 +297,10 @@ pub enum Reply {
         available: bool,
         reason: Option<String>,
         apps: Vec<RemoteAppInfo>,
+        /// 服务端预检：RDP 监听端口、监听证书指纹与逐项检查。
+        /// 来自后台缓存；服务刚启动尚未完成首次预检时为 `None`。
+        #[serde(default)]
+        host: Option<crate::remote_rdp_protocol::RdpHost>,
     },
     InstalledApps {
         apps: Vec<InstalledAppInfo>,
@@ -470,6 +477,25 @@ pub struct EnvironmentView {
     pub ssid: Option<String>,
     pub message: String,
     pub conflict: bool,
+    /// 本机实际读到的 SSID；`ssid` 是场景判定采用的值（可能来自对端上报）。
+    #[serde(default)]
+    pub observed_ssid: Option<String>,
+    /// 各在线对端经输入链路上报的 SSID，用于界面核对两端是否同一网络。
+    #[serde(default)]
+    pub peer_ssids: Vec<PeerSsidView>,
+    /// 已保存的 Wi-Fi → 首选主控规则。
+    #[serde(default)]
+    pub rules: Vec<EnvironmentRuleView>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PeerSsidView {
+    pub device_id: String,
+    pub ssid: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct EnvironmentRuleView {
+    pub ssid: String,
+    pub controller: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SceneView {

@@ -207,6 +207,9 @@ fn input_state_carries_layout_and_control_views() {
             ssid: Some("DeskFuse-Test".into()),
             message: String::new(),
             conflict: false,
+            observed_ssid: Some("DeskFuse-Test".into()),
+            peer_ssids: vec![],
+            rules: vec![],
         },
         scenes: vec![ipc::SceneView {
             id: "scene-1".into(),

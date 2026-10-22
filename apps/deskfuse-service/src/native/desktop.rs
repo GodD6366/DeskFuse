@@ -187,6 +187,25 @@ impl State {
                 ssid: input.environment.ssid.clone(),
                 message: input.environment.message.clone(),
                 conflict: input.environment.conflict,
+                observed_ssid: input.environment.observed_ssid.clone(),
+                peer_ssids: input
+                    .environment
+                    .peer_ssids
+                    .iter()
+                    .map(|(device_id, ssid)| ipc::PeerSsidView {
+                        device_id: device_id.to_string(),
+                        ssid: ssid.clone(),
+                    })
+                    .collect(),
+                rules: input
+                    .environment
+                    .rules
+                    .iter()
+                    .map(|(ssid, controller)| ipc::EnvironmentRuleView {
+                        ssid: ssid.clone(),
+                        controller: controller.to_string(),
+                    })
+                    .collect(),
             },
             scenes: input
                 .scenes
@@ -572,11 +591,18 @@ impl State {
         &mut self,
         network: &Network,
         paths: Vec<String>,
+        target_peer_id: Option<String>,
     ) -> Result<String, String> {
         let Some(files) = self.file_bridge.as_ref() else {
             return Err("文件通道尚未就绪".into());
         };
-        let peers = self.sync.file_peers(&network.runtime);
+        let mut peers = self.sync.file_peers(&network.runtime);
+        if let Some(target) = target_peer_id.as_deref() {
+            peers.retain(|peer| peer.to_string() == target);
+            if peers.is_empty() {
+                return Err("目标设备不在线或不支持文件通道".into());
+            }
+        }
         let frames = files.publish_local(
             &peers,
             paths.into_iter().map(std::path::PathBuf::from).collect(),
@@ -606,11 +632,11 @@ impl State {
                 BoundaryErrorCode::InvalidRequest,
                 "typed Windows host payload required",
             ),
-            PlatformCommand::CreateFileDataObject { paths } => {
+            PlatformCommand::CreateFileDataObject { paths, target_peer_id } => {
                 if paths.is_empty() || paths.len() > 512 {
                     return failed(BoundaryErrorCode::InvalidRequest, "invalid file list");
                 }
-                match self.publish_file_data_object(network, paths) {
+                match self.publish_file_data_object(network, paths, target_peer_id) {
                     Ok(id) => ipc::Reply::Platform {
                         event: PlatformEvent::FileDataObjectCreated { id },
                     },
@@ -814,6 +840,7 @@ impl State {
                 session_epoch,
                 sequence,
                 paths,
+                target_peer_id,
             } => {
                 if session_epoch != epoch
                     || sequence == 0
@@ -831,7 +858,16 @@ impl State {
                 let Some(files) = self.file_bridge.as_ref() else {
                     return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
                 };
-                let peers = self.sync.file_peers(&network.runtime);
+                let mut peers = self.sync.file_peers(&network.runtime);
+                if let Some(target) = target_peer_id.as_deref() {
+                    peers.retain(|peer| peer.to_string() == target);
+                    if peers.is_empty() {
+                        return ipc::Reply::rejected(
+                            "peer_unavailable",
+                            "目标设备不在线或不支持文件通道",
+                        );
+                    }
+                }
                 let frames = match files.publish_local(
                     &peers,
                     paths.into_iter().map(std::path::PathBuf::from).collect(),
@@ -1251,6 +1287,7 @@ impl State {
                     available,
                     reason,
                     apps,
+                    host: remote_app::host_status_cached().map(|host| (*host).clone()),
                 }
             }
             ipc::Command::ListInstalledApps => {

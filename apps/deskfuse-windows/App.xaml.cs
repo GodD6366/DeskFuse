@@ -17,6 +17,7 @@ public partial class App : Application
     private PowerStateController? power;
     private MainWindow? window;
     internal bool Exiting { get; private set; }
+    internal MainWindow? ClientWindow => window;
 
     public App() => InitializeComponent();
 
@@ -36,9 +37,10 @@ public partial class App : Application
 
         var dispatcher = DispatcherQueue.GetForCurrentThread();
         service = new ServiceClient(dispatcher);
-        clipboard = new DesktopClipboardController(service, dispatcher);
+        var library = new ClipboardLibrary();
+        clipboard = new DesktopClipboardController(service, dispatcher, library);
         power = new PowerStateController(clipboard.KeepAwake);
-        window = new MainWindow(service, clipboard, power);
+        window = new MainWindow(service, clipboard, power, library);
         if (power.StartupFailed)
         {
             clipboard.SetKeepAwake(false);
@@ -141,8 +143,9 @@ public partial class App : Application
         // unavailable; the registry keeps the per-user onboarding marker.
         using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
         if (key.GetValue("OnboardingVersion") is int completed && completed >= OnboardingVersion) return;
-        window.ShowOnboarding(new OnboardingPage(clipboard, () =>
+        window.ShowOnboarding(new OnboardingPage(clipboard, result =>
         {
+            window?.ApplyOnboarding(result);
             using var completedKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
             completedKey.SetValue("OnboardingVersion", OnboardingVersion);
             window?.HideOnboarding();

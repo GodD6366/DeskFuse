@@ -59,13 +59,18 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     }
     public ObservableCollection<ClipboardEntry> Entries => history.Entries;
     public event Action<string>? Error;
-    public DesktopClipboardController(ServiceClient service, DispatcherQueue dispatcher)
+    public DesktopClipboardController(ServiceClient service, DispatcherQueue dispatcher, ClipboardLibrary? library = null)
     {
         this.service = service;
         this.dispatcher = dispatcher;
         native = new NativeClipboard(dispatcher);
         LoadPreferences();
-        history = new ClipboardHistory(historyRetentionDays);
+        // 库必须先于历史加载完成，过期清理才不会误删手动列表成员。
+        history = library is null
+            ? new ClipboardHistory(historyRetentionDays)
+            : new ClipboardHistory(
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop"),
+                historyRetentionDays, () => DateTimeOffset.UtcNow, library.IsPinned);
         historyMaintenance = dispatcher.CreateTimer();
         historyMaintenance.Interval = TimeSpan.FromHours(1);
         historyMaintenance.Tick += (_, _) => { if (!disposed) history.Prune(); };
@@ -109,10 +114,10 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         return content;
     }
 
-    public async Task<string> CreateFileDataObjectAsync(IReadOnlyList<string> paths, long sessionEpoch, long sequence)
+    public async Task<string> CreateFileDataObjectAsync(IReadOnlyList<string> paths, long sessionEpoch, long sequence, string? targetPeerId = null)
     {
         NativeClipboard.ValidateLocalFiles(paths);
-        var reply = await service.SendPlatformAsync(sessionEpoch, sequence, PlatformBoundary.CreateFileDataObject(paths));
+        var reply = await service.SendPlatformAsync(sessionEpoch, sequence, PlatformBoundary.CreateFileDataObject(paths, targetPeerId));
         if (PlatformBoundary.TryGetFileDataObjectCreated(reply, out var id, out var error)) return id;
         throw new IOException(error);
     }
@@ -123,7 +128,32 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     internal async Task<ClipboardContent> ApplyTypedAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token = default) =>
         await ((ClipboardApplyPort)this).ApplyAsync(content, expectedRevision, sessionEpoch, sequence, token);
 
-    private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false, bool KeepAwake = false, int HistoryRetentionDays = 30);
+    private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false, bool KeepAwake = false,
+        int HistoryRetentionDays = 30, string DownloadDirectory = "");
+
+    private string downloadDirectory = "";
+    private readonly Dictionary<string, string> receivedPaths = new();
+
+    /// <summary>Default destination for verified incoming files; empty means
+    /// the per-user Downloads\DeskFuse folder.</summary>
+    public string DownloadDirectory
+    {
+        get => downloadDirectory;
+        set
+        {
+            if (downloadDirectory == value) return;
+            string previous = downloadDirectory;
+            downloadDirectory = value;
+            if (!SavePreferences())
+            {
+                downloadDirectory = previous;
+                throw new IOException("接收位置保存失败。");
+            }
+        }
+    }
+
+    public bool TryGetReceivedPath(string transferId, out string path) =>
+        receivedPaths.TryGetValue(transferId, out path!) && !string.IsNullOrEmpty(path);
 
     public void SetHistoryRetentionDays(int days)
     {
@@ -152,6 +182,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             syncEnabled = preferences.SyncEnabled;
             keepAwake = preferences.KeepAwake;
             historyRetentionDays = preferences.HistoryRetentionDays;
+            downloadDirectory = preferences.DownloadDirectory ?? "";
         }
         catch (Exception) { preferencesError = "无法读取本机偏好；本次使用默认设置，原文件未改变。"; }
     }
@@ -162,7 +193,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(preferencesFile)!);
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new Preferences(captureEnabled, syncEnabled, keepAwake, historyRetentionDays)));
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new Preferences(captureEnabled, syncEnabled, keepAwake, historyRetentionDays, downloadDirectory)));
             File.Move(temporary, preferencesFile, overwrite: true);
             preferencesError = null;
             return true;
@@ -210,7 +241,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private void LocalChanged(ClipboardContent content)
     {
         if (paused || disposed) return;
-        try { if (CaptureEnabled) history.Add(content, "local", "本机"); }
+        try { if (CaptureEnabled) history.Add(content, "local", "本机", NativeClipboard.ForegroundProcessName()); }
         catch (Exception) { Error?.Invoke("剪贴板历史保存失败。当前系统剪贴板没有被改变。"); }
         observedNativeSequence = native.SequenceNumber;
         _ = InvalidateAndPublishAsync(content);
@@ -451,8 +482,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     }
 
     /// <summary>Publishes existing local files as a deferred file clipboard
-    /// (shared with local copies and the shelf's send action).</summary>
-    public async Task<bool> PublishFilesAsync(IReadOnlyList<string> paths)
+    /// (shared with local copies and the shelf's send action). When
+    /// <paramref name="targetPeerId"/> is set, only that peer receives the offer.</summary>
+    public async Task<bool> PublishFilesAsync(IReadOnlyList<string> paths, string? targetPeerId = null)
     {
         try
         {
@@ -462,7 +494,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             if (!FilesEnabled) { Error?.Invoke("对端设备尚未支持跨设备文件传输。"); return false; }
             long epoch = generation.Value;
             await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
-            await CreateFileDataObjectAsync(paths, epoch, ++publishSequence);
+            await CreateFileDataObjectAsync(paths, epoch, ++publishSequence, targetPeerId);
             return true;
         }
         catch (Exception ex) { Error?.Invoke(ex is IOException or InvalidOperationException ? ex.Message : "文件发送未完成，请稍后重试。"); return false; }
@@ -499,11 +531,12 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                     File.Copy(source, target, overwrite: false);
                 }
                 var copiedRoots = roots.Values.ToList();
+                if (copiedRoots.Count > 0) receivedPaths[id] = copiedRoots[0];
                 destinations.Remove(id);
                 var copiedContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copiedRoots);
                 native.Write(copiedContent);
                 observedNativeSequence = native.SequenceNumber;
-                if (CaptureEnabled) history.Add(copiedContent, "local", "本机");
+                if (CaptureEnabled) history.Add(copiedContent, "local", "本机", "DeskFuse");
                 await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
                 FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
                 return;
@@ -517,13 +550,14 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                 else CopyDirectory(path, target);
                 copies.Add(target);
             }
+            if (copies.Count > 0) receivedPaths[id] = copies[0];
             destinations.Remove(id);
             // The received copies are installed onto the clipboard so the user
             // can paste them in Explorer immediately, mirroring macOS.
             var flatContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
             native.Write(flatContent);
             observedNativeSequence = native.SequenceNumber;
-            if (CaptureEnabled) history.Add(flatContent, "local", "本机");
+            if (CaptureEnabled) history.Add(flatContent, "local", "本机", "DeskFuse");
             await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
             FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
         }
@@ -534,7 +568,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             catch (Exception) { Error?.Invoke("文件落地回执未送达，请检查连接。"); }
             FileTransferSettled?.Invoke(id, ex.Message, false);
         }
-        finally { copying.Remove(id); }
+        finally { copying.Remove(id); destinations.Remove(id); }
     }
 
     private static string ResolveConflict(string target)
