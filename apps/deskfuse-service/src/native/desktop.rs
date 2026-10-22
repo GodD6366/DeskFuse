@@ -422,9 +422,21 @@ impl State {
                 self.last_error =
                     Some("network command failed; inspect device connection and retry".into())
             }
-            RuntimeEvent::ClipboardSent { result: Err(_), .. } => {
-                self.last_error =
-                    Some("clipboard transport failed; copy again after reconnection".into())
+            RuntimeEvent::ClipboardSent {
+                result: Err(error),
+                sync_id: Some(_),
+                ..
+            } => {
+                // Handshake/ack frames (sync_id None) retry in the background;
+                // only a real content-frame failure is actionable for the user.
+                self.last_error = Some(
+                    format!(
+                        "clipboard transport failed ({error}); copy again after reconnection"
+                    )
+                    .chars()
+                    .take(256)
+                    .collect(),
+                )
             }
             _ => {}
         }
@@ -437,7 +449,7 @@ impl State {
         }
         self.last_error = Some("event stream overflow; clipboard session reset; copy again".into());
     }
-    fn snapshot(&self, network: &Network, auth: ClientSession, epoch: u64) -> ipc::Snapshot {
+    fn snapshot(&mut self, network: &Network, auth: ClientSession, epoch: u64) -> ipc::Snapshot {
         let view = network.runtime.snapshot_view();
         let mut peers = view
             .snapshot
@@ -547,7 +559,8 @@ impl State {
                 .status
                 .clone()
                 .or_else(|| self.pairing_status.clone()),
-            last_error: self.last_error.clone().or_else(|| {
+            // Deliver each error once; the client notifies on non-empty values.
+            last_error: self.last_error.take().or_else(|| {
                 view.device_network
                     .integrity_error
                     .as_ref()

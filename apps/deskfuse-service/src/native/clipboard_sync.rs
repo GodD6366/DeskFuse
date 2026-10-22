@@ -83,8 +83,10 @@ impl Sync {
         // drops the tracked writer receipt and cancels remaining queued chunks.
         self.helpers.push(tokio::spawn(async move {
             for payload in payloads {
+                // One 1 MiB chunk legitimately needs several seconds on Wi-Fi;
+                // a shorter budget silently cancels in-flight writes.
                 match tokio::time::timeout(
-                    Duration::from_secs(3),
+                    Duration::from_secs(10),
                     runtime.send_clipboard_on_session(peer, generation, payload),
                 )
                 .await
