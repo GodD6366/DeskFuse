@@ -169,77 +169,181 @@ struct ClipboardFrame {
 
 // MARK: - 局域网传输
 
-/// 文件沿局域网连线从此 Mac 送到另一台电脑，对端进度条走满后打勾。
+/// 左侧是电脑浏览器和手机浏览器：手机先发一张图片，电脑浏览器再发一份数据，
+/// 两个文件依次沿局域网连线落到右侧这台电脑上。
 struct FileTransferDemo: View {
     var body: some View {
-        DemoLoop(period: 4.2, still: 0.85) { progress in
+        DemoLoop(period: 5.4, still: 0.85) { progress in
             let frame = FileTransferFrame(progress: progress)
             let screen = DemoStage.screen
             DemoPair(
-                leftTitle: "此 Mac", rightTitle: "另一台电脑",
-                leftActive: true, rightActive: frame.progress > 0,
+                leftTitle: "电脑浏览器 · 手机", rightTitle: "这台电脑",
+                leftActive: frame.browserActive || frame.phoneActive, rightActive: frame.receiving,
                 left: {
-                    DemoScreen(tint: DemoStage.localTint, active: true) {
-                        Image(systemName: "doc")
-                            .font(DFType.icon(.large, weight: .light))
-                            .foregroundStyle(.tertiary)
-                            .offset(y: 4)
-                    }
-                },
-                right: {
-                    DemoScreen(tint: DemoStage.remoteTint, active: frame.progress > 0) {
-                        ZStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(DFType.icon(.large))
-                                .foregroundStyle(DFPalette.success)
-                                .scaleEffect(0.6 + 0.4 * frame.done)
-                                .opacity(frame.done)
-                                .offset(y: -4)
-                            Capsule().fill(.quaternary)
-                                .frame(width: 80, height: 5)
-                                .overlay(alignment: .leading) {
-                                    Capsule().fill(DFPalette.accent).frame(width: 80 * frame.progress, height: 5)
-                                }
-                                .offset(y: 24)
-                                .opacity(1 - frame.done)
+                    HStack(spacing: FileTransferFrame.Layout.senderSpacing) {
+                        DemoBrowser(style: .desktop, active: frame.browserActive) {
+                            Image(systemName: "doc.text")
+                        }
+                        DemoBrowser(style: .phone, active: frame.phoneActive) {
+                            Image(systemName: "photo")
                         }
                     }
                 },
+                right: {
+                    DemoScreen(tint: DemoStage.localTint, active: frame.receiving) {
+                        HStack(spacing: FileTransferFrame.Layout.tileSpacing) {
+                            DemoReceivedTile(symbol: "photo.fill", landed: frame.image.landed)
+                            DemoReceivedTile(symbol: "doc.text.fill", landed: frame.data.landed)
+                        }
+                        .offset(y: 4)
+                    }
+                },
                 overlay: {
-                    // 局域网连线：不经过云端，两台设备直连。
+                    // 局域网连线：不经过云端，浏览器页面与电脑直连。
                     Path { path in
                         path.move(to: CGPoint(x: screen.width + 4, y: screen.height / 2))
                         path.addLine(to: CGPoint(x: screen.width + DemoStage.gap - 4, y: screen.height / 2))
                     }
                     .stroke(DFPalette.accent.opacity(0.45), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 4]))
-                    Image(systemName: "doc.fill")
+                    Image(systemName: "photo.fill")
                         .font(DFType.icon(.large))
                         .foregroundStyle(DFPalette.accent)
-                        .position(frame.file)
-                        .opacity(frame.fileOpacity)
+                        .position(frame.image.position)
+                        .opacity(frame.image.opacity)
+                    Image(systemName: "doc.text.fill")
+                        .font(DFType.icon(.large))
+                        .foregroundStyle(DFPalette.accent)
+                        .position(frame.data.position)
+                        .opacity(frame.data.opacity)
                 }
             )
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("演示：文件经局域网从此 Mac 直接发送到另一台电脑")
+        .accessibilityLabel("演示：手机和电脑浏览器把图片与数据经局域网直接发送到这台电脑")
     }
 }
 
+/// 浏览器窗口示意：电脑是带三色点和地址栏的横向窗口，手机是只有地址栏的竖屏。
+/// 发送方处于活动状态时描边用身份色强调。
+private struct DemoBrowser<Content: View>: View {
+    enum Style { case desktop, phone }
+
+    let style: Style
+    let active: Bool
+    @ViewBuilder var content: () -> Content
+    @Environment(\.colorScheme) private var scheme
+
+    private var size: CGSize {
+        style == .desktop ? FileTransferFrame.Layout.browser : FileTransferFrame.Layout.phone
+    }
+
+    var body: some View {
+        let tint = DemoStage.remoteTint
+        let shape = RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+        VStack(spacing: 0) {
+            HStack(spacing: 3) {
+                if style == .desktop {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle().fill(tint.opacity(active ? DFOpacity.strong : DFOpacity.faint))
+                            .frame(width: 4, height: 4)
+                    }
+                }
+                Capsule()
+                    .fill(tint.opacity(active ? DFOpacity.strong : DFOpacity.faint))
+                    .frame(width: style == .desktop ? 30 : 20, height: 4)
+            }
+            .frame(maxWidth: .infinity, alignment: style == .desktop ? .leading : .center)
+            .padding(.horizontal, 6)
+            .frame(height: 12)
+            content()
+                .font(DFType.icon(.large, weight: .light))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: size.width, height: size.height)
+        .background(DFPalette.surface(scheme), in: shape)
+        .clipShape(shape)
+        .overlay(shape.stroke(tint.opacity(active ? 0.9 : 0.25), lineWidth: DFMetrics.selectionStroke))
+        .animation(DFMotion.snappy, value: active)
+    }
+}
+
+/// 落到这台电脑上的文件：弹入后右上角出现对勾。
+private struct DemoReceivedTile: View {
+    let symbol: String
+    let landed: Double
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous)
+        Image(systemName: symbol)
+            .font(DFType.icon(.large))
+            .foregroundStyle(DFPalette.accent)
+            .frame(width: FileTransferFrame.Layout.tile, height: FileTransferFrame.Layout.tile)
+            .background(DFPalette.control(scheme), in: shape)
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(DFType.icon(.small))
+                    .foregroundStyle(DFPalette.success)
+                    .background(Circle().fill(DFPalette.surface(scheme)))
+                    .offset(x: 4, y: -4)
+            }
+            .scaleEffect(0.7 + 0.3 * landed)
+            .opacity(landed)
+    }
+}
+
+/// 一次传输：文件图标从发送方飞到电脑上，落地后在电脑屏幕里留下对应的文件块。
 struct FileTransferFrame {
-    let file: CGPoint
-    let fileOpacity: Double
-    let progress: Double
-    let done: Double
+    /// 舞台里各元素的尺寸与落点，视图和时间轴共用，保证图标正好落在文件块上。
+    enum Layout {
+        static let browser = CGSize(width: 84, height: 58)
+        static let phone = CGSize(width: 42, height: 76)
+        static let senderSpacing: CGFloat = DemoStage.screen.width - browser.width - phone.width
+        static let tile: CGFloat = 40
+        static let tileSpacing: CGFloat = 8
+    }
+
+    struct Leg {
+        /// 飞行中的图标位置与不透明度；未出发和已落地时不可见。
+        let position: CGPoint
+        let opacity: Double
+        /// 落地后文件块的弹入程度，0 到 1。
+        let landed: Double
+
+        init(progress p: Double, start: Double, end: Double, from: CGPoint, to: CGPoint) {
+            let t = DemoCurve.smoothstep(DemoCurve.segment(p, start, end))
+            position = CGPoint(x: DemoCurve.mix(from.x, to.x, t),
+                               y: DemoCurve.mix(from.y, to.y, t) - 10 * sin(.pi * t))
+            let edge = 0.03
+            opacity = DemoCurve.fade(p)
+                * DemoCurve.segment(p, start, start + edge)
+                * (1 - DemoCurve.segment(p, end - edge, end))
+            landed = DemoCurve.easeOut(DemoCurve.segment(p, end, end + 0.06)) * DemoCurve.fade(p)
+        }
+    }
+
+    let image: Leg
+    let data: Leg
+    let phoneActive: Bool
+    let browserActive: Bool
+    let receiving: Bool
 
     init(progress raw: Double, screen: CGSize = DemoStage.screen, gap: CGFloat = DemoStage.gap) {
         let p = DemoCurve.clamp(raw)
-        let t = DemoCurve.smoothstep(DemoCurve.segment(p, 0.12, 0.56))
-        file = CGPoint(x: DemoCurve.mix(screen.width / 2, screen.width + gap + screen.width / 2, t),
-                       y: screen.height / 2 + 4 - 10 * sin(.pi * t))
-        // 抵达后融入对端，交由进度条继续表达。
-        fileOpacity = DemoCurve.fade(p) * (1 - DemoCurve.segment(p, 0.56, 0.62))
-        progress = DemoCurve.smoothstep(DemoCurve.segment(p, 0.4, 0.72))
-        done = DemoCurve.easeOut(DemoCurve.segment(p, 0.72, 0.8)) * DemoCurve.fade(p)
+        let midY = screen.height / 2
+        let browserCenter = CGPoint(x: Layout.browser.width / 2, y: midY)
+        let phoneCenter = CGPoint(x: screen.width - Layout.phone.width / 2, y: midY)
+        let macCenterX = screen.width + gap + screen.width / 2
+        let tileOffset = (Layout.tile + Layout.tileSpacing) / 2
+        let tileY = midY + 4
+        image = Leg(progress: p, start: 0.08, end: 0.34, from: phoneCenter,
+                    to: CGPoint(x: macCenterX - tileOffset, y: tileY))
+        data = Leg(progress: p, start: 0.46, end: 0.72, from: browserCenter,
+                   to: CGPoint(x: macCenterX + tileOffset, y: tileY))
+        phoneActive = (0.04..<0.38).contains(p)
+        browserActive = (0.42..<0.76).contains(p)
+        receiving = (0.2..<0.9).contains(p)
     }
 }
 
@@ -395,7 +499,7 @@ struct MicrophoneFrame {
     }
 }
 
-// MARK: - 鼠标按键
+// MARK: - 鼠标自定义
 
 /// 按下鼠标侧键，出现“切换桌面”动作提示，屏幕滑到下一个桌面。
 struct MouseSideButtonDemo: View {

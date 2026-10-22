@@ -56,10 +56,10 @@ struct FeatureOnboardingContent {
             permission = nil
             illustration = AnyView(ClipboardSyncDemo())
         case .files:
-            message = "把文件直接发给同一局域网里的电脑，不经过云端。"
+            message = "用手机或电脑的浏览器，把图片和数据直接发到这台电脑，不经过云端。"
             bullets = [
-                "拖入文件，选择在线的电脑即可发送",
-                "手机扫码也能发送照片或文字",
+                "手机扫码，或在其他电脑的浏览器里打开访问地址",
+                "电脑之间也能拖入文件，发给在线的电脑",
             ]
             permission = nil
             illustration = AnyView(FileTransferDemo())

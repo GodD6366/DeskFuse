@@ -30,7 +30,7 @@ enum AppPermission: String, CaseIterable, Identifiable {
         switch self {
         case .accessibility: "让键鼠在电脑间切换，并把剪贴板内容粘贴回原来的应用。"
         case .screenRecording: "远程应用需要它来显示另一台 Mac 上的窗口。"
-        case .inputMonitoring: "鼠标按键功能需要它来识别鼠标侧键。"
+        case .inputMonitoring: "鼠标自定义需要它来识别鼠标侧键。"
         case .wifi: "按 Wi-Fi 自动切换主控电脑时读取网络名称；不会获取位置。"
         case .fullDiskAccess: "可选。仅在传输受系统保护的文件夹时需要。"
         }

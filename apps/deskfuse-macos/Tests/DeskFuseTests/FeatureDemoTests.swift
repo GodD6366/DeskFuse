@@ -44,14 +44,30 @@ struct FeatureDemoTests {
         #expect(ClipboardFrame(progress: 0).chipOpacity == 0)
     }
 
-    @Test func fileArrivesBeforeTheTransferCompletes() {
+    @Test func phoneSendsTheImageBeforeTheBrowserSendsTheData() {
         let start = FileTransferFrame(progress: 0.1)
-        #expect(start.progress == 0 && start.done == 0)
-        // 文件图标抵达对端之后进度条才走满，再打勾。
-        #expect(FileTransferFrame(progress: 0.62).fileOpacity == 0)
-        #expect(FileTransferFrame(progress: 0.72).progress == 1)
-        #expect(FileTransferFrame(progress: 0.85).done == 1)
-        #expect(FileTransferFrame(progress: 1).done == 0)
+        #expect(start.phoneActive && !start.browserActive)
+        #expect(start.image.opacity > 0 && start.data.opacity == 0)
+        // 图片先落地，此时数据还没出发。
+        let imageLanded = FileTransferFrame(progress: 0.42)
+        #expect(imageLanded.image.opacity == 0 && imageLanded.image.landed == 1)
+        #expect(imageLanded.data.landed == 0)
+        let sendingData = FileTransferFrame(progress: 0.58)
+        #expect(sendingData.browserActive && !sendingData.phoneActive)
+        #expect(sendingData.data.opacity > 0 && sendingData.image.landed == 1)
+        let both = FileTransferFrame(progress: 0.85)
+        #expect(both.image.landed == 1 && both.data.landed == 1 && both.receiving)
+    }
+
+    @Test func transferredIconsLandOnTheirTilesAndTheLoopRestartsEmpty() {
+        let screen = DemoStage.screen
+        let landing = FileTransferFrame(progress: 0.34)
+        #expect(landing.image.position.x > screen.width + DemoStage.gap)
+        let dataLanding = FileTransferFrame(progress: 0.72)
+        #expect(dataLanding.data.position.x > landing.image.position.x)
+        let wrapped = FileTransferFrame(progress: 1)
+        #expect(wrapped.image.landed == 0 && wrapped.data.landed == 0)
+        #expect(FileTransferFrame(progress: 0).image.opacity == 0)
     }
 
     @Test func remoteWindowMovesFromTheOtherComputerToThisMac() {

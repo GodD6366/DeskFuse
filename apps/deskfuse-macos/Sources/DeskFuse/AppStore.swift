@@ -443,11 +443,11 @@ import DeskFuseEngine
 enum StartupError: LocalizedError { case invalidTransaction; var errorDescription: String? { "缺少启动自检事务" } }
 enum Page: String, CaseIterable, Identifiable {
     case devices = "设备", clipboard = "剪贴板", input = "键鼠共享", files = "局域网传输"
-    case remoteApplications = "远程应用", microphone = "麦克风共享", mouse = "鼠标按键"
+    case remoteApplications = "远程应用", microphone = "麦克风共享", mouse = "鼠标自定义"
     case settings = "设置"
     var id: Self { self }
-    /// 侧栏分两组：日常协作的核心功能在上，进阶差异化功能在分隔线下。
-    static let primary: [Page] = [.devices, .clipboard, .input, .files]
+    /// 侧栏功能分两组：日常协作的基础功能在上，进阶差异化功能（Beta）在下。
+    static let primary: [Page] = [.clipboard, .input, .files]
     static let extended: [Page] = [.remoteApplications, .microphone, .mouse]
     var isBeta: Bool { Page.extended.contains(self) }
     /// 侧栏分组名，同时作为页面顶栏面包屑的第一级。
@@ -455,7 +455,8 @@ enum Page: String, CaseIterable, Identifiable {
         switch self {
         case .devices: "配置"
         case .settings: "设置"
-        default: "功能"
+        case .clipboard, .input, .files: "基础"
+        case .remoteApplications, .microphone, .mouse: "高级"
         }
     }
     var symbol: String {

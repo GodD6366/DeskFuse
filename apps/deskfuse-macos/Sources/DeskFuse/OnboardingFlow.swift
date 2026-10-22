@@ -31,14 +31,14 @@ final class OnboardingController {
 }
 
 /// 首次安装时可选择的功能。这里的默认值是全新安装的开箱状态：
-/// 剪贴板、键鼠共享与远程应用开启；鼠标按键与麦克风保持关闭。
+/// 剪贴板、键鼠共享与远程应用开启；鼠标自定义与麦克风保持关闭。
 /// 已安装过的本机进入引导时，会先用现有设置覆盖这些初值。
 enum OnboardingFeatureKind: String, CaseIterable, Identifiable {
     case clipboard
     case input
     case remoteApplications
-    case mouseButtons
     case microphone
+    case mouseButtons
 
     var id: String { rawValue }
 
@@ -47,7 +47,7 @@ enum OnboardingFeatureKind: String, CaseIterable, Identifiable {
         case .clipboard: "剪贴板同步"
         case .input: "键鼠共享"
         case .remoteApplications: "远程应用"
-        case .mouseButtons: "鼠标按键"
+        case .mouseButtons: "鼠标自定义"
         case .microphone: "麦克风共享"
         }
     }

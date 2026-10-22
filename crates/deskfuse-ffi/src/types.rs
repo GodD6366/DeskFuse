@@ -726,6 +726,9 @@ pub enum ExportOutcome {
     Failed,
 }
 
+/// 运动记录前后多少秒内视为运动活跃，此时不用 idle 占位补洞。
+const IDLE_MOTION_GUARD_SECONDS: u64 = 3;
+
 fn input_quality_cutoff(now_ms: u128) -> u128 {
     (now_ms / 1_000 * 1_000).saturating_sub(60_000)
 }
@@ -747,7 +750,7 @@ impl From<&EngineState> for EngineSnapshot {
         // regroup historical samples and change their median.
         let cutoff = input_quality_cutoff(now_ms);
         let mut quality = deskfuse_platform::timing::InputQualityWindow::default();
-        let mut observed_seconds = std::collections::BTreeSet::new();
+        let mut observed_seconds = std::collections::BTreeSet::<u64>::new();
         let mut samples = std::collections::BTreeMap::<i64, (Vec<f64>, u32, u32)>::new();
         let mut max_rtt_ms = None;
         // 记录按时间追加，循环走到最后就是最新一次采样的通道状态。
@@ -766,7 +769,7 @@ impl From<&EngineState> for EngineSnapshot {
             } else {
                 sample.0.push(0.0);
             }
-            if observed_seconds.insert(record.timestamp_ms / 1_000) {
+            if observed_seconds.insert((record.timestamp_ms / 1_000) as u64) {
                 quality.observe_motion_second();
             }
             if record.rtt_micros > 0 {
@@ -796,8 +799,19 @@ impl From<&EngineState> for EngineSnapshot {
         }
         // Idle observations fill only seconds without input-link samples. They
         // are graph continuity, not packet timings or hitch statistics.
+        // 占位值是路由 RTT，与运动通道 RTT 不是同一个指标；运动记录经服务进程 IPC
+        // 到达有延迟，最新一秒的记录未到时若用占位补洞，曲线末端会冲高再回落。
+        // 因此运动活跃（前后 IDLE_MOTION_GUARD_SECONDS 秒内有记录）时不补占位。
         for &(timestamp_ms, rtt_ms) in &s.idle_quality_samples {
-            if (cutoff..=now_ms).contains(&timestamp_ms) {
+            let absolute_second = (timestamp_ms / 1_000) as u64;
+            let motion_active = observed_seconds
+                .range(
+                    (absolute_second.saturating_sub(IDLE_MOTION_GUARD_SECONDS))
+                        ..=(absolute_second + IDLE_MOTION_GUARD_SECONDS),
+                )
+                .next()
+                .is_some();
+            if !motion_active && (cutoff..=now_ms).contains(&timestamp_ms) {
                 let second = (timestamp_ms.saturating_sub(cutoff) / 1_000) as i64;
                 samples
                     .entry(second)
@@ -1306,6 +1320,36 @@ mod input_quality_tests {
         assert_eq!(quality.rtt_p50_ms, Some(7.5));
         assert_eq!(quality.datagram_ready, Some(false));
         assert!(!quality.suggestions.is_empty());
+    }
+
+    #[test]
+    fn idle_placeholder_never_overrides_a_late_motion_second() {
+        let mut state = EngineState::default();
+        let latest = now() / 1_000 * 1_000 - 1_000;
+        // 最新一秒只有路由 RTT 占位（150 ms），运动记录还在 IPC 路上。
+        let record = |timestamp_ms| deskfuse_transport::motion_diag::QualityRecord {
+            timestamp_ms,
+            rtt_micros: 1_700,
+            hitches: 0,
+            slow_injections: 0,
+            capture_queue_micros: 0,
+            capture_count: 0,
+            ready: true,
+        };
+        state.idle_quality_samples.push_back((latest, 150.0));
+        state.input_quality = Some(deskfuse_runtime::input_service_types::InputServiceQuality {
+            records: vec![record(latest - 2_000), record(latest - 1_000)],
+            report: deskfuse_input::quality::build_report(&[], "datagram", None),
+        });
+        let quality = EngineSnapshot::from(&state).input.quality;
+        assert!(
+            quality
+                .samples
+                .iter()
+                .all(|sample| sample.rtt_ms.is_none_or(|rtt| rtt < 10.0)),
+            "运动活跃时占位值不得进入曲线: {:?}",
+            quality.samples
+        );
     }
 
     #[test]

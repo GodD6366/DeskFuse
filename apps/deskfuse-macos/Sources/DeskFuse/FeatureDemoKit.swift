@@ -39,7 +39,7 @@ enum DemoCurve {
 }
 
 /// 循环驱动引导动画；系统开启“减弱动态效果”时停在 `still` 对应的静止画面。
-/// 每帧都要重建整棵视图树，因此限制在 30fps，并在窗口被遮挡、最小化或关闭时暂停。
+/// 每帧都要重建整棵视图树，因此限制在 60fps，并在窗口被遮挡、最小化或关闭时暂停。
 struct DemoLoop<Content: View>: View {
     let period: Double
     let still: Double
@@ -48,7 +48,7 @@ struct DemoLoop<Content: View>: View {
     @State private var windowVisible = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || !windowVisible)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion || !windowVisible)) { context in
             content(reduceMotion ? still
                 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period)
         }

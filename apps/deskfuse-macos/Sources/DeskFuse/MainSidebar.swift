@@ -23,12 +23,14 @@ struct MainSidebar: View {
 
             ScrollView {
                 VStack(spacing: DFSpace.xxs) {
-                    sectionTitle(Page.clipboard.section)
-                    ForEach(Page.allCases.filter { $0 != .devices && $0 != .settings }) { page in
-                        navButton(page) {
-                            DFSidebarRow(title: page.rawValue, symbol: page.symbol,
-                                selected: store.selectedPage == page,
-                                badge: page.isBeta ? "Beta" : nil)
+                    ForEach([Page.primary, Page.extended], id: \.first) { pages in
+                        sectionTitle(pages[0].section)
+                        ForEach(pages) { page in
+                            navButton(page) {
+                                DFSidebarRow(title: page.rawValue, symbol: page.symbol,
+                                    selected: store.selectedPage == page,
+                                    badge: page.isBeta ? "Beta" : nil)
+                            }
                         }
                     }
                     sectionTitle(Page.devices.section)

@@ -4,6 +4,8 @@ import DeskFuseEngine
 
 struct MouseSettingsView: View {
     let engine: Engine?
+    /// 键鼠共享开启且本机作为主控：这只鼠标此刻正在控制其他 Mac。
+    let sharingActive: Bool
     @State private var controller = MouseButtonController.shared
     @State private var modifiers: UInt64 = 0
     @State private var recording: Int?
@@ -129,7 +131,13 @@ struct MouseSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: DFSpace.s)
-                DFStatusPill(text: deviceStatus.0, tone: deviceStatus.1)
+                VStack(alignment: .trailing, spacing: DFSpace.xs) {
+                    DFStatusPill(text: deviceStatus.0, tone: deviceStatus.1)
+                    if sharingActive {
+                        DFStatusPill(text: "主控鼠标生效中", tone: .success)
+                            .help("键鼠共享已开启，这台 Mac 的鼠标正在作为主控")
+                    }
+                }
             }
             if controller.settings.enabled && !controller.tapReady {
                 Divider()

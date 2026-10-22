@@ -62,7 +62,13 @@ struct MainContentView: View {
                 switch page {
                 case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
                 case .input: InputView(store: store, snapshot: snapshot)
-                case .mouse: MouseSettingsView(engine: store.engine)
+                case .mouse: MouseSettingsView(
+                    engine: store.engine,
+                    sharingActive: snapshot.input.settings.featureEnabled
+                        && snapshot.input.settings.enabled
+                        && snapshot.input.settings.controller
+                        && !snapshot.input.managed
+                )
                 case .microphone: MicrophoneSettingsView(store: store).padding(.top, 16)
                 case .devices:
                     DevicesView(
