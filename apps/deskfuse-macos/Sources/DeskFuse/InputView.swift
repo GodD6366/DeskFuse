@@ -65,6 +65,8 @@ struct InputView: View {
         .sheet(isPresented: $showAddDevice) {
             InputDevicePicker(snapshot: snapshot, adding: updatingSettings, error: store.error, onAdd: { id in
                 setParticipant(id, included: true)
+            }, onRemove: { id in
+                setParticipant(id, included: false)
             }, onOpenDevices: {
                 showAddDevice = false
                 store.selectedPage = .devices

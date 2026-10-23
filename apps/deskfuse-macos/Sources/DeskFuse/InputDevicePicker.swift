@@ -7,6 +7,7 @@ struct InputDevicePicker: View {
     let adding: Bool
     let error: String?
     let onAdd: (String) -> Void
+    let onRemove: (String) -> Void
     let onOpenDevices: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -39,7 +40,7 @@ struct InputDevicePicker: View {
                             }
                             Spacer(minLength: 12)
                             if snapshot.input.settings.participants.contains(device.id) {
-                                Label("已添加", systemImage: "checkmark").font(DFType.detail).foregroundStyle(.secondary)
+                                Button("移除") { onRemove(device.id) }.disabled(adding)
                             } else {
                                 Button("添加") { onAdd(device.id) }.disabled(adding)
                             }

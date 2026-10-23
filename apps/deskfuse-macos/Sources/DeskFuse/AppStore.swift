@@ -104,8 +104,14 @@ import DeskFuseEngine
     private var errorHandlers: [UInt64: (String) -> Void] = [:]
     private var failureHandlers: [UInt64: () -> Void] = [:]
     private var requestPairings: [UInt64: String] = [:]
-    /// 用户主动移除过的屏幕，本次运行内不要自动加回。
-    private var autoJoinSuppressedPeers: Set<String> = []
+    /// 用户主动移除过的屏幕不再自动加回；持久保存，重启后仍尊重用户的选择。
+    static let autoJoinSuppressedDefaultsKey = "deskfuse.input.autoJoinSuppressedPeers"
+    private var autoJoinSuppressedPeers = Set(UserDefaults.standard.stringArray(
+        forKey: AppStore.autoJoinSuppressedDefaultsKey) ?? []) {
+        didSet {
+            UserDefaults.standard.set(autoJoinSuppressedPeers.sorted(), forKey: AppStore.autoJoinSuppressedDefaultsKey)
+        }
+    }
     /// 自动加入的退避时间：设置命令可能被输入服务静默拒绝，失败回调不会触发。
     private var autoJoinRetryAt: [String: TimeInterval] = [:]
     private var quitting = false
@@ -216,7 +222,7 @@ import DeskFuseEngine
         send(.setInput(settings: settings))
     }
 
-    /// 用户手动移除屏幕后，本次运行内不再自动加回。
+    /// 用户手动移除屏幕后，不再自动加回，直到用户再次手动添加。
     func suppressAutoJoin(_ id: String) {
         autoJoinSuppressedPeers.insert(id)
         autoJoinRetryAt[id] = nil

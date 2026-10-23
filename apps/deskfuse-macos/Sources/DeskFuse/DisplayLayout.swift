@@ -263,22 +263,25 @@ struct DisplayLayout: View {
                                     .lineLimit(2)
                             }
                         }
+                        Spacer(minLength: 8)
                         if let onReconnectDevice {
                             Button("重新连接", systemImage: "arrow.clockwise") { onReconnectDevice(device.id) }
                                 .controlSize(.small)
                                 .disabled(editingDisabled || busy)
                         }
+                        if let onRemoveDevice {
+                            Button("移除", systemImage: "xmark") { onRemoveDevice(device.id) }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .help("从屏幕排布中移除 \(device.name)")
+                                .accessibilityLabel("移除 \(device.name) 的屏幕")
+                                .disabled(editingDisabled)
+                        }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .frame(maxWidth: 520, alignment: .leading)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DFRadius.control))
-                    .contextMenu {
-                        if let onRemoveDevice {
-                            Button("移除此设备的屏幕", systemImage: "minus.circle") {
-                                onRemoveDevice(device.id)
-                            }.disabled(editingDisabled)
-                        }
-                    }
                 }
             }
             .padding(12)
