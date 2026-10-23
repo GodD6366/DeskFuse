@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://deskfuse.godd.cc/sitemap.xml

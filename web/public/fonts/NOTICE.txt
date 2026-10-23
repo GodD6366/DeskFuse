@@ -1,0 +1,9 @@
+DeskFuse Display is a webfont subset of Smiley Sans (得意黑) v2.0.1.
+
+Copyright (c) 2022--2024, atelierAnchor <https://atelier-anchor.com>,
+with Reserved Font Name <Smiley> and <得意黑>.
+
+The original typeface is licensed under the SIL Open Font License, Version 1.1.
+The full license text is included in OFL.txt. This subset modifies the original
+font and uses the family name "DeskFuse Display" rather than the reserved name.
+It is used on the DeskFuse website only, not embedded in the application.

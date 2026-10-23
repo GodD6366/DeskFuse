@@ -1,24 +1,28 @@
 <script setup lang="ts">
 import SiteNav from './components/SiteNav.vue'
 import HeroSection from './components/HeroSection.vue'
-import FeaturesBento from './components/FeaturesBento.vue'
-import ScreenshotsSection from './components/ScreenshotsSection.vue'
+import DemoSection from './components/DemoSection.vue'
+import ChannelsSection from './components/ChannelsSection.vue'
+import ArchitectureSection from './components/ArchitectureSection.vue'
 import CompareSection from './components/CompareSection.vue'
 import InstallSection from './components/InstallSection.vue'
-import FinalCta from './components/FinalCta.vue'
+import ClosingSection from './components/ClosingSection.vue'
 import SiteFooter from './components/SiteFooter.vue'
 </script>
 
 <template>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
   <SiteNav />
 
-  <main id="top">
+  <main id="main" tabindex="-1">
     <HeroSection />
-    <FeaturesBento />
-    <ScreenshotsSection />
+    <DemoSection />
+    <ChannelsSection />
+    <ArchitectureSection />
     <CompareSection />
     <InstallSection />
-    <FinalCta />
+    <ClosingSection />
   </main>
 
   <SiteFooter />
