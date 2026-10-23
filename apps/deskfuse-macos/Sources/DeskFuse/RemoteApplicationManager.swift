@@ -46,7 +46,7 @@ import DeskFuseRemoteApplication
     private init() {}
 
     static let viewerRestriction = "当前键鼠共享角色不允许操作远程应用，请在主控电脑操作，或结束被控并关闭键鼠共享。"
-    static let disabledMessage = "远程应用已关闭，请使用右上角总开关重新开启。"
+    static let disabledMessage = "远程应用已关闭，可在「远程应用」页重新启用。"
     static let windowsDisabledMessage = "Windows 远程应用尚未开启，可在“设置 › 高级”中开启。"
     var canOperateApplications: Bool { AppStore.shared.snapshot?.input.canOperateRemoteApplications == true }
 

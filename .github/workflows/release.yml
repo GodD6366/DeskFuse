@@ -131,6 +131,7 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh "dist/$ARM64_ASSET"
+          unzip -t dist/DeskFuse-arm64-update.zip
           cp dist/.signing dist/signing-arm64.txt
       - name: Remove signing material
         if: always()
@@ -141,6 +142,7 @@ jobs:
           name: release-macos-arm64
           path: |
             dist/${{ env.ARM64_ASSET }}
+            dist/DeskFuse-arm64-update.zip
             dist/release.json
             dist/signing-arm64.txt
           if-no-files-found: error
@@ -193,6 +195,7 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh "dist/$X86_64_ASSET"
+          unzip -t dist/DeskFuse-x86_64-update.zip
           cp dist/.signing dist/signing-x86_64.txt
       - name: Remove signing material
         if: always()
@@ -203,6 +206,7 @@ jobs:
           name: release-macos-x86_64
           path: |
             dist/${{ env.X86_64_ASSET }}
+            dist/DeskFuse-x86_64-update.zip
             dist/release.json
             dist/signing-x86_64.txt
           if-no-files-found: error
@@ -368,8 +372,10 @@ jobs:
       - name: Check downloaded archives
         run: |
           test -s "dist/arm64/$ARM64_ASSET"
+          test -s dist/arm64/DeskFuse-arm64-update.zip
           test -s dist/arm64/signing-arm64.txt
           test -s "dist/x86_64/$X86_64_ASSET"
+          test -s dist/x86_64/DeskFuse-x86_64-update.zip
           test -s dist/x86_64/signing-x86_64.txt
       - name: Verify downloaded macOS DMGs
         env:
@@ -383,7 +389,9 @@ jobs:
           set -euo pipefail
           source scripts/rust-toolchain-env.sh
           cp "dist/arm64/$ARM64_ASSET" dist/
+          cp dist/arm64/DeskFuse-arm64-update.zip dist/
           cp "dist/x86_64/$X86_64_ASSET" dist/
+          cp dist/x86_64/DeskFuse-x86_64-update.zip dist/
           inventory_args=(--macos-only)
           if [[ "$INCLUDE_WINDOWS" == "true" ]]; then
             cp "dist/windows/$WINDOWS_ASSET" dist/

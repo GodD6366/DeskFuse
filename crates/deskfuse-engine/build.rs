@@ -57,10 +57,6 @@ fn main() {
             "RELEASES",
             format!("https://github.com/{repository}/releases/tag"),
         ),
-        (
-            "DMG_NAME",
-            active["assets"]["arm64"].as_str().unwrap().to_owned(),
-        ),
     ];
     let generated: String = constants
         .into_iter()

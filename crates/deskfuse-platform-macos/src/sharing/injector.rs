@@ -40,6 +40,123 @@ unsafe extern "C" {
     fn CFRelease(value: *const std::ffi::c_void);
 }
 
+/// IOHIDSystem owns the Caps Lock latch, and Caps is also a specialty key
+/// (IME switch). Quartz FlagsChanged updates neither: the receiver posts the
+/// HID aux Caps key for the physical edge, then mirrors the controller latch.
+#[cfg(not(test))]
+mod caps_lock {
+    use std::ffi::{c_char, c_void};
+
+    // IOKit/hidsystem/IOHIDParameter.h, IOHIDShared.h, IOLLEvent.h, ev_keymap.h.
+    const IOHID_PARAM_CONNECT_TYPE: u32 = 1;
+    const IOHID_CAPS_LOCK_STATE: i32 = 1;
+    const NX_SYSDEFINED: u32 = 14;
+    const NX_SUBTYPE_AUX_CONTROL_BUTTONS: i16 = 8;
+    const NX_KEYTYPE_CAPS_LOCK: i32 = 4;
+    const NX_KEYDOWN: i32 = 10;
+    const NX_KEYUP: i32 = 11;
+    const NX_EVENT_DATA_VERSION: u32 = 2;
+
+    #[repr(C)]
+    struct IOGPoint {
+        x: i16,
+        y: i16,
+    }
+
+    #[repr(C)]
+    struct NXEventData {
+        reserved: i16,
+        sub_type: i16,
+        misc_l: [i32; 11],
+    }
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOServiceMatching(name: *const c_char) -> *mut c_void;
+        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
+        fn IOServiceOpen(service: u32, owning_task: u32, kind: u32, connect: *mut u32) -> i32;
+        fn IOServiceClose(connect: u32) -> i32;
+        fn IOObjectRelease(object: u32) -> i32;
+        fn IOHIDGetModifierLockState(connect: u32, selector: i32, state: *mut bool) -> i32;
+        fn IOHIDSetModifierLockState(connect: u32, selector: i32, state: bool) -> i32;
+        fn IOHIDPostEvent(
+            connect: u32,
+            event_type: u32,
+            location: IOGPoint,
+            event_data: *const NXEventData,
+            event_data_version: u32,
+            event_flags: u32,
+            options: u32,
+        ) -> i32;
+    }
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+    }
+
+    pub(super) struct CapsLock(u32);
+    impl CapsLock {
+        pub(super) fn open() -> Option<Self> {
+            // SAFETY: the matching dictionary is consumed by the lookup; the
+            // service reference is released after opening its connection.
+            unsafe {
+                let service =
+                    IOServiceGetMatchingService(0, IOServiceMatching(c"IOHIDSystem".as_ptr()));
+                if service == 0 {
+                    return None;
+                }
+                let mut connect = 0;
+                let status = IOServiceOpen(
+                    service,
+                    mach_task_self_,
+                    IOHID_PARAM_CONNECT_TYPE,
+                    &mut connect,
+                );
+                IOObjectRelease(service);
+                (status == 0).then_some(Self(connect))
+            }
+        }
+        pub(super) fn set(&self, on: bool) -> bool {
+            let mut current = false;
+            // SAFETY: self.0 is an open IOHIDSystem parameter connection.
+            unsafe {
+                IOHIDGetModifierLockState(self.0, IOHID_CAPS_LOCK_STATE, &mut current) == 0
+                    && (current == on
+                        || IOHIDSetModifierLockState(self.0, IOHID_CAPS_LOCK_STATE, on) == 0)
+            }
+        }
+        pub(super) fn post_key(&self, down: bool) -> bool {
+            let mut data = NXEventData {
+                reserved: 0,
+                sub_type: NX_SUBTYPE_AUX_CONTROL_BUTTONS,
+                misc_l: [0; 11],
+            };
+            data.misc_l[0] =
+                (NX_KEYTYPE_CAPS_LOCK << 16) | ((if down { NX_KEYDOWN } else { NX_KEYUP }) << 8);
+            // SAFETY: self.0 is an open IOHIDSystem parameter connection;
+            // data lives for the duration of the call.
+            unsafe {
+                IOHIDPostEvent(
+                    self.0,
+                    NX_SYSDEFINED,
+                    IOGPoint { x: 0, y: 0 },
+                    &data,
+                    NX_EVENT_DATA_VERSION,
+                    0,
+                    0,
+                ) == 0
+            }
+        }
+    }
+    impl Drop for CapsLock {
+        fn drop(&mut self) {
+            // SAFETY: the connection was opened by Self::open and is closed once.
+            unsafe {
+                IOServiceClose(self.0);
+            }
+        }
+    }
+}
+
 /// 与真实光标对账的最小间隔。漂移是慢过程，按显示帧节流即可，不必每个
 /// 相对事件都创建一次 Quartz 事件。
 const CURSOR_RECONCILE_INTERVAL: Duration = Duration::from_millis(8);
@@ -730,6 +847,16 @@ struct NativeInjector {
     buttons: BTreeSet<u8>,
     modifier_keys: BTreeSet<u16>,
     modifiers: u64,
+    /// Controller Caps latch last mirrored into IOHIDSystem.
+    caps_latch: Option<bool>,
+    /// Physical Caps key last posted as an HID aux event.
+    caps_hid_down: bool,
+    #[cfg(not(test))]
+    caps_lock: Option<caps_lock::CapsLock>,
+    #[cfg(test)]
+    caps_lock_writes: std::cell::RefCell<Vec<bool>>,
+    #[cfg(test)]
+    caps_key_posts: std::cell::RefCell<Vec<bool>>,
     scroll_residual: (f64, f64),
     /// 相对移动的小数残差。整数部分才发给 Quartz。
     motion_residual: (f64, f64),
@@ -762,6 +889,14 @@ impl NativeInjector {
             buttons: BTreeSet::new(),
             modifier_keys: BTreeSet::new(),
             modifiers: 0,
+            caps_latch: None,
+            caps_hid_down: false,
+            #[cfg(not(test))]
+            caps_lock: None,
+            #[cfg(test)]
+            caps_lock_writes: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            caps_key_posts: std::cell::RefCell::new(Vec::new()),
             scroll_residual: (0.0, 0.0),
             motion_residual: (0.0, 0.0),
             clicks: BTreeMap::new(),
@@ -939,6 +1074,10 @@ impl NativeInjector {
             } => {
                 let caps_event = *code == CAPS_LOCK_KEYCODE;
                 self.set_modifiers(*modifiers, caps_event.then_some(*code))?;
+                if caps_event {
+                    self.post_caps_key(*pressed);
+                }
+                self.sync_caps_lock(*modifiers);
 
                 let event = CGEvent::new_keyboard_event(self.source.clone(), *code, *pressed)
                     .map_err(|()| PlatformError::InputInjectionFailed)?;
@@ -958,7 +1097,10 @@ impl NativeInjector {
                     }
                 }
             }
-            SharedInputEvent::Modifiers { modifiers } => self.set_modifiers(*modifiers, None)?,
+            SharedInputEvent::Modifiers { modifiers } => {
+                self.set_modifiers(*modifiers, None)?;
+                self.sync_caps_lock(*modifiers);
+            }
             SharedInputEvent::Scroll { dx, dy } => {
                 // Point-delta fields are integers, while fixed-point fields
                 // preserve 16.16 fractions. Carry fractional points for clients
@@ -1065,6 +1207,64 @@ impl NativeInjector {
         }
         Ok(())
     }
+    #[cfg(not(test))]
+    fn ensure_caps_lock(&mut self) -> bool {
+        if self.caps_lock.is_none() {
+            self.caps_lock = caps_lock::CapsLock::open();
+        }
+        self.caps_lock.is_some()
+    }
+    fn post_caps_key(&mut self, down: bool) {
+        if self.caps_hid_down == down {
+            return;
+        }
+        self.caps_hid_down = down;
+        #[cfg(not(test))]
+        {
+            if !self.ensure_caps_lock()
+                || !self
+                    .caps_lock
+                    .as_ref()
+                    .is_some_and(|lock| lock.post_key(down))
+            {
+                deskfuse_platform::timing::record(
+                    "caps_lock_key_failed",
+                    Duration::ZERO,
+                    format!("down={down}"),
+                );
+            }
+        }
+        #[cfg(test)]
+        self.caps_key_posts.borrow_mut().push(down);
+    }
+    fn sync_caps_lock(&mut self, flags: u64) {
+        let latched = flags & CGEventFlags::CGEventFlagAlphaShift.bits() != 0;
+        if self.caps_latch == Some(latched) {
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            if self.ensure_caps_lock()
+                && self
+                    .caps_lock
+                    .as_ref()
+                    .is_some_and(|lock| lock.set(latched))
+            {
+                self.caps_latch = Some(latched);
+            } else {
+                deskfuse_platform::timing::record(
+                    "caps_lock_sync_failed",
+                    Duration::ZERO,
+                    format!("latched={latched}"),
+                );
+            }
+        }
+        #[cfg(test)]
+        {
+            self.caps_latch = Some(latched);
+            self.caps_lock_writes.borrow_mut().push(latched);
+        }
+    }
     fn release_all(&mut self) -> PlatformResult<()> {
         let mut error = None;
         for code in self.keys.iter().copied().collect::<Vec<_>>() {
@@ -1087,6 +1287,11 @@ impl NativeInjector {
             error = Some(e);
         }
         self.clicks.clear();
+        if self.caps_hid_down {
+            self.post_caps_key(false);
+        }
+        // The receiver keeps its latch; the next controller re-syncs it.
+        self.caps_latch = None;
         self.scroll_residual = (0.0, 0.0);
         self.motion_residual = (0.0, 0.0);
         self.positioned = false;
@@ -1693,6 +1898,61 @@ mod tests {
                 && event.get_flags().is_empty()
         }));
         assert!(n.modifier_keys.is_empty());
+    }
+    #[test]
+    fn controller_caps_latch_is_mirrored_into_the_system_lock() {
+        let mut n = NativeInjector::new().unwrap();
+        let d = display();
+        let alpha_shift = 1 << 16;
+        for (pressed, modifiers) in [
+            (true, CAPS_LOCK_STATELESS_FLAGS | alpha_shift),
+            (false, alpha_shift),
+        ] {
+            n.inject(
+                &d,
+                &SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    pressed,
+                    modifiers,
+                    repeat: false,
+                },
+            )
+            .unwrap();
+        }
+        n.inject(&d, &SharedInputEvent::Modifiers { modifiers: 0 })
+            .unwrap();
+        n.release_all().unwrap();
+        // A new session re-syncs even when the latch matches the last one.
+        n.inject(&d, &SharedInputEvent::Modifiers { modifiers: 0 })
+            .unwrap();
+        assert_eq!(*n.caps_lock_writes.borrow(), [true, false, false]);
+    }
+    #[test]
+    fn physical_caps_press_posts_one_hid_aux_edge_even_when_the_latch_is_unchanged() {
+        let mut n = NativeInjector::new().unwrap();
+        let d = display();
+        let alpha_shift = 1 << 16;
+        for (pressed, modifiers) in [
+            (true, CAPS_LOCK_STATELESS_FLAGS),
+            (true, CAPS_LOCK_STATELESS_FLAGS),
+            (false, 0),
+            (false, 0),
+            (true, CAPS_LOCK_STATELESS_FLAGS | alpha_shift),
+            (false, alpha_shift),
+        ] {
+            n.inject(
+                &d,
+                &SharedInputEvent::Key {
+                    code: CAPS_LOCK_KEYCODE,
+                    pressed,
+                    modifiers,
+                    repeat: false,
+                },
+            )
+            .unwrap();
+        }
+        n.release_all().unwrap();
+        assert_eq!(*n.caps_key_posts.borrow(), [true, false, true, false]);
     }
     #[test]
     fn release_all_releases_caps_when_only_the_physical_key_is_down() {

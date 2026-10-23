@@ -26,6 +26,7 @@ mod session_auth;
 pub use network::{NetworkTransportRequest, NetworkTransportStream};
 pub mod lan;
 pub mod routes;
+pub mod socket_diag;
 pub use input::{
     InputMotionDiagnostics, InputTransportEvent, InputTransportStream, UpdateReplyStream,
     UpdateTransportRequest, UpdateTransportStream,
@@ -1583,14 +1584,41 @@ fn lan_fingerprint<'a>(entries: impl Iterator<Item = (&'a str, std::net::IpAddr)
 /// reader. Discovery therefore moves to its own endpoint on the probe executor,
 /// so probing an unreachable address can no longer delay live input. Cached for
 /// the process because a dialed connection must outlive the call that made it.
-static INPUT_DIALERS: OnceLock<Mutex<BTreeMap<std::net::IpAddr, Arc<quinn::Endpoint>>>> =
-    OnceLock::new();
+static INPUT_DIALERS: OnceLock<Mutex<BTreeMap<std::net::IpAddr, CachedDialer>>> = OnceLock::new();
 
-fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<Arc<quinn::Endpoint>> {
+struct CachedDialer {
+    endpoint: Arc<quinn::Endpoint>,
+    created: std::time::Instant,
+    uses: u64,
+}
+
+impl CachedDialer {
+    /// Age and reuse count, so a probe failure shows whether it went out on a
+    /// socket created before the last network change.
+    fn usage(&self) -> String {
+        format!(
+            "dialer_age_secs={} dialer_uses={}",
+            self.created.elapsed().as_secs(),
+            self.uses
+        )
+    }
+}
+
+/// A cached dialer plus its usage at the time it was handed out.
+struct InputDialer {
+    endpoint: Arc<quinn::Endpoint>,
+    usage: String,
+}
+
+fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<InputDialer> {
     let dialers = INPUT_DIALERS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut dialers = dialers.lock().ok()?;
-    if let Some(endpoint) = dialers.get(&local.ip()) {
-        return Some(endpoint.clone());
+    if let Some(cached) = dialers.get_mut(&local.ip()) {
+        cached.uses += 1;
+        return Some(InputDialer {
+            endpoint: cached.endpoint.clone(),
+            usage: cached.usage(),
+        });
     }
     let (_, client) = build_input_quic_configs(config).ok()?;
     let socket = std::net::UdpSocket::bind(SocketAddr::new(local.ip(), 0)).ok()?;
@@ -1604,8 +1632,16 @@ fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<Arc<
     .ok()?;
     endpoint.set_default_client_config(client);
     let endpoint = Arc::new(endpoint);
-    dialers.insert(local.ip(), endpoint.clone());
-    Some(endpoint)
+    let bound = endpoint.local_addr().unwrap_or(local);
+    socket_diag::record("dialer_created", bound, String::new());
+    let cached = CachedDialer {
+        endpoint: endpoint.clone(),
+        created: std::time::Instant::now(),
+        uses: 1,
+    };
+    let usage = cached.usage();
+    dialers.insert(local.ip(), cached);
+    Some(InputDialer { endpoint, usage })
 }
 
 /// Drop a cached dialer after a failed attempt: the interface address it was
@@ -1617,9 +1653,14 @@ fn forget_input_dialer(local: SocketAddr, endpoint: &Arc<quinn::Endpoint>) {
     if let Ok(mut dialers) = dialers.lock()
         && dialers
             .get(&local.ip())
-            .is_some_and(|cached| Arc::ptr_eq(cached, endpoint))
+            .is_some_and(|cached| Arc::ptr_eq(&cached.endpoint, endpoint))
+        && let Some(cached) = dialers.remove(&local.ip())
     {
-        dialers.remove(&local.ip());
+        socket_diag::record(
+            "dialer_forgotten",
+            cached.endpoint.local_addr().unwrap_or(local),
+            cached.usage(),
+        );
     }
 }
 
@@ -1943,7 +1984,11 @@ impl QuinnTransport {
                 return Ok(());
             }
             // A disposable signed identity probe is never promoted into a live connection.
-            let Some(probe_endpoint) = input_dialer(&self.config, local) else {
+            let Some(InputDialer {
+                endpoint: probe_endpoint,
+                usage: dialer_usage,
+            }) = input_dialer(&self.config, local)
+            else {
                 failures.record(
                     InputPathFailure::Other,
                     format!("local={local} remote={remote} stage=create_probe failed"),
@@ -1951,7 +1996,7 @@ impl QuinnTransport {
                 continue;
             };
             let mut probe = self.clone();
-            probe.endpoint = Some(probe_endpoint);
+            probe.endpoint = Some(probe_endpoint.clone());
             probe.bound_addr = local;
             probe.bound_interface = Some(interface.clone());
             match time::timeout(
@@ -1969,8 +2014,10 @@ impl QuinnTransport {
                         Err(_) => "timeout (1s)".into(),
                         _ => unreachable!(),
                     };
+                    // 缓存的拨号 socket 可能已随网卡失效，下次换新的。
+                    forget_input_dialer(local, &probe_endpoint);
                     failures.record(InputPathFailure::Probe, format!(
-                        "local={local} remote={remote} interface={interface} stage=identity_probe error={error}"
+                        "local={local} remote={remote} interface={interface} stage=identity_probe error={error} {dialer_usage}"
                     ));
                     continue;
                 }
@@ -2083,6 +2130,11 @@ impl QuinnTransport {
                 ) {
                     endpoint.set_default_client_config(lan_client);
                     if let Ok(address) = endpoint.local_addr() {
+                        socket_diag::record(
+                            "listener_bound",
+                            address,
+                            format!("interface={interface}"),
+                        );
                         lan_endpoints
                             .lock()
                             .map_err(|_| TransportError::Closed)?
@@ -2572,7 +2624,7 @@ impl ControlTransport for QuinnTransport {
                 {
                     continue;
                 }
-                let dialer = input_dialer(&self.config, local);
+                let dialer = input_dialer(&self.config, local).map(|dialer| dialer.endpoint);
                 let mut dedicated = self.clone();
                 dedicated.endpoint = Some(dialer.clone().unwrap_or_else(|| endpoint.clone()));
                 dedicated.bound_addr = local;
@@ -3220,6 +3272,11 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
             listeners.retain(|address, (name, endpoint)| {
                 let keep = active.contains(&(name.clone(), address.ip()));
                 if !keep {
+                    socket_diag::record(
+                        "listener_closed",
+                        *address,
+                        format!("interface={name} reason=interface_changed"),
+                    );
                     endpoint.close(QUIC_CLOSE_CODE, b"physical interface changed");
                 }
                 keep
@@ -3267,6 +3324,7 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
             endpoint.set_default_client_config(client);
             let endpoint = Arc::new(endpoint);
             if let Ok(mut listeners) = shared.lan_endpoints.lock() {
+                socket_diag::record("listener_bound", address, format!("interface={interface}"));
                 listeners.insert(address, (interface.clone(), endpoint.clone()));
             }
             let mut state = shared.clone();
@@ -3308,6 +3366,25 @@ async fn accept_loop(endpoint: Arc<quinn::Endpoint>, shared: QuinnShared) {
                 });
             }
         }
+    }
+    // Quinn 的 endpoint driver 遇到接收错误（睡眠或断网时绑定网卡的 socket 常见）
+    // 会永久退出，accept 随即返回 None。网卡名和 IP 恢复后 refresh 仍会认为监听
+    // 健在，对端探测 42425 永远超时；这里摘掉死监听，让下一轮 refresh 重新绑定。
+    if shared.bound_interface.is_some() && !shared.stopping.load(Ordering::Acquire) {
+        let removed = shared.lan_endpoints.lock().is_ok_and(|mut listeners| {
+            listeners
+                .get(&shared.bound_addr)
+                .is_some_and(|(_, current)| Arc::ptr_eq(current, &endpoint))
+                && listeners.remove(&shared.bound_addr).is_some()
+        });
+        socket_diag::record(
+            "listener_accept_ended",
+            shared.bound_addr,
+            format!(
+                "interface={} removed={removed}",
+                shared.bound_interface.as_deref().unwrap_or_default()
+            ),
+        );
     }
 }
 

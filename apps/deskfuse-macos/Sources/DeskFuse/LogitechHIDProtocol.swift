@@ -10,28 +10,84 @@ enum LogitechHIDProtocol {
     static let buttons = mxButtons.union(g502Buttons)
 
     enum Model: String, CaseIterable, Hashable, Identifiable {
+        // G-series: special buttonSpy path
         case g502Lightspeed
+        // MX series: reprogrammable controls
         case mxMaster3
+        case mxMaster4
+        case mxAnywhere3
+        case mxErgo
+        case mxVertical
+        // Generic fallback: any HID++ 2.0 mouse with reprogrammable controls
+        case generic
 
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .g502Lightspeed: "G502 LIGHTSPEED"
             case .mxMaster3: "MX Master 3 / 3S"
+            case .mxMaster4: "MX Master 4"
+            case .mxAnywhere3: "MX Anywhere 3 / 3S"
+            case .mxErgo: "MX Ergo / Ergo S"
+            case .mxVertical: "MX Vertical"
+            case .generic: "Logitech HID++ 鼠标"
             }
         }
         var supportSummary: String {
             switch self {
             case .g502Lightspeed: "11 个实体键 · 保留原生功能"
             case .mxMaster3: "手势键、模式切换键与标准按键"
+            case .mxMaster4: "手势键、模式切换键与标准按键"
+            case .mxAnywhere3: "可编程扩展按键"
+            case .mxErgo: "可编程扩展按键"
+            case .mxVertical: "可编程扩展按键"
+            case .generic: "自动枚举可编程按键"
             }
         }
+        /// Whether this model uses the generic reprogrammable-controls (0x1b04) path.
+        /// Only `.g502Lightspeed` uses the button-spy path; everything else goes here.
+        var usesReprogrammableControls: Bool { self != .g502Lightspeed }
     }
     static func model(_ name: String) -> Model? {
-        let name = name.lowercased()
-        if name.contains("mx master 3") { return .mxMaster3 }
-        if name.contains("g502 lightspeed") { return .g502Lightspeed }
+        let n = name.lowercased()
+        // G-series: button-spy path — match narrowly to avoid false positives on "G502 X"
+        if n.contains("g502 lightspeed") { return .g502Lightspeed }
+        // MX series: reprogrammable controls
+        if n.contains("mx master 4") { return .mxMaster4 }
+        if n.contains("mx master 3") { return .mxMaster3 }
+        if n.contains("mx anywhere 3") || n.contains("mx anywhere3") { return .mxAnywhere3 }
+        if n.contains("mx ergo") { return .mxErgo }
+        if n.contains("mx vertical") { return .mxVertical }
+        // Generic fallback: let discover() try reprogrammable controls;
+        // return nil here to keep the unsupported-identity fast path for
+        // non-mouse Logitech devices that also show up on the receiver.
         return nil
+    }
+    /// Returns a model for display purposes: named match first, then a generic
+    /// marker when the device answered the feature table probe (passed in as
+    /// `hasReprogrammableControls`). Used only for UI labelling — routing
+    /// decisions stay in LogitechHIDDevice.discover().
+    static func resolvedModel(_ name: String, hasReprogrammableControls: Bool) -> Model? {
+        if let named = model(name) { return named }
+        return hasReprogrammableControls ? .generic : nil
+    }
+
+    /// Decodes a BatteryVoltage (0x1001) getBatteryInfo reply: big-endian millivolts,
+    /// then a flags byte whose bit 7 marks external power. Percent is interpolated
+    /// from a single-cell Li-ion discharge curve, matching Solaar's estimate.
+    static func voltageBattery(_ payload: [UInt8]) -> (percent: UInt8, charging: Bool)? {
+        guard payload.count >= 3 else { return nil }
+        let millivolts = Int(payload[0]) << 8 | Int(payload[1])
+        guard millivolts > 0 else { return nil }
+        let curve: [(Int, Int)] = [(4186, 100), (4067, 90), (3989, 80), (3922, 70), (3859, 60), (3811, 50),
+                                   (3778, 40), (3751, 30), (3717, 20), (3671, 10), (3646, 5), (3579, 2), (3500, 0)]
+        let charging = payload[2] & 0x80 != 0
+        if millivolts >= curve[0].0 { return (100, charging) }
+        for (upper, lower) in zip(curve, curve.dropFirst()) where millivolts >= lower.0 {
+            let pct = lower.1 + (upper.1 - lower.1) * (millivolts - lower.0) / (upper.0 - lower.0)
+            return (UInt8(pct), charging)
+        }
+        return (0, charging)
     }
 
     static func spyButtons(count: Int) -> Set<Int>? {

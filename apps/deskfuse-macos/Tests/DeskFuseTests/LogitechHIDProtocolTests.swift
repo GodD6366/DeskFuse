@@ -54,11 +54,27 @@ final class LogitechHIDProtocolTests: XCTestCase {
         XCTAssertNil(LogitechHIDProtocol.report([0x11, 0xff], reportID: 0x11))
     }
     func testMXModelGateAndSyncedSemanticIDs() throws {
-        XCTAssertTrue(LogitechHIDProtocol.supportedModel("MX Master 3S"))
-        XCTAssertTrue(LogitechHIDProtocol.supportedModel("MX Master 3 for Mac"))
-        XCTAssertFalse(LogitechHIDProtocol.supportedModel("G502 HERO"))
-        XCTAssertTrue(LogitechHIDProtocol.supportedModel("G502 LIGHTSPEED Wireless Gaming Mouse"))
-        XCTAssertFalse(LogitechHIDProtocol.supportedModel("G502 X LIGHTSPEED"))
+        // Named model matches
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Master 3S"), .mxMaster3)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Master 3 for Mac"), .mxMaster3)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Master 4"), .mxMaster4)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Anywhere 3S"), .mxAnywhere3)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Anywhere 3"), .mxAnywhere3)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Ergo S"), .mxErgo)
+        XCTAssertEqual(LogitechHIDProtocol.model("MX Vertical"), .mxVertical)
+        XCTAssertEqual(LogitechHIDProtocol.model("G502 LIGHTSPEED Wireless Gaming Mouse"), .g502Lightspeed)
+        // G502 X is NOT the Lightspeed button-spy path
+        XCTAssertNil(LogitechHIDProtocol.model("G502 X LIGHTSPEED"))
+        XCTAssertNil(LogitechHIDProtocol.model("G502 HERO"))
+        // Unknown model: model() returns nil; discover() tries reprogrammable controls
+        XCTAssertNil(LogitechHIDProtocol.model("G305 LIGHTSPEED"))
+        XCTAssertNil(LogitechHIDProtocol.model("G604 LIGHTSPEED"))
+        // resolvedModel() gives .generic for unnamed mice that answered the probe
+        XCTAssertEqual(LogitechHIDProtocol.resolvedModel("G305 LIGHTSPEED", hasReprogrammableControls: true), .generic)
+        XCTAssertNil(LogitechHIDProtocol.resolvedModel("G305 LIGHTSPEED", hasReprogrammableControls: false))
+        // Named model wins over generic even with probe
+        XCTAssertEqual(LogitechHIDProtocol.resolvedModel("MX Anywhere 3S", hasReprogrammableControls: true), .mxAnywhere3)
+        // Settings round-trip
         var settings = MouseSettings(enabled: true)
         settings.set(button: 195, modifiers: 0, action: .shortcut(126, 0x40000))
         settings.set(button: 196, modifiers: 0, action: .disabled)
@@ -68,6 +84,15 @@ final class LogitechHIDProtocolTests: XCTestCase {
         XCTAssertNil(decoded.action(button: 5, modifiers: 0))
     }
 
+    func testVoltageBatteryInterpolatesDischargeCurve() throws {
+        let full = try XCTUnwrap(LogitechHIDProtocol.voltageBattery([0x10, 0x68, 0x00]))  // 4200 mV
+        XCTAssertEqual(full.percent, 100); XCTAssertFalse(full.charging)
+        XCTAssertEqual(LogitechHIDProtocol.voltageBattery([0x0e, 0xe3, 0x80])?.percent, 50)  // 3811 mV
+        XCTAssertEqual(LogitechHIDProtocol.voltageBattery([0x0e, 0xe3, 0x80])?.charging, true)
+        XCTAssertEqual(LogitechHIDProtocol.voltageBattery([0x0e, 0x96, 0x00])?.percent, 25)  // 3734 mV
+        XCTAssertEqual(LogitechHIDProtocol.voltageBattery([0x0d, 0x00, 0x00])?.percent, 0)
+        XCTAssertNil(LogitechHIDProtocol.voltageBattery([0x0e]))
+    }
     func testG502BitmapUsesBothBytesAndPhysicalNamespace() throws {
         // Real receiver: slot 1, feature 0x0a, 11 buttons. Feature indices are discovered.
         XCTAssertEqual(LogitechHIDProtocol.spyButtons(count: 11), Set(208...218))

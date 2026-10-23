@@ -134,7 +134,7 @@ impl quinn::Runtime for InputQuicRuntime {
         socket: std::net::UdpSocket,
     ) -> io::Result<Arc<dyn quinn::AsyncUdpSocket>> {
         let _entered = self.0.enter();
-        quinn::TokioRuntime.wrap_udp_socket(socket)
+        Ok(Arc::new(crate::socket_diag::InputUdpSocket::new(socket)?))
     }
     fn now(&self) -> Instant {
         let _entered = self.0.enter();

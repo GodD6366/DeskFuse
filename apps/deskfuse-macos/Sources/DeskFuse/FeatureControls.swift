@@ -1,43 +1,6 @@
 import SwiftUI
 import DeskFuseEngine
 
-/// The feature switch lives in the window header, independently of page tasks.
-struct FeatureControls: View {
-    let store: AppStore
-    let page: Page
-    @State private var saving = false
-
-    var body: some View {
-        if let enabled = store.featureEnabled(for: page) {
-            HStack(spacing: DFSpace.s) {
-                if saving { ProgressView().controlSize(.small) }
-                // 开关本身不带文字，旁边直接写出当前状态，不必猜右上角这个开关管什么。
-                Text(enabled ? "已开启" : "已关闭")
-                    .font(DFType.detail)
-                    .dfSecondaryText()
-                    .accessibilityHidden(true)
-                Toggle("总开关", isOn: Binding(
-                    get: { enabled },
-                    set: { value in
-                        saving = true
-                        store.setFeatureEnabled(value, for: page) { saving = false }
-                    }
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
-                .disabled(saving || store.client == nil
-                          || (page == .microphone && MicrophoneSharing.shared.saving)
-                          || (page == .mouse && MouseButtonController.shared.saving))
-                .accessibilityLabel("\(page.rawValue)总开关")
-                .help(enabled ? "关闭\(page.rawValue)并停止相关后台任务" : "开启\(page.rawValue)")
-            }
-            .id(page)
-
-        }
-    }
-}
-
 extension AppStore {
     func featureEnabled(for page: Page) -> Bool? {
         guard let snapshot else { return nil }

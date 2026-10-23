@@ -539,7 +539,7 @@ struct OnboardingFlow: View {
                          action: { advance(-1) })
             }
 
-            Text("完成设置后，可在各功能页右上角的总开关或设置中随时修改。")
+            Text("完成设置后，可在「设置 › 通用」中随时修改。")
                 .font(DFType.detail)
                 .dfSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)

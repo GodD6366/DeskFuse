@@ -13,12 +13,6 @@ struct MainContentView: View {
         VStack(spacing: 0) {
             if page != .settings {
                 DFTopBar(section: page.section, title: page.rawValue, badge: page.isBeta ? "Beta" : nil)
-                    .overlay(alignment: .trailing) {
-                        FeatureControls(store: store, page: page)
-                            .id(page)
-                            .padding(.trailing, DFMetrics.pageInset)
-                            .padding(.bottom, DFSpace.s)
-                    }
             }
             featureError
             pageContent
@@ -62,13 +56,7 @@ struct MainContentView: View {
                 switch page {
                 case .clipboard: ClipboardView(store: store, snapshot: snapshot, searchRequest: historySearchRequest)
                 case .input: InputView(store: store, snapshot: snapshot)
-                case .mouse: MouseSettingsView(
-                    engine: store.engine,
-                    sharingActive: snapshot.input.settings.featureEnabled
-                        && snapshot.input.settings.enabled
-                        && snapshot.input.settings.controller
-                        && !snapshot.input.managed
-                )
+                case .mouse: MouseSettingsView(engine: store.engine)
                 case .microphone: MicrophoneSettingsView(store: store).padding(.top, 16)
                 case .devices:
                     DevicesView(

@@ -36,8 +36,6 @@ struct G502MouseEditor<ActionEditor: View>: View {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.shield")
                 Text("保留原生功能，只附加快捷键")
-                Spacer()
-                Text("\(locations.buttons.count) / 11 个位置已确认")
             }.font(DFType.caption).foregroundStyle(.secondary).padding(16)
         }
         .background(.background, in: RoundedRectangle(cornerRadius: DFRadius.panel))
@@ -70,18 +68,8 @@ struct G502MouseEditor<ActionEditor: View>: View {
                     let point = anchor(position)
                     let x = (size.width - photoSize.width) / 2 + point.x * scale
                     let y = (size.height - photoSize.height) / 2 + point.y * scale
-                    let active = editing == position
                     Button { select(position); editing = position } label: {
-                        ZStack {
-                            Circle().fill(active ? DFPalette.accent : Color.white)
-                            Circle().strokeBorder(active ? Color.white : DFPalette.accent, lineWidth: 2)
-                            if active { Circle().fill(.white).frame(width: 6, height: 6) }
-                            else if locations.button(at: position) != nil {
-                                Image(systemName: "checkmark").font(DFType.caption.weight(.bold)).foregroundStyle(DFPalette.accent)
-                            }
-                        }.frame(width: 23, height: 23)
-                            .shadow(color: .black.opacity(0.22), radius: 4, y: 2)
-                            .contentShape(Circle())
+                        MouseButtonHotspot(selected: editing == position, configured: configured(position))
                     }.buttonStyle(.plain)
                         .popover(isPresented: Binding(get: { editing == position }, set: { presented in
                             if !presented && editing == position {
@@ -126,11 +114,11 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 }.pickerStyle(.segmented).labelsHidden()
             }
             Divider()
-            if let button = locations.button(at: selection), locating == nil {
+            if locating == nil {
                 Text("附加动作").font(DFType.caption).foregroundStyle(.secondary)
-                actionEditor(button)
+                actionEditor(locations.button(at: selection))
                     .padding(10).background(DFPalette.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: DFRadius.control))
-                Button("重新确认位置") { startCapture() }.buttonStyle(.link).font(DFType.caption)
+                Button("按键不对应？重新识别") { startCapture() }.buttonStyle(.link).font(DFType.caption)
             } else if let candidate, let position = locating {
                 Label("已收到按键", systemImage: "checkmark.circle").foregroundStyle(DFPalette.accent)
                 Text("刚才按下的是「\(position.title)」吗？确认后才会记住位置。")
@@ -143,7 +131,7 @@ struct G502MouseEditor<ActionEditor: View>: View {
                 }.buttonStyle(.dfPrimary)
                 Button("重新识别") { startCapture() }
                 Button("取消") { cancelCapture() }.buttonStyle(.link)
-            } else if locating != nil {
+            } else {
                 Label(controller.captureReleased ? "请重试识别" : controller.detecting ? "正在监听…" : controller.lastButton != nil ? "请松开按键" : "未收到按键", systemImage: "waveform")
                     .foregroundStyle(DFPalette.accent)
                 Text("按下并松开「\(selection.title)」。只确认位置，不改变鼠标原有设置。")
@@ -152,17 +140,16 @@ struct G502MouseEditor<ActionEditor: View>: View {
                     Button("重新监听") { startCapture() }
                     Button("取消") { cancelCapture() }
                 }
-            } else {
-                Text("第一次，确认一下位置")
-                    .font(DFType.bodyMedium)
-                Text("按一下对应的实体键，让 DeskFuse 记住它。已有快捷键不会丢失。")
-                    .font(DFType.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("识别这个位置", systemImage: "cursorarrow.click") { startCapture() }
-                    .buttonStyle(.dfPrimary)
             }
         }.fixedSize(horizontal: false, vertical: true)
     }
 
+    /// The wheel anchor covers press and both tilts, so any of them counts.
+    private func configured(_ position: G502ButtonPosition) -> Bool {
+        let shared: [G502ButtonPosition] = [.middle, .tiltLeft, .tiltRight].contains(position) ? [.middle, .tiltLeft, .tiltRight] : [position]
+        let events = Set(shared.map(locations.button(at:)))
+        return controller.settings.bindings.contains { events.contains($0.button) }
+    }
     private func select(_ position: G502ButtonPosition) {
         cancelCapture(); onSelection(); selection = position
     }

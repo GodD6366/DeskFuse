@@ -610,6 +610,18 @@ if [[ "$SIGNING_KIND" == "developer-id" ]] && deskfuse_notarize_credentials_read
   "$ROOT_DIR/scripts/notarize-macos.sh" "$FINAL_DMG"
   NOTARIZED=true
   "$ROOT_DIR/scripts/verify-dmg.sh" "$FINAL_DMG"
+  # The disk-image ticket does not travel inside the app zip. Staple the same
+  # signed app and rebuild the zip so a website download opens without waiting
+  # for an online Gatekeeper lookup.
+  xcrun stapler staple "$APP_BUNDLE"
+  xcrun stapler validate "$APP_BUNDLE"
+  codesign --verify --deep --strict "$APP_BUNDLE"
+  rm -f "$UPDATE_ZIP"
+  if [[ "$FAST_MODE" == 1 ]]; then
+    ditto -c -k --zlibCompressionLevel 1 --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
+  else
+    ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$UPDATE_ZIP"
+  fi
 else
   echo "notarization: not performed"
 fi

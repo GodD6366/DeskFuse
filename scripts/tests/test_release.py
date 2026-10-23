@@ -57,6 +57,8 @@ class ReleaseTests(unittest.TestCase):
     def make_inventory(self):
         (self.root / "DeskFuse-arm64.dmg").write_bytes(b"test fixture, not a DMG")
         (self.root / "DeskFuse-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
+        (self.root / "DeskFuse-arm64-update.zip").write_bytes(b"test fixture, not a zip")
+        (self.root / "DeskFuse-x86_64-update.zip").write_bytes(b"intel fixture, not a zip")
         windows = self.root / "DeskFuse-windows-x64-setup.exe"
         windows.write_bytes(b"windows installer fixture")
         (self.root / f"{windows.name}.manifest.json").write_text(json.dumps({
@@ -72,6 +74,8 @@ class ReleaseTests(unittest.TestCase):
     def make_macos_inventory(self):
         (self.root / "DeskFuse-arm64.dmg").write_bytes(b"test fixture, not a DMG")
         (self.root / "DeskFuse-x86_64.dmg").write_bytes(b"intel fixture, not a DMG")
+        (self.root / "DeskFuse-arm64-update.zip").write_bytes(b"test fixture, not a zip")
+        (self.root / "DeskFuse-x86_64-update.zip").write_bytes(b"intel fixture, not a zip")
         with patch.object(release, "version", return_value=self.data["version"]), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit, include_windows=False)
 

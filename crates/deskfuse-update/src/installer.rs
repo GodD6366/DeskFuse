@@ -260,14 +260,35 @@ struct InstallSource {
     file_name: String,
 }
 
-struct MountGuard(PathBuf);
-impl Drop for MountGuard {
-    fn drop(&mut self) {
-        let _ = Command::new("/usr/bin/hdiutil")
-            .args(["detach", "-quiet", "-force"])
-            .arg(&self.0)
-            .status();
+/// Reject path traversal before ditto sees the archive, then expand it inside
+/// the staging directory. The zip must be exactly one `DeskFuse.app`.
+fn extract_app_zip(zip: &Path, stage: &Path) -> Result<PathBuf> {
+    let entries = Command::new("/usr/bin/unzip")
+        .args(["-Z", "-1"])
+        .arg(zip)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !entries.status.success()
+        || !String::from_utf8_lossy(&entries.stdout).lines().all(|p| {
+            !p.starts_with('/')
+                && !p.split('/').any(|c| c == "..")
+                && (p.starts_with("DeskFuse.app/") || p.starts_with("__MACOSX/"))
+        })
+    {
+        return Err("更新压缩包包含无效路径".into());
     }
+    command(
+        Command::new("/usr/bin/ditto")
+            .args(["-x", "-k"])
+            .arg(zip)
+            .arg(stage),
+    )?;
+    let app = stage.join("DeskFuse.app");
+    let metadata = app.symlink_metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("更新包中的应用不是普通目录".into());
+    }
+    Ok(app)
 }
 
 fn digest_file(path: &Path, size: u64, sha256: &str) -> Result<()> {
@@ -323,8 +344,9 @@ fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
     )
 }
 
-/// Public GitHub DMGs are not LAN-signed. Trust is SHA-256 plus the already-running
-/// app's designated code-signing requirement. Never write a LAN manifest here.
+/// Public GitHub packages install the same app zip as a LAN update. Trust is
+/// SHA-256 plus the already-running app's designated code-signing requirement.
+/// Never write a LAN manifest here.
 /// # Errors
 /// Returns a verification, storage, or platform operation failure.
 pub fn prepare_github(
@@ -333,9 +355,9 @@ pub fn prepare_github(
     status: &UpdateStatus,
 ) -> Result<()> {
     if status.release != *release
-        || status.artifact.kind != PackageKind::MacosDmg
+        || status.artifact.kind != PackageKind::MacosAppZip
         || status.artifact.target != Target::MacosArm64
-        || status.artifact.file_name != "DeskFuse-arm64.dmg"
+        || status.artifact.file_name != PeerAppArtifact::FILE_NAME
     {
         return Err("安装任务不匹配".into());
     }
@@ -343,6 +365,9 @@ pub fn prepare_github(
     let target = current_bundle()?;
     if target.starts_with("/Volumes") {
         return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
+    }
+    if bundle_update_channel(&target)? != "github" {
+        return Err("只有 GitHub 渠道的正式包会从发布页自动安装".into());
     }
     let installed = installed_release(&target)?;
     if !release.precedence(&installed).is_gt() {
@@ -366,9 +391,9 @@ pub fn prepare_github(
     private_dir(&stage)?;
     persist(&root, &journal)?;
     let result = (|| {
-        let dmg = stage.join(&status.artifact.file_name);
-        fs::copy(payload, &dmg).map_err(|e| e.to_string())?;
-        digest_file(&dmg, status.artifact.size, &status.artifact.sha256)?;
+        let zip = stage.join(&status.artifact.file_name);
+        fs::copy(payload, &zip).map_err(|e| e.to_string())?;
+        digest_file(&zip, status.artifact.size, &status.artifact.sha256)?;
         write_json_atomic(
             &stage.join(INSTALL_SOURCE),
             &InstallSource {
@@ -377,23 +402,9 @@ pub fn prepare_github(
             },
         )
         .map_err(|e| e.to_string())?;
-        let mount = stage.join("mount");
-        private_dir(&mount)?;
-        command(
-            Command::new("/usr/bin/hdiutil")
-                .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
-                .arg(&mount)
-                .arg(&dmg),
-        )?;
-        let _mounted = MountGuard(mount.clone());
-        let app = mount.join("DeskFuse.app");
-        if app
-            .symlink_metadata()
-            .map_err(|e| e.to_string())?
-            .file_type()
-            .is_symlink()
-        {
-            return Err("磁盘映像中的应用不是普通目录".into());
+        let app = extract_app_zip(&zip, &stage)?;
+        if bundle_update_channel(&app)? != "github" {
+            return Err("正式更新包与本机发行通道不一致".into());
         }
         verify_bundle(&app, &status.release, &requirement)?;
         command(Command::new("/usr/bin/ditto").arg(&app).arg(&candidate))?;
@@ -475,27 +486,7 @@ pub fn prepare_peer_zip(
             },
         )
         .map_err(|e| e.to_string())?;
-        let entries = Command::new("/usr/bin/unzip")
-            .args(["-Z", "-1"])
-            .arg(&zip)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !entries.status.success()
-            || !String::from_utf8_lossy(&entries.stdout).lines().all(|p| {
-                !p.starts_with('/')
-                    && !p.split('/').any(|c| c == "..")
-                    && (p.starts_with("DeskFuse.app/") || p.starts_with("__MACOSX/"))
-            })
-        {
-            return Err("更新压缩包包含无效路径".into());
-        }
-        command(
-            Command::new("/usr/bin/ditto")
-                .args(["-x", "-k"])
-                .arg(&zip)
-                .arg(&stage),
-        )?;
-        let app = stage.join("DeskFuse.app");
+        let app = extract_app_zip(&zip, &stage)?;
         if bundle_update_channel(&app)? != channel {
             return Err("局域网更新包与本机发行通道不一致".into());
         }

@@ -218,6 +218,9 @@ struct DisplayLayout: View {
                         .offset(y: snapGuideY)
                         .allowsHitTesting(false)
                 }
+                if dragging == nil {
+                    awaitingDevices
+                }
                 if dragging != nil {
                     Label(pendingMove != nil ? "正在保存布局…" : snapped ? "已吸附边缘" : "松手自动贴合相邻屏幕", systemImage: "rectangle.connected.to.line.below")
                         .font(DFType.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(12)
@@ -235,6 +238,51 @@ struct DisplayLayout: View {
             guard pendingMove == token else { return }
             resetDrag()
             store.error = "屏幕布局更新尚未确认，请重试"
+        }
+    }
+
+    /// 已加入共享但对端还没上报屏幕的设备。画布不编造屏幕尺寸，
+    /// 但必须让"已添加"的设备可见，并给出原因与重连入口。
+    @ViewBuilder private var awaitingDevices: some View {
+        let shown = Set(snapshot.input.displays.map(\.deviceId))
+        let awaiting = snapshot.input.settings.participants
+            .filter { $0 != snapshot.localId && !shown.contains($0) }
+            .compactMap { id in snapshot.devices.first { $0.id == id } }
+        if !awaiting.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(awaiting, id: \.id) { device in
+                    let busy = isReconnecting(device.id)
+                    HStack(spacing: 8) {
+                        Image(systemName: "display.trianglebadge.exclamationmark")
+                            .foregroundStyle(DFPalette.warning)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(device.name) · \(busy ? "正在连接…" : "等待屏幕信息")")
+                                .font(DFType.detail.weight(.semibold))
+                            if !device.inputReason.isEmpty {
+                                Text(device.inputReason).font(DFType.caption).dfSecondaryText()
+                                    .lineLimit(2)
+                            }
+                        }
+                        if let onReconnectDevice {
+                            Button("重新连接", systemImage: "arrow.clockwise") { onReconnectDevice(device.id) }
+                                .controlSize(.small)
+                                .disabled(editingDisabled || busy)
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .frame(maxWidth: 520, alignment: .leading)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DFRadius.control))
+                    .contextMenu {
+                        if let onRemoveDevice {
+                            Button("移除此设备的屏幕", systemImage: "minus.circle") {
+                                onRemoveDevice(device.id)
+                            }.disabled(editingDisabled)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
     }
 

@@ -62,19 +62,21 @@ brew install --cask godd6366/deskfuse/deskfuse
 
 ### 更新
 
-Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases（包括预发行版），发现新版后可打开对应发布页。Homebrew 安装请执行：
+Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases（包括预发行版）。已经装好、并且带 Developer ID 签名的正式版会下载 `DeskFuse-arm64-update.zip`，校验后自动替换 `/Applications/DeskFuse.app`，不打开安装窗口。没有稳定签名时，从发布页下载同一个应用包，打开后按安装窗口安装。Homebrew 安装请执行：
 
 ```sh
 brew update && brew upgrade --cask deskfuse
 ```
 
-内部签名包继续使用可信局域网自动更新；公开包不使用该安装通道。尚未包含 GitHub 自动安装功能的旧版需要先通过 Homebrew 或手动下载安装新版。
+内部签名包继续使用可信局域网自动更新。公开包的替换动作与局域网相同，但信任的是 Developer ID 和 SHA-256，不使用局域网签名清单。尚未包含这套自动安装的旧版需要先通过 Homebrew 或手动下载安装新版；那些旧版只认 DMG，所以发布里仍同时提供磁盘映像。
 
-### 手动安装 DMG
+### 下载应用包
 
-1. 按设备从同一 Release 下载 `DeskFuse-arm64.dmg` 或 `DeskFuse-x86_64.dmg`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
-2. 打开 DMG，把 `DeskFuse.app` 拖进 Applications；同一设备只运行一份实例。
+1. 按芯片从同一 Release 下载 `DeskFuse-arm64-update.zip` 或 `DeskFuse-x86_64-update.zip`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
+2. 打开压缩包里的 `DeskFuse.app`。安装窗口会把它复制到「应用程序」；同一设备只运行一份实例。已经放在「应用程序」里的副本直接进入应用，不再显示安装窗口。
 3. 按提示允许局域网访问；键鼠共享还需辅助功能授权、可信局域网会话、设备激活和可用显示器布局。
+
+Homebrew 和已经发布的旧客户端仍使用同一 Release 里的 `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg`。那些旧客户端只认磁盘映像，所以发布里继续提供它。
 
 配置 Apple 凭据后的 GitHub 预发行使用 Developer ID 签名并公证，可直接打开；不要关闭 Gatekeeper 或 SIP。更早的 ad-hoc 预发行若被拦截，用系统“隐私与安全性 → 仍要打开”，或 `sudo xattr -rd com.apple.quarantine "/Applications/DeskFuse.app"`。维护者凭据准备见 [公证凭据](docs/NOTARIZE.md)。
 
@@ -116,6 +118,11 @@ docs/           架构、功能契约、发布与支持边界
 - 日志只记录元数据、状态和哈希；提交问题前检查附件，不上传剪贴板内容、设备密钥或凭据。
 
 漏洞披露与传输认证边界见 [SECURITY.md](SECURITY.md)。
+
+## 致谢
+
+- [OpenLogi](https://github.com/AprilNEA/OpenLogi)（MIT/Apache-2.0，© AprilNEA）：Logitech HID++ 鼠标的 feature 寻址、设备兼容列表和电量/SmartShift 协议说明参考了该项目；DeskFuse 使用自有实现，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- [BlueSync](https://github.com/deskflow/deskflow)：交互行为参考。
 
 ## 许可证
 

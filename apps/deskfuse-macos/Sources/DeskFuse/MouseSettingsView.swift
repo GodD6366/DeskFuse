@@ -4,8 +4,6 @@ import DeskFuseEngine
 
 struct MouseSettingsView: View {
     let engine: Engine?
-    /// 键鼠共享开启且本机作为主控：这只鼠标此刻正在控制其他 Mac。
-    let sharingActive: Bool
     @State private var controller = MouseButtonController.shared
     @State private var modifiers: UInt64 = 0
     @State private var recording: Int?
@@ -70,7 +68,8 @@ struct MouseSettingsView: View {
         let base: Set<Int>
         switch profile {
         case .g502Lightspeed: base = LogitechHIDProtocol.g502Buttons
-        case .mxMaster3: base = Set(0...4).union(LogitechHIDProtocol.mxButtons)
+        case .mxMaster3, .mxMaster4, .mxAnywhere3, .mxErgo, .mxVertical, .generic:
+            base = Set(0...4).union(LogitechHIDProtocol.mxButtons)
         case nil: base = Set(0...4)
         }
         return base
@@ -78,12 +77,12 @@ struct MouseSettingsView: View {
             .filter {
                 switch profile {
                 case .g502Lightspeed: LogitechHIDProtocol.g502Buttons.contains($0)
-                case .mxMaster3: (0...4).contains($0) || LogitechHIDProtocol.mxButtons.contains($0)
+                case .mxMaster3, .mxMaster4, .mxAnywhere3, .mxErgo, .mxVertical, .generic:
+                    (0...4).contains($0) || LogitechHIDProtocol.mxButtons.contains($0)
                 case nil: (0...4).contains($0)
                 }
             }.sorted()
     }
-    private var mappedCount: Int { buttons.filter { selected($0) != nil }.count }
     private var contributionDevice: DetectedMouseDevice? { selectedOption.devices.first }
 
     var body: some View {
@@ -91,7 +90,7 @@ struct MouseSettingsView: View {
             // 宽窗口：左侧设备与按键编辑，右侧已支持列表与说明；窄窗口自动上下堆叠。
             DFAdaptiveColumns {
                 VStack(alignment: .leading, spacing: DFSpace.xl) {
-                    deviceCard
+                    statusNotices
                     assignments
                 }
                 VStack(alignment: .leading, spacing: DFSpace.l) {
@@ -117,67 +116,66 @@ struct MouseSettingsView: View {
         }
     }
 
-    private var deviceCard: some View {
-        DFSection {
-            HStack(spacing: 16) {
-                Image(systemName: selectedOption.isSupported ? "computermouse.fill" : "computermouse")
-                    .font(DFType.metric.weight(.light))
-                    .frame(width: 52, height: 56)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(selectedOption.title).font(DFType.title.weight(.semibold))
-                    Text(deviceDetail)
-                        .font(DFType.detail).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: DFSpace.s)
-                VStack(alignment: .trailing, spacing: DFSpace.xs) {
-                    DFStatusPill(text: deviceStatus.0, tone: deviceStatus.1)
-                    if sharingActive {
-                        DFStatusPill(text: "主控鼠标生效中", tone: .success)
-                            .help("键鼠共享已开启，这台 Mac 的鼠标正在作为主控")
-                    }
-                }
-            }
-            if controller.settings.enabled && !controller.tapReady {
-                Divider()
-                HStack {
-                    Label("需要辅助功能与输入监控权限", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(DFPalette.warning)
-                    Spacer()
-                    Button("检查权限") { controller.openInputMonitoringSettings() }
-                }.padding(.top, 6)
-            }
-            if let error = controller.error {
-                Label(friendlyError(error), systemImage: "exclamationmark.circle").font(DFType.caption).foregroundStyle(DFPalette.danger)
-            }
+    @ViewBuilder
+    private var statusNotices: some View {
+        if controller.settings.enabled && !controller.tapReady {
+            DFNotice(tone: .warning, title: "需要辅助功能与输入监控权限",
+                     actionTitle: "检查权限", action: { controller.openInputMonitoringSettings() })
+        }
+        if let error = controller.error {
+            DFNotice(tone: .danger, title: friendlyError(error))
         }
     }
 
-    private var deviceDetail: String {
-        let save = controller.settings.enabled ? "自定义已启用 · 修改自动保存" : "先配置按键，再开启自定义"
-        if selectedOption.isSupported {
-            let name = selectedOption.devices.first?.name ?? selectedOption.title
-            return "\(name) · 已连接 · \(save)"
-        }
-        if !selectedOption.devices.isEmpty {
-            let names = selectedOption.devices.map(\.name).joined(separator: "、")
-            return "\(names) · 尚未适配 · 使用通用映射"
-        }
-        return "未检测到鼠标 · 使用标准 5 键映射"
+    private func battery(_ model: LogitechHIDProtocol.Model) -> LogitechHIDManager.BatteryInfo? {
+        controller.batteryInfo.first { LogitechHIDProtocol.model($0.name) == model }
     }
 
-    private var deviceStatus: (String, DFTone) {
-        if selectedOption.isSupported { return ("已连接", .success) }
-        return selectedOption.devices.isEmpty ? ("未检测到", .neutral) : ("未适配", .warning)
+    private func wheel(_ model: LogitechHIDProtocol.Model) -> LogitechHIDManager.WheelInfo? {
+        controller.wheelInfo.first { LogitechHIDProtocol.model($0.name) == model }
+    }
+
+    private func connectionPill(_ model: LogitechHIDProtocol.Model) -> DFStatusPill {
+        guard isConnected(model) else { return DFStatusPill(text: "未连接", tone: .neutral) }
+        guard let pct = battery(model)?.percent else { return DFStatusPill(text: "已连接", tone: .success) }
+        let text = battery(model)?.charging == true ? "充电中 \(pct)%" : "电量 \(pct)%"
+        return DFStatusPill(text: text, tone: pct <= 15 ? .danger : pct <= 30 ? .warning : .success)
+    }
+
+    private func smartShiftRow(_ info: LogitechHIDManager.WheelInfo) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "scroll.fill")
+                .font(DFType.body)
+                .frame(width: 24)
+                .dfSecondaryText()
+            Text("滚轮模式")
+                .frame(width: 62, alignment: .leading)
+            Spacer(minLength: 0)
+            if let freespin = info.freespin {
+                Picker("滚轮模式", selection: Binding(
+                    get: { freespin },
+                    set: { value in
+                        controller.setWheelMode(name: info.name, freespin: value)
+                    })) {
+                    Text("自由滚动").tag(true)
+                    Text("棘轮").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                .help("SmartShift：切换滚轮的自动解锁模式")
+            } else {
+                Text("不支持")
+                    .font(DFType.detail)
+                    .dfSecondaryText()
+            }
+        }
+        .font(DFType.detail)
+        .padding(.vertical, 6)
     }
 
     private var assignments: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("按键分配").font(DFType.title.weight(.semibold))
-                Text("已设置 \(mappedCount) 项").font(DFType.caption).foregroundStyle(.secondary)
-                Spacer()
+            if deviceOptions.count > 1 {
                 Picker("鼠标类型", selection: Binding(
                     get: { selectedOption.id },
                     set: { selection = $0 })) {
@@ -187,6 +185,7 @@ struct MouseSettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 200)
+                .frame(maxWidth: .infinity, alignment: .trailing)
                 .help("只显示当前识别到的鼠标；未适配型号使用通用映射")
             }
             switch selectedOption.kind {
@@ -201,11 +200,12 @@ struct MouseSettingsView: View {
                             .font(DFType.caption).foregroundStyle(.secondary)
                     }
                 }
-            case .supported(.mxMaster3):
+            case .supported(.mxMaster3), .supported(.mxMaster4):
                 MXMasterMouseEditor(controller: controller, onSelection: stopRecording) { button in
                     actionMenu(button)
                 }
-            case .generic:
+            case .supported(.mxAnywhere3), .supported(.mxErgo), .supported(.mxVertical),
+                 .supported(.generic), .generic:
                 genericAssignments
             }
         }
@@ -237,7 +237,7 @@ struct MouseSettingsView: View {
 
     private var supportedMice: some View {
         DFSection("已支持鼠标", symbol: "checkmark.seal") {
-            ForEach(Array(LogitechHIDProtocol.Model.allCases.enumerated()), id: \.offset) { index, model in
+            ForEach(Array(LogitechHIDProtocol.Model.allCases.filter { $0 != .generic }.enumerated()), id: \.offset) { index, model in
                 if index > 0 { Divider() }
                 HStack(spacing: DFSpace.m) {
                     Image(systemName: "computermouse.fill")
@@ -250,10 +250,12 @@ struct MouseSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: DFSpace.s)
-                    DFStatusPill(text: isConnected(model) ? "已连接" : "未连接",
-                                 tone: isConnected(model) ? .success : .neutral)
+                    connectionPill(model)
                 }
                 .frame(minHeight: 38)
+                if let wheel = wheel(model) {
+                    smartShiftRow(wheel)
+                }
             }
             Divider().padding(.vertical, 4)
             VStack(alignment: .leading, spacing: DFSpace.s) {

@@ -21,6 +21,29 @@ struct MousePhotoAnglePicker: View {
     }
 }
 
+/// Fill means "has an action"; selection adds a halo, so it never hides that state.
+struct MouseButtonHotspot: View {
+    let selected: Bool
+    let configured: Bool
+    var body: some View {
+        ZStack {
+            Circle().fill(configured ? DFPalette.accent : Color.white)
+            Circle().strokeBorder(configured ? Color.white : DFPalette.accent, lineWidth: 2)
+            if configured {
+                Image(systemName: "checkmark").font(DFType.caption.weight(.bold)).foregroundStyle(.white)
+            }
+        }
+        .frame(width: 24, height: 24)
+        .shadow(color: .black.opacity(0.22), radius: 4, y: 2)
+        .padding(5)
+        .background(Circle().fill(DFPalette.accent.opacity(selected ? 0.22 : 0)))
+        .overlay(Circle().strokeBorder(DFPalette.accent.opacity(selected ? 0.6 : 0), lineWidth: 1.5))
+        .scaleEffect(selected ? 1.08 : 1)
+        .animation(.snappy(duration: 0.18), value: selected)
+        .contentShape(Circle())
+    }
+}
+
 private enum MXMasterPhotos {
     static let top = load("mx-master-3-top")
     static let side = load("mx-master-3-side")
@@ -70,14 +93,8 @@ struct MXMasterMouseEditor<Editor: View>: View {
                 ForEach(side ? [4, 3, 195] : [0, 1, 2, 196], id: \.self) { button in
                     let point = anchor(button)
                     Button { onSelection(); editing = button } label: {
-                        Circle().fill(editing == button ? DFPalette.accent : Color.white)
-                            .overlay(Circle().strokeBorder(DFPalette.accent, lineWidth: 2).allowsHitTesting(false))
-                            .overlay {
-                                if controller.settings.bindings.contains(where: { $0.button == button }) {
-                                    Image(systemName: "checkmark").font(DFType.caption.weight(.bold)).foregroundStyle(DFPalette.accent)
-                                        .allowsHitTesting(false)
-                                }
-                            }.frame(width: 25, height: 25).shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                        MouseButtonHotspot(selected: editing == button,
+                                           configured: controller.settings.bindings.contains { $0.button == button })
                     }.buttonStyle(.plain).accessibilityLabel(MouseSettings.buttonName(button))
                         .help(MouseSettings.buttonName(button))
                         .popover(isPresented: Binding(get: { editing == button }, set: { if !$0 && editing == button { close() } })) {

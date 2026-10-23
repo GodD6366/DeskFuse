@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 功能总开关关闭时唯一的引导页：演示动画 + 说明 + 启用按钮。
-/// 启用按钮与右上角总开关是同一个动作，页面不再出现第二种“已关闭”状态。
+/// 开启只在这里；关闭在「设置 › 通用 › 功能」，页面不再出现第二种“已关闭”状态。
 struct FeatureOnboardingView: View {
     let store: AppStore
     let page: Page

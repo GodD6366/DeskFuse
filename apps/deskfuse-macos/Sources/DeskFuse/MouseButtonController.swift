@@ -48,6 +48,10 @@ final class MouseButtonController {
     private(set) var availableNativeButtons: Set<Int> = []
     private(set) var detectingG502 = false
     private(set) var detectedMice: [DetectedMouseDevice] = []
+    /// Battery readings for connected wireless HID++ mice, keyed by mouse name.
+    private(set) var batteryInfo: [LogitechHIDManager.BatteryInfo] = []
+    /// SmartShift wheel state for connected HID++ mice.
+    private(set) var wheelInfo: [LogitechHIDManager.WheelInfo] = []
     private let hid = LogitechHIDManager()
     private let inventory = MouseDeviceInventory()
     private var hardwareMice: [DetectedMouseDevice] = []
@@ -100,6 +104,11 @@ final class MouseButtonController {
             guard let self else { return }
             self.logitechNames = names
             self.rebuildDetectedMice()
+        }
+        hid.onCapabilitiesChanged = { [weak self] in
+            guard let self else { return }
+            self.batteryInfo = self.hid.batteryInfo()
+            self.wheelInfo = self.hid.wheelInfo()
         }
         inventory.onChange = { [weak self] devices in
             guard let self else { return }
@@ -259,6 +268,17 @@ final class MouseButtonController {
         activeNativeCapture = nil
         captureReleased = false
     }
+
+    /// Toggle the SmartShift wheel mode for the mouse with the given name.
+    func setWheelMode(name: String, freespin: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            let ok = await self.hid.setWheelMode(name: name, freespin: freespin)
+            if ok {
+                self.wheelInfo = self.hid.wheelInfo()
+            }
+        }
+    }
     func openInputMonitoringSettings() {
         hid.prepareCapture()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
@@ -301,7 +321,7 @@ final class MouseButtonController {
         record("button", fields: ["source": "hidpp", "button": button, "down": down])
         if down {
             observedButtons[button, default: 0] += 1
-            lastExecution = "已收到 G502 实体键 \(button - 207)"
+            lastExecution = "已收到\(MouseSettings.buttonName(button))"
         }
         if nativeCaptured.contains(id) {
             if !down {

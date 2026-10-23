@@ -62,19 +62,21 @@ Run `brew trust` once (skip it on older Homebrew without the command). If you ta
 
 ### Updates
 
-Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates, then automatically download and install new Developer ID signed versions; ad-hoc packages require manual DMG download from the release page. Homebrew installations can also run:
+Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates. An installed Developer ID build downloads `DeskFuse-arm64-update.zip` and replaces `/Applications/DeskFuse.app` in place, without the install window. Builds without that stable signature download the same app package and follow the install window. Homebrew installations can also run:
 
 ```sh
 brew update && brew upgrade --cask deskfuse
 ```
 
-Internal signed packages continue using trusted LAN automatic updates; public packages do not use that installer. Older builds without GitHub auto-install need an initial update through Homebrew or a manually downloaded DMG.
+Internal signed packages continue using trusted LAN automatic updates. A public package replaces the installed app the same way, but trust is Developer ID plus SHA-256 rather than the LAN manifest. Older builds that cannot install the app zip need one update through Homebrew or a manually downloaded DMG; those builds only recognize the DMG, so releases keep publishing it.
 
-### Manual DMG install
+### Download the app package
 
-1. Download the package for your device (`DeskFuse-arm64.dmg` or `DeskFuse-x86_64.dmg`) plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
-2. Open the DMG and drag `DeskFuse.app` into Applications; run only one instance per device.
+1. Download `DeskFuse-arm64-update.zip` or `DeskFuse-x86_64-update.zip` for your Mac, plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+2. Open `DeskFuse.app` inside the zip. The install window copies it into Applications; run only one instance per device. A copy that is already in Applications opens directly and does not show the install window.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
+
+Homebrew and already shipped clients still use `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg` from the same release. Those older clients only recognize the disk image, so releases keep publishing it.
 
 GitHub prereleases built with Apple credentials are Developer ID signed and notarized, and should open normally. Never disable Gatekeeper or SIP. Older ad-hoc builds may still be blocked: use the system's “Open Anyway” option, or `sudo xattr -rd com.apple.quarantine "/Applications/DeskFuse.app"`. Maintainer credentials: [notarization secrets](docs/NOTARIZE.md).
 
@@ -116,6 +118,11 @@ docs/           Architecture, feature contracts, release and support boundaries
 - Logs contain metadata, state and hashes only; check attachments before filing issues and never upload clipboard contents, device keys or credentials.
 
 Report vulnerabilities according to [SECURITY.md](SECURITY.md).
+
+## Acknowledgments
+
+- [OpenLogi](https://github.com/AprilNEA/OpenLogi) (MIT/Apache-2.0, © AprilNEA): DeskFuse's Logitech HID++ mouse support references its feature addressing, device compatibility list, and battery/SmartShift protocol notes; DeskFuse uses its own implementation, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- [BlueSync](https://github.com/deskflow/deskflow): interaction behavior reference.
 
 ## License
 

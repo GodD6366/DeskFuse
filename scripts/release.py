@@ -21,9 +21,16 @@ import runpy
 
 ROOT = Path(__file__).resolve().parent.parent
 DISTRIBUTION = runpy.run_path(str(ROOT / "scripts/distribution-config.py"))["load"]()
+# Current clients install the app zip. DMGs stay so Homebrew and already-shipped
+# clients, which only accept those file names, can still update.
+# ASSETS[0] must remain the arm64 DMG: build-info dmg_sha256 is that file.
+ARM64_UPDATE_ZIP = "DeskFuse-arm64-update.zip"
+X86_64_UPDATE_ZIP = "DeskFuse-x86_64-update.zip"
 ASSETS = (
     DISTRIBUTION["assets"]["arm64"],
     DISTRIBUTION["assets"]["x86_64"],
+    ARM64_UPDATE_ZIP,
+    X86_64_UPDATE_ZIP,
     DISTRIBUTION["assets"]["windows_x64"],
     "release.json",
     "build-info.json",
@@ -32,6 +39,8 @@ ASSETS = (
 MACOS_ASSETS = (
     DISTRIBUTION["assets"]["arm64"],
     DISTRIBUTION["assets"]["x86_64"],
+    ARM64_UPDATE_ZIP,
+    X86_64_UPDATE_ZIP,
     "release.json",
     "build-info.json",
     "SHA256SUMS",
@@ -39,6 +48,8 @@ MACOS_ASSETS = (
 TARGET_ASSETS = {
     DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
     DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
+    ARM64_UPDATE_ZIP: "aarch64-apple-darwin",
+    X86_64_UPDATE_ZIP: "x86_64-apple-darwin",
     DISTRIBUTION["assets"]["windows_x64"]: "win-x64",
 }
 MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
@@ -118,13 +129,13 @@ def inventory(directory: Path, commit: str, include_windows: bool = True) -> Non
     targets = []
     for name, target in target_assets.items():
         sidecar = None
-        if name.endswith("arm64.dmg"):
+        if name.endswith("arm64.dmg") or name == ARM64_UPDATE_ZIP:
             sidecar = directory / ".signing-arm64"
-        elif name.endswith("x86_64.dmg"):
+        elif name.endswith("x86_64.dmg") or name == X86_64_UPDATE_ZIP:
             sidecar = directory / ".signing-x86_64"
         if sidecar is not None and not sidecar.is_file():
             sidecar = directory / ".signing"
-        if name.endswith(".dmg"):
+        if name.endswith(".dmg") or name.endswith("-update.zip"):
             kind, notarized = signing_status(directory, sidecar)
             target_info = {
                 "asset": name,
@@ -267,14 +278,18 @@ def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: 
     info = json.loads((directory / "build-info.json").read_text())
     arm64_info = next(item for item in info["targets"] if item["asset"] == DISTRIBUTION["assets"]["arm64"])
     if arm64_info.get("signing") == "developer-id" and arm64_info.get("notarized") is True:
-        signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled DMG; do not disable SIP."
+        signing_note = "**Developer ID signed and notarized.** Gatekeeper should accept the stapled app and DMG; do not disable SIP."
     else:
         signing_note = "**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations."
-    notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64) DMG\n\n"
+    notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64)\n\n"
+             "Website download: open the app zip and follow the install window. "
+             "Homebrew still installs the DMG. An installed Developer ID build replaces itself from "
+             "`DeskFuse-arm64-update.zip` and does not show that window. "
+             "Already shipped clients only recognize the DMG, so this release still includes it.\n\n"
              f"{signing_note}\n\n"
              f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"
              "Build/package checks do not establish Finder paste, drag-out, native input permissions or physical two-device acceptance. "
-             "No signed LAN auto-update payload is published.\n\n")
+             "The app zip is not a LAN-signed manifest.\n\n")
     changelog = (ROOT / "CHANGELOG.md").read_text()
     heading = f"## [{version()}]"
     if heading not in changelog:
@@ -303,7 +318,7 @@ def main() -> None:
     parser.add_argument("--tag")
     parser.add_argument("--repo", default=os.environ.get("DESKFUSE_RELEASE_REPOSITORY", DISTRIBUTION["release_repository"]))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
-    parser.add_argument("--macos-only", action="store_true", help="publish and verify only the two macOS DMGs")
+    parser.add_argument("--macos-only", action="store_true", help="publish and verify only the macOS DMGs and app zips")
     args = parser.parse_args()
     if args.command == "version":
         print(version())

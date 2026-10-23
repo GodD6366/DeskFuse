@@ -65,6 +65,7 @@ struct SettingsView: View, Equatable {
         switch category {
         case .general:
             GeneralSettingsView(
+                store: store,
                 hideDockIcon: Binding(get: { store.hideDockIcon }, set: { store.setHideDockIcon($0) }),
                 keepAwake: Binding(get: { store.keepAwake }, set: { store.keepAwake = $0 }))
         case .clipboard:

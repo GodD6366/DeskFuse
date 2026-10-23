@@ -1,13 +1,22 @@
 import SwiftUI
 
-/// 通用设置只保留三件与日常使用直接相关的事：开机启动、Dock 图标、保持唤醒。
-/// 功能开关都在各自功能页的页头，不再在设置里重复一份。
+/// 通用设置：功能开关、开机启动、Dock 图标、保持唤醒。
+/// 功能在各自页面的引导页里开启，关闭统一放在这里，避免页面里误触关掉正在用的功能。
 struct GeneralSettingsView: View {
+    let store: AppStore
     @Binding var hideDockIcon: Bool
     @Binding var keepAwake: Bool
+    @State private var saving: Set<Page> = []
 
     var body: some View {
         DFScrollPage {
+            DFSection("功能", footer: "关闭后停止相关后台任务；在功能页可随时重新启用。") {
+                let pages = (Page.primary + Page.extended).filter { store.featureEnabled(for: $0) != nil }
+                ForEach(pages) { page in
+                    if page != pages.first { Divider() }
+                    featureRow(page)
+                }
+            }
             DFSection("启动") {
                 LoginItemSettingsView()
                 Divider()
@@ -21,5 +30,18 @@ struct GeneralSettingsView: View {
                     isOn: $keepAwake)
             }
         }
+    }
+
+    private func featureRow(_ page: Page) -> some View {
+        DFToggleRow(page.rawValue, symbol: page.symbol, badge: page.isBeta ? "Beta" : nil,
+                    isOn: Binding(
+                        get: { store.featureEnabled(for: page) ?? false },
+                        set: { value in
+                            saving.insert(page)
+                            store.setFeatureEnabled(value, for: page) { saving.remove(page) }
+                        }))
+            .disabled(saving.contains(page) || store.client == nil
+                      || (page == .microphone && MicrophoneSharing.shared.saving)
+                      || (page == .mouse && MouseButtonController.shared.saving))
     }
 }

@@ -3,21 +3,30 @@ import { computed } from 'vue'
 import { useLatestRelease, assetUrl } from '../composables/useLatestRelease'
 import { useCopy } from '../composables/useCopy'
 import { HOMEBREW_ONE_LINE, HOMEBREW_SCRIPT, HOMEBREW_UPGRADE } from '../config/install'
-import { fallbackAssetUrl } from '../config/distribution'
+import {
+  ARM64_DISK_IMAGE,
+  INTEL_DISK_IMAGE,
+  fallbackAssetUrl,
+  macAppDownloadUrl,
+} from '../config/distribution'
 
 const { release } = useLatestRelease()
 const { copied, copy } = useCopy()
 
-const rel = fallbackAssetUrl
-const arm64Url = computed(() => assetUrl(release.value, 'DeskFuse-arm64.dmg', rel('DeskFuse-arm64.dmg')))
-const intelUrl = computed(() => assetUrl(release.value, 'DeskFuse-x86_64.dmg', rel('DeskFuse-x86_64.dmg')))
-const checksumsUrl = computed(() => assetUrl(release.value, 'SHA256SUMS', rel('SHA256SUMS')))
+const arm64Url = computed(() => macAppDownloadUrl(release.value?.assets, ARM64_DISK_IMAGE))
+const intelUrl = computed(() => macAppDownloadUrl(release.value?.assets, INTEL_DISK_IMAGE))
+const checksumsUrl = computed(() => assetUrl(release.value, 'SHA256SUMS', fallbackAssetUrl('SHA256SUMS')))
+const usesAppPackage = computed(() => arm64Url.value.includes('-update.zip'))
+
+function downloadLabel(url: string, chip: string): string {
+  return url.includes('-update.zip') ? `${chip}应用包` : `${chip}磁盘映像`
+}
 
 const platforms: [string, string, string][] = [
   ['macOS 14+ · Apple Silicon', '主平台', 'ok'],
   ['macOS 26+', '原生 Liquid Glass', 'ok'],
   ['Windows x64', '实验性离线安装器', 'warn'],
-  ['Intel Mac', 'x86_64 DMG', 'ok'],
+  ['Intel Mac', 'x86_64', 'ok'],
   ['Linux', '不在首发范围', 'muted'],
 ]
 </script>
@@ -43,17 +52,18 @@ const platforms: [string, string, string][] = [
         </div>
 
         <div class="install-card" v-reveal>
-          <h3>手动安装 DMG</h3>
-          <p>选择你的 Mac 芯片版本直接下载，拖入「应用程序」即可。</p>
+          <h3>下载应用</h3>
+          <p>选择芯片版本下载{{ usesAppPackage ? '应用包' : '' }}。打开里面的 DeskFuse.app，按安装窗口装进「应用程序」。</p>
           <ol class="steps">
-            <li><a :href="arm64Url">Apple Silicon（arm64）DMG</a></li>
-            <li><a :href="intelUrl">Intel（x86_64）DMG</a></li>
+            <li><a :href="arm64Url">{{ downloadLabel(arm64Url, 'Apple Silicon（arm64）') }}</a></li>
+            <li><a :href="intelUrl">{{ downloadLabel(intelUrl, 'Intel（x86_64）') }}</a></li>
             <li><a :href="checksumsUrl">下载 SHA256SUMS 校验文件</a></li>
             <li>运行 <code>shasum -a 256 -c SHA256SUMS</code> 校验完整性</li>
-            <li>打开 DMG，把 DeskFuse.app 拖进「应用程序」</li>
+            <li v-if="usesAppPackage">打开压缩包里的 DeskFuse.app，在安装窗口点「点击安装」</li>
+            <li v-else>打开磁盘映像里的 DeskFuse.app，在安装窗口点「点击安装」</li>
             <li>按提示允许局域网访问；键鼠共享另需辅助功能授权</li>
           </ol>
-          <p class="install-note">公开预发行经 Developer ID 签名并公证，可直接打开。</p>
+          <p class="install-note">公开预发行经 Developer ID 签名并公证。已经安装的应用会在后台自动更新，不会再出现这个窗口。</p>
         </div>
       </div>
 

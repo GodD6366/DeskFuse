@@ -1,16 +1,20 @@
-//! Public distributions check GitHub and install the official DMG after SHA-256
-//! and code-signing checks.
+//! Public distributions check GitHub and install the official app zip after
+//! SHA-256 and code-signing checks. The zip is the same `DeskFuse.app` payload
+//! a LAN update installs: the running app is replaced in place, without mounting
+//! a disk image. This client does not read the DMG. Publication still uploads
+//! it so Homebrew and already-shipped clients can update.
 //!
 //! The release list and the small per-release metadata files are read from
 //! GitHub first and fall back to the site mirror, so the canonical release
 //! source wins whenever it is reachable while the independent domain keeps
-//! checks working through GitHub outages. The DMG itself always comes from GitHub, and
-//! GitHub bytes never enter the signed LAN installer. Public bundles also zip
-//! the running app and serve it to other GitHub-channel devices over the LAN
-//! update transport; those ZIP bytes use Developer ID + SHA-256, not Ed25519.
+//! checks working through GitHub outages. The zip itself always comes from GitHub, and
+//! GitHub bytes never enter the signed LAN installer. Public bundles also zip the
+//! running app and serve it to other GitHub-channel devices over the LAN update
+//! transport; those bytes use Developer ID + SHA-256, not Ed25519.
 use deskfuse_runtime::updates::{GitHubUpdateView, LanUpdateView};
 use deskfuse_update::{
-    ArtifactDescriptor, PackageKind, ReleaseVersion, Target, UpdatePhase, UpdateStatus, installer,
+    ArtifactDescriptor, PackageKind, PeerAppArtifact, ReleaseVersion, Target, UpdatePhase,
+    UpdateStatus, installer,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -24,7 +28,9 @@ use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/distribution.rs"));
 const INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
-const DMG_LIMIT: u64 = 512 * 1024 * 1024;
+const PACKAGE_LIMIT: u64 = 512 * 1024 * 1024;
+/// Signed `DeskFuse.app` zip. Old clients ignore this name and still install the DMG.
+const UPDATE_ZIP: &str = PeerAppArtifact::FILE_NAME;
 
 pub(crate) fn is_public_bundle() -> bool {
     has_update_channel("github")
@@ -45,7 +51,7 @@ fn has_update_channel(expected: &str) -> bool {
 struct GitHubOffer {
     release: ReleaseVersion,
     release_url: String,
-    dmg_url: String,
+    package_url: String,
     sha256: String,
     size: u64,
     developer_id: bool,
@@ -269,7 +275,7 @@ impl GitHubUpdater {
                     self.offer = Some(offer);
                     self.view.manual_requested = false;
                     self.view.message =
-                        "GitHub 有新版本，但该包没有可用于自动安装的稳定签名；请从发布页下载 DMG 手动安装"
+                        "GitHub 有新版本，但该包没有可用于自动安装的稳定签名；请从发布页下载应用包，打开后按安装窗口安装"
                             .into();
                     return;
                 }
@@ -296,7 +302,7 @@ impl GitHubUpdater {
         if !offer.developer_id {
             self.view.manual_requested = false;
             self.view.message =
-                "GitHub 有新版本，但该包没有可用于自动安装的稳定签名；请从发布页下载 DMG 手动安装"
+                "GitHub 有新版本，但该包没有可用于自动安装的稳定签名；请从发布页下载应用包，打开后按安装窗口安装"
                     .into();
             return;
         }
@@ -307,14 +313,14 @@ impl GitHubUpdater {
         };
         let _ = std::fs::create_dir_all(&root);
         let transaction = Uuid::new_v4();
-        let path = root.join(format!("github-{transaction}.dmg.part"));
+        let path = root.join(format!("github-{transaction}.zip.part"));
         let status = UpdateStatus {
             transaction_id: transaction,
             release: offer.release.clone(),
             artifact: ArtifactDescriptor {
                 target: Target::MacosArm64,
-                kind: PackageKind::MacosDmg,
-                file_name: DMG_NAME.into(),
+                kind: PackageKind::MacosAppZip,
+                file_name: UPDATE_ZIP.into(),
                 size: offer.size,
                 sha256: offer.sha256.clone(),
                 minimum_os: semver::Version::new(14, 0, 0),
@@ -327,11 +333,11 @@ impl GitHubUpdater {
         self.view.status = Some(status);
         self.view.error = None;
         self.view.message = "正在从 GitHub 下载更新".into();
-        let url = offer.dmg_url;
+        let url = offer.package_url;
         let expected = offer.size;
         self.task = Some(Task::Download {
             handle: tokio::spawn(async move { download_file(&url, &path, expected).await }),
-            path: root.join(format!("github-{transaction}.dmg.part")),
+            path: root.join(format!("github-{transaction}.zip.part")),
             expected,
         });
     }
@@ -435,7 +441,9 @@ fn cleanup_partial_downloads() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("github-") && name.ends_with(".dmg.part") {
+        if name.starts_with("github-")
+            && (name.ends_with(".zip.part") || name.ends_with(".dmg.part"))
+        {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -494,7 +502,6 @@ struct Asset {
 struct BuildInfo {
     release: ReleaseVersion,
     targets: Vec<BuildTarget>,
-    dmg_sha256: String,
 }
 #[derive(Deserialize)]
 struct BuildTarget {
@@ -520,7 +527,7 @@ fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
         }
         if !matches!(
             name,
-            "DeskFuse-arm64.dmg" | "release.json" | "build-info.json"
+            "DeskFuse-arm64-update.zip" | "release.json" | "build-info.json"
         ) {
             continue;
         }
@@ -528,7 +535,7 @@ fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
             return Err("SHA256SUMS 重复条目".into());
         }
     }
-    for required in ["DeskFuse-arm64.dmg", "release.json", "build-info.json"] {
+    for required in [UPDATE_ZIP, "release.json", "build-info.json"] {
         if !map.contains_key(required) {
             return Err("SHA256SUMS 缺少必要文件".into());
         }
@@ -579,7 +586,7 @@ async fn fetch_json(url: &str, limit: usize) -> Result<Vec<u8>, String> {
 }
 
 async fn download_file(url: &str, dest: &Path, size: u64) -> Result<(), String> {
-    if size == 0 || size > DMG_LIMIT {
+    if size == 0 || size > PACKAGE_LIMIT {
         return Err("GitHub 更新包大小无效".into());
     }
     let path = dest.to_str().ok_or("更新路径无效")?;
@@ -670,7 +677,7 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
         .filter(|release| {
             !release.draft
                 && release.published_at.is_some()
-                && [DMG_NAME, "release.json", "build-info.json", "SHA256SUMS"]
+                && [UPDATE_ZIP, "release.json", "build-info.json", "SHA256SUMS"]
                     .iter()
                     .all(|name| {
                         release.assets.iter().any(|asset| {
@@ -689,9 +696,9 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
             let size = release
                 .assets
                 .iter()
-                .find(|asset| asset.name == DMG_NAME)?
+                .find(|asset| asset.name == UPDATE_ZIP)?
                 .size;
-            if size == 0 || size > DMG_LIMIT {
+            if size == 0 || size > PACKAGE_LIMIT {
                 return None;
             }
             Some((version, release.tag_name, size))
@@ -719,24 +726,21 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
         return Err("构建信息校验和不匹配".into());
     }
     let info: BuildInfo = serde_json::from_slice(&info_bytes).map_err(|_| "构建信息格式无效")?;
-    let arm64 = info
+    let package = info
         .targets
         .iter()
-        .find(|target| target.asset == DMG_NAME && target.target == "aarch64-apple-darwin")
-        .ok_or("构建信息缺少 arm64 目标")?;
-    if info.release != release
-        || info.dmg_sha256 != sums[DMG_NAME]
-        || arm64.sha256 != sums[DMG_NAME]
-    {
+        .find(|target| target.asset == UPDATE_ZIP && target.target == "aarch64-apple-darwin")
+        .ok_or("构建信息缺少 arm64 应用包")?;
+    if info.release != release || package.sha256 != sums[UPDATE_ZIP] {
         return Err("构建信息与发布包不一致".into());
     }
     Ok(GitHubOffer {
         release,
         release_url: format!("{RELEASES}/{tag}"),
-        dmg_url: format!("{DOWNLOAD}/{tag}/{DMG_NAME}"),
-        sha256: sums[DMG_NAME].clone(),
+        package_url: format!("{DOWNLOAD}/{tag}/{UPDATE_ZIP}"),
+        sha256: sums[UPDATE_ZIP].clone(),
         size,
-        developer_id: arm64.signing == "developer-id",
+        developer_id: package.signing == "developer-id",
     })
 }
 
@@ -745,16 +749,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checksums_require_dmg_and_metadata() {
+    fn checksums_require_package_and_metadata() {
         let text = "\
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  DeskFuse-arm64.dmg
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  release.json
-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  build-info.json
-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.json
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  extra.txt
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  DeskFuse-x86_64-update.zip
 ";
         let map = checksums(text).unwrap();
         assert_eq!(map.len(), 3);
-        assert_eq!(map[DMG_NAME].len(), 64);
+        assert!(!map.contains_key("DeskFuse-arm64.dmg"));
+        assert!(!map.contains_key("DeskFuse-x86_64-update.zip"));
+        assert_eq!(map[UPDATE_ZIP].len(), 64);
+        assert_eq!(UPDATE_ZIP, "DeskFuse-arm64-update.zip");
+        let without_dmg = "\
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.json
+";
+        assert_eq!(checksums(without_dmg).unwrap().len(), 3);
     }
 
     fn release(tag: &str, assets: &[(&str, u64)]) -> Release {
@@ -860,9 +875,14 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
             .filter(|release| {
                 !release.draft
                     && release.published_at.is_some()
-                    && [DMG_NAME, "release.json", "build-info.json", "SHA256SUMS"]
-                        .iter()
-                        .all(|name| release.assets.iter().any(|asset| asset.name == *name))
+                    && [
+                        "DeskFuse-arm64.dmg",
+                        "release.json",
+                        "build-info.json",
+                        "SHA256SUMS",
+                    ]
+                    .iter()
+                    .all(|name| release.assets.iter().any(|asset| asset.name == *name))
             })
             .map(|release| release.tag_name.clone())
             .next()
@@ -901,7 +921,8 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  extra.txt
         );
         assert!(checksums(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  DeskFuse-arm64.dmg\n\
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  release.json\n"
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip\n\
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json\n"
         )
         .is_err());
     }

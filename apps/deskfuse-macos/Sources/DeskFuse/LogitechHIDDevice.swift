@@ -42,6 +42,7 @@ private final class LogitechHIDWriter: @unchecked Sendable {
 final class LogitechHIDDevice {
     struct Mouse {
         enum Backend: String { case reprogrammable, buttonSpy }
+        // MARK: Button remapping
         var name: String
         var feature: UInt8
         var available: Set<Int>
@@ -49,6 +50,14 @@ final class LogitechHIDDevice {
         var spyEnabled = false
         var owned: Set<Int> = []
         var pressed: Set<Int> = []
+        // MARK: Battery (feature 0x1004 unified, 0x1000 legacy, or 0x1001 voltage)
+        enum BatteryKind: String { case unified, legacy, voltage }
+        var battery: (kind: BatteryKind, index: UInt8)? = nil
+        var batteryPercent: UInt8? = nil      // nil = unknown
+        var batteryCharging: Bool = false
+        // MARK: SmartShift wheel mode (feature 0x2110)
+        var smartshiftFeature: UInt8? = nil
+        var wheelFreespin: Bool? = nil          // nil = not supported / unknown
     }
     struct Identity: Equatable {
         var name: String
@@ -95,7 +104,12 @@ final class LogitechHIDDevice {
              guard let mouse = mice[slot] else { return nil }
              return ["slot": Int(slot), "name": mouse.name, "feature": Int(mouse.feature),
                      "backend": mouse.backend.rawValue, "spy_enabled": mouse.spyEnabled,
-                     "available": mouse.available.sorted(), "owned": mouse.owned.sorted(), "pressed": mouse.pressed.sorted()]
+                     "available": mouse.available.sorted(), "owned": mouse.owned.sorted(), "pressed": mouse.pressed.sorted(),
+                     "battery_feature": mouse.battery.map { "\($0.kind.rawValue):\($0.index)" } as Any? ?? NSNull(),
+                     "battery_percent": mouse.batteryPercent.map { Int($0) } as Any? ?? NSNull(),
+                     "battery_charging": mouse.batteryCharging,
+                     "smartshift_feature": mouse.smartshiftFeature.map { Int($0) } as Any? ?? NSNull(),
+                     "wheel_freespin": mouse.wheelFreespin as Any? ?? NSNull()] as [String: Any]
          }]
     }
     private(set) var mice: [UInt8: Mouse] = [:]
@@ -105,6 +119,8 @@ final class LogitechHIDDevice {
     var onStatus: ((String) -> Void)?
     var onControlsChanged: (() -> Void)?
     var onIdentitiesChanged: (() -> Void)?
+    /// Fired when battery or SmartShift state changes for any slot.
+    var onCapabilitiesChanged: (() -> Void)?
 
     init?(_ device: IOHIDDevice) {
         guard IOHIDDeviceOpen(device, 0) == kIOReturnSuccess else { return nil }
@@ -156,13 +172,7 @@ final class LogitechHIDDevice {
             }
             guard nameBytes.count == Int(size) else { continue }
             let name = String(decoding: nameBytes, as: UTF8.self)
-            guard let model = LogitechHIDProtocol.model(name) else {
-                identify(slot, name: name, supported: false)
-                record("identified unsupported slot=\(slot)")
-                onStatus?("\(name)：暂未适配，可使用通用鼠标映射。")
-                if !receiver { break }
-                continue
-            }
+            let model = LogitechHIDProtocol.model(name)
             if model == .g502Lightspeed {
                 guard let feature = await request(slot, 0, 0, [0x81, 0x10]), let index = feature.first, index != 0,
                       let count = await request(slot, index, 0, []), let n = count.first,
@@ -175,8 +185,18 @@ final class LogitechHIDDevice {
                 if !receiver { break }
                 continue
             }
+            // Reprogrammable controls (feature 0x1b04) is a standard HID++ 2.0
+            // capability shared by most Logitech mice. Try it for every model
+            // we don't route to button-spy — named MX devices and unknown
+            // Logitech mice alike — instead of rejecting unknown names up front.
             guard let feature = await request(slot, 0, 0, [0x1b, 4]), let index = feature.first, index != 0,
-                  let count = await request(slot, index, 0, []), let n = count.first, n > 0, n <= 64 else { continue }
+                  let count = await request(slot, index, 0, []), let n = count.first, n > 0, n <= 64 else {
+                identify(slot, name: name, supported: false)
+                record("identified unsupported slot=\(slot) name=\(name)")
+                onStatus?("\(name)：暂未适配，可使用通用鼠标映射。")
+                if !receiver { break }
+                continue
+            }
             var controls: Set<Int> = []
             var complete = true
             for i in 0..<n {
@@ -185,16 +205,147 @@ final class LogitechHIDDevice {
             }
             guard !closed else { return }
             guard complete else { continue }
+            guard !controls.isEmpty else {
+                identify(slot, name: name, supported: false)
+                record("slot=\(slot) name=\(name) has no divertable controls")
+                onStatus?("\(name)：未发现可接管的扩展按键，可使用通用鼠标映射。")
+                if !receiver { break }
+                continue
+            }
             mice[slot] = Mouse(name: name, feature: index, available: controls)
             identify(slot, name: name, supported: true)
             onControlsChanged?()
-            record("discovered slot=\(slot) controls=\(controls.sorted())")
+            record("discovered slot=\(slot) name=\(name) controls=\(controls.sorted())")
             onStatus?("\(name)：发现 \(controls.count) 个可接管的扩展按键")
             if !receiver { break }
+        }
+        // Probe battery and SmartShift for every successfully discovered mouse.
+        for slot in mice.keys.sorted() {
+            guard !closed, !Task.isCancelled else { return }
+            await probeCapabilities(slot)
         }
         if mice.isEmpty && identities.isEmpty {
             onStatus?("HID++ 接口已连接，但未识别到在线鼠标。\(lastError ?? "请唤醒鼠标后重新采集。")")
         }
+    }
+
+    // MARK: - Battery & SmartShift capability probes
+
+    private func probeCapabilities(_ slot: UInt8) async {
+        guard mice[slot] != nil, !closed else { return }
+        await probeBattery(slot)
+        await probeSmartShift(slot)
+    }
+
+    private func probeBattery(_ slot: UInt8) async {
+        guard !closed, !Task.isCancelled else { return }
+        // Prefer 0x1004 (UnifiedBattery), then 0x1000 (legacy BatteryStatus), then
+        // 0x1001 (BatteryVoltage) — the only one G502 LIGHTSPEED exposes.
+        let candidates: [(Mouse.BatteryKind, [UInt8])] = [(.unified, [0x10, 0x04]), (.legacy, [0x10, 0x00]), (.voltage, [0x10, 0x01])]
+        for (kind, id) in candidates {
+            guard !closed, let reply = await request(slot, 0, 0, id),
+                  let idx = reply.first, idx != 0 else { continue }
+            mice[slot]?.battery = (kind, idx)
+            await refreshBattery(slot)
+            return
+        }
+    }
+
+    private func refreshBattery(_ slot: UInt8) async {
+        guard let battery = mice[slot]?.battery else { return }
+        switch battery.kind {
+        case .unified: await refreshBattery1004(slot, featureIndex: battery.index)
+        case .legacy: await refreshBattery1000(slot, featureIndex: battery.index)
+        case .voltage: await refreshBattery1001(slot, featureIndex: battery.index)
+        }
+    }
+
+    private func refreshBattery1004(_ slot: UInt8, featureIndex: UInt8) async {
+        // getStatus = function 1; payload[0]=percent, payload[1]=level, payload[2]=status
+        // status: 0=discharging, 1/2=charging, 3=full, 4=slow, 5-7=error
+        guard let reply = await request(slot, featureIndex, 1, []),
+              reply.count >= 3 else { return }
+        let pct = reply[0]
+        let statusByte = reply[2]
+        let charging = statusByte >= 1 && statusByte <= 4
+        let changed = mice[slot]?.batteryPercent != pct || mice[slot]?.batteryCharging != charging
+        mice[slot]?.batteryPercent = pct
+        mice[slot]?.batteryCharging = charging
+        if changed {
+            record("battery slot=\(slot) pct=\(pct) charging=\(charging)")
+            onCapabilitiesChanged?()
+        }
+    }
+
+    private func refreshBattery1000(_ slot: UInt8, featureIndex: UInt8) async {
+        // getBatteryLevelStatus = function 0; payload[0]=percent, payload[2]=status
+        // status: 0=discharging, 1=recharging, 2=almost-full
+        guard let reply = await request(slot, featureIndex, 0, []),
+              reply.count >= 3 else { return }
+        let pct = reply[0]
+        let statusByte = reply[2]
+        let charging = statusByte == 1 || statusByte == 2
+        let changed = mice[slot]?.batteryPercent != pct || mice[slot]?.batteryCharging != charging
+        mice[slot]?.batteryPercent = pct
+        mice[slot]?.batteryCharging = charging
+        if changed {
+            record("battery_legacy slot=\(slot) pct=\(pct) charging=\(charging)")
+            onCapabilitiesChanged?()
+        }
+    }
+
+    private func refreshBattery1001(_ slot: UInt8, featureIndex: UInt8) async {
+        // getBatteryInfo = function 0; payload[0...1]=millivolts, payload[2]=flags
+        guard let reply = await request(slot, featureIndex, 0, []),
+              let (pct, charging) = LogitechHIDProtocol.voltageBattery(reply) else { return }
+        let changed = mice[slot]?.batteryPercent != pct || mice[slot]?.batteryCharging != charging
+        mice[slot]?.batteryPercent = pct
+        mice[slot]?.batteryCharging = charging
+        if changed {
+            record("battery_voltage slot=\(slot) pct=\(pct) charging=\(charging)")
+            onCapabilitiesChanged?()
+        }
+    }
+
+    private func probeSmartShift(_ slot: UInt8) async {
+        guard !closed, !Task.isCancelled else { return }
+        guard let reply = await request(slot, 0, 0, [0x21, 0x10]),
+              let idx = reply.first, idx != 0 else { return }
+        mice[slot]?.smartshiftFeature = idx
+        // getRatchetControlMode = function 0; payload[0] = WheelMode (1=freespin, 2=ratchet)
+        guard let mode = await request(slot, idx, 0, []),
+              let byte = mode.first else { return }
+        let freespin = byte == 1
+        mice[slot]?.wheelFreespin = freespin
+        record("smartshift slot=\(slot) freespin=\(freespin)")
+        onCapabilitiesChanged?()
+    }
+
+    // MARK: - Public read / write APIs
+
+    /// Re-reads battery for all slots that have a battery feature. Called by manager on a timer.
+    func refreshBatteries() async {
+        for slot in mice.keys.sorted() {
+            guard !closed, !Task.isCancelled else { return }
+            await refreshBattery(slot)
+        }
+    }
+
+    /// Toggle wheel between free-spin (true) and ratchet (false) for the given slot.
+    @discardableResult
+    func setWheelMode(slot: UInt8, freespin: Bool) async -> Bool {
+        guard let mouse = mice[slot], let feat = mouse.smartshiftFeature, !closed else { return false }
+        // setRatchetControlMode = function 1; byte 0 = WheelMode (1=freespin, 2=ratchet), bytes 1-2 = 0 (keep defaults)
+        let modeValue: UInt8 = freespin ? 1 : 2
+        guard let reply = await request(slot, feat, 1, [modeValue, 0, 0]),
+              let applied = reply.first else { return false }
+        let confirmed = applied == modeValue
+        if confirmed {
+            mice[slot]?.wheelFreespin = freespin
+            onCapabilitiesChanged?()
+            record("wheel_mode slot=\(slot) freespin=\(freespin)")
+        }
+        return confirmed
     }
 
     private func identify(_ slot: UInt8, name: String, supported: Bool) {
@@ -224,11 +375,16 @@ final class LogitechHIDDevice {
                     continue
                 }
                 let flags = report[2]
-                if wants && !current.owned.contains(cid) && flags & 0x05 != 0 {
-                    onStatus?("\(current.name)：\(MouseSettings.buttonName(cid)) 已被其他程序接管")
+                // HID++ has no owner field. A divert left by a previous DeskFuse run
+                // (crash, kill, reinstall) survives until the mouse reconnects, and
+                // diverted notifications reach every host client anyway: adopt it.
+                if wants && flags & 1 != 0 {
+                    if mice[slot]?.owned.insert(cid).inserted == true {
+                        record("diversion slot=\(slot) cid=\(cid) adopted")
+                        onStatus?("\(current.name)：\(MouseSettings.buttonName(cid))已接管")
+                    }
                     continue
                 }
-                if wants && current.owned.contains(cid) && flags & 1 != 0 { continue }
                 if !wants && !current.owned.contains(cid) { continue }
                 // Track intent before write, so a lost reply still gets a restore on shutdown.
                 if wants { mice[slot]?.owned.insert(cid) }

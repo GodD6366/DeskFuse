@@ -16,6 +16,7 @@ final class LogitechHIDManager {
     private var openResult: IOReturn?
     private var inventory: [ObjectIdentifier: [String: Any]] = [:]
     private var lastIdentities: Set<String> = []
+    private var batteryRefreshTask: Task<Void, Never>?
     var desired: Set<Int> = [] {
         didSet { if desired != oldValue { wakes.values.forEach { $0.yield(()) } } }
     }
@@ -23,6 +24,8 @@ final class LogitechHIDManager {
     var onStatus: ((String) -> Void)?
     var onControlsChanged: ((Set<Int>) -> Void)?
     var onIdentitiesChanged: (([String]) -> Void)?
+    /// Fired when battery level/charging or SmartShift wheel mode changes for any mouse.
+    var onCapabilitiesChanged: (() -> Void)?
     private func publishControls() {
         onControlsChanged?(Set(devices.values.flatMap { $0.mice.values.flatMap { $0.available } }))
     }
@@ -31,6 +34,43 @@ final class LogitechHIDManager {
         guard names != lastIdentities else { return }
         lastIdentities = names
         onIdentitiesChanged?(names.sorted())
+    }
+
+    // MARK: - Battery & SmartShift aggregation
+
+    struct BatteryInfo {
+        let name: String
+        let percent: UInt8?
+        let charging: Bool
+    }
+    struct WheelInfo {
+        let name: String
+        let freespin: Bool?
+    }
+
+    /// Per-mouse battery readings across all connected HID++ devices.
+    func batteryInfo() -> [BatteryInfo] {
+        devices.values.flatMap { $0.mice.values }
+            .filter { $0.battery != nil }
+            .map { BatteryInfo(name: $0.name, percent: $0.batteryPercent, charging: $0.batteryCharging) }
+    }
+
+    /// Per-mouse SmartShift wheel mode across all connected HID++ devices.
+    func wheelInfo() -> [WheelInfo] {
+        devices.values.flatMap { $0.mice.values }
+            .filter { $0.smartshiftFeature != nil }
+            .map { WheelInfo(name: $0.name, freespin: $0.wheelFreespin) }
+    }
+
+    /// Toggle the SmartShift wheel for the first mouse with the given name.
+    @discardableResult
+    func setWheelMode(name: String, freespin: Bool) async -> Bool {
+        for endpoint in devices.values {
+            for (slot, mouse) in endpoint.mice where mouse.name == name {
+                return await endpoint.setWheelMode(slot: slot, freespin: freespin)
+            }
+        }
+        return false
     }
 
     // Only the explicit capture/permission action may ask macOS for a grant.
@@ -66,7 +106,7 @@ final class LogitechHIDManager {
         let result = IOHIDManagerOpen(manager, 0)
         openResult = result
         onStatus?(result == kIOReturnSuccess
-            ? "正在查找 MX Master 3 / 3S、G502 LIGHTSPEED 的 HID++ 接口…"
+            ? "正在查找 Logitech HID++ 鼠标（MX Master / Anywhere / Ergo、G502 LIGHTSPEED 等）…"
             : "无法访问 HID 设备（\(result)），请检查输入监控权限并重启应用")
         if result == kIOReturnSuccess {
             refreshTask = Task { [weak self] in
@@ -82,6 +122,14 @@ final class LogitechHIDManager {
                 self.onStatus?(IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
                     ? "未发现可用的 Logitech HID++ 接口，请确认鼠标已连接到此 Mac。"
                     : "HID++ 需要输入监控权限，请在系统设置中授权 DeskFuse 后重新采集。")
+            }
+            // Periodically re-read battery levels for connected wireless mice.
+            batteryRefreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                    guard let self else { return }
+                    await self.refreshBatteries()
+                }
             }
         }
     }
@@ -116,6 +164,7 @@ final class LogitechHIDManager {
         endpoint.onStatus = { [weak self] in self?.onStatus?($0) }
         endpoint.onControlsChanged = { [weak self] in self?.publishControls() }
         endpoint.onIdentitiesChanged = { [weak self] in self?.publishIdentities() }
+        endpoint.onCapabilitiesChanged = { [weak self] in self?.onCapabilitiesChanged?() }
         let (events, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         wakes[id] = wake
         wake.yield(())
@@ -146,12 +195,20 @@ final class LogitechHIDManager {
         publishIdentities()
         if devices.isEmpty { onStatus?("未连接可用的 Logitech HID++ 设备") }
     }
+
+    private func refreshBatteries() async {
+        for endpoint in devices.values {
+            guard !endpoint.closed else { continue }
+            await endpoint.refreshBatteries()
+        }
+    }
     func stop() {
         guard !stopping else { return }
         stopping = true
         defer { stopping = false }
         inventoryTimeout?.cancel(); inventoryTimeout = nil
         refreshTask?.cancel(); refreshTask = nil
+        batteryRefreshTask?.cancel(); batteryRefreshTask = nil
         wakes.values.forEach { $0.finish() }; wakes.removeAll()
         tasks.values.forEach { $0.cancel() }; tasks.removeAll()
         devices.values.forEach { $0.close() }; devices.removeAll()

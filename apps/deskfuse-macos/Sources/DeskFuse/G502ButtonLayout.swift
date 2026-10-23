@@ -13,6 +13,22 @@ enum G502ButtonPosition: String, CaseIterable, Identifiable, Codable {
         default: nil
         }
     }
+    /// Button Spy reports G1…G11 as bits 0…10 (events 208…218).
+    var spyButton: Int {
+        switch self {
+        case .left: 208
+        case .right: 209
+        case .middle: 210
+        case .back: 211
+        case .forward: 212
+        case .thumb: 213
+        case .dpiDown: 214
+        case .dpiUp: 215
+        case .top: 216
+        case .tiltLeft: 217
+        case .tiltRight: 218
+        }
+    }
     var id: String { rawValue }
     var sideView: Bool { [.back, .forward, .thumb].contains(self) }
     var title: String {
@@ -47,27 +63,31 @@ enum G502ButtonPosition: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Factory layout from the firmware's G-key order; saved entries only override it
+/// after the user re-identifies a position.
 struct G502ButtonLocations: Codable, Equatable {
-    private(set) var buttons: [String: Int] = [:]
+    private(set) var buttons = Dictionary(uniqueKeysWithValues: G502ButtonPosition.allCases.map { ($0.rawValue, $0.spyButton) })
 
     init(json: String = "{}") {
         guard let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([String: Int].self, from: data) else { return }
-        // Ignore corrupt/unknown entries and keep one physical location per event.
+        // Ignore corrupt/unknown entries; the first position claiming an event wins.
         var used: Set<Int> = []
         for position in G502ButtonPosition.allCases {
             if let button = decoded[position.rawValue], (208...218).contains(button), used.insert(button).inserted {
-                buttons[position.rawValue] = button
+                locate(button, at: position)
             }
         }
     }
-    func button(at position: G502ButtonPosition) -> Int? { buttons[position.rawValue] }
+    func button(at position: G502ButtonPosition) -> Int { buttons[position.rawValue] ?? position.spyButton }
     func position(for button: Int) -> G502ButtonPosition? {
-        G502ButtonPosition.allCases.first { buttons[$0.rawValue] == button }
+        G502ButtonPosition.allCases.first { self.button(at: $0) == button }
     }
+    /// Moves an event to a position; the position that held it takes over the displaced event.
     mutating func locate(_ button: Int, at position: G502ButtonPosition) {
         guard (208...218).contains(button) else { return }
-        buttons = buttons.filter { $0.value != button }
+        let displaced = self.button(at: position)
+        if let other = self.position(for: button) { buttons[other.rawValue] = displaced }
         buttons[position.rawValue] = button
     }
     var json: String {

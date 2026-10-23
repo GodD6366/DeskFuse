@@ -213,6 +213,12 @@ async fn run(
                     lines.push_str(&line.to_string()); lines.push('\n');
                 }
                 lines.push_str(&format!("{{\"subsystem\":\"input_service\",\"motion_dropped\":{dropped},\"export_limit\":256}}\n"));
+                let (sockets, sockets_dropped) = deskfuse_transport::socket_diag::snapshot();
+                for r in sockets {
+                    let line = serde_json::json!({"subsystem":"input_socket", "timestamp_ms":r.timestamp_ms, "pid":runtime_port.process_id(), "stage":r.event, "local_addr":r.local_addr, "detail":r.detail});
+                    lines.push_str(&line.to_string()); lines.push('\n');
+                }
+                lines.push_str(&format!("{{\"subsystem\":\"input_socket\",\"dropped\":{sockets_dropped}}}\n"));
                 *diagnostic_output.lock().unwrap_or_else(|e|e.into_inner()) = lines;
             }
             std::thread::sleep(Duration::from_secs(2));

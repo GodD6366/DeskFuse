@@ -4,13 +4,14 @@
 
 | 产物 | 用途 |
 | --- | --- |
-| `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 安装包；GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
-| `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 安装包；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录 |
+| `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 磁盘映像；Homebrew 与只认该文件名的旧客户端使用。GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
+| `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 磁盘映像；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录。Homebrew cask 不使用它 |
 | `dist/DeskFuse-windows-x64-setup.exe` | Windows x64 NSIS 安装包；发布 job 要求 Authenticode 有效签名，安装、SCM、GUI 和双机行为单独记录 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
 | `dist/build-info.json` | 源 commit、工具链、macOS/Windows 目标、签名状态和资产哈希 |
 | `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
-| `dist/DeskFuse-arm64-update.zip` | 保留应用签名的原始 LAN 更新包；接收端按签名清单校验，不重新打包 |
+| `dist/DeskFuse-arm64-update.zip` | 签过名的 `DeskFuse.app`。官网下载这个包，打开应用后走安装窗口；局域网设备和已安装的正式版用它直接替换应用，不再显示安装窗口。公证成功后会把票据打进这个 zip。已发布的旧客户端只认同一发布里的 DMG，所以 DMG 继续上传 |
+| `dist/DeskFuse-x86_64-update.zip` | Intel 版同一个应用包。官网 Intel 下载用它；当前自动更新只在 Apple Silicon 上静默安装 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
 
 根 `release.json` 是公开且随版本提交的输入，不含凭据。`dist/` 是输出，不提交到 Git。

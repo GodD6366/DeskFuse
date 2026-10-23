@@ -1494,6 +1494,25 @@ impl TokioBridge {
         contents.push_str(&format!(
             "{{\"subsystem\":\"input_motion_transport\",\"stage\":\"export_summary\",\"dropped_records\":{motion_dropped}}}\n"
         ));
+        // 输入路径 UDP socket 的生命周期与系统错误；输入子进程的同类记录在下面的诊断文本里。
+        let (sockets, sockets_dropped) = deskfuse_transport::socket_diag::snapshot();
+        for record in sockets {
+            contents.push_str(
+                &serde_json::to_string(&serde_json::json!({
+                    "timestamp_ms": record.timestamp_ms,
+                    "subsystem": "input_socket",
+                    "process": "main",
+                    "stage": record.event,
+                    "local_addr": record.local_addr,
+                    "detail": record.detail,
+                }))
+                .map_err(|error| error.to_string())?,
+            );
+            contents.push('\n');
+        }
+        contents.push_str(&format!(
+            "{{\"subsystem\":\"input_socket\",\"process\":\"main\",\"stage\":\"export_summary\",\"dropped_records\":{sockets_dropped}}}\n"
+        ));
         if let Some(service) = self.input_service.lock().ok().and_then(|s| s.clone())
             && let Ok(diagnostics) = service.diagnostics.lock()
         {

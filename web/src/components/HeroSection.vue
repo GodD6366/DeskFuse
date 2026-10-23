@@ -1,19 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { asset } from './demos'
-import { useLatestRelease, assetUrl, FALLBACK_RELEASE_TAG } from '../composables/useLatestRelease'
+import { useLatestRelease, FALLBACK_RELEASE_TAG } from '../composables/useLatestRelease'
 import { useCopy } from '../composables/useCopy'
 import { HOMEBREW_ONE_LINE } from '../config/install'
-import { fallbackAssetUrl } from '../config/distribution'
+import { ARM64_DISK_IMAGE, INTEL_DISK_IMAGE, macAppDownloadUrl } from '../config/distribution'
 
 const { release } = useLatestRelease()
 const { copied, copy } = useCopy()
 
-const arm64Fallback = fallbackAssetUrl('DeskFuse-arm64.dmg')
-const intelFallback = fallbackAssetUrl('DeskFuse-x86_64.dmg')
-
-const arm64Url = computed(() => assetUrl(release.value, 'DeskFuse-arm64.dmg', arm64Fallback))
-const intelUrl = computed(() => assetUrl(release.value, 'DeskFuse-x86_64.dmg', intelFallback))
+const arm64Url = computed(() => macAppDownloadUrl(release.value?.assets, ARM64_DISK_IMAGE))
+const intelUrl = computed(() => macAppDownloadUrl(release.value?.assets, INTEL_DISK_IMAGE))
+const usesAppPackage = computed(() => arm64Url.value.includes('-update.zip'))
 const badgeText = computed(() =>
   release.value?.tag
     ? `最新版本 ${release.value.tag} · macOS arm64 / Intel · Windows x64`
@@ -41,7 +39,9 @@ const badgeText = computed(() =>
           {{ copied ? '已复制 ✓' : '复制' }}
         </button>
       </div>
-      <p class="hero-note">macOS 14+ · Developer ID 签名与公证 · QUIC 加密传输</p>
+      <p class="hero-note">
+        macOS 14+ · {{ usesAppPackage ? '打开应用后按窗口安装 · ' : '' }}Developer ID 签名与公证
+      </p>
     </div>
 
     <div class="hero-shot" v-reveal>

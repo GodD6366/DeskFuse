@@ -39,6 +39,8 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 
 BlueSync 用于交互行为参考；DeskFuse 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。
 
+[OpenLogi](https://github.com/AprilNEA/OpenLogi)（MIT/Apache-2.0，© AprilNEA）是 Logitech Options+ 的开源替代项目，以 Rust 实现 HID++ 2.0 协议。DeskFuse 的鼠标 HID 支持参考了其设备兼容列表和 feature 寻址方式（reprogrammable controls 0x1b04、UnifiedBattery 0x1004、SmartShift 0x2110），协议知识来自其公开代码中针对各 feature 的逆向说明；DeskFuse 使用自有 Swift/IOKit 实现，未复制其 Rust 源码。
+
 ## Windows RDP RemoteApp 客户端
 
 macOS 客户端静态链接 FreeRDP/WinPR 3.14.1（Apache-2.0）、OpenSSL 3.6.5（Apache-2.0）和 json-c 0.18（MIT）。固定源码提交及构建入口见 `scripts/build-freerdp-macos.sh`；打包时将上游许可证原文合并为 `DeskFuse.app/Contents/Resources/THIRD_PARTY_RDP.txt`。这些原生依赖不在 Cargo.lock 内，单独随产物附带声明。

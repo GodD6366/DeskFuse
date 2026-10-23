@@ -151,7 +151,6 @@ struct MicrophoneSettingsView: View {
 
     private func configured(_ state: MicrophoneSharingSnapshot, role: MicrophoneRole) -> some View {
         VStack(alignment: .leading, spacing: DFSpace.l) {
-            DFSectionLabel("当前状态")
             roleStatus(state, role: role)
             if role == .provider { inputPermission(state) }
             runtimeNotices(state, role: role)
