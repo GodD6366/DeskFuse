@@ -1037,7 +1037,7 @@ async fn cycle(
     let connected_peers = peers.len();
     let mut checked_peers = 0;
     let mut newer_peer: Option<(semver::Version, u64)> = None;
-    let mut sources: BTreeMap<uuid::Uuid, Vec<(DeviceId, ConnectionContext)>> = BTreeMap::new();
+    let mut sources: BTreeMap<uuid::Uuid, Vec<PeerSource>> = BTreeMap::new();
     // 本机已有的包（含已下载未安装的新版）也能升级本机。
     let mut offers: Vec<PeerAppArtifact> = state
         .lock()
@@ -1093,10 +1093,11 @@ async fn cycle(
             observe_peer(state, peer, &remote);
             for bytes in remote.github_artifacts {
                 if let Ok(offer) = PeerAppArtifact::from_slice(&bytes) {
-                    sources
-                        .entry(offer.release.release_id)
-                        .or_default()
-                        .push((peer, context.clone()));
+                    sources.entry(offer.release.release_id).or_default().push((
+                        peer,
+                        context.clone(),
+                        offer.clone(),
+                    ));
                     offers.push(offer);
                 }
             }
@@ -1130,12 +1131,42 @@ async fn cycle(
     )
     .await
 }
+/// 每台设备现场打包自己正在运行的应用，同一发行版的压缩包字节因机器而异，
+/// 所以来源必须带着它自己的包描述，下载时按该描述请求与校验。
+type PeerSource = (DeviceId, ConnectionContext, PeerAppArtifact);
 struct Scan {
     offers: Vec<PeerAppArtifact>,
-    sources: BTreeMap<uuid::Uuid, Vec<(DeviceId, ConnectionContext)>>,
+    sources: BTreeMap<uuid::Uuid, Vec<PeerSource>>,
     connected_peers: usize,
     checked_peers: usize,
     newer_peer: Option<(semver::Version, u64)>,
+}
+/// 选出最高的可安装发行版。各设备自打包的压缩包字节天然不同，所以只把
+/// 「同一版本与 build 却是不同发行版」视为冲突。
+fn select_release(
+    mut offers: Vec<PeerAppArtifact>,
+    installed: &ReleaseVersion,
+    quarantined: &BTreeSet<uuid::Uuid>,
+) -> Result<Option<PeerAppArtifact>, String> {
+    offers.retain(|offer| {
+        offer.release.precedence(installed).is_gt()
+            && !quarantined.contains(&offer.release.release_id)
+    });
+    for (i, left) in offers.iter().enumerate() {
+        for right in offers.iter().skip(i + 1) {
+            if left.release.precedence(&right.release) == std::cmp::Ordering::Equal
+                && left.release != right.release
+            {
+                return Err(format!(
+                    "设备网络中有两个不同的 {} · build {} 发行版，无法判断该安装哪一个；本次未安装",
+                    left.release.version, left.release.build_number
+                ));
+            }
+        }
+    }
+    Ok(offers
+        .into_iter()
+        .max_by(|a, b| a.release.precedence(&b.release)))
 }
 async fn finish_cycle(
     runtime: &RuntimeHandle,
@@ -1156,21 +1187,9 @@ async fn finish_cycle(
             && offer.artifact.target == config.target
             && offer.artifact.minimum_os <= config.os
     });
-    for (i, left) in offers.iter().enumerate() {
-        for right in offers.iter().skip(i + 1) {
-            if left.release.precedence(&right.release) == std::cmp::Ordering::Equal && left != right
-            {
-                return Err("设备网络中同一版本的更新包内容不一致".into());
-            }
-        }
-    }
     let quarantined = state.lock().unwrap().quarantined.clone();
-    let selected = offers
-        .into_iter()
-        .filter(|offer| offer.release.precedence(&config.installed).is_gt())
-        .filter(|offer| !quarantined.contains(&offer.release.release_id))
-        .max_by(|a, b| a.release.precedence(&b.release));
-    let Some(offer) = selected else {
+    let selected = select_release(offers, &config.installed, &quarantined)?;
+    let Some(selected) = selected else {
         let mut state = state.lock().unwrap();
         state.view.manual_requested = false;
         let quarantined_failure = state
@@ -1203,13 +1222,13 @@ async fn finish_cycle(
         }
         return Ok(());
     };
-    let cached_path = state
+    let cached = state
         .lock()
         .unwrap()
         .packages
-        .get(&offer.release.release_id)
-        .map(|(_, path)| path.clone());
-    if let Some(path) = cached_path {
+        .get(&selected.release.release_id)
+        .cloned();
+    if let Some((offer, path)) = cached {
         let mut transaction =
             UpdateTransaction::for_artifact(&offer.release, offer.artifact.clone())
                 .map_err(|e| e.to_string())?;
@@ -1227,16 +1246,19 @@ async fn finish_cycle(
         return Ok(());
     }
     let candidates = sources
-        .get(&offer.release.release_id)
+        .get(&selected.release.release_id)
         .ok_or("更新源已离线")?;
     let index = {
         let mut state = state.lock().unwrap();
-        let attempt = state.attempts.entry(offer.release.release_id).or_default();
+        let attempt = state
+            .attempts
+            .entry(selected.release.release_id)
+            .or_default();
         let index = *attempt % candidates.len();
         *attempt = attempt.wrapping_add(1);
         index
     };
-    let (peer, context) = &candidates[index];
+    let (peer, context, offer) = candidates[index].clone();
     let mut transaction = UpdateTransaction::for_artifact(&offer.release, offer.artifact.clone())
         .map_err(|e| e.to_string())?;
     {
@@ -1255,7 +1277,7 @@ async fn finish_cycle(
     let result = async {
         download(
             runtime,
-            (*peer, context),
+            (peer, &context),
             offer.release.release_id.as_bytes(),
             &mut transaction,
             &path,
@@ -1411,6 +1433,65 @@ mod tests {
             UPDATE_COMMAND_ACCEPTED
         );
         assert!(state.lock().unwrap().view.manual_requested);
+    }
+
+    #[test]
+    fn devices_repackaging_the_same_release_do_not_conflict() {
+        let release = |build, id| ReleaseVersion {
+            version: semver::Version::new(0, 7, 2),
+            build_number: build,
+            release_id: id,
+        };
+        let offer = |release: ReleaseVersion, sha: char| PeerAppArtifact {
+            channel: "lan".into(),
+            release,
+            artifact: deskfuse_update::ArtifactDescriptor {
+                target: Target::MacosArm64,
+                kind: deskfuse_update::PackageKind::MacosAppZip,
+                file_name: PeerAppArtifact::FILE_NAME.into(),
+                size: 1,
+                sha256: sha.to_string().repeat(64),
+                minimum_os: semver::Version::new(14, 0, 0),
+            },
+        };
+        let installed = release(260, uuid::Uuid::new_v4());
+        let current = release(260, installed.release_id);
+        let next = release(261, uuid::Uuid::new_v4());
+        let none = BTreeSet::new();
+        // Each device zips its own running copy, so the same release arrives
+        // with different bytes, both at the installed and at the newer build.
+        let selected = select_release(
+            vec![
+                offer(current.clone(), 'a'),
+                offer(current, 'b'),
+                offer(next.clone(), 'c'),
+                offer(next.clone(), 'd'),
+            ],
+            &installed,
+            &none,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.release, next);
+
+        let impostor = release(261, uuid::Uuid::new_v4());
+        assert!(
+            select_release(
+                vec![offer(next.clone(), 'c'), offer(impostor.clone(), 'd')],
+                &installed,
+                &none,
+            )
+            .is_err()
+        );
+        let quarantined = BTreeSet::from([impostor.release_id]);
+        let selected = select_release(
+            vec![offer(next.clone(), 'c'), offer(impostor, 'd')],
+            &installed,
+            &quarantined,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.release, next);
     }
 
     #[test]
