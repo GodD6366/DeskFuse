@@ -691,6 +691,7 @@ fn set_item_text_keeps_rtf_representation() {
         .find(|r| r.type_name == "public.rtf")
         .unwrap();
     assert_eq!(rtf_representation.data, rtf);
+    assert_eq!(library.rich_text(id).unwrap(), Some(rtf));
 }
 
 #[test]

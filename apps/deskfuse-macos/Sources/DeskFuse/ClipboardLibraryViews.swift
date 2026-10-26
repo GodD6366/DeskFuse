@@ -85,6 +85,8 @@ struct ClipboardLibraryTabs: View {
                 Text(name).lineLimit(1).font(DFType.detail)
                 if let count { Text("\(count)").font(DFType.caption).monospacedDigit() }
             }
+                // 横向滚动条里的标签按理想宽度排版，名称不被压缩成省略号。
+                .fixedSize()
                 .padding(.horizontal, spacious ? 12 : 11).padding(.vertical, spacious ? 0 : 9)
                 .frame(minHeight: spacious ? DFMetrics.controlHeight : 34)
                 .foregroundStyle(selectedListID == id ? DFPalette.accent : .secondary)
@@ -137,12 +139,10 @@ struct ClipboardLibraryTabs: View {
             Button("新建列表…") { editing = ClipboardLibraryList() }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: "plus.circle.fill")
-                    .foregroundStyle(.secondary)
-                Text(label ?? "")
-                if label == nil { EmptyView() }
+                Image(systemName: "plus.circle")
+                    .font(DFType.icon(.circled, weight: .medium))
+                if let label { Text(label).font(DFType.detail) }
             }
-            .font(DFType.detail)
             .frame(maxWidth: vertical ? .infinity : nil, alignment: .leading)
             .padding(.horizontal, vertical ? 10 : 6)
             .frame(minWidth: vertical ? nil : 32, minHeight: vertical ? 34 : (spacious ? DFMetrics.controlHeight : 32))

@@ -428,23 +428,21 @@ struct ClipboardHistoryPane: View {
         }
     }
 
-    private var emptyHistory: some View {
-        VStack(spacing: 10) {
+    @ViewBuilder private var emptyHistory: some View {
+        Group {
             if searching {
-                ProgressView().controlSize(.small)
-                Text("正在搜索…").font(DFType.detail).dfSecondaryText()
+                ProgressView("正在搜索…").frame(maxWidth: .infinity).padding(.vertical, 65)
             } else {
-                Image(systemName: historyIsEmpty ? "clipboard" : "magnifyingglass")
-                    .font(DFType.metric).foregroundStyle(DFPalette.brandGradient)
-                Text(historyIsEmpty ? "还没有剪贴板历史" : "没有匹配的内容")
-                    .font(DFType.detail.weight(.medium))
-                Text(historyIsEmpty ? "复制文字、图片或文件后\n会显示在这里。" : "试试其他关键词或筛选条件。")
-                    .font(DFType.caption).dfSecondaryText().multilineTextAlignment(.center)
+                ClipboardEmptyState(
+                    symbol: historyIsEmpty ? "clipboard" : "magnifyingglass",
+                    title: historyIsEmpty ? "还没有剪贴板记录" : "没有匹配内容",
+                    message: historyIsEmpty ? "复制文字、图片或文件后，会显示在这里" : "试试其他关键词，或清除筛选",
+                    onClear: !historyIsEmpty && (!search.isEmpty || source != nil || listID != nil)
+                        ? { search = ""; source = nil; listID = nil } : nil
+                )
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .allowsHitTesting(false)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

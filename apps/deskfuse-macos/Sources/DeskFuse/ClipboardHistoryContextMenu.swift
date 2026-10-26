@@ -70,6 +70,7 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
         private func showMenu(_ event: NSEvent) {
             let value = configuration.context
             let item = value.item
+            let clickPoint = NSEvent.mouseLocation
             ClipboardLibraryStore.shared.remember(item, memberships: value.memberships, title: value.title)
             let menu = NSMenu()
             menu.autoenablesItems = false
@@ -141,7 +142,7 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
                     // 图片经外部编辑器（预览.app）打开，焦点离开本应用，关闭面板；
                     // 文本编辑是应用内窗口，面板保持打开，保存时原地更新条目。
                     if item.hasImage { ClipboardPanelController.shared.close() }
-                    ClipboardItemActions.edit(item, title: value.title)
+                    ClipboardItemActions.edit(item, title: value.title, at: clickPoint)
                 }
             }
             if item.fileCount > 0 || item.hasImage {

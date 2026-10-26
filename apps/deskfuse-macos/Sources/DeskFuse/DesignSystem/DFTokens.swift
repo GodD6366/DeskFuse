@@ -39,6 +39,8 @@ enum DFType {
 enum DFIconSize: CGFloat {
     case small = 12
     case regular = 14
+    /// 圆框符号（ellipsis.circle 等）与同排 14pt 的非圆框图标视觉等大。
+    case circled = 16
     case medium = 18
     case large = 24
     case hero = 40

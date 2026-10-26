@@ -186,6 +186,8 @@ pub struct ClipboardContent {
     pub truncated: bool,
     pub image_png: Vec<u8>,
     pub file_paths: Vec<String>,
+    /// RTF of a text item; empty for plain text, images and files.
+    pub rtf: Vec<u8>,
 }
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum TransferPhase {

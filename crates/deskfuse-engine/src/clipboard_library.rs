@@ -1430,6 +1430,19 @@ END;").map_err(err)?;
         )
     }
 
+    /// RTF representation of a text item, so the in-app editor reopens with
+    /// the styles a previous edit (or the source app) stored.
+    pub fn rich_text(&self, id: u64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .snapshot(id)?
+            .items
+            .into_iter()
+            .flat_map(|item| item.representations)
+            .find(|representation| representation.type_name == "public.rtf")
+            .map(|representation| representation.data)
+            .filter(|data| !data.is_empty()))
+    }
+
     pub fn content(&self, id: u64) -> Result<ClipboardHistoryItem> {
         let mut snapshot = self.snapshot(id)?;
         let reference = crate::library_files::reference(&snapshot)?;

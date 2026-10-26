@@ -15,7 +15,7 @@ import XCTest
                               preview: "Preview", source: "Local", hasImage: false, fileCount: 0),
             title: title,
             content: ClipboardContent(canRequestFiles: false, id: 1, text: text,
-                                      truncated: false, imagePng: Data(), filePaths: []),
+                                      truncated: false, imagePng: Data(), filePaths: [], rtf: Data()),
             media: ClipboardMedia(thumbnail: nil, localPaths: localPaths,
                                   pixelWidth: nil, pixelHeight: nil),
             image: image, ocrText: ocrText, copying: copying, copied: copied, copyContent: copy)

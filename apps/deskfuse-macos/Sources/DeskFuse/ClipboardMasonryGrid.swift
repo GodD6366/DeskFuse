@@ -22,7 +22,7 @@ struct ClipboardDisplayModePicker: View {
                     mode = option
                 } label: {
                     Image(systemName: option.symbol)
-                        .font(DFType.detail.weight(.medium))
+                        .font(DFType.icon(.regular, weight: .medium))
                         .frame(width: 34, height: 30)
                         .contentShape(Rectangle())
                         .foregroundStyle(mode == option ? (quiet ? Color.primary : DFPalette.accent) : Color.secondary)

@@ -585,6 +585,16 @@ impl Engine {
         } else {
             false
         };
+        let rtf = if item.image_png.is_none() && item.file_paths.is_empty() {
+            deskfuse_engine::clipboard_library::global()
+                .map_err(failure)?
+                .rich_text(id)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Ok(ClipboardContent {
             can_request_files,
             id,
@@ -592,6 +602,7 @@ impl Engine {
             truncated: item.content_truncated,
             image_png: item.image_png.as_deref().cloned().unwrap_or_default(),
             file_paths: item.file_paths.clone(),
+            rtf,
         })
     }
     /// # Errors

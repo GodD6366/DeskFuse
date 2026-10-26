@@ -194,7 +194,8 @@ private struct ShelfNativeGlass: NSViewRepresentable {
             // Regular glass protects text contrast over both light and dark desktops.
             glass.style = .regular
             glass.cornerRadius = 20
-            if #available(macOS 27.0, *) { glass.effectIsInteractive = true }
+            // 不开 effectIsInteractive：交互玻璃按下即整体放大，发送菜单展开期间
+            // 按压状态一直保持，整个暂存区会跟着变大。
             glass.contentView = content
             background = glass
         } else {

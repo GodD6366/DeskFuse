@@ -52,8 +52,10 @@ enum ClipboardPreviewPolicy {
         Task { await openPreview(id) }
     }
 
-    static func edit(_ item: HistoryItem, title: String?) {
-        Task { await presentEditor(item, title: title) }
+    /// `point` 是触发编辑的屏幕坐标（右键位置等），编辑窗口就近弹出；
+    /// 键盘触发时为 nil，窗口居中。
+    static func edit(_ item: HistoryItem, title: String?, at point: NSPoint? = nil) {
+        Task { await presentEditor(item, title: title, at: point) }
     }
 
     static func writePlainText(_ text: String) -> Int64 {
@@ -213,7 +215,7 @@ enum ClipboardPreviewPolicy {
         }
     }
 
-    private static func presentEditor(_ item: HistoryItem, title: String?) async {
+    private static func presentEditor(_ item: HistoryItem, title: String?, at point: NSPoint?) async {
         guard let client = AppStore.shared.client else { report("引擎尚未就绪"); return }
         do {
             let content = try await loadContent(item.id, client: client)
@@ -235,7 +237,9 @@ enum ClipboardPreviewPolicy {
             ClipboardContentEditorController.shared.present(
                 itemID: item.id,
                 title: (title?.isEmpty == false ? title! : nil) ?? item.clipboardTitle,
-                text: content.text
+                text: content.text,
+                rtf: content.rtf,
+                at: point
             )
         } catch {
             report(error.userFacingMessage)

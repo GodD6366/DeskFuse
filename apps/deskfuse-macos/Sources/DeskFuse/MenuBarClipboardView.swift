@@ -175,7 +175,7 @@ struct MenuBarClipboardView: View {
                     sourceMenu
                     Button { closePanel(); store.shelf?.show() } label: {
                         Image(systemName: "tray")
-                            .font(DFType.title)
+                            .font(DFType.icon(.regular, weight: .medium))
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
@@ -234,7 +234,7 @@ struct MenuBarClipboardView: View {
             Button("退出 DeskFuse") { NSApp.terminate(nil) }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(DFType.icon(.medium))
+                .font(DFType.icon(.circled, weight: .medium))
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
@@ -362,18 +362,13 @@ struct MenuBarClipboardView: View {
             ProgressView(store.starting ? "正在启动…" : "正在搜索…")
                 .frame(maxWidth: .infinity).padding(.vertical, 65)
         } else {
-            VStack(spacing: 10) {
-                Image(systemName: history.isEmpty ? "clipboard" : "magnifyingglass")
-                    .font(DFType.metric).foregroundStyle(.tertiary)
-                Text(store.client == nil ? "引擎尚未就绪" : searchError != nil ? "搜索失败" : history.isEmpty ? "还没有剪贴板记录" : "没有匹配内容")
-                    .font(DFType.section)
-                Text(store.client == nil ? (store.errorNotice.message ?? "请稍后重试") : searchError ?? (history.isEmpty ? "复制文字、图片或文件后，会显示在这里" : "试试其他关键词，或清除筛选"))
-                    .font(DFType.detail).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                if !history.isEmpty && (!query.isEmpty || source != nil || listID != nil) {
-                    Button("清除筛选") { query = ""; source = nil; listID = nil; searchError = nil }
-                }
-            }
-            .frame(maxWidth: .infinity).padding(.horizontal, 15).padding(.vertical, 45)
+            ClipboardEmptyState(
+                symbol: history.isEmpty ? "clipboard" : "magnifyingglass",
+                title: store.client == nil ? "引擎尚未就绪" : searchError != nil ? "搜索失败" : history.isEmpty ? "还没有剪贴板记录" : "没有匹配内容",
+                message: store.client == nil ? (store.errorNotice.message ?? "请稍后重试") : searchError ?? (history.isEmpty ? "复制文字、图片或文件后，会显示在这里" : "试试其他关键词，或清除筛选"),
+                onClear: !history.isEmpty && (!query.isEmpty || source != nil || listID != nil)
+                    ? { query = ""; source = nil; listID = nil; searchError = nil } : nil
+            )
         }
     }
 
@@ -611,7 +606,7 @@ struct MenuBarClipboardView: View {
         let text = item.preview.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         return PreviewPayload(
-            content: ClipboardContent(canRequestFiles: false, id: id, text: item.preview, truncated: true, imagePng: Data(), filePaths: []),
+            content: ClipboardContent(canRequestFiles: false, id: id, text: item.preview, truncated: true, imagePng: Data(), filePaths: [], rtf: Data()),
             image: nil
         )
     }
@@ -646,7 +641,7 @@ struct MenuBarClipboardView: View {
     }
     private func previewStatus(_ text: String, id: UInt64) -> PreviewPayload {
         PreviewPayload(content: ClipboardContent(canRequestFiles: false, id: id, text: text,
-                                                truncated: false, imagePng: Data(), filePaths: []), image: nil, isPlaceholder: true)
+                                                truncated: false, imagePng: Data(), filePaths: [], rtf: Data()), image: nil, isPlaceholder: true)
     }
     private func showPreview(_ payload: PreviewPayload, id: UInt64, from anchor: NSView) {
         let controller = ClipboardQuickLookController.shared

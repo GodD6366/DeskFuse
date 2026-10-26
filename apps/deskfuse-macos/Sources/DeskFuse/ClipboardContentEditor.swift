@@ -13,19 +13,19 @@ import SwiftUI
         windows.values.contains { $0 === window }
     }
 
-    func present(itemID: UInt64, title: String, text: String) {
+    func present(itemID: UInt64, title: String, text: String, rtf: Data, at point: NSPoint?) {
         if let existing = windows[itemID] {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let hosting = NSHostingController(rootView: ClipboardContentEditor(
-            itemID: itemID, title: title, initial: text
+            itemID: itemID, title: title, initial: Self.initialText(text, rtf: rtf)
         ) { [weak self] in
             self?.windows[itemID]?.performClose(nil)
         })
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -39,10 +39,38 @@ import SwiftUI
         if ClipboardPanelController.shared.isShown {
             window.level = .popUpMenu
         }
-        window.center()
+        if let point { place(window, near: point) } else { window.center() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         windows[itemID] = window
+    }
+
+    /// 窗口左上角贴近触发点，整体收进该点所在屏幕的可见区域。
+    private func place(_ window: NSWindow, near point: NSPoint) {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) ?? NSScreen.main
+        else { window.center(); return }
+        let visible = screen.visibleFrame
+        var frame = window.frame
+        frame.origin.x = min(max(point.x - 24, visible.minX), visible.maxX - frame.width)
+        frame.origin.y = min(max(point.y + 24 - frame.height, visible.minY), visible.maxY - frame.height)
+        window.setFrame(frame, display: false)
+    }
+
+    /// 已保存过样式的条目带回 RTF；文字以引擎的纯文本为准，颜色交给系统
+    /// 文本色，暗色模式下不会出现黑字。
+    private static func initialText(_ text: String, rtf: Data) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15),
+            .foregroundColor: NSColor.textColor,
+        ]
+        guard !rtf.isEmpty,
+              let rich = NSMutableAttributedString(rtf: rtf, documentAttributes: nil),
+              rich.string == text
+        else { return NSAttributedString(string: text, attributes: base) }
+        let range = NSRange(location: 0, length: rich.length)
+        rich.removeAttribute(.backgroundColor, range: range)
+        rich.addAttribute(.foregroundColor, value: NSColor.textColor, range: range)
+        return rich
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -59,17 +87,11 @@ private struct ClipboardContentEditor: View {
     @State private var plainOnly = false
     @State private var coordinator = ClipboardTextViewBridge()
 
-    init(itemID: UInt64, title: String, initial: String, close: @escaping () -> Void) {
+    init(itemID: UInt64, title: String, initial: NSAttributedString, close: @escaping () -> Void) {
         self.itemID = itemID
         self.title = title
         self.close = close
-        _attributed = State(initialValue: NSAttributedString(
-            string: initial,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 15),
-                .foregroundColor: NSColor.textColor,
-            ]
-        ))
+        _attributed = State(initialValue: initial)
     }
 
     var body: some View {
@@ -138,7 +160,16 @@ private enum ClipboardTextStyle {
         guard let textView else { return }
         textView.window?.makeFirstResponder(textView)
         let range = textView.selectedRange
-        guard range.length > 0, let storage = textView.textStorage else { return }
+        guard range.length > 0, let storage = textView.textStorage,
+              textView.shouldChangeText(in: range, replacementString: nil)
+        else { return }
+        // 经 shouldChange/didChange 改样式：既登记撤销，也通知代理把结果
+        // 同步回 SwiftUI 状态，保存时才拿得到加粗等样式。
+        storage.beginEditing()
+        defer {
+            storage.endEditing()
+            textView.didChangeText()
+        }
         switch style {
         case .bold:
             toggleTrait(.boldFontMask, in: storage, range: range, fallback: textView.font)
@@ -211,7 +242,7 @@ private struct ClipboardTextView: NSViewRepresentable {
         guard let view = scroll.documentView as? NSTextView else { return }
         view.isRichText = !plainOnly
         bridge.textView = view
-        if view.window?.firstResponder !== view, view.attributedString() != text {
+        if view.attributedString() != text {
             view.textStorage?.setAttributedString(text)
         }
     }

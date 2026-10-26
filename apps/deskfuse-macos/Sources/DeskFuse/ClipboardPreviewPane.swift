@@ -274,7 +274,7 @@ struct ClipboardPreviewPane: View, Equatable {
                 .disabled(copying || hasMissingFiles)
             if item.fileCount == 0 {
                 Button(item.hasImage ? "编辑图片" : "编辑文本", systemImage: "pencil") {
-                    ClipboardItemActions.edit(item, title: title)
+                    ClipboardItemActions.edit(item, title: title, at: NSEvent.mouseLocation)
                 }
             }
             Button(item.hasImage ? "保存图片…" : item.fileCount > 0 ? "保存文件…" : "保存文本…", systemImage: "square.and.arrow.down") {
