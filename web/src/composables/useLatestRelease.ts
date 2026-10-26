@@ -5,10 +5,13 @@ export { FALLBACK_RELEASE_TAG } from '../config/distribution'
 export interface ReleaseAsset {
   name: string
   url: string
+  size?: number
 }
 
 export interface LatestRelease {
   tag: string
+  prerelease: boolean
+  url: string
   assets: ReleaseAsset[]
 }
 
@@ -49,9 +52,12 @@ function fetchLatest(): Promise<LatestRelease | null> {
     if (!latest) return null
     return {
       tag: latest.tag_name || '',
+      prerelease: Boolean(latest.prerelease),
+      url: latest.html_url || '',
       assets: (latest.assets || []).map((a: any) => ({
         name: a.name,
         url: a.browser_download_url,
+        size: typeof a.size === 'number' ? a.size : undefined,
       })),
     }
   })()

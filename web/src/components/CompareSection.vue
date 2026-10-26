@@ -1,362 +1,200 @@
 <script setup lang="ts">
-const rows = [
+type Mark = 'yes' | 'partial' | 'no'
+
+interface Row {
+  feature: string
+  apple: [Mark, string?]
+  deskflow: [Mark, string?]
+  deskfuse: [Mark, string?]
+}
+
+const rows: Row[] = [
   {
     feature: '键鼠跨屏',
-    apple: '仅限同一 Apple 账号',
-    deskflow: '屏幕位置无法自由摆放',
-    fuse: '真实布局，自由摆放',
+    apple: ['yes', '需要同一个 Apple 账号'],
+    deskflow: ['partial', '屏幕位置不能自由摆放'],
+    deskfuse: ['yes', '按真实位置摆放'],
+  },
+  {
+    feature: '远程应用窗口',
+    apple: ['partial', '屏幕共享只能看整块屏幕'],
+    deskflow: ['no'],
+    deskfuse: ['yes', '单个应用开成本机窗口，含 Windows'],
+  },
+  {
+    feature: '共享麦克风',
+    apple: ['no'],
+    deskflow: ['no'],
+    deskfuse: ['yes', '另一台多出一个虚拟麦克风'],
   },
   {
     feature: '剪贴板同步',
-    apple: '依赖 iCloud 与同一账号',
-    deskflow: '基础文字与小图片',
-    fuse: '文本、图片、原生格式',
-  },
-  {
-    feature: '文件传输',
-    apple: 'AirDrop',
-    deskflow: '不提供',
-    fuse: '支持文件夹，保留结构',
-  },
-  {
-    feature: '文件暂存抽屉',
-    apple: '不提供',
-    deskflow: '不提供',
-    fuse: '240 × 240，整批拖出',
+    apple: ['yes', '依赖 iCloud，时好时坏'],
+    deskflow: ['partial', '只有文字和小图片'],
+    deskfuse: ['yes', '保留原生格式'],
   },
   {
     feature: '剪贴板历史',
-    apple: '不提供',
-    deskflow: '不提供',
-    fuse: '跨设备，可搜图片内容',
+    apple: ['no'],
+    deskflow: ['no'],
+    deskfuse: ['yes', '跨设备同步，可搜图片里的文字'],
+  },
+  {
+    feature: '文件传输',
+    apple: ['yes', '隔空投送'],
+    deskflow: ['no'],
+    deskfuse: ['yes', '支持整个文件夹'],
+  },
+  {
+    feature: '文件暂存抽屉',
+    apple: ['no'],
+    deskflow: ['no'],
+    deskfuse: ['yes'],
   },
   {
     feature: '加密传输',
-    apple: '系统级加密',
-    deskflow: 'TLS',
-    fuse: 'QUIC，设备间加密',
+    apple: ['yes'],
+    deskflow: ['yes', 'TLS'],
+    deskfuse: ['yes', 'QUIC'],
   },
 ]
 
-const sources = [
-  {
-    label: 'Apple 通用控制',
-    href: 'https://support.apple.com/en-us/HT212757',
-  },
-  {
-    label: 'Apple 通用剪贴板',
-    href: 'https://support.apple.com/en-us/102430',
-  },
-  {
-    label: 'Deskflow',
-    href: 'https://github.com/deskflow/deskflow',
-  },
-]
+const label: Record<Mark, string> = { yes: '支持', partial: '部分支持', no: '不支持' }
 </script>
 
 <template>
-  <section id="compare" class="section compare" aria-labelledby="compare-title">
-    <div class="container">
-      <header class="section-head">
-        <div class="section-head__main">
-          <p class="section-index">04 / 对比</p>
-          <h2 id="compare-title" v-reveal.title>
-            你的设备，<br />
-            不必共用一个账号。
-          </h2>
-        </div>
-        <div class="section-head__aside" v-reveal="90">
-          <p class="lead">
-            连续互通适合轻度场景；DeskFuse 在同一局域网里，把剪贴板、文件和键鼠一起接上。
-          </p>
-        </div>
-      </header>
+  <section id="compare" class="section compare">
+    <div class="page">
+      <div class="section-head">
+        <h2>和系统自带的、和 Deskflow 比</h2>
+        <p>如果你的电脑都登录同一个 Apple 账号，只需要键鼠跨屏，系统自带的通用控制就够用。</p>
+      </div>
 
-      <div class="compare__wrap" v-reveal>
-        <table class="compare__table">
+      <div class="compare__scroll" tabindex="0" role="region" aria-label="功能对比表">
+        <table>
           <thead>
             <tr>
-              <th scope="col" class="compare__feature-head">能力</th>
+              <th scope="col"><span class="sr-only">功能</span></th>
               <th scope="col">macOS 连续互通</th>
               <th scope="col">Deskflow</th>
-              <th scope="col" class="compare__us">
-                <span>DeskFuse</span>
-              </th>
+              <th scope="col" class="is-us">DeskFuse</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="row in rows" :key="row.feature">
               <th scope="row">{{ row.feature }}</th>
-              <td data-label="macOS 连续互通">{{ row.apple }}</td>
-              <td data-label="Deskflow">{{ row.deskflow }}</td>
-              <td data-label="DeskFuse" class="compare__us-cell">
-                <span class="compare__mark" aria-hidden="true"></span>
-                {{ row.fuse }}
+              <td v-for="(cell, i) in [row.apple, row.deskflow, row.deskfuse]" :key="i" :class="{ 'is-us': i === 2 }">
+                <span class="mark" :class="`mark--${cell[0]}`">{{ label[cell[0]] }}</span>
+                <span v-if="cell[1]" class="note">{{ cell[1] }}</span>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <div class="compare__cards" v-reveal>
-        <article v-for="row in rows" :key="row.feature" class="compare-card">
-          <h3>{{ row.feature }}</h3>
-          <div class="compare-card__rows">
-            <div class="compare-card__row">
-              <span>macOS 连续互通</span>
-              <b>{{ row.apple }}</b>
-            </div>
-            <div class="compare-card__row">
-              <span>Deskflow</span>
-              <b>{{ row.deskflow }}</b>
-            </div>
-            <div class="compare-card__row is-us">
-              <span>DeskFuse</span>
-              <b>{{ row.fuse }}</b>
-            </div>
-          </div>
-        </article>
-      </div>
-
-      <div class="compare__foot" v-reveal="80">
-        <p>
-          对比依据 2026-09
-          <template v-for="(source, index) in sources" :key="source.href">
-            <span v-if="index > 0" aria-hidden="true"> · </span>
-            <a :href="source.href" target="_blank" rel="noopener">{{ source.label }}</a>
-          </template>
-          。功能以各产品实际版本为准。
-        </p>
-        <p class="compare__pitch">
-          DeskFuse 不要求你把设备交给同一个账号，也不要求先经过云端。
-        </p>
-      </div>
+      <p class="compare__source">
+        依据 2026 年 9 月的公开资料：
+        <a class="link" href="https://support.apple.com/en-us/HT212757" target="_blank" rel="noopener">通用控制</a>、
+        <a class="link" href="https://support.apple.com/en-us/102430" target="_blank" rel="noopener">通用剪贴板</a>、
+        <a class="link" href="https://support.apple.com/guide/mac-help/mh14066/mac" target="_blank" rel="noopener">屏幕共享</a>、
+        <a class="link" href="https://github.com/deskflow/deskflow" target="_blank" rel="noopener">Deskflow</a>。
+      </p>
     </div>
   </section>
 </template>
 
 <style scoped>
-.compare {
-  background:
-    radial-gradient(ellipse 40% 35% at 85% 20%, rgba(255, 106, 60, 0.045), transparent 70%),
-    var(--bg);
-}
-
-.compare__wrap {
-  border-top: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line);
+.compare__scroll {
   overflow-x: auto;
-  scrollbar-width: thin;
+  border-radius: var(--r-card);
+  background: var(--c-paper);
+  box-shadow: inset 0 0 0 1px var(--c-line);
 }
 
-.compare__cards {
-  display: none;
-}
-
-.compare__table {
+table {
   width: 100%;
-  min-width: 760px;
+  min-width: 640px;
   border-collapse: collapse;
-  table-layout: fixed;
+  font-size: 0.9375rem;
 }
 
-.compare__table th,
-.compare__table td {
-  padding: 21px 22px;
-  border-bottom: 1px solid var(--line);
+th,
+td {
+  padding: 18px 20px;
   text-align: left;
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 1.5;
+  vertical-align: top;
 }
 
-.compare__table thead th {
-  padding-block: 16px;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
+thead th {
+  font-weight: 600;
+  color: var(--c-muted);
+  font-size: var(--t-small);
+}
+
+thead th.is-us {
+  color: var(--c-ink);
+}
+
+tbody tr {
+  border-top: 1px solid var(--c-line);
+}
+
+tbody th {
+  font-weight: 600;
   white-space: nowrap;
 }
 
-.compare__table thead th:first-child,
-.compare__table tbody th {
-  width: 21%;
+td.is-us {
+  background: rgba(240, 90, 36, 0.05);
 }
 
-.compare__table thead th:not(:first-child) {
-  width: 26.3%;
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
 }
 
-.compare__table tbody th {
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 550;
+.mark::before {
+  content: '';
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
 }
 
-.compare__table tbody td {
-  color: var(--muted);
+.mark--yes::before {
+  background: var(--c-graphite);
 }
 
-.compare__table tbody tr:last-child th,
-.compare__table tbody tr:last-child td {
-  border-bottom: 0;
+.is-us .mark--yes::before {
+  background: var(--c-signal);
 }
 
-.compare__table tbody tr {
-  transition: background-color 0.2s ease;
+.mark--partial::before {
+  background: linear-gradient(90deg, var(--c-graphite) 50%, var(--c-line) 50%);
 }
 
-.compare__table tbody tr:hover {
-  background: rgba(207, 255, 243, 0.025);
+.mark--no {
+  color: var(--c-muted);
 }
 
-.compare__feature-head {
-  color: var(--faint);
+.mark--no::before {
+  box-shadow: inset 0 0 0 1.5px var(--c-line);
 }
 
-.compare__us {
-  color: var(--aqua);
-  background: rgba(89, 243, 218, 0.045);
+.note {
+  display: block;
+  margin-top: 4px;
+  padding-left: 20px;
+  color: var(--c-muted);
+  font-size: var(--t-small);
+  line-height: 1.5;
 }
 
-.compare__us span {
-  font-family: var(--display);
-  font-size: 18px;
-  letter-spacing: 0;
-}
-
-.compare__us-cell {
-  position: relative;
-  color: var(--ink) !important;
-  font-weight: 500 !important;
-  background: rgba(89, 243, 218, 0.045);
-}
-
-.compare__mark {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 9px;
-  border-radius: 50%;
-  background: var(--aqua);
-  box-shadow: 0 0 8px rgba(89, 243, 218, 0.65);
-  vertical-align: 1px;
-}
-
-.compare__foot {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-top: 20px;
-}
-
-.compare__foot p {
-  max-width: 70ch;
-  color: var(--faint);
-  font-size: 10.5px;
-  line-height: 1.7;
-}
-
-.compare__foot a {
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-}
-
-.compare__foot a:hover {
-  color: var(--aqua);
-  border-color: var(--aqua);
-}
-
-.compare__pitch {
-  max-width: 34ch !important;
-  color: var(--muted) !important;
-  text-align: right;
-}
-
-@media (max-width: 900px) {
-  .compare__wrap {
-    display: none;
-  }
-
-  .compare__cards {
-    display: grid;
-    gap: 14px;
-  }
-
-  .compare-card {
-    border: 1px solid var(--line);
-    background: var(--surface);
-  }
-
-  .compare-card h3 {
-    padding: 13px 16px;
-    border-bottom: 1px solid var(--line);
-    background: rgba(207, 255, 243, 0.02);
-    color: var(--ink);
-    font-family: var(--display);
-    font-size: clamp(22px, 6vw, 30px);
-    font-weight: 400;
-    line-height: 1.1;
-  }
-
-  .compare-card__row {
-    display: grid;
-    grid-template-columns: 120px minmax(0, 1fr);
-    gap: 14px;
-    align-items: baseline;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .compare-card__row:last-child {
-    border-bottom: 0;
-  }
-
-  .compare-card__row span {
-    color: var(--faint);
-    font-family: var(--mono);
-    font-size: 8.5px;
-    letter-spacing: 0.03em;
-  }
-
-  .compare-card__row b {
-    color: var(--muted);
-    font-size: 12.5px;
-    font-weight: 400;
-    line-height: 1.55;
-  }
-
-  .compare-card__row.is-us {
-    background: rgba(89, 243, 218, 0.055);
-  }
-
-  .compare-card__row.is-us span {
-    color: var(--aqua);
-  }
-
-  .compare-card__row.is-us b {
-    color: var(--ink);
-    font-weight: 550;
-  }
-
-  .compare__foot {
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .compare__pitch {
-    max-width: 48ch !important;
-    text-align: left;
-  }
-}
-
-@media (max-width: 520px) {
-  .compare-card__row {
-    grid-template-columns: 96px minmax(0, 1fr);
-    gap: 10px;
-    padding: 11px 13px;
-  }
+.compare__source {
+  margin-top: 16px;
+  color: var(--c-muted);
+  font-size: var(--t-small);
 }
 </style>

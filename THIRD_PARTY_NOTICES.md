@@ -34,12 +34,6 @@ UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游
 - 原生系统符号／设备表现由平台 API 提供，不从 macOS 系统资源提取二进制素材加入仓库。
 - `design/current/` 的 v5 与菜单栏原图来自 Atelier，来源标识与 SHA-256 见同目录清单；布局参考为用户提供的截图，图标预览来自项目 SVG。设计图不属于原生应用运行证据，不随应用打包。
 - 早期设计参考中的风景照来自 [Unsplash 图片源](https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1)；原始示例照片及旧 HTML 样稿已清理，此处保留来源署名。[Unsplash License](https://unsplash.com/license) 单独适用，不属于项目双许可证。
-
-## 官网字体
-
-- 官网页头字体 `web/src/assets/fonts/deskfuse-display.woff2` 是 Smiley Sans（得意黑）v2.0.1 的子集，按 [SIL Open Font License 1.1](https://openfontlicense.org/open-font-license-official-text/) 使用，版权归 atelierAnchor 所有。子集修改了字体名，未在名称中使用保留字体名。
-- OFL 全文与来源说明位于 `web/public/fonts/OFL.txt` 和 `web/public/fonts/NOTICE.txt`，随官网构建产物一并发布。该字体仅用于官网，不嵌入应用。
-
 ## 参考项目
 
 BlueSync 用于交互行为参考；DeskFuse 使用独立 Rust 实现、协议及状态格式。Deskflow 仅作为行为研究背景，不因参考行为把其代码或测试材料复制进本项目。来源声明不能替代对实际引入代码的逐项审查。

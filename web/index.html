@@ -3,29 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DeskFuse — 多台 Mac，接成一台。</title>
+  <title>DeskFuse — 桌上几台电脑，当一台来用</title>
   <meta
     name="description"
-    content="DeskFuse 是 macOS 优先的原生桌面协作工具：剪贴板同步、文件传输、暂存抽屉、屏幕与键鼠共享。Rust 引擎、QUIC 加密，默认只在局域网内直连。"
+    content="DeskFuse 让局域网里的几台 Mac 共用一套键鼠和一个剪贴板，文件和文件夹直接互传。只在你自己的电脑之间直连，QUIC 加密，不经过任何服务器。"
   />
-  <meta name="theme-color" content="#06100e" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#ecebe7" />
+  <meta name="color-scheme" content="light" />
   <meta name="robots" content="index,follow" />
   <link rel="canonical" href="https://deskfuse.godd.cc/" />
   <link rel="icon" type="image/png" href="assets/icon.png" />
   <link rel="apple-touch-icon" href="assets/icon.png" />
-  <link
-    rel="preload"
-    href="/src/assets/fonts/deskfuse-display.woff2"
-    as="font"
-    type="font/woff2"
-    crossorigin
-  />
 
-  <meta property="og:title" content="DeskFuse — 多台 Mac，接成一台。" />
+  <meta property="og:title" content="DeskFuse — 桌上几台电脑，当一台来用" />
   <meta
     property="og:description"
-    content="剪贴板、文件、屏幕与键鼠，在可信设备之间直接流转。Rust 引擎，QUIC 加密，默认局域网直连。"
+    content="几台 Mac 共用一套键鼠和一个剪贴板，文件直接互传。局域网直连，QUIC 加密。"
   />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
@@ -34,22 +27,20 @@
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="DeskFuse — 多台 Mac，接成一台。" />
+  <meta name="twitter:title" content="DeskFuse — 桌上几台电脑，当一台来用" />
   <meta
     name="twitter:description"
-    content="剪贴板、文件、屏幕与键鼠，在可信设备之间直接流转。"
+    content="几台 Mac 共用一套键鼠和一个剪贴板，文件直接互传。"
   />
   <meta name="twitter:image" content="https://deskfuse.godd.cc/og.png" />
 </head>
 <body>
   <div id="app"></div>
   <noscript>
-    <div style="min-height:100vh;margin:0;padding:80px 24px;box-sizing:border-box;background:#06100e;color:#e9f3ee;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif">
-      <div style="max-width:720px;margin:0 auto">
-        <h1 style="font-size:32px;margin:0 0 16px">DeskFuse</h1>
-        <p style="color:#94aaa3;line-height:1.7">官网的交互演示需要 JavaScript。你可以直接从 GitHub Releases 下载 macOS 安装包。</p>
-        <p><a style="color:#59f3da" href="https://github.com/GodD6366/DeskFuse/releases">前往 GitHub Releases</a></p>
-      </div>
+    <div style="max-width:640px;margin:0 auto;padding:80px 24px;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;color:#24262b;line-height:1.7">
+      <h1 style="font-size:32px;margin:0 0 12px">DeskFuse</h1>
+      <p style="color:#676a71">桌上几台电脑，当一台来用。安装包在 GitHub Releases。</p>
+      <p><a style="color:#b8410f" href="https://github.com/GodD6366/DeskFuse/releases">前往 GitHub Releases 下载</a></p>
     </div>
   </noscript>
   <script type="module" src="/src/main.ts"></script>

@@ -17,6 +17,14 @@ export function fallbackAssetUrl(name: string): string {
 export interface DownloadAsset {
   name: string
   url: string
+  size?: number
+}
+
+export interface MacDownload {
+  url: string
+  /** 应用包（zip）或磁盘映像（dmg），决定安装第一步怎么写。 */
+  kind: 'zip' | 'dmg'
+  size?: number
 }
 
 export const ARM64_DISK_IMAGE = config.assets.arm64
@@ -32,14 +40,14 @@ export function appPackageName(diskImage: string): string {
  * 用同一发布里的磁盘映像，避免按钮在过渡期指向不存在的文件。
  * 发布列表也读不到时，回退到已知存在的磁盘映像。
  */
-export function macAppDownloadUrl(
+export function macAppDownload(
   assets: readonly DownloadAsset[] | null | undefined,
   diskImage: string,
-): string {
+): MacDownload {
   const appZip = appPackageName(diskImage)
   const zip = assets?.find((asset) => asset.name === appZip && asset.url)
-  if (zip) return zip.url
+  if (zip) return { url: zip.url, kind: 'zip', size: zip.size }
   const image = assets?.find((asset) => asset.name === diskImage && asset.url)
-  if (image) return image.url
-  return fallbackAssetUrl(diskImage)
+  if (image) return { url: image.url, kind: 'dmg', size: image.size }
+  return { url: fallbackAssetUrl(diskImage), kind: 'dmg' }
 }
