@@ -1,4 +1,5 @@
-//! Process-global lifecycle and error records for the input-path UDP sockets.
+//! Process-global lifecycle and error records for the control (42424) and
+//! input-path UDP sockets.
 //!
 //! Answers, from an exported diagnostics file, why a 42425 probe keeps timing
 //! out until the process restarts: which listener/dialer sockets exist, how old

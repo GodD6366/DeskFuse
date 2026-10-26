@@ -2108,6 +2108,7 @@ impl QuinnTransport {
         let bound_addr = endpoint
             .local_addr()
             .map_err(|e| TransportError::Quic(e.to_string()))?;
+        socket_diag::record("listener_bound", bound_addr, "interface=control".to_owned());
         let lan_endpoints = Arc::new(Mutex::new(BTreeMap::new()));
         if local_hello
             .capabilities

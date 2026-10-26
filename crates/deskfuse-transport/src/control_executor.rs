@@ -46,7 +46,9 @@ impl quinn::Runtime for ControlQuicRuntime {
         socket: std::net::UdpSocket,
     ) -> io::Result<Arc<dyn quinn::AsyncUdpSocket>> {
         let _entered = self.0.enter();
-        quinn::TokioRuntime.wrap_udp_socket(socket)
+        // Same semantics as quinn's Tokio socket, but OS send/recv errors on
+        // 42424 are recorded instead of surfacing only as handshake timeouts.
+        Ok(Arc::new(crate::socket_diag::InputUdpSocket::new(socket)?))
     }
 
     fn now(&self) -> Instant {
