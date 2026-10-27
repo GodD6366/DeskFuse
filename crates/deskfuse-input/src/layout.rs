@@ -333,6 +333,17 @@ fn snap_device_move_with_attachment(
         return Ok((dx, dy));
     }
     let alignment = distance.unwrap_or(48.0);
+    let preferred_horizontal = moving
+        .iter()
+        .flat_map(|a| stationary.iter().map(move |b| {
+            let overlap_x = (a.x + dx + a.width).min(b.x + b.width) - (a.x + dx).max(b.x);
+            let overlap_y = (a.y + dy + a.height).min(b.y + b.height) - (a.y + dy).max(b.y);
+            (overlap_x, overlap_y, overlap_x * overlap_y)
+        }))
+        .filter(|(_, _, area)| *area > 0.0)
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(overlap_x, overlap_y, _)| overlap_x <= overlap_y)
+        .unwrap_or_else(|| dx.abs() >= dy.abs());
     let mut candidates = Vec::new();
     for a in &moving {
         for b in &stationary {
@@ -342,8 +353,9 @@ fn snap_device_move_with_attachment(
             }) {
                 continue;
             }
-            // Try all four seams, including cross-axis endpoints for irregular multi-screen groups.
-            for horizontal in [true, false] {
+            // Preserve the axis of the smaller overlap. A nearly aligned
+            // vertical edge must win over a closer top/bottom seam.
+            for horizontal in [preferred_horizontal] {
                 let (a_start, a_size, b_start, b_size, desired) = if horizontal {
                     (a.y, a.height, b.y, b.height, dy)
                 } else {

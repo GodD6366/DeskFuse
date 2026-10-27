@@ -1,7 +1,8 @@
 <Window
   x:Class="DeskFuse.Windows.MainWindow"
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="using:DeskFuse.Windows">
   <!-- Shell mirrored from the macOS MainSidebar/RootView: a 212 pt sidebar
        with the brand inside the hidden titlebar row, grouped navigation, the
        settings category rail and the health footer. The workspace uses the
@@ -55,8 +56,7 @@
         </Button>
         <StackPanel Orientation="Horizontal" Spacing="8" Margin="20,0,0,0">
           <Grid Width="22" Height="22">
-            <FontIcon Glyph="&#xE8A7;" FontSize="22" Foreground="{ThemeResource DFAccentBrush}" />
-            <Image Source="ms-appx:///Assets/Square44x44Logo.png" Stretch="Uniform" />
+            <Image x:Name="BrandMarkImage" Stretch="Uniform" />
           </Grid>
           <TextBlock Text="DeskFuse" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
         </StackPanel>
@@ -75,7 +75,7 @@
         <TextBlock x:Name="PageTitle" Text="设备" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" />
         <Border x:Name="PageBadge" Visibility="Collapsed" Background="{ThemeResource DFWarningSubtleBrush}"
                 CornerRadius="4" Padding="6,1" Margin="2,0,0,0" VerticalAlignment="Center">
-          <TextBlock Text="Beta" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource DFWarningBrush}" />
+          <TextBlock Text="即将支持" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource DFWarningBrush}" />
         </Border>
       </StackPanel>
       <Grid x:Name="FeatureControlsHost" Grid.Column="1" VerticalAlignment="Center" />
@@ -290,14 +290,43 @@
             </Grid>
           </Border>
 
-          <!-- 类型筛选已挪到左侧"分组与列表"；这里保留来源设备筛选 -->
+          <!-- 来源筛选（左）+ 显示模式切换（右），与 mac 对齐 -->
           <Grid Grid.Row="2" Margin="20,0,16,8">
-            <ComboBox x:Name="SourceFilter" MinWidth="120" HorizontalAlignment="Left"
-                      PlaceholderText="所有设备" SelectionChanged="HistoryFilterChanged" />
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="SourceFilterButton" Click="SourceFilterClick"
+                    MinHeight="28" Padding="8,0" Margin="0"
+                    CornerRadius="6" Template="{StaticResource DFFlatButtonTemplate}"
+                    Background="Transparent" BorderThickness="0">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <FontIcon Glyph="&#xE7F8;" FontSize="13" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="SourceFilterLabel" Text="所有设备" FontSize="12"
+                           Foreground="{ThemeResource DFMutedBrush}" VerticalAlignment="Center" />
+                <FontIcon Glyph="&#xE70D;" FontSize="10" Foreground="{ThemeResource DFMutedBrush}" />
+              </StackPanel>
+            </Button>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+              <Button x:Name="DisplayModeListButton" Click="DisplayModeListClick"
+                      ToolTipService.ToolTip="列表视图" MinHeight="28" MinWidth="32" Padding="6,0"
+                      CornerRadius="6" Template="{StaticResource DFFlatButtonTemplate}"
+                      Background="{ThemeResource DFControlBrush}" BorderThickness="0">
+                <FontIcon Glyph="&#xE8FD;" FontSize="13" />
+              </Button>
+              <Button x:Name="DisplayModeGridButton" Click="DisplayModeGridClick"
+                      ToolTipService.ToolTip="网格视图" MinHeight="28" MinWidth="32" Padding="6,0"
+                      CornerRadius="6" Template="{StaticResource DFFlatButtonTemplate}"
+                      Background="Transparent" BorderThickness="0">
+                <FontIcon Glyph="&#xE80A;" FontSize="13" />
+              </Button>
+            </StackPanel>
           </Grid>
 
           <Grid Grid.Row="3">
+            <!-- 列表模式 -->
             <ListView x:Name="HistoryList" SelectionChanged="HistorySelectionChanged"
+                      ContainerContentChanging="HistoryContainerChanging"
                       DoubleTapped="HistoryDoubleClick" Background="Transparent" BorderThickness="0"
                       Padding="8,0,8,8" SelectionMode="Extended" IsMultiSelectCheckBoxEnabled="False">
               <ListView.ItemContainerStyle>
@@ -306,20 +335,26 @@
                   <Setter Property="Padding" Value="0" />
                   <Setter Property="Margin" Value="0,1" />
                   <Setter Property="MinHeight" Value="52" />
+                  <Setter Property="AutomationProperties.AutomationId" Value="{Binding Id}" />
                   <Setter Property="CornerRadius" Value="8" />
                 </Style>
               </ListView.ItemContainerStyle>
               <ListView.ContextFlyout>
-                <MenuFlyout>
+                <MenuFlyout Opening="HistoryContextOpening">
                   <MenuFlyoutItem Text="复制" Click="CopyClick" />
                   <MenuFlyoutItem Text="编辑标题…" Click="EditHistoryTitleClick" />
                   <MenuFlyoutItem Text="编辑内容…" Click="EditHistoryContentClick" />
                   <MenuFlyoutSeparator />
-                  <MenuFlyoutItem Text="保存图片…" Click="SaveImageClick" />
-                  <MenuFlyoutItem Text="保存文本…" Click="SaveTextClick" />
-                  <MenuFlyoutItem Text="打开文件" Click="OpenFileClick" />
-                  <MenuFlyoutItem Text="在资源管理器中显示" Click="RevealClick" />
+                  <MenuFlyoutItem x:Name="SaveImageContextMenuItem" Text="保存图片…" Click="SaveImageClick" />
+                  <MenuFlyoutItem x:Name="SaveTextContextMenuItem" Text="保存文本…" Click="SaveTextClick" />
+                  <MenuFlyoutItem x:Name="SaveFilesContextMenuItem" Text="保存文件…" Click="SaveFilesClick" />
+                  <MenuFlyoutItem x:Name="OpenFileContextMenuItem" Text="打开文件" Click="OpenFileClick" />
+                  <MenuFlyoutItem x:Name="RevealContextMenuItem" Text="在资源管理器中显示" Click="RevealClick" />
                   <MenuFlyoutItem Text="加入暂存区" Click="AddShelfClick" />
+                  <MenuFlyoutSubItem x:Name="ShareToDeviceMenu" Text="发送到设备" />
+                  <MenuFlyoutSubItem x:Name="WorkflowHistoryMenu" Text="使用工作流" />
+                  <MenuFlyoutSeparator />
+                  <MenuFlyoutSubItem x:Name="AddToListContextMenu" Text="添加到列表" />
                   <MenuFlyoutSeparator />
                   <MenuFlyoutItem Text="删除记录" Click="DeleteHistoryClick" />
                 </MenuFlyout>
@@ -343,8 +378,7 @@
                       <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <Border Width="42" Height="42" CornerRadius="8" Background="{ThemeResource DFControlBrush}">
-                      <FontIcon Glyph="{Binding KindGlyph}" FontSize="16"
-                                Foreground="{ThemeResource DFMutedBrush}" />
+                      <local:ClipboardThumbnail Entry="{Binding}" Loaded="HistoryThumbnailLoaded" />
                     </Border>
                     <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center" Spacing="2">
                       <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="Medium"
@@ -359,6 +393,42 @@
                 </DataTemplate>
               </ListView.ItemTemplate>
             </ListView>
+
+            <!-- Both modes retain their scroll position; only the viewport is realized. -->
+            <ScrollViewer x:Name="HistoryGrid" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"
+                          Padding="12,0,12,12" ViewChanged="HistoryGridViewChanged">
+              <ItemsRepeater x:Name="HistoryCards" ElementPrepared="HistoryCardPrepared"
+                             ElementClearing="HistoryCardClearing">
+                <ItemsRepeater.Layout>
+                  <local:ClipboardMasonryLayout />
+                </ItemsRepeater.Layout>
+                <ItemsRepeater.ItemTemplate>
+                  <DataTemplate>
+                    <Border Loaded="HistoryCardLoaded" Tapped="HistoryCardTapped" Background="{ThemeResource DFCanvasBrush}"
+                            BorderBrush="{ThemeResource DFLineBrush}" BorderThickness="1"
+                            CornerRadius="12" Padding="12" MinHeight="112">
+                      <StackPanel Spacing="6">
+                        <local:ClipboardThumbnail Entry="{Binding}" Height="140"
+                                                  Loaded="HistoryThumbnailLoaded" />
+                        <TextBlock Text="{Binding Title}" FontSize="13" MaxLines="4"
+                                   TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                        <Grid ColumnSpacing="8">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="{Binding TimeLabel}" FontSize="11" Foreground="{ThemeResource DFMutedBrush}" />
+                          <TextBlock Grid.Column="1" Text="{Binding SourceName}" FontSize="11"
+                                     TextAlignment="Right" TextTrimming="CharacterEllipsis"
+                                     Foreground="{ThemeResource DFMutedBrush}" />
+                        </Grid>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsRepeater.ItemTemplate>
+              </ItemsRepeater>
+            </ScrollViewer>
+
             <StackPanel x:Name="HistoryEmpty" Margin="24,40" Spacing="8" HorizontalAlignment="Center"
                         IsHitTestVisible="False">
               <FontIcon Glyph="&#xE8C8;" FontSize="24" Foreground="{ThemeResource DFMutedBrush}"
@@ -383,20 +453,25 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
-          <StackPanel Margin="24,18,24,14" Spacing="5">
-            <TextBlock x:Name="PreviewTitle" Text="复制内容，从这里接着用" FontSize="15" FontWeight="SemiBold"
-                       TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+          <!-- header: 小字 metadata 在上，大标题在下（mac 排版） -->
+          <StackPanel Margin="24,18,24,14" Spacing="6">
             <TextBlock x:Name="PreviewMetadata" Text="在任意应用里复制，内容会在可信设备之间同步。"
                        FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
+            <TextBlock x:Name="PreviewTitle" Visibility="Collapsed" FontSize="15" FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
           </StackPanel>
 
           <ScrollViewer Grid.Row="1" Margin="24,0,24,0" VerticalScrollBarVisibility="Auto">
             <Grid>
               <TextBlock x:Name="TextPreview" Text="内容将在这里显示" FontSize="15" IsTextSelectionEnabled="True"
                          TextWrapping="Wrap" LineHeight="22" />
-              <Image x:Name="ImagePreview" Stretch="Uniform" MaxHeight="440" HorizontalAlignment="Center"
-                     Visibility="Collapsed" />
+              <Border x:Name="ImagePreviewHost" CornerRadius="12" Background="{ThemeResource DFControlBrush}"
+                      Visibility="Collapsed" Margin="0,0,0,0" Padding="8">
+                <Image x:Name="ImagePreview" Stretch="Uniform" MaxHeight="440" HorizontalAlignment="Center" />
+              </Border>
               <StackPanel x:Name="PreviewEmpty" HorizontalAlignment="Center" VerticalAlignment="Center"
                           Spacing="8" MaxWidth="360" IsHitTestVisible="False">
                 <FontIcon Glyph="&#xE8C8;" FontSize="40" Foreground="{ThemeResource DFMutedBrush}"
@@ -410,31 +485,97 @@
             </Grid>
           </ScrollViewer>
 
-          <StackPanel Grid.Row="2" Margin="24,12,24,20" Spacing="10">
-            <TextBlock x:Name="FormatMetadata" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-              <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="EditContentButton" Content="编辑内容" Click="EditHistoryContentClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False" />
-                <Button x:Name="EditTitleButton" Content="编辑标题" Click="EditHistoryTitleClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False" />
-                <Button x:Name="RevealButton" Content="在资源管理器中显示" Click="RevealClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" Visibility="Collapsed" />
-                <Button x:Name="FitButton" Content="适合窗口 / 填满" Click="FitClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" Visibility="Collapsed" />
-              </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                <Button x:Name="AddShelfButton" Content="加入暂存区" Click="AddShelfClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False" />
-                <Button x:Name="CopyButton" Content="复制" Click="CopyClick"
-                        Style="{StaticResource DFButtonPrimaryStyle}" IsEnabled="False" />
-              </StackPanel>
-            </Grid>
-          </StackPanel>
+          <!-- metadataCard 上方分隔线 -->
+          <Border Grid.Row="2" Height="1" Background="{ThemeResource DFLineBrush}" Margin="24,0,24,0" />
+
+          <!-- metadataCard：mac 的卡片化元数据 -->
+          <Border x:Name="MetadataCard" Grid.Row="3" Margin="24,12,24,0"
+                  Background="{ThemeResource DFSurfaceBrush}" BorderBrush="{ThemeResource DFLineBrush}"
+                  BorderThickness="1" CornerRadius="12" Padding="16,12" Visibility="Collapsed">
+            <StackPanel Spacing="6">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="62" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="种类" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="MetaKind" Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis" />
+              </Grid>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="62" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="大小" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="MetaSize" Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis" />
+              </Grid>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="62" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="来源设备" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="MetaSource" Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis" />
+              </Grid>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="62" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="添加时间" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="MetaTime" Grid.Column="1" FontSize="12" TextTrimming="CharacterEllipsis" />
+              </Grid>
+              <Grid x:Name="MetaOcrRow" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="62" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="图片文字" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
+                <TextBlock x:Name="MetaOcr" Grid.Column="1" FontSize="12" TextWrapping="Wrap"
+                           MaxLines="4" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" />
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- 操作行：右对齐 [加入暂存区] [复制] [⋯] -->
+          <Grid Grid.Row="4" Margin="24,12,24,20">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <Button x:Name="RevealButton" Content="在资源管理器中显示" Click="RevealClick"
+                      Style="{StaticResource DFButtonSecondaryStyle}" Visibility="Collapsed" />
+              <Button x:Name="FitButton" Content="适合窗口 / 填满" Click="FitClick"
+                      Style="{StaticResource DFButtonSecondaryStyle}" Visibility="Collapsed" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="AddShelfButton" Content="加入暂存区" Click="AddShelfClick"
+                      Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False" />
+              <Button x:Name="CopyButton" Content="复制" Click="CopyClick"
+                      Style="{StaticResource DFButtonPrimaryStyle}" IsEnabled="False" />
+              <DropDownButton x:Name="MoreActionsButton" Style="{StaticResource DFButtonSecondaryStyle}"
+                              MinWidth="32" Padding="8,0" IsEnabled="False">
+                <FontIcon Glyph="&#xE712;" FontSize="13" />
+                <DropDownButton.Flyout>
+                  <MenuFlyout Opening="HistoryContextOpening">
+                    <MenuFlyoutItem x:Name="EditTitleMenuItem" Text="编辑标题…" Click="EditHistoryTitleClick" />
+                    <MenuFlyoutItem x:Name="EditContentMenuItem" Text="编辑内容…" Click="EditHistoryContentClick" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="SaveImageMenuItem" Text="保存图片…" Click="SaveImageClick" />
+                    <MenuFlyoutItem x:Name="SaveTextMenuItem" Text="保存文本…" Click="SaveTextClick" />
+                    <MenuFlyoutItem x:Name="SaveFilesMenuItem" Text="保存文件…" Click="SaveFilesClick" />
+                    <MenuFlyoutItem x:Name="OpenFileMenuItem" Text="打开文件" Click="OpenFileClick" />
+                    <MenuFlyoutSubItem x:Name="WorkflowHistoryMenuCompact" Text="使用工作流" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutSubItem x:Name="AddToListMenu" Text="添加到列表" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="DeleteMenuItem" Text="删除记录" Click="DeleteHistoryClick" />
+                  </MenuFlyout>
+                </DropDownButton.Flyout>
+              </DropDownButton>
+            </StackPanel>
+          </Grid>
         </Grid>
         <Border Grid.Column="0" HorizontalAlignment="Right" Width="1" Background="{ThemeResource DFLineBrush}" />
       </Grid>
@@ -531,59 +672,10 @@
             </Grid>
           </Border>
 
-          <!-- Windows 侧能力卡：参与者管理、输入 helper 状态、快捷键与已保存布局 -->
-          <StackPanel Grid.Row="2" Spacing="18">
-            <Border Style="{StaticResource CardBorder}">
-              <StackPanel Spacing="10">
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                  </Grid.ColumnDefinitions>
-                  <TextBlock Text="参与者" FontSize="15" FontWeight="SemiBold" />
-                  <Button Grid.Column="1" Content="添加设备" Click="AddInputDeviceClick"
-                          Style="{StaticResource DFButtonSecondaryStyle}" MinHeight="28" FontSize="12"
-                          Padding="10,0" Margin="0" />
-                </Grid>
-                <TextBlock x:Name="InputParticipantsEmpty" Text="还没有添加设备。添加已配对的电脑后，可把指针移过屏幕边缘进行控制。"
-                           FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
-                <StackPanel x:Name="InputParticipantsPanel" Spacing="0" />
-              </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardBorder}">
-              <StackPanel Spacing="12">
-                <TextBlock Text="键鼠状态" FontSize="15" FontWeight="SemiBold" />
-                <TextBlock x:Name="InputAvailability" Text="正在连接普通桌面输入 helper…" FontSize="12"
-                           Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
-                <CheckBox x:Name="InputReceiverReady" Content="允许已授权主控控制当前普通桌面" IsEnabled="False" />
-                <Button x:Name="ReclaimInputButton" Content="停止被控并收回本机输入" Click="ReclaimInputClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False" HorizontalAlignment="Left" />
-              </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardBorder}">
-              <StackPanel Spacing="12">
-                <TextBlock Text="共享快捷键" FontSize="15" FontWeight="SemiBold" />
-                <TextBlock Text="每行对应左、右、上、下、锁定、紧急收回；修改后由输入运行时校验并持久化。"
-                           FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
-                <TextBox x:Name="ShortcutBindings" AcceptsReturn="True" Height="120" FontFamily="Cascadia Mono" />
-                <Button Content="保存快捷键" Click="SaveShortcutBindingsClick"
-                        Style="{StaticResource DFButtonSecondaryStyle}" HorizontalAlignment="Left" />
-              </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardBorder}">
-              <StackPanel Spacing="12">
-                <TextBlock Text="已保存的布局" FontSize="15" FontWeight="SemiBold" />
-                <TextBlock Text="布局绑定到当前 Wi-Fi；回到该网络会自动恢复排布。当前网络标识见页头的 Wi-Fi 胶囊。"
-                           FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
-                <Button x:Name="SaveEnvironmentLayoutButton" Content="保存布局到当前 Wi-Fi"
-                        Click="SaveEnvironmentLayoutClick" Style="{StaticResource DFButtonSecondaryStyle}"
-                        HorizontalAlignment="Left" />
-                <StackPanel x:Name="LayoutScenesPanel" Spacing="4" />
-              </StackPanel>
-            </Border>
+          <StackPanel Grid.Row="2" Spacing="8">
+            <TextBlock x:Name="InputAvailability" FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
+            <Button x:Name="ReclaimInputButton" Content="停止被控" Click="ReclaimInputClick"
+                    Style="{StaticResource DFButtonSecondaryStyle}" Visibility="Collapsed" HorizontalAlignment="Left" />
           </StackPanel>
         </Grid>
       </ScrollViewer>
@@ -623,15 +715,7 @@
                     <Grid x:Name="LanAccessToggleHost" Grid.Column="1" VerticalAlignment="Center" />
                   </Grid>
                   <Border Height="1" Background="{ThemeResource DFLineBrush}" Margin="0,12" />
-                  <StackPanel Spacing="12" HorizontalAlignment="Center" Margin="0,8">
-                    <TextBlock Text="&#x25A6;" FontSize="40" Foreground="{ThemeResource DFMutedBrush}"
-                               HorizontalAlignment="Center" />
-                    <TextBlock Text="开启后扫码传输" FontSize="15" FontWeight="SemiBold"
-                               HorizontalAlignment="Center" />
-                    <TextBlock Text="Windows 端暂不支持手机扫码传输；开启后将在同一局域网内提供网页入口。"
-                               FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap"
-                               TextAlignment="Center" MaxWidth="360" />
-                  </StackPanel>
+                  <StackPanel x:Name="LanWebContent" Spacing="12" HorizontalAlignment="Center" Margin="0,8" />
                 </StackPanel>
               </Border>
               <TextBlock Text="离开此页仍保持可用；重启后自动恢复上次的开关。" FontSize="12"
@@ -713,7 +797,9 @@
                     </Grid>
                   </Grid>
 
-                  <Border Grid.Row="1" Height="1" Background="{ThemeResource DFLineBrush}" />
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="12,0,12,8">
+                      <Button Content="选择文件夹…" Click="PickFolderClick" Style="{StaticResource DFButtonPlainStyle}" />
+                    </StackPanel>
 
                   <!-- 底栏：目标电脑在左，操作在右 -->
                   <Grid Grid.Row="2" Margin="16,12">
@@ -787,6 +873,7 @@
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
           <StackPanel Margin="0,0,0,12" Spacing="6">
             <TextBlock Text="工作流" FontSize="15" FontWeight="SemiBold" />
@@ -810,6 +897,8 @@
                 <DataTemplate>
                   <StackPanel Spacing="3">
                     <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Medium" />
+                    <TextBlock Text="{Binding SummaryLabel}" FontSize="11"
+                               Foreground="{ThemeResource DFMutedBrush}" />
                     <TextBlock Text="{Binding ShortcutLabel}" FontSize="11"
                                Foreground="{ThemeResource DFMutedBrush}" />
                   </StackPanel>
@@ -817,23 +906,69 @@
               </ListView.ItemTemplate>
             </ListView>
           </Border>
+          <StackPanel Grid.Row="2" Margin="0,12,0,0" Spacing="8">
+            <TextBlock x:Name="WorkflowSyncStatus" FontSize="12"
+                       Foreground="{ThemeResource DFMutedBrush}" Text="正在读取同步状态…"
+                       TextWrapping="Wrap" />
+            <StackPanel x:Name="WorkflowConflictList" Spacing="6" />
+            <Button Content="刷新同步状态" Click="RefreshWorkflowCatalogClick"
+                    Style="{StaticResource DFButtonSecondaryStyle}" HorizontalAlignment="Left" />
+            <TextBlock x:Name="WorkflowRunsHeader" Text="最近运行" FontSize="12" FontWeight="SemiBold"
+                       Foreground="{ThemeResource DFMutedBrush}" Visibility="Collapsed" />
+            <StackPanel x:Name="WorkflowRunsPanel" Spacing="6" />
+          </StackPanel>
         </Grid>
         <Border Grid.Column="1" Style="{StaticResource CardBorder}">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel x:Name="WorkflowEditor" Spacing="10">
               <TextBlock Text="选择或新建工作流" FontSize="15" FontWeight="SemiBold" />
-              <TextBlock Text="快捷键与步骤由服务端 Rust 模型校验；保存后写入服务数据库。"
+              <TextBlock Text="中间结果不会写入剪贴板；图片步骤只处理剪贴板中的图片。"
                          FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
               <TextBlock Text="名称" FontWeight="SemiBold" />
               <TextBox x:Name="WorkflowName" />
+              <TextBlock Text="接受内容" FontWeight="SemiBold" />
+              <ComboBox x:Name="WorkflowInputType" MinWidth="180" HorizontalAlignment="Left"
+                        SelectionChanged="WorkflowInputTypeChanged">
+                <ComboBoxItem Content="任意内容" Tag="Any" />
+                <ComboBoxItem Content="文字" Tag="Text" />
+                <ComboBoxItem Content="图片" Tag="Image" />
+              </ComboBox>
               <CheckBox x:Name="WorkflowEnabled" Content="启用本机快捷键" />
               <TextBlock Text="快捷键（key code, modifiers；留空表示无快捷键）" FontWeight="SemiBold" />
-              <TextBox x:Name="WorkflowShortcut" PlaceholderText="例如 49,1835008" />
-              <TextBlock Text="步骤由服务端校验；不支持的动作会被拒绝。" FontSize="12"
-                         Foreground="{ThemeResource DFMutedBrush}" />
+              <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="WorkflowShortcut" PlaceholderText="例如 49,1835008" />
+                <Button x:Name="WorkflowShortcutRecord" Grid.Column="1" Content="录制…"
+                        Click="RecordWorkflowShortcutClick" Style="{StaticResource DFButtonSecondaryStyle}" />
+              </Grid>
+              <TextBlock Text="依次处理" FontWeight="SemiBold" />
+              <StackPanel x:Name="WorkflowStepList" Spacing="8" />
+              <Button x:Name="AddWorkflowStepButton" Content="添加动作" HorizontalAlignment="Left"
+                      Style="{StaticResource DFButtonSecondaryStyle}">
+                <Button.Flyout>
+                  <MenuFlyout>
+                    <MenuFlyoutItem Text="文字替换" Tag="TextReplace" Click="AddWorkflowStepClick" />
+                    <MenuFlyoutItem Text="去除首尾空白" Tag="TextTrim" Click="AddWorkflowStepClick" />
+                    <MenuFlyoutItem Text="压缩图片" Tag="Compress" Click="AddWorkflowStepClick" />
+                    <MenuFlyoutItem Text="调整尺寸" Tag="Resize" Click="AddWorkflowStepClick" />
+                    <MenuFlyoutItem Text="转换格式" Tag="Convert" Click="AddWorkflowStepClick" />
+                  </MenuFlyout>
+                </Button.Flyout>
+              </Button>
+              <TextBlock x:Name="WorkflowCompatibility" FontSize="12"
+                         Foreground="{ThemeResource DFWarningBrush}" TextWrapping="Wrap"
+                         Visibility="Collapsed" />
+              <TextBlock Text="步骤由服务端校验；文件重命名、ZIP 与 macOS 快捷指令在 Windows 上不可用。"
+                         FontSize="12" Foreground="{ThemeResource DFMutedBrush}" TextWrapping="Wrap" />
               <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button x:Name="SaveWorkflowButton" Content="保存" Click="SaveWorkflowClick"
                         Style="{StaticResource DFButtonPrimaryStyle}" />
+                <Button x:Name="RunWorkflowButton" Content="运行" Click="RunWorkflowClick"
+                        Style="{StaticResource DFButtonSecondaryStyle}" IsEnabled="False"
+                        ToolTipService.ToolTip="按服务端已保存的定义执行；修改后请先保存。" />
                 <Button x:Name="DeleteWorkflowButton" Content="删除" Click="DeleteWorkflowClick"
                         Style="{StaticResource DFButtonSecondaryStyle}" />
               </StackPanel>
@@ -888,8 +1023,8 @@
       <ScrollViewer x:Name="MicrophonePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24,20,24,24" Spacing="24" MaxWidth="880" HorizontalAlignment="Center">
           <StackPanel Spacing="6">
-            <TextBlock Text="这台电脑要怎么参与？" FontSize="15" FontWeight="SemiBold" />
-            <TextBlock Text="先选择身份，再完成对应的设置。之后可以随时更改。"
+            <TextBlock Text="麦克风共享 · 即将支持" FontSize="15" FontWeight="SemiBold" />
+            <TextBlock Text="Windows 端尚未开放麦克风共享。"
                        FontSize="12" Foreground="{ThemeResource DFMutedBrush}" />
           </StackPanel>
           <Grid ColumnSpacing="12">
@@ -954,13 +1089,19 @@
                 </Border>
                 <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center" Spacing="4">
                   <TextBlock Text="鼠标" FontSize="15" FontWeight="SemiBold" />
-                  <TextBlock Text="未检测到鼠标 · 使用标准 5 键映射" FontSize="12"
+                  <TextBlock Text="鼠标自定义即将支持；跨屏共享请前往键鼠共享页面" FontSize="12"
                              Foreground="{ThemeResource DFMutedBrush}" />
                 </StackPanel>
-                <Border Grid.Column="2" Background="{ThemeResource DFControlBrush}" CornerRadius="12"
-                        Padding="8,3" VerticalAlignment="Center">
-                  <TextBlock Text="未检测到" FontSize="11" Foreground="{ThemeResource DFMutedBrush}" />
-                </Border>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                  <Border x:Name="MouseSharingPill" Background="{ThemeResource DFSuccessSubtleBrush}" CornerRadius="12"
+                          Padding="8,3" Visibility="Collapsed" ToolTipService.ToolTip="键鼠共享已开启，这台电脑的鼠标正在作为主控">
+                    <TextBlock Text="主控鼠标生效中" FontSize="11" Foreground="{ThemeResource DFSuccessBrush}" />
+                  </Border>
+                  <Border Background="{ThemeResource DFControlBrush}" CornerRadius="12"
+                          Padding="8,3">
+                    <TextBlock Text="即将支持" FontSize="11" Foreground="{ThemeResource DFMutedBrush}" />
+                  </Border>
+                </StackPanel>
               </Grid>
             </Border>
             <Border Style="{StaticResource CardBorder}">
@@ -971,7 +1112,7 @@
                     <ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
                   <TextBlock Text="按键分配" FontSize="15" FontWeight="SemiBold" />
-                  <TextBlock Grid.Column="1" Text="Windows 端暂不支持自定义" FontSize="11"
+                  <TextBlock Grid.Column="1" Text="即将支持" FontSize="11"
                              Foreground="{ThemeResource DFMutedBrush}" VerticalAlignment="Center" />
                 </Grid>
                 <StackPanel x:Name="MouseBindingList" Spacing="0" />

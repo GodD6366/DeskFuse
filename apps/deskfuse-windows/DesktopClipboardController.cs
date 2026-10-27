@@ -11,12 +11,15 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
 {
     private readonly NativeClipboard native;
     private readonly ClipboardHistory history;
+    private readonly ClipboardLibrary? localLibrary;
     private readonly DispatcherQueueTimer historyMaintenance;
     private readonly ServiceClient service;
+    private readonly CanonicalLibraryClient canonical;
     private readonly DispatcherQueue dispatcher;
     private IShelfHost? shelf;
     private bool paused;
     private bool disposed;
+    private Task? canonicalMigration;
     private long publishSequence;
     private uint? pollNativeSequence;
     private uint observedNativeSequence;
@@ -25,6 +28,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private bool captureEnabled = true;
     private bool syncEnabled;
     private bool keepAwake;
+    private bool skipCanonicalIngest;
     private int historyRetentionDays = 30;
     public bool KeepAwake => keepAwake;
     public bool SetKeepAwake(bool enabled)
@@ -47,6 +51,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     /// <summary>Shared with the shelf window; the controller stays the owner.</summary>
     internal NativeClipboard Native => native;
     internal ClipboardHistory History => history;
+    internal CanonicalLibraryClient Canonical => canonical;
     public bool SyncEnabled
     {
         get => syncEnabled;
@@ -58,11 +63,16 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         set { if (captureEnabled == value) return; captureEnabled = value; SavePreferences(); }
     }
     public ObservableCollection<ClipboardEntry> Entries => history.Entries;
+    private readonly Dictionary<ulong, ClipboardEntry> canonicalBodies = [];
+    private readonly Dictionary<ulong, SemaphoreSlim> canonicalLoads = [];
+    public bool CanonicalConnected => service.IsConnected;
     public event Action<string>? Error;
     public DesktopClipboardController(ServiceClient service, DispatcherQueue dispatcher, ClipboardLibrary? library = null)
     {
         this.service = service;
         this.dispatcher = dispatcher;
+        canonical = new CanonicalLibraryClient(service);
+        localLibrary = library;
         native = new NativeClipboard(dispatcher);
         LoadPreferences();
         // 库必须先于历史加载完成，过期清理才不会误删手动列表成员。
@@ -79,6 +89,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         native.LocalInvalidated += ObserveNativeChange;
         native.Error += message => { ObserveNativeChange(); Error?.Invoke(message); };
         service.ClipboardReceived += RemoteReceived;
+        service.LanWebUploadReceived += LanWebReceived;
         service.PollStarting += PollStarting;
         service.SnapshotChanged += Snapshot;
         service.ConnectionChanged += Connection;
@@ -128,6 +139,13 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     internal async Task<ClipboardContent> ApplyTypedAsync(ClipboardContent content, long expectedRevision, long sessionEpoch, long sequence, CancellationToken token = default) =>
         await ((ClipboardApplyPort)this).ApplyAsync(content, expectedRevision, sessionEpoch, sequence, token);
 
+    /// <summary>
+    /// A clipboard another application just wrote belongs to the user. Remote
+    /// copies wait this long so a fresh screenshot or copy is never replaced
+    /// mid-paste (and so no two synchronizers can rewrite it in turn).
+    /// </summary>
+    private const long RemoteApplyQuietMilliseconds = 1500;
+
     private sealed record Preferences(bool CaptureEnabled = true, bool SyncEnabled = false, bool KeepAwake = false,
         int HistoryRetentionDays = 30, string DownloadDirectory = "");
 
@@ -154,6 +172,127 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
 
     public bool TryGetReceivedPath(string transferId, out string path) =>
         receivedPaths.TryGetValue(transferId, out path!) && !string.IsNullOrEmpty(path);
+
+    public async Task SetHistoryRetentionDaysAsync(int days)
+    {
+        await canonical.SettingsAsync(new { retention_days = days });
+        SetHistoryRetentionDays(days);
+    }
+
+    // ---- Canonical content library ----
+
+    public Task<CanonicalState> CanonicalStateAsync(CancellationToken token = default) =>
+        canonical.StateAsync(token);
+
+    public Task<CanonicalPage> QueryCanonicalAsync(
+        string query, string? listId, string kind, string? source, int offset, int limit,
+        IReadOnlyList<CanonicalRule>? rules = null, CancellationToken token = default) =>
+        canonical.PageAsync(query, listId, kind, source, offset, limit, rules, token);
+
+    public Task<Dictionary<string, long>> CanonicalCountsAsync(
+        IReadOnlyList<CanonicalList> lists, CancellationToken token = default) =>
+        canonical.CountsAsync(lists, token);
+
+    public bool TryResolvedCanonical(ClipboardEntry entry, out ClipboardEntry resolved)
+    {
+        resolved = entry;
+        if (entry.CanonicalId is not ulong id) return false;
+        lock (canonicalBodies)
+        {
+            if (!canonicalBodies.TryGetValue(id, out var loaded)) return false;
+            resolved = loaded;
+            return true;
+        }
+    }
+
+    /// <summary>Fetch the private payload once. Concurrent requests share one round trip.</summary>
+    public async Task<ClipboardEntry> ResolveCanonicalAsync(ClipboardEntry entry, CancellationToken token = default)
+    {
+        if (entry.CanonicalId is not ulong id) return entry;
+        if (TryResolvedCanonical(entry, out var cached)) return cached;
+        SemaphoreSlim gate;
+        lock (canonicalLoads)
+        {
+            if (!canonicalLoads.TryGetValue(id, out gate!))
+                canonicalLoads[id] = gate = new SemaphoreSlim(1, 1);
+        }
+        await gate.WaitAsync(token);
+        try
+        {
+            if (TryResolvedCanonical(entry, out cached)) return cached;
+            var content = await canonical.ContentAsync(id, token);
+            var resolved = entry with { Content = content, ContentLoaded = true, Available = true, PreviewOverride = null };
+            lock (canonicalBodies) canonicalBodies[id] = resolved;
+            return resolved;
+        }
+        finally
+        {
+            gate.Release();
+            lock (canonicalLoads)
+                if (gate.CurrentCount == 1) canonicalLoads.Remove(id);
+        }
+    }
+
+    public async Task<byte[]?> ThumbnailAsync(ClipboardEntry entry, int pixelSize = 160, CancellationToken token = default)
+    {
+        if (entry.Thumbnail is { Length: > 0 } ready) return ready;
+        if (entry.CanonicalId is ulong id) return await canonical.ThumbnailAsync(id, pixelSize, token);
+        if (entry.Kind == "image") return entry.Content.Data;
+        if (entry.Content.Files is not { Count: 1 } files || !File.Exists(files[0])) return null;
+        var file = await global::Windows.Storage.StorageFile.GetFileFromPathAsync(files[0]).AsTask(token);
+        using var thumbnail = await file.GetThumbnailAsync(global::Windows.Storage.FileProperties.ThumbnailMode.SingleItem,
+            (uint)pixelSize).AsTask(token);
+        if (thumbnail is null || !thumbnail.ContentType.StartsWith("image/", StringComparison.Ordinal)) return null;
+        using var reader = new global::Windows.Storage.Streams.DataReader(thumbnail.GetInputStreamAt(0));
+        await reader.LoadAsync((uint)thumbnail.Size).AsTask(token);
+        byte[] bytes = new byte[thumbnail.Size];
+        reader.ReadBytes(bytes);
+        return bytes;
+    }
+
+    public async Task<string?> SetCanonicalTitleAsync(ClipboardEntry entry, string? title, CancellationToken token = default)
+    {
+        if (entry.CanonicalId is not ulong id) return null;
+        await canonical.SetTitleAsync(id, title, token);
+        InvalidateCanonical(id);
+        return string.IsNullOrWhiteSpace(title) ? null : title.Trim();
+    }
+
+    public async Task DeleteCanonicalAsync(IEnumerable<ClipboardEntry> entries, CancellationToken token = default)
+    {
+        var ids = entries.Select(entry => entry.CanonicalId).OfType<ulong>().Distinct().ToArray();
+        if (ids.Length == 0) return;
+        await canonical.DeleteAsync(ids, token);
+        foreach (ulong id in ids) InvalidateCanonical(id);
+    }
+
+    public Task ClearCanonicalHistoryAsync(CancellationToken token = default) => canonical.ClearHistoryAsync(token);
+
+    public async Task SetCanonicalMembershipAsync(string listId, ClipboardEntry entry, bool present, CancellationToken token = default)
+    {
+        if (entry.CanonicalId is not ulong id) return;
+        await canonical.MembershipAsync(listId, id, present, token);
+    }
+
+    public Task SaveCanonicalListAsync(CanonicalList list, CancellationToken token = default) =>
+        canonical.SaveListAsync(list, token);
+
+    public Task DeleteCanonicalListAsync(string id, CancellationToken token = default) =>
+        canonical.DeleteListAsync(id, token);
+
+    public Task ReorderCanonicalListsAsync(IEnumerable<string> ids, CancellationToken token = default) =>
+        canonical.ReorderAsync(ids, token);
+
+    public Task ClearCanonicalRemoteIndexAsync(CancellationToken token = default) =>
+        canonical.ClearRemoteIndexAsync(token);
+
+    public Task SaveCanonicalTextAsync(ClipboardEntry entry, string text, byte[]? rtf = null, CancellationToken token = default) =>
+        entry.CanonicalId is ulong id ? canonical.SetTextAsync(id, text, rtf, token) : Task.CompletedTask;
+
+    private void InvalidateCanonical(ulong id)
+    {
+        lock (canonicalBodies) canonicalBodies.Remove(id);
+    }
 
     public void SetHistoryRetentionDays(int days)
     {
@@ -236,18 +375,47 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private void Connection(bool connected, string message)
     {
         if (!connected) { generation = null; pollNativeSequence = null; }
+        else if (localLibrary is not null)
+        {
+            canonicalMigration ??= MigrateCanonicalAsync();
+        }
+    }
+
+    private async Task MigrateCanonicalAsync()
+    {
+        try { await canonical.MigrateAsync(history.Entries.ToArray(), localLibrary!, historyRetentionDays); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        {
+            canonicalMigration = null;
+            dispatcher.TryEnqueue(() => { if (!disposed) Error?.Invoke($"历史迁移稍后将重试：{ex.Message}"); });
+        }
     }
 
     private void LocalChanged(ClipboardContent content)
     {
         if (paused || disposed) return;
-        try { if (CaptureEnabled) history.Add(content, "local", "本机", NativeClipboard.ForegroundProcessName()); }
+        string? application = NativeClipboard.ForegroundProcessName();
+        try { if (CaptureEnabled) history.Add(content, "local", "本机", application); }
         catch (Exception) { Error?.Invoke("剪贴板历史保存失败。当前系统剪贴板没有被改变。"); }
+        if (CaptureEnabled && !skipCanonicalIngest) RecordCanonical(content, "local", "本机", application);
         observedNativeSequence = native.SequenceNumber;
-        _ = InvalidateAndPublishAsync(content);
+        _ = InvalidateAndPublishAsync(content, application);
     }
 
-    private async Task InvalidateAndPublishAsync(ClipboardContent? content)
+    private void RecordCanonical(ClipboardContent content, string deviceId, string source, string? application, long? copiedAtMs = null)
+    {
+        if (!service.IsConnected) return;
+        _ = Task.Run(async () =>
+        {
+            try { await canonical.IngestAsync(content, deviceId, source, application, copiedAtMs: copiedAtMs); }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+            {
+                dispatcher.TryEnqueue(() => { if (!disposed) Error?.Invoke($"canonical 内容库暂不可用：{ex.Message}"); });
+            }
+        });
+    }
+
+    private async Task InvalidateAndPublishAsync(ClipboardContent? content, string? application = null)
     {
         long revision = ++nativeRevision;
         var snapshot = service.LatestSnapshot;
@@ -270,9 +438,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             if (content is null) return;
             var representations = content.Representations ?? [new ClipboardRepresentation(content.Mime, content.Data)];
             if (representations.Sum(r => (long)r.Data.Length) > NativeClipboard.MaxContentBytes) { Error?.Invoke("内容已保存在本机历史；当前桌面同步通道最多支持 16 MiB。"); return; }
-            await service.SendAsync(ServiceClient.Command("PublishClipboard", new { session_epoch = epoch, sequence = ++publishSequence, formats = representations.Select(r => new { mime = r.Mime, data_base64 = Convert.ToBase64String(r.Data) }).ToArray() }));
+            await service.SendAsync(ServiceClient.Command("PublishClipboard", new { session_epoch = epoch, sequence = ++publishSequence, source_app = application, formats = representations.Select(r => new { mime = r.Mime, data_base64 = Convert.ToBase64String(r.Data) }).ToArray() }));
         }
-        catch (Exception) { if (!disposed && generation == epoch) Error?.Invoke("本机剪贴板保留，但服务未接受同步状态。请检查连接；旧内容不会作为新复制重发。"); }
+        catch (Exception ex) { if (!disposed && generation == epoch) Error?.Invoke($"本机剪贴板已保留，同步未完成：{ex.Message}"); }
     }
 
     private async void RemoteReceived(JsonElement item)
@@ -291,7 +459,8 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                 observedNativeSequence = native.SequenceNumber;
                 applied = true;
             }
-            else if (SyncEnabled && !paused && pollNativeSequence is uint expected)
+            else if (SyncEnabled && !paused && pollNativeSequence is uint expected
+                && native.MillisecondsSinceForeignChange >= RemoteApplyQuietMilliseconds)
             {
                 var formats = item.Array("formats").Select(f => new ClipboardRepresentation(f.String("mime"), Convert.FromBase64String(f.String("data_base64")))).ToArray();
                 if (formats.Length is 0 or > 4 || formats.Sum(f => (long)f.Data.Length) > NativeClipboard.MaxContentBytes) throw new InvalidDataException();
@@ -305,7 +474,15 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                     observedNativeSequence = native.SequenceNumber;
                     string peer = item.String("peer_id");
                     string name = service.LatestSnapshot?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", peer) ?? peer;
-                    if (CaptureEnabled) history.Add(content, peer, name);
+                    var origin = item.TryGetProperty("source_metadata", out var metadata) ? metadata : default;
+                    if (CaptureEnabled && !origin.Bool("no_history"))
+                    {
+                        string originDevice = origin.String("device_id", peer);
+                        string? app = origin.String("app_bundle_id") is { Length: > 0 } sourceApp ? sourceApp : null;
+                        long copiedAt = origin.Number("created_at_ms");
+                        history.Add(content, originDevice, name, app);
+                        RecordCanonical(content, originDevice, name, app, copiedAt > 0 ? copiedAt : null);
+                    }
                 }
             }
         }
@@ -315,6 +492,58 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             if (!disposed && generation == epoch) await service.SendAsync(ServiceClient.Command("CommitClipboard", new { session_epoch = epoch.Value, sequence, applied }));
         }
         catch (Exception) { if (!disposed) Error?.Invoke("远端剪贴板应用回执未送达，请检查连接状态。"); }
+    }
+
+    private async void LanWebReceived(JsonElement item)
+    {
+        long? epoch = generation;
+        if (epoch is null || disposed) return;
+        string id = item.String("id");
+        bool applied = false;
+        bool historySaved = false;
+        bool accepted = false;
+        if (!paused)
+        {
+            try
+            {
+                var formats = item.Array("formats").Select(f => new ClipboardRepresentation(f.String("mime"), Convert.FromBase64String(f.String("data_base64")))).ToArray();
+                if (formats.Length is 0 or > 4 || formats.Sum(f => (long)f.Data.Length) > NativeClipboard.MaxContentBytes) throw new InvalidDataException();
+                var primary = formats.FirstOrDefault(f => f.Mime == "image/png") ?? formats.FirstOrDefault(f => f.Mime == "text/plain") ?? formats[0];
+                var content = new ClipboardContent(primary.Mime, primary.Data, Representations: formats);
+                try
+                {
+                    if (pollNativeSequence is uint expected
+                        && native.MillisecondsSinceForeignChange >= RemoteApplyQuietMilliseconds)
+                    {
+                        applied = native.TryWrite(content, expected);
+                        if (applied)
+                        {
+                            nativeRevision++;
+                            observedNativeSequence = native.SequenceNumber;
+                        }
+                    }
+                }
+                catch (Exception) { applied = false; }
+                if (CaptureEnabled)
+                {
+                    try
+                    {
+                        history.Add(content, "lan-web", "手机网页");
+                        RecordCanonical(content, "lan-web", "手机网页", null);
+                        historySaved = true;
+                    }
+                    catch (Exception) { Error?.Invoke("网页内容已接收，但本机历史保存失败。"); }
+                }
+                accepted = applied || historySaved || !CaptureEnabled;
+            }
+            catch (Exception) { accepted = applied || historySaved; }
+        }
+        try
+        {
+            if (!disposed && generation == epoch)
+                await service.SendAsync(ServiceClient.Command("CommitLanWebUpload", new { session_epoch = epoch.Value, upload_id = id, recorded = accepted, clipboard_written = applied }));
+        }
+        catch (Exception) { if (!disposed) Error?.Invoke("网页上传回执未送达，请检查连接状态。"); }
     }
 
     public void SaveEditedContent(ClipboardContent content)
@@ -327,14 +556,42 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         LocalChanged(content);
     }
 
-    public void Restore(ClipboardEntry entry)
+    /// <summary>Update one canonical row in place, then publish the edited text
+    /// without creating a duplicate canonical entry for the same edit.</summary>
+    public async Task SaveEditedContentAsync(ClipboardEntry entry, ClipboardContent content, CancellationToken token = default)
     {
-        history.Prune();
-        if (!history.Entries.Any(current => current.Id == entry.Id))
-            throw new InvalidOperationException("记录已删除或过期，请重新选择。");
+        string text = System.Text.Encoding.UTF8.GetString(
+            content.Representations?.FirstOrDefault(item => item.Mime == "text/plain")?.Data ?? content.Data);
+        byte[]? rtf = content.Representations?.FirstOrDefault(item => item.Mime == "text/rtf")?.Data;
+        if (entry.CanonicalId is ulong id)
+        {
+            await canonical.SetTextAsync(id, text, rtf, token);
+            InvalidateCanonical(id);
+        }
+        skipCanonicalIngest = true;
+        try { SaveEditedContent(content); }
+        finally { skipCanonicalIngest = false; }
+    }
+
+    /// <summary>Restore and return the exact native generation for a later paste guard.</summary>
+    public uint Restore(ClipboardEntry entry)
+    {
+        if (!entry.IsCanonical)
+        {
+            history.Prune();
+            if (!history.Entries.Any(current => current.Id == entry.Id))
+                throw new InvalidOperationException("记录已删除或过期，请重新选择。");
+        }
         native.Write(entry.Content);
         observedNativeSequence = native.SequenceNumber;
         _ = InvalidateAndPublishAsync(entry.Content);
+        return observedNativeSequence;
+    }
+
+    public async Task<uint> RestoreAsync(ClipboardEntry entry, CancellationToken token = default)
+    {
+        if (entry.IsCanonical) entry = await ResolveCanonicalAsync(entry, token);
+        return Restore(entry);
     }
 
     // ---- Cross-device file transfer (deferred clipboard file protocol) ----
@@ -484,17 +741,22 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     /// <summary>Publishes existing local files as a deferred file clipboard
     /// (shared with local copies and the shelf's send action). When
     /// <paramref name="targetPeerId"/> is set, only that peer receives the offer.</summary>
+    public async Task<string> BeginFileTransferAsync(IReadOnlyList<string> paths, string? targetPeerId = null)
+    {
+        NativeClipboard.ValidateLocalFiles(paths);
+        if (service.LatestSnapshot is null || generation is null)
+            throw new IOException("后台组件尚未就绪，无法发送文件。");
+        if (!FilesEnabled) throw new IOException("文件传输尚未就绪，请检查文件共享开关与对端握手。");
+        long epoch = generation.Value;
+        await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
+        return await CreateFileDataObjectAsync(paths, epoch, ++publishSequence, targetPeerId);
+    }
+
     public async Task<bool> PublishFilesAsync(IReadOnlyList<string> paths, string? targetPeerId = null)
     {
         try
         {
-            NativeClipboard.ValidateLocalFiles(paths);
-            var snapshot = service.LatestSnapshot;
-            if (snapshot is null || generation is null) { Error?.Invoke("后台组件尚未就绪，无法发送文件。"); return false; }
-            if (!FilesEnabled) { Error?.Invoke("对端设备尚未支持跨设备文件传输。"); return false; }
-            long epoch = generation.Value;
-            await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
-            await CreateFileDataObjectAsync(paths, epoch, ++publishSequence, targetPeerId);
+            await BeginFileTransferAsync(paths, targetPeerId);
             return true;
         }
         catch (Exception ex) { Error?.Invoke(ex is IOException or InvalidOperationException ? ex.Message : "文件发送未完成，请稍后重试。"); return false; }
@@ -536,7 +798,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                 var copiedContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copiedRoots);
                 native.Write(copiedContent);
                 observedNativeSequence = native.SequenceNumber;
-                if (CaptureEnabled) history.Add(copiedContent, "local", "本机", "DeskFuse");
+                if (CaptureEnabled)
+                {
+                    history.Add(copiedContent, "local", "本机", "DeskFuse");
+                    RecordCanonical(copiedContent, "local", "本机", "DeskFuse");
+                }
                 await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
                 FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
                 return;
@@ -557,7 +823,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             var flatContent = new ClipboardContent(ClipboardContent.LocalFilesMime, Array.Empty<byte>(), copies);
             native.Write(flatContent);
             observedNativeSequence = native.SequenceNumber;
-            if (CaptureEnabled) history.Add(flatContent, "local", "本机", "DeskFuse");
+            if (CaptureEnabled)
+            {
+                history.Add(flatContent, "local", "本机", "DeskFuse");
+                RecordCanonical(flatContent, "local", "本机", "DeskFuse");
+            }
             await service.SendAsync(ServiceClient.Command("CommitFileClipboard", new { session_epoch = generation ?? 0, transfer_id = id, applied = true }));
             FileTransferSettled?.Invoke(id, "文件已接收并放入剪贴板", true);
         }
@@ -610,6 +880,18 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         shelf.Show();
     }
 
+    public void ToggleShelf()
+    {
+        if (shelf?.IsVisible == true) shelf.Hide();
+        else ShowShelf();
+    }
+
+    public void ShowShelfAtPointer()
+    {
+        ShowShelf();
+        shelf?.Show(nearPointer: true);
+    }
+
     private void SessionChanged(object sender, SessionSwitchEventArgs args) => dispatcher.TryEnqueue(() =>
     {
         if (disposed) return;
@@ -638,8 +920,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
 /// <summary>Shelf window contract, so the controller holds no WinUI type.</summary>
 public interface IShelfHost
 {
+    bool IsVisible { get; }
     void Add(ClipboardEntry entry);
-    void Show();
+    void Show(bool nearPointer = false);
     void Hide();
     void Shutdown();
 }

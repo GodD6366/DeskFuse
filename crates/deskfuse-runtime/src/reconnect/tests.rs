@@ -241,7 +241,7 @@ async fn failed_routes_retry_with_backoff_and_reset_after_success() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
     let (peer, route) = add_peer(&mut actor, &transport, 82);
-    transport.inner.fail_route(route.id);
+    transport.inner.fail_peer(peer);
     actor.connect_peer(peer).await;
     complete(&mut actor).await;
     for failure in 1..=3 {
@@ -255,7 +255,7 @@ async fn failed_routes_retry_with_backoff_and_reset_after_success() {
         assert!(!actor.recovery.attempts.contains_key(&peer));
         expire(&mut actor, peer);
         if failure == 3 {
-            transport.inner.failures.lock().unwrap().clear();
+            transport.inner.clear_failures();
         }
         actor.recovery_tick().await;
         complete(&mut actor).await;
@@ -366,10 +366,11 @@ async fn revoke_and_forget_cancel_completed_but_unpublished_connections() {
 async fn wake_refreshes_addresses_and_expedites_offline_peer() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
-    let (peer, route) = add_peer(&mut actor, &transport, 88);
-    transport.inner.fail_route(route.id);
+    let (peer, _) = add_peer(&mut actor, &transport, 88);
+    transport.inner.fail_peer(peer);
     actor.connect_peer(peer).await;
     complete(&mut actor).await;
+    transport.inner.clear_failures();
     let discovery = MemoryDiscovery::new();
     let fresh = RouteCandidate::new(
         Endpoint::new("127.0.0.1", 4999).unwrap(),
@@ -402,7 +403,7 @@ async fn new_address_expedites_retry_but_same_address_does_not() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
     let (peer, route) = add_peer(&mut actor, &transport, 89);
-    transport.inner.fail_route(route.id);
+    transport.inner.fail_peer(peer);
     actor.connect_peer(peer).await;
     complete(&mut actor).await;
     actor
@@ -412,6 +413,15 @@ async fn new_address_expedites_retry_but_same_address_does_not() {
         })
         .await;
     assert!(!actor.recovery.attempts.contains_key(&peer));
+    transport.inner.clear_failures();
+    for route_id in actor.peers[&peer]
+        .routes
+        .keys()
+        .copied()
+        .collect::<Vec<_>>()
+    {
+        transport.inner.fail_route(route_id);
+    }
     let fresh = RouteCandidate::new(
         Endpoint::new("127.0.0.1", 4998).unwrap(),
         RouteSource::Manual,
@@ -542,7 +552,10 @@ async fn real_quic_peer_restart_recovers_same_route_and_delivers_one_clipboard()
         loop {
             match QuinnTransport::bind(remote_hello.clone(), config(remote_addr)).await {
                 Ok(transport) => break transport,
-                Err(error) if error.to_string().contains("Address already in use") => {
+                Err(error)
+                    if error.to_string().contains("Address already in use")
+                        || error.to_string().contains("os error 10048") =>
+                {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
                 Err(error) => panic!("restart bind failed: {error}"),
@@ -830,15 +843,15 @@ async fn local_disconnect_rejects_peer_dial_in_so_both_sides_agree() {
 async fn explicit_refresh_retries_failed_peer_immediately() {
     let transport = ProbeTransport::default();
     let mut actor = actor(transport.clone());
-    let (peer, route) = add_peer(&mut actor, &transport, 98);
-    transport.inner.fail_route(route.id);
+    let (peer, _) = add_peer(&mut actor, &transport, 98);
+    transport.inner.fail_peer(peer);
     actor.connect_peer(peer).await;
     complete(&mut actor).await;
     assert_eq!(actor.peers[&peer].connection, ConnectionState::Failed);
     // 失败会清空 preferred_route；刷新仍必须绕过退避立即重试。
     assert!(actor.peers[&peer].preferred_route.is_none());
     assert!(actor.recovery.retries[&peer].due > Instant::now());
-    transport.inner.failures.lock().unwrap().clear();
+    transport.inner.clear_failures();
     actor.handle_command(RuntimeCommand::RefreshPeers).await;
     assert!(actor.recovery.attempts.contains_key(&peer));
     complete(&mut actor).await;
@@ -911,9 +924,9 @@ async fn local_network_change_skips_offline_retry_backoff() {
     let transport = ProbeTransport::default();
     *transport.network.lock().unwrap() = Some(1);
     let mut actor = actor(transport.clone());
-    let (peer, route) = add_peer(&mut actor, &transport, 97);
+    let (peer, _) = add_peer(&mut actor, &transport, 97);
     actor.recovery_tick().await;
-    transport.inner.fail_route(route.id);
+    transport.inner.fail_peer(peer);
     actor.connect_peer(peer).await;
     complete(&mut actor).await;
     assert!(actor.recovery.retries[&peer].due > Instant::now());

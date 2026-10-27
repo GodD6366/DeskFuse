@@ -1,5 +1,72 @@
 # Windows / macOS 产品能力对齐执行清单
 
+## 当前交付范围：三大基础功能
+
+以当前 macOS 源码为基准，优先严格对齐 **剪贴板、鼠标跨屏共享、分享与文件传输** 的操作、默认值、数据语义和失败行为。保留已有功能；远程应用、麦克风共享、鼠标自定义在 Windows 标记「即将支持」，不作为本阶段完成条件。下文旧批次记录保留作历史，不代表当前工作区的实现或验收状态。
+
+### 当前核查与本批修复
+
+| 基础功能 | 本批已落实（代码验证，不代表双机验收） | 尚未完成 / 待核对 |
+| --- | --- | --- |
+| 剪贴板 | Windows canonical 查询与数量统计共用日期窗口；按本地日历计算今天、昨天、最近 N 天和闭开日期范围，覆盖 23/25 小时夏令时日期 | canonical 迁移、列表/索引/正文同步、删除冲突、应用排除、快捷面板粘贴需逐项双机验收；原生格式与文件归档不可仅由页面存在判定完成 |
+| 鼠标跨屏共享 | 按当前 Mac 页面收口为主控开关、Wi-Fi、添加设备和排布画布；移除旧右上角总开关及参与者/内部编码/布局配置区。修复开关启用后仍半透明和提交后旧快照回弹；接入本机配置壁纸与远端认证 JPEG 预览；视口容纳全部显示器，读取已保存坐标 | 设置入口仍需按当前 Mac 独立设置页继续核对；Windows 壁纸向 Mac 发布尚未接入；UIAccess helper 安装/授权、两种主控方向、负坐标/旋转/混合 DPI、休眠/热插拔仍需实机验收 |
+| 分享与文件传输 | 增加文件夹选择入口；发送只移除本次提交的文件，保留等待期间新加入的项目；断线清除旧目标，发送按钮受真实连接和文件开关约束；提交提示不再冒充对端已接收 | Windows LAN 当前仅文字/图片上传，尚无 Mac 的网页列表与直接下载；缓存设置/清理、接收目录配置、失败重试与 Explorer OLE 按需传输仍需补齐或核对；目录/空目录/重名/源变化和取消需双机验证 |
+
+### 本批实际检查
+
+- `dotnet build apps/deskfuse-windows/DeskFuse.Windows.csproj -c Release --no-restore`：通过，0 警告、0 错误。
+- `dotnet run --project tools/DeskFuse.HistoryChecks/DeskFuse.HistoryChecks.csproj --no-restore`：11 项通过；新增日历夏令时、日期范围和数量/页面请求一致性检查。测试使用临时目录，不访问系统剪贴板或用户历史。
+- `git diff --check`：通过；已有 LF/CRLF 提示不是空白错误。
+- 本批没有修改 Rust、发行元数据或安装器；没有将现有未提交 Rust 改动算作本批验证通过。
+- 本机 SCM 的 `DeskFuseService` 为 Running；这不证明本次构建已部署、helper 已获授权或 Mac 已连接。未进行本批 WinUI 交互及真实 Mac ↔ Windows 两机验收。
+
+### 后续完成条件
+
+1. 按上述剩余项继续补齐三大功能，不以导航或按钮存在代替实现。
+2. 每个操作核对服务回执与最终状态，拒绝/超时/断线保留草稿或恢复权威状态；不得显示虚假的成功。
+3. 同源 Rust 行为、Windows 原生适配、UI 和双设备分别记录检查证据。只有双方向、离线恢复、失败处理都通过后，才标记「严格对齐完成」。
+
+## 截图反馈修正：以当前 Mac 页面而非历史能力清单为准
+
+前一批把内部快捷键编码、布局保存等配置堆在鼠标共享主页面，不符合当前 `InputView.swift`，已移除，不再将此视为对齐成果。角色开关独立于旧功能总开关，启用主控时一次提交必要字段；正在被控时仍不能切换主控，不降低输入授权。
+
+- 只读 UI Automation 检查发现，用户当前安装版两个可见 ToggleButton 都是 `Enabled=True, State=On`，不是系统把主控按钮禁用了。`DfToggle` 初始禁用时设为 0.45 透明度，却未在 IsEnabled 变化时刷新；现已修复。命令入队后读取旧快照会把切换外观改回去，现保留待确认状态，确认/失败/超时再更新。
+- 本机壁纸使用 `IDesktopWallpaper` 按显示器读取配置文件；不捕获桌面、图标或应用窗口。远端壁纸透传现有输入运行时已认证、限额的 JPEG，客户端限制字节数与解码尺寸，旧服务缺字段时兼容回退。没有图片时显示中性背景，不伪造壁纸。
+- 画布去掉中央设备路径、数字与大色块，用壁纸和底部设备名展示；全体显示器共同计算视口，读取浮点布局坐标，避免把远端排到可见区外。真实混合 DPI 行为仍待双机验证。
+- 当前运行程序仍是 `C:\Program Files\DeskFuse\DeskFuse.Windows.exe`；本轮未替换运行程序或服务。检查时未发现活跃的 input helper，安装目录的 helper Authenticode 状态为 `NotSigned`；旧调试日志不是当前进程启动结果，不据此宣称已确定全部运行失败原因。UI 不再同时报告输入未就绪和可以跨屏，也不再将该状态显示为「一切正常」。
+- 验证通过：`dotnet build apps/deskfuse-windows/DeskFuse.Windows.csproj -c Release --no-restore`（0 警告/错误）、MSVC 环境中的 `cargo check --locked -p deskfuse-service`、`cargo test --locked -p deskfuse-service --lib input_state_carries_layout_and_control_views`（含壁纸字段往返与旧快照兼容）、`git diff --check`。
+- `./scripts/check.sh` 补齐 Git Bash 的 Rust PATH 后，`cargo fmt` 通过，首个失败阶段为 workspace `cargo check`：`core-foundation` 在 Windows 引用了 `std::os::unix`，随后全量测试/Clippy 未执行。原因为工作区 Apple 专属依赖；不等同于本次 Windows 服务检查失败。
+- 尚未验收：本次 UI 的实际渲染、远端壁纸到达、Windows → Mac 壁纸发布、已安装版本升级、真实鼠标共享。编译成功不代表这些已完成。
+
+## 剪贴板、设备选择与暂存区修复（当前批）
+
+- **设备选择**：原弹窗过滤掉已加入的参与者，因此 `godd-MBP-108` 虽在线却不在候选列表，其他设备又默认全选。现在按 Mac 的 `InputDevicePicker.swift` 显示全部已配对设备，逐台添加/移除，明确区分「已添加」「本机输入未就绪」「等待对端屏幕」「离线」；提交后等待实际快照确认。
+- **内容库路径根因**：`user_library_dir` 去掉 UTF-16 NUL 后仍调用 `ExpandEnvironmentStringsW`，越界读取导致用户目录后出现随机字符、服务创建多个孤立库。现保留终止符、校验输出长度/绝对路径；新增带哨兵字符的回归测试。新库固定在 `%LOCALAPPDATA%\DeskFuse\state.sqlite3`；迁移标记升为 `canonical-migration-v2-profile-path.done`，让旧本机历史重新迁入正确库。错误目录保留，不自动删除或宣称全部孤立库已合并。
+- **实时剪贴板协议**：Windows 原先手写 HELLO/DATA，漏掉 Mac 当前要求的来源策略版本。现统一使用共享 `SyncMessage::hello/data`，协商接收上限，校验分块来源元数据，保留来源 App/设备/日期以及 `no_history`；被排除的内容仍可写系统剪贴板但不保存历史。显式历史发送缺少可靠来源时保守不新增历史，不伪造来源。
+- **列表刷新**：连接事件只在重连时发送；快照携带 `library_revision`，没有数据变化时不重查。初次实际安装复测仍发现大量远端索引到达时整表重绑，因此进一步改成 `StableCollection` 的逐条 Insert/Move/Replace/Remove；分组对象、未变化行、选中项和预览保持，不发 Reset、不重建 ItemsSource。缩略图改为顺序请求，避免堵塞心跳与同步请求。
+- **暂存区重做**：以 `ShelfController.swift` 为基准，240×240 DIP 无边框置顶浮窗、480×420 DIP 四列展开、真实文件图标、折叠文件堆、逐台发送、清空关闭；仅存文件/文件夹引用，不把它变成另一套剪贴板历史。拖入/拖出使用异步 deferral，目录用 StorageFolder，成功拖出才移除引用，拖回自身不丢文件。关闭发送中的暂存区会取消对应入站/出站任务；原始文件不删除。
+- **剪贴板快捷键**：设置 → 快捷键 → 剪贴板面板，支持录制、启停、恢复默认与保存。默认 Ctrl+Shift+V，只存本机配置。新组合成功注册并持久化后才释放旧组合；冲突/保存失败保持旧键。固定暂存区 Ctrl+Shift+D 和工作流组合不可被覆盖。
+
+检查：Windows 服务 42 项测试通过（包含来源策略/路径修复），文件发送取消回归通过，历史/增量集合/快捷键/未知复制时间/日期查询 14 项检查通过；Windows Release 构建通过。完整工作区检查通过 fmt 后仍在 Windows 编译 Apple 专属 core-foundation/objc2 阶段失败，不代表 Windows 定向测试失败。
+
+首次替换后已直接验证：正确路径数据库存在，接收到 Mac 索引（一次观察为 4661 个 remote 索引行、9684 个同步操作）；这只是当时的同步进度，不代表全部正文已下载。
+
+最终 GUI 已替换到安装目录：514 个文件哈希一致，四个 native EXE（service/input-helper/service-client/update-helper）哈希前后一致、SCM 未重启，保留权限线程已签名并修复的 helper。备份 `C:\Program Files\DeskFuse-ui-backup-20261027-000658`。
+
+运行版检查：设置 → 快捷键的剪贴板录制/启停/保存入口已实际打开；暂存区实际窗口为 600×600 和 1200×1050 物理像素（250% DPI，对应 240×240 和 480×420 DIP）。最终列表检查先等待布局完成，再对可见行的显示内容作本地哈希匹配（不输出正文）：跨 2.4 秒心跳，8 行匹配、8 个原 UI Automation 容器保留。不要把导航后的首帧、虚拟化的离屏行或真实新增记录当成整表重置。未知复制时间的 canonical 行不再投影为 DateTimeOffset.UtcNow，使用稳定排序时间但显示「复制时间未知」。
+
+未完成的独立验收：暂存区真实跨设备发送/拖出到不同目标应用、全量图片正文下载、两机键鼠控制、PixPin 与其他剪贴板工具并行行为；没有通过替换 GUI 来声称这些已通过。
+
+### Windows UI 开发模式
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-windows.ps1
+# 只生成调试客户端，不启动：
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-windows.ps1 -BuildOnly
+```
+
+发布 Debug 客户端到 `dist\windows-dev`，复用已安装的 SCM 服务及本机数据；不安装服务，不生成另一套设备身份，不复制或绕过输入 helper 授权。重新运行脚本会重建并重启 UI，不是热重载。客户端与安装版互斥；服务协议改动仍需更新匹配服务。`-BuildOnly` 已实际通过。
+
 ## 目标与判定
 
 Windows 完整对齐当前 macOS 的功能、导航、操作路径、默认值、数据语义和失败行为。只有 Apple 专属系统集成可以例外；存在 Windows 等价实现的 OCR、文件预览、托盘、保持唤醒和 Wi-Fi 布局恢复仍在范围内。

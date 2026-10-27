@@ -359,6 +359,29 @@ impl RelativePath {
         Ok(Self(components.join("/")))
     }
 
+    /// Converts trusted local filesystem paths to wire form; network input must use `new`.
+    pub(crate) fn from_native_path(path: impl AsRef<Path>) -> Result<Self, TransferError> {
+        let path = path.as_ref();
+        let raw = path
+            .to_str()
+            .ok_or_else(|| TransferError::InvalidPath("non-UTF-8 path".into()))?;
+        let mut normalized = String::new();
+        for component in path.components() {
+            let Component::Normal(value) = component else {
+                return Err(TransferError::InvalidPath(raw.into()));
+            };
+            if !normalized.is_empty() {
+                normalized.push('/');
+            }
+            normalized.push_str(
+                value
+                    .to_str()
+                    .ok_or_else(|| TransferError::InvalidPath("non-UTF-8 path".into()))?,
+            );
+        }
+        Self::new(normalized)
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -495,7 +518,7 @@ impl TransferEntry {
 
     pub(crate) fn prefixed(&self, prefix: &RelativePath) -> Result<Self, TransferError> {
         let mut entry = self.clone();
-        entry.path = RelativePath::new(prefix.as_ref().join(self.path.as_ref()))?;
+        entry.path = RelativePath::new(format!("{}/{}", prefix.as_str(), self.path.as_str()))?;
         Ok(entry)
     }
 
@@ -2968,7 +2991,7 @@ fn collect_manifest_entries(
     let directory = if relative.as_os_str().is_empty() {
         root.to_path_buf()
     } else {
-        secure_join(root, &RelativePath::new(relative)?)?
+        secure_join(root, &RelativePath::from_native_path(relative)?)?
     };
     let mut children = fs::read_dir(&directory)?.collect::<Result<Vec<_>, io::Error>>()?;
     children.sort_by_key(|entry| entry.file_name());
@@ -2983,7 +3006,7 @@ fn collect_manifest_entries(
         } else {
             relative.join(child.file_name())
         };
-        let safe = RelativePath::new(&child_relative)?;
+        let safe = RelativePath::from_native_path(&child_relative)?;
         if entries.len() >= MAX_MANIFEST_ENTRIES {
             return Err(TransferError::InvalidManifest(
                 "文件目录超过 100 万项，请分批复制".into(),

@@ -84,6 +84,8 @@ identity.key
 /apps/deskfuse-windows/obj/
 /tools/DeskFuse.HistoryChecks/bin/
 /tools/DeskFuse.HistoryChecks/obj/
+/tools/DeskFuse.InputLayoutChecks/bin/
+/tools/DeskFuse.InputLayoutChecks/obj/
 
 # Website dependencies and Pages build output (web/ → /site).
 /web/node_modules/

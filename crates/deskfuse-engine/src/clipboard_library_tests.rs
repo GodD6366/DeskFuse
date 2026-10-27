@@ -469,7 +469,8 @@ fn database_clone_benchmark() {
     let result = std::process::Command::new("python3").args(["-c", "import sqlite3,sys,pathlib; a=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro',uri=True); b=sqlite3.connect(sys.argv[2]); a.backup(b); b.close(); a.close()", &source, directory.path().join("state.sqlite3").to_str().unwrap()]).status().unwrap();
     assert!(result.success());
     let started = std::time::Instant::now();
-    let library = Library::open_database(directory).unwrap();
+    let database_path = directory.path().join("state.sqlite3");
+    let library = Library::open_database(database_path, directory).unwrap();
     eprintln!(
         "clipboard-clone startup_ms={:.2}",
         started.elapsed().as_secs_f64() * 1000.0

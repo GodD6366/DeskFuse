@@ -34,6 +34,7 @@ public sealed partial class OnboardingPage : UserControl
         this.clipboard = clipboard;
         this.onCompleted = onCompleted;
         InitializeComponent();
+        BrandMark.Apply(BrandMarkImage, this);
         UpdateChrome();
         Unloaded += (_, _) => StopDemos();
     }
@@ -203,18 +204,43 @@ public sealed partial class OnboardingPage : UserControl
 
     // MARK: - Step 2
 
+    // 顺序与 macOS 引导一致；Available=false 的功能在 Windows 端尚未提供，开关禁用。
+    private static readonly (string Key, string Glyph, string Title, string Detail, bool Beta, bool Available)[] FeatureList =
+    [
+        ("clipboard", "\uE8C8", "剪贴板同步", "在一台电脑复制，另一台直接粘贴。文字、图片和文件都会同步。", false, true),
+        ("input", "\uE962", "键鼠共享", "一套键盘和鼠标穿过屏幕边缘，控制同一网络里的其他电脑。", false, true),
+        ("remote", "\uE8A7", "远程应用", "把另一台电脑上的应用窗口，直接打开在这台电脑上。", true, true),
+        ("microphone", "\uE720", "麦克风共享", "把另一台电脑的麦克风作为本机的输入设备。", true, false),
+        ("mouse", "\uE8B1", "鼠标自定义", "把鼠标侧键映射成快捷键、窗口切换或系统操作。", true, false),
+    ];
+
+    private readonly Dictionary<string, Border> featureRows = [];
+    private StackPanel? previewHost;
+    private FrameworkElement? previewDemo;
+    private TextBlock? previewState;
+    private string previewed = "clipboard";
+
     private void BuildFeaturesStep()
     {
         StepContent.Children.Add(PageIntro("\uE703", "选择开机后默认开启的功能",
             "常用功能已经为你打开，进阶功能保持关闭；完成设置后也能随时调整。"));
 
-        StepContent.Children.Add(FeatureSection("默认开启", "建议保留，完成设置后即可跨电脑使用。",
-            ("clipboard", "\uE8C8", "剪贴板同步", "在一台电脑复制，另一台直接粘贴。文字、图片和文件都会同步。", false),
-            ("input", "\uE962", "键鼠共享", "一套键盘和鼠标穿过屏幕边缘，控制同一网络里的其他电脑。", false),
-            ("remote", "\uE8A7", "远程应用", "把另一台电脑上的应用窗口，直接打开在这台电脑上。", true)));
-        StepContent.Children.Add(FeatureSection("按需开启", "保持关闭不影响日常使用，需要时再打开。",
-            ("mouse", "\uE8B1", "鼠标按键", "把鼠标侧键映射成快捷键、窗口切换或系统操作。", true),
-            ("microphone", "\uE720", "麦克风共享", "把另一台电脑的麦克风作为本机的输入设备。", true)));
+        // 与 macOS 引导一致：左侧功能列表，右侧只预览选中的那一段演示。
+        featureRows.Clear();
+        previewed = "clipboard";
+        var columns = new Grid { ColumnSpacing = 16 };
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280) });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var groups = new StackPanel { Spacing = 16 };
+        groups.Children.Add(FeatureGroup("默认开启", "建议保留，完成设置后即可跨电脑使用。", FeatureList.Take(3)));
+        groups.Children.Add(FeatureGroup("按需开启", "保持关闭不影响日常使用，需要时再打开。", FeatureList.Skip(3)));
+        columns.Children.Add(groups);
+        previewHost = new StackPanel { Spacing = 12, VerticalAlignment = VerticalAlignment.Top };
+        Grid.SetColumn(previewHost, 1);
+        columns.Children.Add(previewHost);
+        StepContent.Children.Add(columns);
+        RefreshFeatureSelection();
+        RebuildPreview();
 
         StepContent.Children.Add(DfUi.Detail("完成设置后，可在各功能页右上角的总开关或设置中随时修改。"));
 
@@ -226,90 +252,150 @@ public sealed partial class OnboardingPage : UserControl
         }
     }
 
-    private UIElement FeatureSection(string title, string caption, params (string Key, string Glyph, string Title, string Detail, bool Beta)[] cards)
+    private UIElement FeatureGroup(string title, string caption, IEnumerable<(string Key, string Glyph, string Title, string Detail, bool Beta, bool Available)> features)
     {
         var section = new StackPanel { Spacing = 8 };
         section.Children.Add(DfUi.SectionLabel(title));
         section.Children.Add(DfUi.Detail(caption));
-        var grid = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (int i = 0; i < cards.Length; i += 2)
+        var list = new StackPanel { Spacing = 2 };
+        foreach (var feature in features) list.Children.Add(FeatureRow(feature));
+        section.Children.Add(new Border
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            for (int column = 0; column < 2 && i + column < cards.Length; column++)
-            {
-                var card = BuildFeatureCard(cards[i + column]);
-                Grid.SetRow(card, i / 2);
-                Grid.SetColumn(card, column);
-                grid.Children.Add(card);
-            }
-        }
-        section.Children.Add(grid);
+            Background = DfUi.Surface,
+            BorderBrush = DfUi.Line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(4),
+            Child = list,
+        });
         return section;
     }
 
-    private Border BuildFeatureCard((string Key, string Glyph, string Title, string Detail, bool Beta) kind)
+    private UIElement FeatureRow((string Key, string Glyph, string Title, string Detail, bool Beta, bool Available) feature)
     {
-        bool available = kind.Key is not ("mouse" or "microphone");
-        bool isOn = enabled[kind.Key];
-        var toggle = DfUi.Switch(isOn, null, available);
-        var demo = BuildDemo(kind.Key);
-        demo.Opacity = isOn ? 1 : 0.6;
-        var demoSurface = new Border
+        bool isOn = enabled[feature.Key];
+        var icon = DfUi.Glyph(feature.Glyph, 14, isOn ? DfUi.Accent : DfUi.Muted);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        var toggle = DfUi.Switch(isOn, null, feature.Available);
+        toggle.VerticalAlignment = VerticalAlignment.Center;
+        var grid = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 0, 8, 0), MinHeight = 44 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(icon);
+        var title = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        title.Children.Add(DfUi.Text(feature.Title, 13, false, DfUi.PrimaryText, wrap: false));
+        if (feature.Beta)
         {
-            Height = 112,
-            Margin = new Thickness(12, 12, 12, 0),
+            var badge = DfUi.Badge("Beta");
+            badge.Margin = new Thickness(2, 0, 0, 0);
+            title.Children.Add(badge);
+        }
+        Grid.SetColumn(title, 1);
+        grid.Children.Add(title);
+        Grid.SetColumn(toggle, 2);
+        grid.Children.Add(toggle);
+        // 透明画刷占位：Background 为 null 的 Border 不接收指针事件，行将无法点选。
+        var row = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Child = grid,
+        };
+        featureRows[feature.Key] = row;
+        toggle.Toggled += (_, _) =>
+        {
+            enabled[feature.Key] = toggle.IsOn;
+            icon.Foreground = toggle.IsOn ? DfUi.Accent : DfUi.Muted;
+            UpdateFooterHint();
+            if (previewed == feature.Key) UpdatePreviewState();
+        };
+        row.PointerPressed += (_, args) =>
+        {
+            if (WithinToggle(args.OriginalSource)) return;
+            previewed = feature.Key;
+            RefreshFeatureSelection();
+            RebuildPreview();
+        };
+        row.PointerEntered += (_, _) =>
+        {
+            if (previewed != feature.Key) row.Background = DfUi.Control;
+        };
+        row.PointerExited += (_, _) =>
+        {
+            if (previewed != feature.Key) row.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        };
+        return row;
+    }
+
+    private static bool WithinToggle(object? source)
+    {
+        for (var node = source as DependencyObject; node is not null; node = VisualTreeHelper.GetParent(node))
+        {
+            if (node is DfToggle) return true;
+        }
+        return false;
+    }
+
+    private void RefreshFeatureSelection()
+    {
+        foreach (var (key, row) in featureRows)
+        {
+            row.Background = key == previewed
+                ? DfUi.Brush("DFAccentSubtleBrush")
+                : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        }
+    }
+
+    private void RebuildPreview()
+    {
+        if (previewHost is null) return;
+        var feature = FeatureList.First(item => item.Key == previewed);
+        previewHost.Children.Clear();
+        demoTicks.Clear();
+        previewDemo = BuildDemo(feature.Key);
+        previewDemo.VerticalAlignment = VerticalAlignment.Center;
+        previewHost.Children.Add(new Border
+        {
+            Height = 168,
             Background = DfUi.Control,
             CornerRadius = new CornerRadius(8),
-            Child = demo,
-        };
-        var footer = new Grid { Padding = new Thickness(16), ColumnSpacing = 8 };
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var text = new StackPanel { Spacing = 4 };
-        var heading = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        heading.Children.Add(DfUi.Glyph(kind.Glyph, 14, isOn ? DfUi.Accent : DfUi.Muted));
-        heading.Children.Add(DfUi.Text(kind.Title, 15, true, DfUi.PrimaryText, wrap: false));
-        if (kind.Beta)
+            Child = previewDemo,
+        });
+        var heading = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        heading.Children.Add(DfUi.Text(feature.Title, 15, true, DfUi.PrimaryText, wrap: false));
+        if (feature.Beta)
         {
             var badge = DfUi.Badge("Beta");
             badge.Margin = new Thickness(2, 0, 0, 0);
             heading.Children.Add(badge);
         }
-        text.Children.Add(heading);
-        text.Children.Add(DfUi.Detail(kind.Detail));
-        footer.Children.Add(text);
-        toggle.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(toggle, 1);
-        footer.Children.Add(toggle);
-
-        var root = new StackPanel();
-        root.Children.Add(demoSurface);
-        root.Children.Add(footer);
-        var card = new Border
-        {
-            Background = DfUi.Surface,
-            BorderBrush = isOn ? DfUi.Brush("DFAccentSubtleBrush") : DfUi.Line,
-            BorderThickness = new Thickness(isOn ? 1.5 : 1),
-            CornerRadius = new CornerRadius(12),
-            Child = root,
-        };
-        void Apply(bool value)
-        {
-            enabled[kind.Key] = value;
-            demo.Opacity = value ? 1 : 0.6;
-            card.BorderBrush = value ? DfUi.Brush("DFAccentSubtleBrush") : DfUi.Line;
-            card.BorderThickness = new Thickness(value ? 1.5 : 1);
-            FooterHint.Text = EnabledCount == 0 ? "所有功能保持关闭，随时可以再打开" : $"将开启 {EnabledCount} 项功能，随时可以调整";
-        }
-        toggle.Toggled += (_, _) => Apply(toggle.IsOn);
-        return card;
+        previewState = DfUi.Detail("", 12);
+        previewState.Margin = new Thickness(8, 0, 0, 0);
+        heading.Children.Add(previewState);
+        previewHost.Children.Add(heading);
+        previewHost.Children.Add(DfUi.Detail(feature.Detail));
+        UpdatePreviewState();
     }
+
+    private void UpdatePreviewState()
+    {
+        var feature = FeatureList.First(item => item.Key == previewed);
+        bool isOn = enabled[feature.Key];
+        if (previewDemo is not null) previewDemo.Opacity = isOn ? 1 : 0.6;
+        if (previewState is not null)
+        {
+            previewState.Text = isOn ? "完成后开启" : "保持关闭";
+            previewState.Foreground = isOn ? DfUi.Accent : DfUi.Muted;
+        }
+    }
+
+    private void UpdateFooterHint() =>
+        FooterHint.Text = EnabledCount == 0 ? "所有功能保持关闭，随时可以再打开" : $"将开启 {EnabledCount} 项功能，随时可以调整";
 
     // MARK: - Demos
 
-    private UIElement BuildDemo(string kind)
+    private FrameworkElement BuildDemo(string kind)
     {
         var canvas = new Canvas { Height = 112, IsHitTestVisible = false };
         switch (kind)

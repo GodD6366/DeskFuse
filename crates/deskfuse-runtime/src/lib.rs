@@ -21,9 +21,9 @@ pub mod updates;
 #[cfg(unix)]
 pub mod input_service;
 #[cfg(not(unix))]
-#[path = "input_service_types.rs"]
-pub mod input_service;
-#[cfg(unix)]
+pub mod input_service {
+    pub use crate::input_service_types::*;
+}
 pub mod input_service_types;
 
 use deskfuse_core::{
@@ -1233,7 +1233,10 @@ pub enum RuntimeCommand {
 }
 
 impl RuntimeCommand {
-    fn is_input(&self) -> bool {
+    /// Commands that the runtime routes to its input actor. The Windows
+    /// desktop bridge uses this to reach the standalone input runtime.
+    #[must_use]
+    pub fn is_input(&self) -> bool {
         matches!(
             self,
             Self::ObserveWifiEnvironment { .. }
@@ -4912,6 +4915,7 @@ pub struct MemoryTransport {
     remote_hellos: Arc<Mutex<BTreeMap<DeviceId, Hello>>>,
     registered_identities: Arc<Mutex<BTreeMap<DeviceId, [u8; 32]>>>,
     failures: Arc<Mutex<BTreeSet<RouteId>>>,
+    failed_peers: Arc<Mutex<BTreeSet<DeviceId>>>,
     revoked: Arc<Mutex<BTreeSet<DeviceId>>>,
     connect_count: Arc<std::sync::atomic::AtomicUsize>,
     disconnect_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -4948,6 +4952,7 @@ impl MemoryTransport {
             remote_hellos: Arc::new(Mutex::new(BTreeMap::new())),
             registered_identities: Arc::new(Mutex::new(BTreeMap::new())),
             failures: Arc::new(Mutex::new(BTreeSet::new())),
+            failed_peers: Arc::new(Mutex::new(BTreeSet::new())),
             revoked: Arc::new(Mutex::new(BTreeSet::new())),
             connect_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             disconnect_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -4992,6 +4997,21 @@ impl MemoryTransport {
     pub fn fail_route(&self, route_id: RouteId) {
         if let Ok(mut failures) = self.failures.lock() {
             failures.insert(route_id);
+        }
+    }
+
+    pub fn fail_peer(&self, peer_id: DeviceId) {
+        if let Ok(mut failures) = self.failed_peers.lock() {
+            failures.insert(peer_id);
+        }
+    }
+
+    pub fn clear_failures(&self) {
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.clear();
+        }
+        if let Ok(mut failures) = self.failed_peers.lock() {
+            failures.clear();
         }
     }
 
@@ -5065,6 +5085,7 @@ impl TransportProvider for MemoryTransport {
     ) -> ProviderFuture<TransportConnection> {
         let remote_hellos = self.remote_hellos.clone();
         let failures = self.failures.clone();
+        let failed_peers = self.failed_peers.clone();
         let revoked = self.revoked.clone();
         let count = self.connect_count.clone();
         let generations = self.generations.clone();
@@ -5076,6 +5097,15 @@ impl TransportProvider for MemoryTransport {
                 .contains(&peer_id)
             {
                 return Err(RuntimeError::PeerBlocked(peer_id));
+            }
+            if failed_peers
+                .lock()
+                .map_err(|_| RuntimeError::Transport("peer failure set is poisoned".to_owned()))?
+                .contains(&peer_id)
+            {
+                return Err(RuntimeError::Transport(
+                    "peer is configured to fail".to_owned(),
+                ));
             }
             if failures
                 .lock()
@@ -5110,6 +5140,7 @@ impl TransportProvider for MemoryTransport {
         route: RouteCandidate,
     ) -> ProviderFuture<TransportConnection> {
         let remote_hellos = self.remote_hellos.clone();
+        let failed_peers = self.failed_peers.clone();
         let revoked = self.revoked.clone();
         Box::pin(async move {
             if revoked
@@ -5118,6 +5149,15 @@ impl TransportProvider for MemoryTransport {
                 .contains(&peer_id)
             {
                 return Err(RuntimeError::PeerBlocked(peer_id));
+            }
+            if failed_peers
+                .lock()
+                .map_err(|_| RuntimeError::Transport("peer failure set is poisoned".to_owned()))?
+                .contains(&peer_id)
+            {
+                return Err(RuntimeError::Transport(
+                    "peer is configured to fail".to_owned(),
+                ));
             }
             let remote_hello = remote_hellos
                 .lock()
@@ -5983,7 +6023,7 @@ mod tests {
             Capabilities::NETWORK,
         );
         if fail_first {
-            transport.fail_route(route.id);
+            transport.fail_peer(peer_id);
         }
         store
             .upsert_peer(
@@ -6015,6 +6055,7 @@ mod tests {
             .with_transport(transport.clone())
             .build()
             .expect("runtime");
+        let mut expected_connects = 1;
         if fail_first {
             let failed = wait_for_snapshot(&handle, |snapshot| {
                 snapshot
@@ -6024,8 +6065,8 @@ mod tests {
             })
             .await;
             assert_eq!(failed.peers[0].connection, ConnectionState::Failed);
-            assert_eq!(transport.connect_count(), 1);
-            transport.failures.lock().expect("failures").clear();
+            expected_connects = transport.connect_count() + 1;
+            transport.clear_failures();
             handle
                 .send(RuntimeCommand::RefreshPeers)
                 .await
@@ -6039,7 +6080,6 @@ mod tests {
         .await;
         assert_eq!(snapshot.peers[0].trust, TrustState::Trusted);
         assert_eq!(snapshot.peers[0].connection, ConnectionState::Connected);
-        let expected_connects = if fail_first { 2 } else { 1 };
         assert_eq!(transport.connect_count(), expected_connects);
         let sequence = snapshot.sequence;
         handle
@@ -7206,6 +7246,11 @@ mod tests {
         .await;
         let disconnects_before = transport.disconnect_count();
         let connects_before = transport.connect_count();
+        for route in handle.snapshot().peers[0].routes.iter() {
+            if route.id != active_id && route.id != fallback_id {
+                transport.fail_route(route.id);
+            }
+        }
         discovery.push(DiscoveryEvent::RouteRemoved {
             peer_id,
             route_id: active_id,

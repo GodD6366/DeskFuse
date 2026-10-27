@@ -566,6 +566,33 @@ impl FileBridge {
         Ok(())
     }
 
+    /// User cancellation applies to both shelf sends and incoming transfers.
+    pub fn cancel_transfer(&self, transfer_id: &str, reason: &str) {
+        let Ok(id) = parse_transfer(transfer_id) else {
+            return;
+        };
+        let outgoing_peer = {
+            let state = self.inner.state.lock().expect("file bridge state");
+            state
+                .sending
+                .get(&id)
+                .map(|job| job.peer)
+                .or_else(|| state.outgoing.get(&id).map(|offer| offer.peer))
+        };
+        if let Some(peer) = outgoing_peer {
+            self.cancel_from_peer(peer, id, reason);
+            let _ = self.inner.sink.send(
+                peer,
+                ClipboardFileFrame::Cancel {
+                    transfer_id: id,
+                    reason: bounded_reason(reason),
+                },
+            );
+        } else {
+            self.cancel_incoming(transfer_id, reason);
+        }
+    }
+
     /// Desktop cancel of one pending or active incoming transfer.
     pub fn cancel_incoming(&self, transfer_id: &str, reason: &str) {
         let Ok(id) = parse_transfer(transfer_id) else {
@@ -2169,6 +2196,28 @@ mod tests {
             assert_eq!(names, vec!["report.txt".to_owned()]);
             assert_eq!(total_bytes, 5);
         }
+        sender.bridge.reset(false);
+        let _ = fs::remove_dir_all(&sender.root);
+    }
+
+    #[test]
+    fn shelf_cancel_retires_outgoing_offer_without_removing_source() {
+        let sender = harness("shelf-cancel");
+        let source = write_source(&sender.root, "keep.txt", b"keep source");
+        let frames = sender
+            .bridge
+            .publish_local(&[PEER_A], vec![source.clone()])
+            .unwrap();
+        let id = frames[0].1;
+        sender.bridge.cancel_transfer(&id.to_hex(), "shelf closed");
+        assert!(
+            !sender
+                .bridge
+                .views()
+                .iter()
+                .any(|row| row.transfer_id == id.to_hex() && row.state == "offered")
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"keep source");
         sender.bridge.reset(false);
         let _ = fs::remove_dir_all(&sender.root);
     }

@@ -22,6 +22,7 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
     public JsonElement? LatestSnapshot { get; private set; }
     public event Action<JsonElement>? SnapshotChanged;
     public event Action<JsonElement>? ClipboardReceived;
+    public event Action<JsonElement>? LanWebUploadReceived;
     public event Action? PollStarting;
     private long? sessionEpoch;
     private long clipboardCursor;
@@ -44,8 +45,14 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
         SendAsync(Command("SaveEnvironmentLayout", new { name }), token);
     public Task SaveSceneAsync(string name, CancellationToken token = default) =>
         SendAsync(Command("SaveScene", new { name }), token);
+    /// <summary>Persist the session-gate switches. The service rejects this from
+    /// locked or remote sessions; only the unlocked physical console may widen it.</summary>
+    public Task SetSessionPolicyAsync(bool allowLocked, bool allowRemote, CancellationToken token = default) =>
+        SendAsync(Command("SetSessionPolicy", new { allow_locked = allowLocked, allow_remote = allowRemote }), token);
     public Task ApplySceneAsync(string sceneId, CancellationToken token = default) =>
         SendAsync(Command("ApplyScene", new { scene_id = sceneId }), token);
+    public Task RenameSceneAsync(string sceneId, string name, CancellationToken token = default) =>
+        SendAsync(Command("RenameScene", new { scene_id = sceneId, name }), token);
     public Task DeleteSceneAsync(string sceneId, CancellationToken token = default) =>
         SendAsync(Command("DeleteScene", new { scene_id = sceneId }), token);
     public void Start() => poll ??= Task.Run(PollAsync);
@@ -61,16 +68,28 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
                 var reply = await SendAsync(initial ? "Snapshot" : Command("Poll", new { session_epoch = sessionEpoch!.Value, after_sequence = clipboardCursor }), stop.Token);
                 JsonElement snapshot;
                 JsonElement? incoming = null;
+                JsonElement[] lanWebUploads = [];
                 if (initial && reply.TryGetProperty("Snapshot", out snapshot)) { sessionEpoch = snapshot.Number("session_epoch"); clipboardCursor = 0; }
                 else if (!initial && reply.TryGetProperty("Poll", out var result))
                 {
                     snapshot = result.GetProperty("snapshot");
                     clipboardCursor = result.Number("clipboard_sequence");
                     if (result.TryGetProperty("clipboard", out var item) && item.ValueKind == JsonValueKind.Object) incoming = item.Clone();
+                    if (result.TryGetProperty("lan_web_uploads", out var uploads) && uploads.ValueKind == JsonValueKind.Array)
+                        lanWebUploads = uploads.EnumerateArray().Select(item => item.Clone()).ToArray();
                 }
                 else throw new IOException("服务未提供桌面状态，请更新服务和客户端到同一版本。");
                 var clone = snapshot.Clone();
-                await dispatcher.EnqueueAsync(() => { LatestSnapshot = clone; IsConnected = true; ConnectionChanged?.Invoke(true, "服务已连接"); SnapshotChanged?.Invoke(clone); if (incoming.HasValue) ClipboardReceived?.Invoke(incoming.Value); });
+                await dispatcher.EnqueueAsync(() =>
+                {
+                    LatestSnapshot = clone;
+                    bool reconnected = !IsConnected;
+                    IsConnected = true;
+                    if (reconnected) ConnectionChanged?.Invoke(true, "服务已连接");
+                    SnapshotChanged?.Invoke(clone);
+                    if (incoming.HasValue) ClipboardReceived?.Invoke(incoming.Value);
+                    foreach (var upload in lanWebUploads) LanWebUploadReceived?.Invoke(upload);
+                });
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
             catch (Exception ex)

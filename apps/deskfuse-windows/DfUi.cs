@@ -379,6 +379,7 @@ internal sealed class DfToggle : ToggleButton
         grid.Children.Add(thumb);
         Content = grid;
         IsChecked = isOn;
+        IsEnabledChanged += (_, _) => UpdateVisual();
         UpdateVisual();
         Checked += (_, e) => { UpdateVisual(); Toggled?.Invoke(this, e); };
         Unchecked += (_, e) => { UpdateVisual(); Toggled?.Invoke(this, e); };

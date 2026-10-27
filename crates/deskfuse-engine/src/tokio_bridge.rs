@@ -15,9 +15,8 @@ mod file_policy;
 mod file_receive_worker;
 #[path = "finder_paste_jobs.rs"]
 mod finder_paste_jobs;
-#[path = "library_sync.rs"]
-mod library_sync;
 use crate::diagnostics::{DiagnosticLevel, Diagnostics};
+use crate::library_sync;
 use crate::model::{ClipboardHistoryItem, TransferDirection, TransferState};
 use crate::platform::memory_platform;
 #[cfg(test)]
@@ -1415,14 +1414,15 @@ impl TokioBridge {
         ) {
             return;
         }
+        #[cfg(target_os = "macos")]
+        let build = deskfuse_runtime::input_service::build_identity();
+        #[cfg(not(target_os = "macos"))]
+        let build = env!("CARGO_PKG_VERSION").to_owned();
         self.diagnostics.record(
             DiagnosticLevel::Info,
             "startup",
             stage,
-            Some(format!(
-                "build={}",
-                deskfuse_runtime::input_service::build_identity()
-            )),
+            Some(format!("build={build}")),
             None,
         );
     }
@@ -3441,7 +3441,7 @@ async fn run_worker(
 }
 
 /// Controller-side remote-control state owned by the Tokio worker.
-fn trusted_connected_peer_ids(view: &SnapshotView) -> Vec<DeviceId> {
+pub(crate) fn trusted_connected_peer_ids(view: &SnapshotView) -> Vec<DeviceId> {
     view.snapshot
         .peers
         .iter()
@@ -4987,15 +4987,18 @@ fn finish_native_clipboard(
 }
 
 fn clipboard_file_receiver(cache_root: &std::path::Path) -> Result<FileReceiver, String> {
-    use std::os::unix::fs::DirBuilderExt;
-
     // FileReceiver securely creates its final directory, but resolves its
     // parent first. A fresh install has no app/clipboard cache directories.
     // Create those caller-owned parents before opening the no-follow receiver.
     let parent = cache_root.parent().ok_or("文件接收目录无效")?;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
         .create(parent)
         .map_err(|error| format!("无法创建文件接收目录: {error}"))?;
     FileReceiver::new(cache_root).map_err(|error| error.to_string())
@@ -5357,7 +5360,7 @@ fn emit_permission_snapshot(
 #[path = "clipboard_history_tests.rs"]
 mod clipboard_history_tests;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "file_clipboard_tests.rs"]
 mod file_clipboard_tests;
 
@@ -5637,6 +5640,11 @@ mod tests {
     #[test]
     fn runtime_config_has_expected_capabilities() {
         let config = runtime_config(&*crate::platform::memory_platform().runtime());
+        let update_trigger = if crate::github_update::is_manual_bundle() {
+            Capabilities::NONE
+        } else {
+            Capabilities::LAN_UPDATE_TRIGGER
+        };
         assert_eq!(config.display_name, "DeskFuse");
         assert_eq!(
             config.capabilities,
@@ -5647,7 +5655,7 @@ mod tests {
                 | Capabilities::DEVICE_NETWORK
                 | Capabilities::INPUT_ACTIVATION
                 | Capabilities::LAN_UPDATES
-                | Capabilities::LAN_UPDATE_TRIGGER
+                | update_trigger
                 | Capabilities::INPUT_ENVIRONMENT
                 | Capabilities::DEFERRED_FILE_CLIPBOARD
                 | Capabilities::CLIPBOARD_SYNC_V2

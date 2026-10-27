@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>DeskFuse · 局域网传输</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="page-header">
+      <span class="brand"><span class="brand-mark" aria-hidden="true"></span>DeskFuse</span>
+      <span id="connection" class="connection" role="status">正在连接</span>
+    </header>
+    <main class="send-section">
+      <div class="intro">
+        <div><h1>传到这台电脑</h1><p id="device-name">照片与文字，在同一局域网轻松接力。</p></div>
+        <span class="local-badge">局域网传输</span>
+      </div>
+      <form id="text-form" class="composer">
+        <label class="visually-hidden" for="text-input">要发送的文字</label>
+        <textarea id="text-input" rows="4" maxlength="1048576" placeholder="粘贴或输入文字…" required></textarea>
+        <div class="composer-bar"><span id="text-count" class="muted">文字会写入电脑剪贴板</span><button id="send-text" class="button primary" type="submit">发送文字</button></div>
+      </form>
+      <div class="photo-bar">
+        <div><strong>也可以传照片</strong><span class="muted">JPEG、PNG、TIFF、WebP，每张不超过 16 MiB</span></div>
+        <button id="choose-photos" class="button secondary" type="button">上传照片</button>
+        <input id="photo-input" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.webp" multiple hidden>
+      </div>
+      <p id="send-message" class="inline-message" role="status" hidden></p>
+      <section id="queue-section" class="queue-section" aria-label="上传任务" hidden>
+        <div class="queue-heading"><h2>发送记录</h2><button id="clear-completed" class="text-button" type="button">清除已完成</button></div>
+        <ul id="upload-queue" class="upload-queue"></ul>
+      </section>
+    </main>
+    <footer>内容仅通过当前局域网发送到这台电脑，不经过云端。</footer>
+  </div>
+</body>
+</html>

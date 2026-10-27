@@ -6,6 +6,7 @@ pub(crate) mod desktop;
 pub(super) mod file_transfer;
 pub(crate) mod input_helper;
 mod input_security;
+pub(super) mod lan_web;
 mod network;
 mod remote_app;
 mod security;
@@ -13,7 +14,7 @@ mod session_agent;
 mod wifi;
 mod workflow;
 use crate::{
-    policy::same_session,
+    policy::{SessionPolicy, same_session},
     protocol::{self, Command, Reply, Request, Response, Status},
 };
 use futures::StreamExt;
@@ -45,11 +46,61 @@ use windows_sys::Win32::{
     },
 };
 
-#[derive(Default)]
+/// Concurrent authenticated client connections across both listeners. The
+/// helper's persistent desktop connection holds one for its whole lifetime.
+const MAX_CLIENTS: usize = 16;
+
 pub(super) struct Control {
     stopping: AtomicBool,
     epoch: AtomicU64,
     desktop: Mutex<desktop::State>,
+    /// Cached session-gate relaxation; refreshed from the durable store per
+    /// desktop request and written through on change. Strict until then.
+    allow_locked_session: AtomicBool,
+    allow_remote_session: AtomicBool,
+    /// Input-delivery revision. The helper's push task waits on it, so a
+    /// delivery reaches the helper without waiting for its next poll.
+    input_push: tokio::sync::watch::Sender<u64>,
+}
+impl Default for Control {
+    fn default() -> Self {
+        Self {
+            stopping: AtomicBool::default(),
+            epoch: AtomicU64::default(),
+            desktop: Mutex::default(),
+            allow_locked_session: AtomicBool::default(),
+            allow_remote_session: AtomicBool::default(),
+            input_push: tokio::sync::watch::channel(0).0,
+        }
+    }
+}
+impl Control {
+    /// Wake the helper's push task. Cheap and lossless: the revision is stored,
+    /// so a signal raised before the task waits is still observed.
+    pub(super) fn signal_input_push(&self) {
+        self.input_push
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+    pub(super) fn session_policy(&self) -> SessionPolicy {
+        SessionPolicy {
+            allow_locked: self.allow_locked_session.load(Ordering::Relaxed),
+            allow_remote: self.allow_remote_session.load(Ordering::Relaxed),
+        }
+    }
+    pub(super) fn set_session_policy(&self, policy: SessionPolicy) {
+        self.allow_locked_session
+            .store(policy.allow_locked, Ordering::Relaxed);
+        self.allow_remote_session
+            .store(policy.allow_remote, Ordering::Relaxed);
+    }
+    /// Reload the cached policy from the durable store; keep the cache on error.
+    pub(super) fn refresh_session_policy(&self, network: &Network) {
+        if let Ok(Some(json)) = network.store.session_policy_json()
+            && let Ok(policy) = serde_json::from_str::<SessionPolicy>(&json)
+        {
+            self.set_session_policy(policy);
+        }
+    }
 }
 static CONTROL: OnceLock<Arc<Control>> = OnceLock::new();
 
@@ -177,7 +228,10 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
         .get()
         .ok_or_else(|| io::Error::other("missing service control"))?
         .clone();
-    // Claim namespace before touching durable state; squatting/second service fails closed.
+    // Claim the namespace before touching durable state; a squatter or a second
+    // service fails closed. Each pipe then keeps its own accept task, so pipe
+    // connects are never starved by work in the service loop and a client always
+    // finds a listening instance (ERROR_PIPE_BUSY otherwise).
     let mut listener = security::create_pipe(protocol::PIPE_NAME, true)?;
     let mut desktop_listener = security::create_pipe(crate::desktop_protocol::PIPE_NAME, true)?;
     let start = timeout(Duration::from_mins(1), Network::start());
@@ -194,6 +248,8 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
     });
     let running_report = status.report(SERVICE_RUNNING, 0, 0);
     let mut clients = JoinSet::new();
+    // 连接编号。helper 的长连接长期占用一个名额，上限因此留出余量。
+    let links = AtomicU64::new(0);
     let mut events = network.runtime.subscribe_events();
     let mut input_events = network.input_runtime.handle.input_event_stream();
     let mut input_sync_tick = tokio::time::interval(Duration::from_secs(1));
@@ -206,33 +262,43 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                 break Ok(());
             }
             tokio::select! {
-                connected = listener.connect(), if clients.len() < 8 => {
+                connected = listener.connect() => {
                     if let Err(error) = connected { break Err(error); }
-                    // Keep a listening instance owned at all times, so a client cannot
-                    // create a competing namespace between completed connections.
+                    // 监听实例必须始终保持。池满时若连 accept 一起停掉，管道就没有
+                    // 可连接实例，所有客户端——包括正要释放名额的那些——都会拿到
+                    // ERROR_PIPE_BUSY。超出名额就立刻关闭这条连接，让调用方按 EOF 重试。
                     let next = match security::create_pipe(protocol::PIPE_NAME, false) {
                         Ok(next) => next,
                         Err(error) => break Err(error),
                     };
                     let connected = std::mem::replace(&mut listener, next);
+                    if clients.len() >= MAX_CLIENTS {
+                        continue;
+                    }
                     let network = network.clone();
                     let control = control.clone();
                     clients.spawn(async move {
-                        // Read/write deadline and at most eight clients. Authentication
+                        // Read/write deadline and a bounded client count. Authentication
                         // uses synchronous local Win32 queries (no await while impersonating).
                         let _ = timeout(Duration::from_secs(3), handle_client(connected, &network, &control)).await;
                     });
                 }
-                connected = desktop_listener.connect(), if clients.len() < 8 => {
+                connected = desktop_listener.connect() => {
                     if let Err(error) = connected { break Err(error); }
                     let next = match security::create_pipe(crate::desktop_protocol::PIPE_NAME, false) {
                         Ok(next) => next, Err(error) => break Err(error),
                     };
                     let connected = std::mem::replace(&mut desktop_listener, next);
+                    if clients.len() >= MAX_CLIENTS {
+                        continue;
+                    }
                     let network = network.clone();
                     let control = control.clone();
+                    // 桌面连接不再按请求计时：helper 的长连接存活整个进程生命周期。
+                    // 首帧和空闲上限由 `desktop::handle` 自己约束。
+                    let link = links.fetch_add(1, Ordering::AcqRel) + 1;
                     clients.spawn(async move {
-                        let _ = timeout(Duration::from_secs(3), desktop::handle(connected, &network, &control)).await;
+                        let _ = desktop::handle(connected, &network, control, link).await;
                     });
                 }
                 input_event = input_events.next() => {
@@ -242,6 +308,7 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                     if let Ok(mut state) = control.desktop.lock() {
                         state.input_event(input_event, &network, &control);
                     }
+                    control.signal_input_push();
                 }
                 event = events.recv() => {
                     if let Ok(mut state) = control.desktop.lock() {
@@ -253,13 +320,12 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                     }
                 }
                 _ = input_sync_tick.tick() => {
-                    if let Err(error) = network.sync_input_authority().await {
-                        break Err(error);
-                    }
+                    network.schedule_input_authority();
                 }
                 _ = clients.join_next(), if !clients.is_empty() => {},
                 _ = desktop_tick.tick() => {
                     if let Ok(mut state) = control.desktop.lock() { state.tick(&network, &control); }
+                    control.signal_input_push();
                     network.serve_remote_applications();
                 },
             }
@@ -308,7 +374,9 @@ async fn handle_client(
     // Named-pipe impersonation applies to the most recently READ message.
     let request: Request = protocol::read_frame(&mut pipe).await?;
     let epoch = control.epoch.load(Ordering::Acquire);
-    let before = security::authenticate(pipe.as_raw_handle())?;
+    control.refresh_session_policy(network);
+    let policy = control.session_policy();
+    let before = security::authenticate(pipe.as_raw_handle(), policy)?;
     let result = if request.version == protocol::VERSION {
         match request.command {
             Command::Status => {
@@ -331,9 +399,15 @@ async fn handle_client(
     } else {
         Reply::UnsupportedVersion
     };
-    let after = security::authenticate(pipe.as_raw_handle())?;
+    let after = security::authenticate(pipe.as_raw_handle(), policy)?;
     if control.stopping.load(Ordering::Acquire)
-        || !same_session(before, after, epoch, control.epoch.load(Ordering::Acquire))
+        || !same_session(
+            before,
+            after,
+            epoch,
+            control.epoch.load(Ordering::Acquire),
+            policy,
+        )
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

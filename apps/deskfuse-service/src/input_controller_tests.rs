@@ -37,6 +37,18 @@ fn topology() -> DisplayTopology {
 #[test]
 fn controller_commands_round_trip() {
     let commands = vec![
+        ipc::Command::RefreshPeers,
+        ipc::Command::Connect {
+            peer_id: DeviceId::from_bytes([9; 32]).to_hex(),
+        },
+        ipc::Command::SetFileTransferEnabled { enabled: true },
+        ipc::Command::ConfigureLanWeb { enabled: true },
+        ipc::Command::CommitLanWebUpload {
+            session_epoch: 1,
+            upload_id: uuid::Uuid::new_v4().to_string(),
+            recorded: true,
+            clipboard_written: true,
+        },
         ipc::Command::EnterInputControl {
             session_id: session(),
             target_display: "mac-display".into(),
@@ -195,6 +207,11 @@ fn input_state_carries_layout_and_control_views() {
             peer_id: peer.to_hex(),
             topology: topology(),
         }],
+        remote_wallpapers: [(
+            peer.to_hex(),
+            [("mac-display".into(), "/9j/2Q==".into())].into(),
+        )]
+        .into(),
         links: vec![ipc::LinkView {
             peer_id: peer.to_hex(),
             ready: true,
@@ -233,6 +250,14 @@ fn input_state_carries_layout_and_control_views() {
     assert_eq!(parsed.remote_topologies.len(), 1);
     assert_eq!(parsed.links[0].lease_revision, 3);
     assert!(parsed.controlling.is_some());
+    assert_eq!(
+        parsed.remote_wallpapers[&peer.to_hex()]["mac-display"],
+        "/9j/2Q=="
+    );
+    let mut legacy = serde_json::to_value(&state).expect("legacy state");
+    legacy.as_object_mut().unwrap().remove("remote_wallpapers");
+    let legacy: ipc::InputState = serde_json::from_value(legacy).expect("old service state");
+    assert!(legacy.remote_wallpapers.is_empty());
 }
 
 /// The settings toggle must preserve saved shortcuts and only flip role and

@@ -12,15 +12,31 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     public string? CustomTitle { get; init; }
     /// <summary>Foreground application at copy time; null for remote entries.</summary>
     public string? SourceApp { get; init; }
+    /// <summary>Canonical library identity. Local JSON rows have no value.</summary>
+    [JsonIgnore] public ulong? CanonicalId { get; init; }
+    [JsonIgnore] public bool Available { get; init; } = true;
+    [JsonIgnore] public bool Remote { get; init; }
+    [JsonIgnore] public string OcrText { get; init; } = "";
+    [JsonIgnore] public IReadOnlyList<string> MembershipIds { get; init; } = Array.Empty<string>();
+    [JsonIgnore] public byte[]? Thumbnail { get; init; }
+    /// <summary>False until the canonical payload has been fetched on demand.</summary>
+    [JsonIgnore] public bool CopyTimeKnown { get; init; } = true;
+    [JsonIgnore] public bool ContentLoaded { get; init; } = true;
+    [JsonIgnore] public string? KindOverride { get; init; }
+    [JsonIgnore] public string? PreviewOverride { get; init; }
+    [JsonIgnore] public long? SizeOverride { get; init; }
+    [JsonIgnore] public int CanonicalFileCount { get; init; }
     [JsonIgnore]
-    public string Kind => Content.Files is { Count: > 0 } ? "files" : Content.Mime == "image/png" ? "image" : "text";
+    public bool IsCanonical => CanonicalId is not null;
     [JsonIgnore]
-    public long SizeBytes => Content.SizeBytes;
+    public string Kind => KindOverride ?? (Content.Files is { Count: > 0 } ? "files" : Content.Mime == "image/png" ? "image" : "text");
+    [JsonIgnore]
+    public long SizeBytes => SizeOverride ?? Content.SizeBytes;
     /// <summary>Preformatted timestamp: WinUI bindings have no StringFormat.</summary>
     [JsonIgnore]
-    public string CreatedLabel => CreatedAt.LocalDateTime.ToString("g");
+    public string CreatedLabel => CopyTimeKnown ? CreatedAt.LocalDateTime.ToString("g") : "复制时间未知";
     [JsonIgnore]
-    public string TimeLabel => CreatedAt.LocalDateTime.ToString("HH:mm");
+    public string TimeLabel => CopyTimeKnown ? CreatedAt.LocalDateTime.ToString("HH:mm") : "—";
     [JsonIgnore]
     public string SourceLabel => $"来自 {(string.IsNullOrEmpty(SourceApp) ? SourceName : SourceApp)}";
     [JsonIgnore]
@@ -28,12 +44,17 @@ public sealed record ClipboardEntry(string Id, ClipboardContent Content, string 
     [JsonIgnore]
     public string Title => !string.IsNullOrWhiteSpace(CustomTitle) ? CustomTitle : Kind switch
     {
-        "files" => Content.Files!.Count == 1 ? Path.GetFileName(Content.Files[0].TrimEnd(Path.DirectorySeparatorChar)) : $"{Content.Files!.Count} 个文件或文件夹",
-        "image" => "PNG 图片",
+        "files" => Content.Files is { Count: > 0 } files
+            ? (files.Count == 1 ? Path.GetFileName(files[0].TrimEnd(Path.DirectorySeparatorChar)) : $"{files.Count} 个文件或文件夹")
+            : $"{CanonicalFileCount} 个文件或文件夹",
+        "image" => PreviewOverride is not null ? "图片" : "PNG 图片",
         _ => Preview.Length > 60 ? Preview[..60] + "…" : Preview.Length > 0 ? Preview : "空文本"
     };
+    /// Detail titles are user-authored, never a second copy of the body.
     [JsonIgnore]
-    public string Preview => Kind switch
+    public string? DetailTitle => string.IsNullOrWhiteSpace(CustomTitle) ? null : CustomTitle.Trim();
+    [JsonIgnore]
+    public string Preview => PreviewOverride ?? Kind switch
     {
         "files" => string.Join(Environment.NewLine, Content.Files ?? Array.Empty<string>()),
         "image" => $"PNG · {SizeBytes / 1024.0:N1} KiB",
@@ -49,11 +70,17 @@ public sealed class ClipboardHistory : IDisposable
     public int RetentionDays { get; private set; }
     private readonly string directory;
     private readonly string file;
-    private readonly Channel<ClipboardEntry[]> saves = Channel.CreateBounded<ClipboardEntry[]>(new BoundedChannelOptions(1)
-    { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = true });
+    private readonly Channel<(ClipboardEntry[] Entries, long Generation)> saves = Channel.CreateBounded<(ClipboardEntry[], long)>(
+        new BoundedChannelOptions(1)
+        { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = true });
+    private readonly SemaphoreSlim writeGate = new(1, 1);
     private readonly Task writer;
+    private long writeGeneration;
     private bool disposed;
     public ObservableCollection<ClipboardEntry> Entries { get; } = new();
+    /// <summary>True while a replacement is applied, so row-by-row collection
+    /// notifications cannot trigger a full history query per inserted row.</summary>
+    public bool IsReplacing { get; private set; }
     public string? StorageError { get; private set; }
 
     public ClipboardHistory() : this(30) { }
@@ -167,27 +194,75 @@ public sealed class ClipboardHistory : IDisposable
     public void Remove(ClipboardEntry entry) { Entries.Remove(entry); ScheduleSave(); }
     public void Clear() { Entries.Clear(); ScheduleSave(); }
 
+    /// <summary>Atomically replace the local history after the complete replacement
+    /// has been fetched and validated. Nothing is cleared before the new snapshot
+    /// reaches disk, so an interrupted import keeps the previous history intact.</summary>
+    internal async Task<IReadOnlyList<ClipboardEntry>> ReplaceAllAsync(IReadOnlyList<ClipboardEntry> replacement)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (StorageError is not null) throw new IOException(StorageError);
+        var accepted = replacement.Where(entry => Valid(entry) && !Expired(entry)).ToArray();
+        if (accepted.Length == 0) throw new InvalidOperationException("设备没有可导入的剪贴板历史。");
+        await writeGate.WaitAsync();
+        try
+        {
+            if (!await WriteSnapshotAsync(accepted)) throw new IOException(StorageError ?? "剪贴板历史保存失败。");
+            Interlocked.Increment(ref writeGeneration);
+        }
+        finally { writeGate.Release(); }
+        IsReplacing = true;
+        try
+        {
+            Entries.Clear();
+            foreach (var entry in accepted) Entries.Add(entry);
+        }
+        finally { IsReplacing = false; }
+        return accepted;
+    }
+
     private void ScheduleSave()
     {
         // A malformed/unreadable old index is not replaced silently by a blank one.
-        if (StorageError is null && !disposed) saves.Writer.TryWrite(Entries.ToArray());
+        if (StorageError is null && !disposed)
+            saves.Writer.TryWrite((Entries.ToArray(), Volatile.Read(ref writeGeneration)));
     }
 
     private async Task SaveLoop()
     {
-        await foreach (var snapshot in saves.Reader.ReadAllAsync())
+        await foreach (var (snapshot, generation) in saves.Reader.ReadAllAsync())
         {
-            var temporary = Path.Combine(directory, $".history-{Guid.NewGuid():N}.tmp");
+            await writeGate.WaitAsync();
             try
             {
-                await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, FileOptions.Asynchronous))
-                { await JsonSerializer.SerializeAsync(output, snapshot); await output.FlushAsync(); output.Flush(flushToDisk: true); }
-                File.Move(temporary, file, overwrite: true);
+                // A replacement already wrote the authoritative snapshot; an
+                // older queued row snapshot must not overwrite it.
+                if (generation == Volatile.Read(ref writeGeneration)) await WriteSnapshotAsync(snapshot);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            { StorageError = "剪贴板历史保存失败；当前内容仍在内存中"; }
-            finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            finally { writeGate.Release(); }
         }
+    }
+
+    private async Task<bool> WriteSnapshotAsync(ClipboardEntry[] snapshot)
+    {
+        var temporary = Path.Combine(directory, $".history-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await Task.Run(async () =>
+            {
+                await using var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, FileOptions.Asynchronous);
+                await JsonSerializer.SerializeAsync(output, snapshot);
+                await output.FlushAsync();
+                output.Flush(flushToDisk: true);
+            });
+            File.Move(temporary, file, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            StorageError = "剪贴板历史保存失败；当前内容仍在内存中";
+            return false;
+        }
+        finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
 
     public void Dispose()

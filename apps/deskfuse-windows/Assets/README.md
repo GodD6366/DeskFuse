@@ -11,4 +11,8 @@
 
 `StoreLogo.png`、`Square44x44Logo.png`、`Square150x150Logo.png`、`Wide310x150Logo.png`、`SplashScreen.png`、`StoreListingLogo-300x300.png`、`Square44x44Logo.targetsize-256.png` 由 `scripts/generate-store-assets.ps1` 从同一应用图标生成，哈希记录在 `store-assets.json`。生成器优先使用 macOS 资产管线产出的 `resources/generated/DeskFuse-icon-1024.png`，其次是 Edge 无头渲染的 SVG，最后才回退到 ICO。发布准备与限制见 `docs/WINDOWS_STORE.md`。
 
+## 主题品牌标记
+
+`BrandMark.Light.png` 与 `BrandMark.Dark.png` 用于侧栏、引导页和关于页，跟随当前主题切换，对应 macOS `DeskFuseBrandMark` 的浅色/深色图案。它们由 `scripts/generate-windows-brand-marks.ps1` 从 `resources/DeskFuse-icon-light.svg` 与 `resources/DeskFuse-icon.svg` 生成；重新生成后需检查 22 pt 侧栏和 48 pt 关于页的显示效果。
+
 在仓库根目录运行 `python3 scripts/generate-windows-icons.py` 可重新进行格式转换（需要 Pillow）。格式检查和构建不等于真实 Windows 资源管理器、任务栏或系统托盘视觉验收。

@@ -15,7 +15,10 @@ public partial class App : Application
     private DesktopClipboardController? clipboard;
     private InputHelperProcess? inputHelper;
     private PowerStateController? power;
+    private ShelfDragShakeMonitor? shelfDragMonitor;
     private MainWindow? window;
+    private DispatcherQueueTimer? updateTimer;
+    private bool updateChecking;
     internal bool Exiting { get; private set; }
     internal MainWindow? ClientWindow => window;
 
@@ -47,8 +50,9 @@ public partial class App : Application
             window.Notify("Windows 未接受保持唤醒请求，已恢复为系统默认休眠行为。");
         }
         window.Closed += (_, _) => Cleanup();
-        clipboard.ShelfFactory = () => new ShelfWindow(clipboard.Native, clipboard.History, clipboard);
+        clipboard.ShelfFactory = () => new ShelfWindow(clipboard, service, window.Notify);
         clipboard.Start(window.Handle);
+        shelfDragMonitor = new ShelfDragShakeMonitor(dispatcher, () => clipboard?.ShowShelfAtPointer(), message => window?.Notify(message));
 
         tray = null;
         try
@@ -74,12 +78,36 @@ public partial class App : Application
         });
 
         service.Start();
-        inputHelper = new InputHelperProcess(dispatcher);
+        inputHelper = new InputHelperProcess(dispatcher, message => window?.ReportInputHelperStatus(message));
         window.RestoreFromTray();
         // Onboarding builds themed visuals; it needs the window shown so the
         // theme resource chain (ActualTheme) resolves.
         ShowOnboardingIfNeeded();
+        StartUpdateChecks();
         if (Environment.GetCommandLineArgs().Any(argument => argument.Equals("--minimized", StringComparison.OrdinalIgnoreCase))) window.HideToTray();
+    }
+
+    private void StartUpdateChecks()
+    {
+        updateTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
+        updateTimer.Interval = TimeSpan.FromHours(12);
+        updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync();
+        updateTimer.Start();
+        _ = CheckForUpdatesAsync();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (updateChecking || Exiting) return;
+        updateChecking = true;
+        try
+        {
+            if (!Version.TryParse(AppVersion.Display.Split(' ')[0], out var current)) return;
+            var result = await UpdateChecker.CheckAsync(current);
+            if (!Exiting) window?.ApplyAutomaticUpdateResult(result);
+        }
+        catch (Exception) { /* Automatic checks stay quiet; manual checks report the error in Settings. */ }
+        finally { updateChecking = false; }
     }
 
     private IReadOnlyList<TrayMenuEntry> BuildTrayMenu()
@@ -104,7 +132,8 @@ public partial class App : Application
             new TrayMenuEntry("最近剪贴板", null, recent),
             new TrayMenuEntry("暂存区", () => clipboard?.ShowShelf()),
             new TrayMenuEntry("设置", () => window?.ShowSettings()),
-            new TrayMenuEntry("反馈问题…", () => SupportLinks.ReportProblem(service?.LatestSnapshot)),
+            new TrayMenuEntry("反馈问题…", () => SupportLinks.ReportProblem(service?.LatestSnapshot,
+                clipboard?.Entries.Count, clipboard?.HistoryRetentionDays)),
             new TrayMenuEntry("-"),
             new TrayMenuEntry("退出 DeskFuse", ExitApp),
         ];
@@ -124,7 +153,9 @@ public partial class App : Application
     {
         if (cleaned) return;
         cleaned = true;
+        updateTimer?.Stop();
         activationStop?.Cancel();
+        shelfDragMonitor?.Dispose();
         inputHelper?.Dispose();
         clipboard?.Dispose();
         power?.Dispose();
@@ -138,11 +169,25 @@ public partial class App : Application
 
     private void ShowOnboardingIfNeeded()
     {
-        if (window is null || clipboard is null) return;
         // Unpackaged apps have no package identity, so ApplicationData is
         // unavailable; the registry keeps the per-user onboarding marker.
         using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
         if (key.GetValue("OnboardingVersion") is int completed && completed >= OnboardingVersion) return;
+        ShowOnboarding();
+    }
+
+    /// 设置 › 调试入口：与 macOS 的“重走初次设置”一致，沿用当前开关与权限，不清数据。
+    internal void RestartOnboarding()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\DeskFuse");
+        key.DeleteValue("OnboardingVersion", false);
+        window?.RestoreFromTray();
+        ShowOnboarding();
+    }
+
+    private void ShowOnboarding()
+    {
+        if (window is null || clipboard is null) return;
         window.ShowOnboarding(new OnboardingPage(clipboard, result =>
         {
             window?.ApplyOnboarding(result);

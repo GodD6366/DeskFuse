@@ -13,6 +13,8 @@ public sealed class WorkflowRecord
     [JsonPropertyName("steps")] public List<WorkflowStepRecord> Steps { get; set; } = [WorkflowStepRecord.Copy()];
     [JsonPropertyName("input_type")] public string InputType { get; set; } = "Any";
     [JsonIgnore] public string ShortcutLabel => Shortcut is null ? "无快捷键" : $"{Shortcut.KeyCode}, {Shortcut.Modifiers}";
+    [JsonIgnore] public string SummaryLabel => $"{Steps.Count} 个步骤 · {InputTypeLabel}";
+    [JsonIgnore] private string InputTypeLabel => InputType switch { "Text" => "文字", "Image" => "图片", _ => "任意内容" };
 }
 
 public sealed class ShortcutRecord

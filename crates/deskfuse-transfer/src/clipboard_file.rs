@@ -676,8 +676,9 @@ impl DeferredClipboardSource {
                 if &path == root {
                     return Err(TransferError::SymlinkNotAllowed(path));
                 }
-                let relative =
-                    RelativePath::new(path.strip_prefix(root).expect("source descendant"))?;
+                let relative = RelativePath::from_native_path(
+                    path.strip_prefix(root).expect("source descendant"),
+                )?;
                 let target = fs::read_link(&path)?;
                 super::validate_link_target(
                     &relative,
@@ -738,7 +739,8 @@ impl DeferredClipboardSource {
                     PathBuf::from(root_name)
                         .join(entry.path.strip_prefix(root).expect("descendant"))
                 };
-                let path = RelativePath::new(relative).expect("validated source relative path");
+                let path = RelativePath::from_native_path(relative)
+                    .expect("validated source relative path");
                 let kind = if entry.link_target.is_some() {
                     DeferredEntryKind::Symlink
                 } else if entry.directory {
@@ -911,6 +913,7 @@ mod tests {
         assert_eq!(plan.transfer_id(), transfer_id);
     }
 
+    #[cfg(unix)]
     #[test]
     fn folder_clipboard_round_trip_writes_real_file_bytes() {
         let temp = tempfile::tempdir().expect("tempdir");

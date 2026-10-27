@@ -1,9 +1,9 @@
-#[cfg(not(test))]
+#[cfg(all(not(test), not(windows)))]
 use deskfuse_runtime::{
     RuntimeHandle,
     updates::{LanUpdateConfig, LanUpdater, UpdateChannel},
 };
-#[cfg(not(test))]
+#[cfg(all(not(test), not(windows)))]
 use deskfuse_update::Target;
 #[cfg(not(windows))]
 use deskfuse_update::installer;

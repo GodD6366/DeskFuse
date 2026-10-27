@@ -17,7 +17,11 @@ internal interface ClipboardApplyPort
 
 internal interface WorkflowExecutionPort
 {
-    Task<ClipboardContent> ExecuteAsync(string workflowId, long sessionEpoch, long sequence, CancellationToken token = default);
+    Task<ClipboardContent> ExecuteAsync(string workflowId, bool paste, IntPtr target, long sessionEpoch, long sequence,
+        CancellationToken token = default, ClipboardContent? source = null);
+    /// <summary>Run without touching the local clipboard; used before sharing the result.</summary>
+    Task<ClipboardContent> ExecuteToContentAsync(string workflowId, ClipboardContent source, long sessionEpoch,
+        long sequence, CancellationToken token = default);
 }
 
 internal interface FileDataObjectPort
@@ -82,14 +86,30 @@ internal static class PlatformBoundary
 
     internal static object ExecuteWorkflowHost(string workflowId, ClipboardContent input)
     {
-        var representation = input.Representations?.FirstOrDefault(item => item.Mime == "text/plain")
-            ?? new ClipboardRepresentation(input.Mime, input.Data);
+        // Keep every captured representation so image workflows receive the
+        // native PNG and text workflows still see plain text. The service
+        // chooses the payload from the declared input type and steps.
+        var representations = input.Representations ?? [new ClipboardRepresentation(input.Mime, input.Data)];
+        var items = new List<object>();
+        if (input.Files is { Count: > 0 })
+        {
+            items.Add(new
+            {
+                mime = ClipboardContent.LocalFilesMime,
+                bytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(input.Files)),
+            });
+        }
+        else
+        {
+            foreach (var representation in representations)
+                items.Add(new { mime = representation.Mime, bytes = representation.Data.Select(value => (int)value).ToArray() });
+        }
         return new
         {
             ExecuteWorkflowHost = new
             {
                 workflow_id = workflowId,
-                input = new[] { new { mime = representation.Mime, bytes = representation.Data.Select(value => (int)value).ToArray() } }
+                input = items,
             }
         };
     }
@@ -166,10 +186,10 @@ internal static class PlatformBoundary
 
 internal sealed class WindowsWorkflowExecutionPort(ServiceClient service, DesktopClipboardController clipboard) : WorkflowExecutionPort
 {
-    public async Task<ClipboardContent> ExecuteAsync(string workflowId, long sessionEpoch, long requestSequence, CancellationToken token = default)
+    public async Task<ClipboardContent> ExecuteAsync(string workflowId, bool paste, IntPtr target, long sessionEpoch, long requestSequence, CancellationToken token = default, ClipboardContent? source = null)
     {
-        var input = await clipboard.CaptureTypedAsync(sessionEpoch, requestSequence, token);
-        if (input.Files is { Count: > 0 }) throw new InvalidOperationException("工作流当前只接受文字剪贴板输入。");
+        var input = source ?? await clipboard.CaptureTypedAsync(sessionEpoch, requestSequence, token);
+        if (input.Files is { Count: > 0 }) throw new InvalidOperationException("Windows 工作流暂不支持文件输入。");
         var reply = await service.SendPlatformAsync(
             sessionEpoch,
             requestSequence + 1,
@@ -177,11 +197,32 @@ internal sealed class WindowsWorkflowExecutionPort(ServiceClient service, Deskto
             token);
         var output = PlatformBoundary.WorkflowContent(PlatformBoundary.Event(reply));
         long expectedRevision = clipboard.NativeRevision;
-        return await clipboard.ApplyTypedAsync(
+        var applied = await clipboard.ApplyTypedAsync(
             output,
             expectedRevision,
             sessionEpoch,
             requestSequence + 2,
             token);
+        if (paste)
+        {
+            if (target == IntPtr.Zero)
+                throw new InvalidOperationException("没有可用的目标应用，结果已复制到剪贴板。");
+            // Reuse the quick-panel boundary: wait for the shortcut modifiers to
+            // be released, verify the clipboard still holds our result, then paste.
+            await ClipboardPanelNative.PasteWhenReadyAsync(target, clipboard.Native.SequenceNumber, clipboard.Native, token);
+        }
+        return applied;
+    }
+
+    public async Task<ClipboardContent> ExecuteToContentAsync(string workflowId, ClipboardContent source,
+        long sessionEpoch, long requestSequence, CancellationToken token = default)
+    {
+        if (source.Files is { Count: > 0 }) throw new InvalidOperationException("Windows 工作流暂不支持文件输入。");
+        var reply = await service.SendPlatformAsync(
+            sessionEpoch,
+            requestSequence,
+            PlatformBoundary.ExecuteWorkflowHost(workflowId, source),
+            token);
+        return PlatformBoundary.WorkflowContent(PlatformBoundary.Event(reply));
     }
 }

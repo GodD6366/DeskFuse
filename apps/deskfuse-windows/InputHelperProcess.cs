@@ -11,12 +11,15 @@ public sealed class InputHelperProcess : IDisposable
     private readonly DispatcherQueueTimer restart;
     private Process? process;
     private bool disposed;
+    private readonly Action<string?>? statusChanged;
+    private string? lastStatus;
 
     public int? ProcessId => process is { HasExited: false } current ? current.Id : null;
 
-    public InputHelperProcess(DispatcherQueue dispatcher)
+    public InputHelperProcess(DispatcherQueue dispatcher, Action<string?>? statusChanged = null)
     {
         this.dispatcher = dispatcher;
+        this.statusChanged = statusChanged;
         restart = dispatcher.CreateTimer();
         restart.Interval = TimeSpan.FromSeconds(2);
         restart.IsRepeating = false;
@@ -57,11 +60,22 @@ public sealed class InputHelperProcess : IDisposable
         if (!dispatcher.HasThreadAccess) throw new InvalidOperationException("input helper must be controlled from the UI thread");
     }
 
+    private void Report(string? message)
+    {
+        if (lastStatus == message) return;
+        lastStatus = message;
+        statusChanged?.Invoke(message);
+    }
+
     private void Start()
     {
         if (disposed || process is { HasExited: false }) return;
         string executable = Path.Combine(AppContext.BaseDirectory, "deskfuse-input-helper.exe");
-        if (!File.Exists(executable)) return;
+        if (!File.Exists(executable))
+        {
+            Report("当前目录缺少输入组件。UI 开发版不包含输入组件；鼠标共享需要安装完整的受信任版本。");
+            return;
+        }
         try
         {
             var start = new ProcessStartInfo(executable)
@@ -82,14 +96,22 @@ public sealed class InputHelperProcess : IDisposable
             next.Exited += HelperExited;
             process?.Dispose();
             process = next;
+            Report(null);
         }
-        catch (Exception) { restart.Start(); }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            Report(ex.NativeErrorCode == 8235
+                ? "Windows 拒绝启动未受信任的 UIAccess 输入组件（8235）。请安装有效签名的输入组件；设备在线不代表本机输入可用。"
+                : $"本机输入组件启动失败（Windows {ex.NativeErrorCode}）：{ex.Message}");
+            restart.Start();
+        }
+        catch (Exception ex) { Report($"本机输入组件启动失败：{ex.Message}"); restart.Start(); }
     }
 
     private void HelperExited(object? sender, EventArgs args) => dispatcher.TryEnqueue(() =>
     {
         if (sender is Process exited) exited.Exited -= HelperExited;
-        if (!disposed) restart.Start();
+        if (!disposed) { Report("本机输入组件已退出，正在重新连接。请检查安装和授权状态。"); restart.Start(); }
     });
 
     public void Dispose()

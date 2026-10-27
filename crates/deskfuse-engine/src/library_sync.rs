@@ -1,13 +1,18 @@
 //! Independent, resumable library replication. This transport never touches NSPasteboard.
 //! Mount beside clipboard_sync in tokio_bridge; call refresh on its periodic tick and
 //! receive before the ordinary clipboard decoder when MIME matches.
-use super::*;
+use crate::tokio_bridge::{UiEvent, trusted_connected_peer_ids};
+use deskfuse_core::{ClipboardPayload, DeviceId};
+use deskfuse_runtime::RuntimeHandle;
+use futures::channel::mpsc::UnboundedSender;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use crate::clipboard_library::{LogPosition, PullCursor};
+use crate::clipboard_library::{Library, LogPosition, PullCursor};
 
-pub(super) const MIME: &str = "application/x-deskfuse-library-sync-v1";
+pub const MIME: &str = "application/x-deskfuse-library-sync-v1";
 const CHUNK: usize = 128 * 1024;
 const MAX_BLOB: usize = 257 * 1024 * 1024;
 // Maximum frame size for Operations messages. Must match receive limit.
@@ -66,14 +71,28 @@ impl Drop for PeerWorker {
     }
 }
 #[derive(Default)]
-pub(super) struct Sync {
+pub struct Sync {
     peers: HashMap<DeviceId, PeerWorker>,
+    library: Option<Arc<Library>>,
 }
 impl Sync {
+    #[must_use]
+    pub fn with_library(library: Arc<Library>) -> Self {
+        Self {
+            peers: HashMap::new(),
+            library: Some(library),
+        }
+    }
     pub fn stop(&mut self) {
         self.peers.clear();
     }
     pub fn refresh(&mut self, runtime: &RuntimeHandle, ui: &UnboundedSender<UiEvent>) {
+        self.refresh_inner(runtime, Some(ui));
+    }
+    pub fn refresh_silent(&mut self, runtime: &RuntimeHandle) {
+        self.refresh_inner(runtime, None);
+    }
+    fn refresh_inner(&mut self, runtime: &RuntimeHandle, ui: Option<&UnboundedSender<UiEvent>>) {
         let trusted = trusted_connected_peer_ids(&runtime.snapshot_view());
         self.peers.retain(|id, p| {
             trusted.contains(id)
@@ -89,9 +108,12 @@ impl Sync {
             };
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             let runtime = runtime.clone();
-            let ui = ui.clone();
+            let ui = ui.cloned();
+            let library = self.library.clone();
             let task = tokio::spawn(async move {
-                if let Err(error) = worker(peer, generation, runtime, rx).await {
+                if let Err(error) = worker(peer, generation, runtime, library, rx).await
+                    && let Some(ui) = ui
+                {
                     let _ = ui.unbounded_send(UiEvent::ClipboardDelivery {
                         peer_id: peer,
                         phase: format!("列表同步失败：{error}"),
@@ -340,9 +362,13 @@ async fn worker(
     peer: DeviceId,
     generation: u64,
     runtime: RuntimeHandle,
+    library: Option<Arc<Library>>,
     mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Result<(), String> {
-    let library = crate::clipboard_library::global()?;
+    let library = match library {
+        Some(library) => library,
+        None => crate::clipboard_library::global()?,
+    };
     let mut timer = tokio::time::interval(Duration::from_secs(3));
     let mut blob_task = BlobTask(None);
     let mut receive_updated = std::time::Instant::now();
@@ -536,6 +562,7 @@ async fn worker(
 mod tests {
     use super::*;
     use crate::clipboard_library::Library;
+    use deskfuse_platform::PasteboardSnapshot;
     use serde_json::json;
 
     fn deliver(cursor: u64, mut transfer: OperationsTransfer) -> Frame {

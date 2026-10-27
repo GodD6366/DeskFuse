@@ -45,6 +45,10 @@ pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 24 * 1024 * 1024;
 pub const MAX_CONTENT: usize = 16 * 1024 * 1024;
 pub const PIPE_NAME: &str = r"\\.\pipe\com.deskfuse.app.desktop.v2";
+/// Request identifier reserved for frames the service sends without a request.
+/// The helper treats `request_id == 0` as an unsolicited push and never
+/// acknowledges it, so the request/response ack stream stays balanced.
+pub const PUSH_REQUEST_ID: u64 = 0;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -56,6 +60,7 @@ pub struct Request {
 #[serde(deny_unknown_fields)]
 pub enum Command {
     Snapshot,
+    RefreshPeers,
     Poll {
         session_epoch: u64,
         after_sequence: u64,
@@ -73,6 +78,9 @@ pub enum Command {
         request_id: String,
     },
     Disconnect {
+        peer_id: String,
+    },
+    Connect {
         peer_id: String,
     },
     Revoke {
@@ -98,6 +106,20 @@ pub enum Command {
         session_epoch: u64,
         sequence: u64,
         formats: Vec<Format>,
+        #[serde(default)]
+        source_app: Option<String>,
+    },
+    SetFileTransferEnabled {
+        enabled: bool,
+    },
+    ConfigureLanWeb {
+        enabled: bool,
+    },
+    CommitLanWebUpload {
+        session_epoch: u64,
+        upload_id: String,
+        recorded: bool,
+        clipboard_written: bool,
     },
     PublishFileClipboard {
         session_epoch: u64,
@@ -135,6 +157,10 @@ pub enum Command {
     RegisterInput {
         topology: deskfuse_core::DisplayTopology,
     },
+    /// Declare that this helper applies `Reply::InputPush` frames. Sent once
+    /// after a successful registration; a service without push support rejects
+    /// the command and the helper keeps its ordinary poll cadence.
+    EnableInputPush,
     PollInput {
         session_epoch: u64,
         after_sequence: u64,
@@ -186,6 +212,12 @@ pub enum Command {
     SetInputSharingSettings {
         settings: deskfuse_core::InputSharingSettings,
     },
+    /// Persist the session-gate relaxation switches. Requires a fully present
+    /// (unlocked physical console) session; relaxed sessions cannot widen access.
+    SetSessionPolicy {
+        allow_locked: bool,
+        allow_remote: bool,
+    },
     /// Persist the current layout as a named scene.
     SaveScene {
         name: String,
@@ -203,6 +235,49 @@ pub enum Command {
     /// Create or refresh the layout scene bound to the current Wi-Fi network.
     SaveEnvironmentLayout {
         name: Option<String>,
+    },
+    LibraryQuery {
+        request: String,
+    },
+    LibraryMutate {
+        request: String,
+    },
+    /// Materialize one library row. Payload transfer may be queued for a
+    /// synced row; the caller must treat a rejection as "not available yet".
+    LibraryContent {
+        id: u64,
+    },
+    /// Display-sized PNG for the library grid; never the restorable payload.
+    LibraryThumbnail {
+        id: u64,
+        #[serde(default)]
+        max_pixel_size: Option<u32>,
+    },
+    LibraryIngest {
+        formats: Vec<Format>,
+        files: Vec<String>,
+        source: String,
+        #[serde(default)]
+        device_id: String,
+        #[serde(default)]
+        app_id: Option<String>,
+        #[serde(default)]
+        app_name: Option<String>,
+        #[serde(default)]
+        copied_at_ms: Option<u64>,
+    },
+    /// Send one canonical library entry to a single paired peer. Text and
+    /// image entries use the acknowledged clipboard channel; entries with
+    /// files use the existing deferred file offer path.
+    ShareLibraryEntry {
+        id: u64,
+        peer_id: String,
+    },
+    /// Send workflow output that is not in the library yet. Mirrors the
+    /// macOS share menu's "使用工作流发送"; nothing is written locally.
+    ShareContent {
+        peer_id: String,
+        formats: Vec<Format>,
     },
     GetWorkflows,
     SaveWorkflow {
@@ -255,6 +330,8 @@ pub struct Clipboard {
     pub sequence: u64,
     pub peer_id: String,
     pub formats: Vec<Format>,
+    #[serde(default)]
+    pub source_metadata: deskfuse_protocol::clipboard_sync::SourceMetadata,
     /// Ordered with text/image copies; absent for ordinary content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_transfer_id: Option<String>,
@@ -272,12 +349,21 @@ pub enum Reply {
         snapshot: Snapshot,
         clipboard: Option<Clipboard>,
         clipboard_sequence: u64,
+        #[serde(default)]
+        lan_web_uploads: Vec<LanWebUpload>,
     },
     InputRegistered {
         session_epoch: u64,
     },
     InputPoll {
         state: InputState,
+        deliveries: Vec<InputDelivery>,
+        sequence: u64,
+    },
+    /// Unsolicited delivery on the helper's persistent connection. Carries only
+    /// what the poll reply carries for deliveries; the helper still polls for
+    /// the state view, so push latency never depends on the poll cadence.
+    InputPush {
         deliveries: Vec<InputDelivery>,
         sequence: u64,
     },
@@ -292,6 +378,17 @@ pub enum Reply {
     },
     WorkflowCatalog {
         json: String,
+    },
+    LibraryResult {
+        json: String,
+    },
+    LibraryContent {
+        formats: Vec<Format>,
+        files: Vec<String>,
+    },
+    LibraryThumbnail {
+        mime: String,
+        data_base64: String,
     },
     RemoteApps {
         available: bool,
@@ -358,6 +455,8 @@ pub struct Snapshot {
     pub session_epoch: u64,
     pub client_session_id: u32,
     pub sequence: u64,
+    #[serde(default)]
+    pub library_revision: Option<u64>,
     pub local_device_id: String,
     pub local_name: String,
     pub network_running: bool,
@@ -366,15 +465,64 @@ pub struct Snapshot {
     pub input: InputState,
     pub peers: Vec<Peer>,
     pub pending: Vec<Pending>,
+    #[serde(default)]
+    pub file_settings: deskfuse_core::FileTransferSettings,
+    #[serde(default)]
+    pub lan_web: LanWebState,
     pub file_transfers: Vec<FileTransferView>,
     pub file_cache: FileCache,
     pub pairing_status: Option<String>,
     pub last_error: Option<String>,
+    /// Effective session-gate policy switches persisted by the service.
+    #[serde(default)]
+    pub session_policy: SessionPolicyView,
+    /// False while this client session itself runs relaxed (locked console or
+    /// remote protocol); such sessions cannot change policy, pairing or input.
+    #[serde(default)]
+    pub session_full_presence: bool,
+}
+/// User-facing copy of the service session gate; see `policy::SessionPolicy`.
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SessionPolicyView {
+    pub allow_locked: bool,
+    pub allow_remote: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FileCache {
     pub max_bytes: u64,
     pub used_bytes: u64,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct LanWebState {
+    pub enabled: bool,
+    pub running: bool,
+    pub session_available: bool,
+    pub address: Option<String>,
+    pub addresses: Vec<String>,
+    pub port: u16,
+    pub error: Option<String>,
+    pub tasks: Vec<LanWebTask>,
+    pub qr_size: usize,
+    pub qr_modules: Vec<bool>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LanWebTask {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub received_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub recorded: Option<bool>,
+    pub clipboard_written: Option<bool>,
+    pub message: String,
+    #[serde(skip)]
+    pub result: Option<serde_json::Value>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LanWebUpload {
+    pub id: String,
+    pub name: String,
+    pub formats: Vec<Format>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Capabilities {
@@ -456,6 +604,10 @@ pub struct InputState {
     pub activations: Vec<ActivationView>,
     /// Remote input topologies of participant peers.
     pub remote_topologies: Vec<RemoteTopologyView>,
+    /// Authenticated, bounded JPEG previews, keyed by peer and display id.
+    #[serde(default)]
+    pub remote_wallpapers:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     /// Input session links with granted control sessions.
     pub links: Vec<LinkView>,
     /// Wi-Fi environment observed by the service (SSID is a switch key for

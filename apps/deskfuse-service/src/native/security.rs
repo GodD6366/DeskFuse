@@ -1,20 +1,29 @@
 //! Synchronous authentication only: no await is permitted while impersonating.
 #![allow(unsafe_code)]
-use crate::{policy::ClientSession, protocol::SERVICE_NAME};
+use crate::{
+    policy::{ClientSession, SessionPolicy},
+    protocol::SERVICE_NAME,
+};
 use std::{
     io,
     mem::size_of,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::{
+        ffi::OsStringExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
     ptr,
 };
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
     Foundation::{HANDLE, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
-        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, CheckTokenMembership,
-        CreateWellKnownSid, GetLengthSid, GetTokenInformation, IsWellKnownSid, RevertToSelf,
-        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER, TokenSessionId,
-        TokenStatistics, TokenUser, WinInteractiveSid, WinLocalSystemSid,
+        Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        },
+        CheckTokenMembership, CreateWellKnownSid, GetLengthSid, GetTokenInformation,
+        IsWellKnownSid, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_STATISTICS,
+        TOKEN_USER, TokenSessionId, TokenStatistics, TokenUser, WinInteractiveSid,
+        WinLocalSystemSid,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_WRITE_ATTRIBUTES,
@@ -22,8 +31,13 @@ use windows_sys::Win32::{
         SECURITY_SQOS_PRESENT,
     },
     System::{
+        Environment::ExpandEnvironmentStringsW,
         Pipes::{
             GetNamedPipeClientSessionId, GetNamedPipeServerProcessId, ImpersonateNamedPipeClient,
+        },
+        Registry::{
+            HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ, RegCloseKey, RegOpenKeyExW,
+            RegQueryValueExW,
         },
         RemoteDesktop::{
             WTS_CURRENT_SERVER_HANDLE, WTS_SESSIONSTATE_UNLOCK, WTSActive, WTSClientProtocolType,
@@ -58,11 +72,186 @@ impl Drop for Descriptor {
         }
     }
 }
+/// Total instances allowed for one pipe name, listening included.
+///
+/// Windows rejects *new client connections* with `ERROR_PIPE_BUSY` once this
+/// many instances exist, even when one is listening. Long-lived connections
+/// therefore make this a hard ceiling on concurrent clients, not a hint: the
+/// previous value of 10 was below the service's own client limit.
+pub const MAX_PIPE_INSTANCES: usize = 64;
+
 /// IU has data read/write rights but not `FILE_CREATE_PIPE_INSTANCE` (0x4).
 /// No Everyone/Authenticated Users/Network ACL; remote clients are rejected too.
 pub fn create_pipe(name: &str, first: bool) -> io::Result<NamedPipeServer> {
     create_pipe_with_sddl(name, first, "O:SYG:SYD:P(A;;GA;;;SY)(A;;0x0012019b;;;IU)")
 }
+/// Resolve the authenticated user's canonical library directory from the
+/// machine profile list. The client cannot supply an arbitrary service-side path.
+pub fn user_library_dir(session: &ClientSession) -> io::Result<std::path::PathBuf> {
+    let mut sid_text = ptr::null_mut::<u16>();
+    // SAFETY: user_sid is the kernel TOKEN_USER SID captured during authentication.
+    if unsafe { ConvertSidToStringSidW(session.user_sid.as_ptr().cast_mut().cast(), &mut sid_text) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let sid = unsafe {
+        std::ffi::OsString::from_wide(&std::slice::from_raw_parts(
+            sid_text,
+            (0..).take_while(|i| *sid_text.add(*i) != 0).count(),
+        ))
+    }
+    .to_string_lossy()
+    .into_owned();
+    unsafe { LocalFree(sid_text.cast()) };
+    let path = wide(&format!(
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}"
+    ));
+    let mut key: HKEY = ptr::null_mut();
+    // SAFETY: path is NUL terminated and key is a valid out parameter.
+    if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.as_ptr(), 0, KEY_READ, &mut key) } != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "user profile unavailable",
+        ));
+    }
+    let value_name = wide("ProfileImagePath");
+    // ProfileImagePath is REG_EXPAND_SZ on most machines (%SystemDrive% style);
+    // a plain REG_SZ also appears on some installs.
+    let mut kind = 0_u32;
+    let mut bytes = 0_u32;
+    // SAFETY: querying the size with a null buffer does not write memory.
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            ptr::null(),
+            &mut kind,
+            ptr::null_mut(),
+            &mut bytes,
+        )
+    };
+    if status != 0
+        || (kind != REG_SZ && kind != REG_EXPAND_SZ)
+        || bytes == 0
+        || bytes > 32_768
+        || bytes % 2 != 0
+    {
+        unsafe { RegCloseKey(key) };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "user profile path unavailable",
+        ));
+    }
+    let mut buffer = vec![0_u16; bytes as usize / 2];
+    // SAFETY: buffer matches the size returned by the registry and key remains open.
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            ptr::null(),
+            &mut kind,
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let profile = profile_path(&buffer, kind)?;
+    Ok(profile.join("AppData").join("Local").join("DeskFuse"))
+}
+
+fn profile_path(buffer: &[u16], kind: u32) -> io::Result<std::path::PathBuf> {
+    let length = buffer
+        .iter()
+        .position(|character| *character == 0)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "unterminated user profile path")
+        })?;
+    let raw = if kind == REG_EXPAND_SZ {
+        // Keep the registry terminator: passing a trimmed UTF-16 slice to a
+        // NUL-terminated Win32 API reads beyond the allocation into arbitrary data.
+        let terminated = &buffer[..=length];
+        let expanded = unsafe {
+            ExpandEnvironmentStringsW(terminated.as_ptr().cast_mut(), ptr::null_mut(), 0)
+        };
+        if expanded == 0 || expanded > 32_768 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid expanded profile size",
+            ));
+        }
+        let mut target = vec![0_u16; expanded as usize];
+        let written = unsafe {
+            ExpandEnvironmentStringsW(
+                terminated.as_ptr().cast_mut(),
+                target.as_mut_ptr(),
+                expanded,
+            )
+        };
+        if written == 0 || written > expanded || target[written as usize - 1] != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "profile expansion failed",
+            ));
+        }
+        target.truncate(written as usize - 1);
+        target
+    } else if kind == REG_SZ {
+        buffer[..length].to_vec()
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid profile registry type",
+        ));
+    };
+    let profile = std::path::PathBuf::from(std::ffi::OsString::from_wide(&raw));
+    if !profile.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "user profile path is not absolute",
+        ));
+    }
+    Ok(profile)
+}
+
+#[cfg(test)]
+mod profile_path_tests {
+    use super::*;
+
+    #[test]
+    fn expanded_profile_stops_at_registry_terminator() {
+        let expected = r"C:\Users\DeskFuseTest";
+        let mut value = wide(expected);
+        value.extend("THIS_MUST_NOT_ENTER_THE_PATH".encode_utf16());
+        for _ in 0..64 {
+            assert_eq!(
+                profile_path(&value, REG_EXPAND_SZ).unwrap(),
+                std::path::PathBuf::from(expected)
+            );
+        }
+        assert_eq!(
+            profile_path(&value, REG_SZ).unwrap(),
+            std::path::PathBuf::from(expected)
+        );
+    }
+
+    #[test]
+    fn malformed_profile_is_rejected_without_creating_directories() {
+        assert!(
+            profile_path(
+                &r"C:\Users\Test".encode_utf16().collect::<Vec<_>>(),
+                REG_EXPAND_SZ
+            )
+            .is_err()
+        );
+        assert!(profile_path(&wide("relative"), REG_SZ).is_err());
+        assert!(profile_path(&wide(r"C:\Users\Test"), 0).is_err());
+    }
+}
+
 fn create_pipe_with_sddl(name: &str, first: bool, sddl: &str) -> io::Result<NamedPipeServer> {
     let sddl = wide(sddl);
     let mut descriptor = ptr::null_mut();
@@ -90,7 +279,7 @@ fn create_pipe_with_sddl(name: &str, first: bool, sddl: &str) -> io::Result<Name
         ServerOptions::new()
             .first_pipe_instance(first)
             .reject_remote_clients(true)
-            .max_instances(10)
+            .max_instances(MAX_PIPE_INSTANCES)
             .in_buffer_size(16_384)
             .out_buffer_size(16_384)
             .create_with_security_attributes_raw(name, (&raw mut attributes).cast())
@@ -141,7 +330,7 @@ impl Drop for Impersonation {
     }
 }
 
-pub fn authenticate(pipe: HANDLE) -> io::Result<ClientSession> {
+pub fn authenticate(pipe: HANDLE, policy: SessionPolicy) -> io::Result<ClientSession> {
     let mut pipe_session = 0;
     // SAFETY: caller owns a connected pipe; output integer is writable.
     if unsafe { GetNamedPipeClientSessionId(pipe, &raw mut pipe_session) } == 0 {
@@ -157,6 +346,7 @@ pub fn authenticate(pipe: HANDLE) -> io::Result<ClientSession> {
     let (token_session, logon_id, user_sid, interactive, local_system) = result?;
     // SAFETY: no arguments or ownership obligations.
     let console = unsafe { WTSGetActiveConsoleSessionId() };
+    let (unlocked, physical_console) = local_session_facts(pipe_session)?;
     let auth = ClientSession {
         pipe_session,
         token_session,
@@ -165,9 +355,10 @@ pub fn authenticate(pipe: HANDLE) -> io::Result<ClientSession> {
         interactive,
         local_system,
         active_console_session: console,
-        unlocked: unlocked_local_session(pipe_session)?,
+        unlocked,
+        physical_console,
     };
-    if !auth.allowed() {
+    if !auth.allowed(policy) {
         return Err(denied());
     }
     Ok(auth)
@@ -278,12 +469,18 @@ impl Drop for WtsBuffer {
         }
     }
 }
-pub(super) fn session_still_active(auth: ClientSession) -> bool {
+pub(super) fn session_still_active(auth: ClientSession, policy: SessionPolicy) -> bool {
     // SAFETY: system query with no pointer or ownership arguments.
-    (unsafe { WTSGetActiveConsoleSessionId() }) == auth.pipe_session
-        && unlocked_local_session(auth.pipe_session).unwrap_or(false)
+    if (unsafe { WTSGetActiveConsoleSessionId() }) != auth.pipe_session {
+        return false;
+    }
+    local_session_facts(auth.pipe_session).is_ok_and(|(unlocked, physical_console)| {
+        (unlocked || policy.allow_locked) && (physical_console || policy.allow_remote)
+    })
 }
-fn unlocked_local_session(session: u32) -> io::Result<bool> {
+/// Facts of the session's current console attachment: (unlocked, physical console).
+/// A session that is not WTSActive reports both as false; it cannot satisfy any policy.
+fn local_session_facts(session: u32) -> io::Result<(bool, bool)> {
     let mut data = ptr::null_mut();
     let mut size = 0;
     // SAFETY: valid output pointers; WTS_CURRENT_SERVER_HANDLE selects this machine.
@@ -310,12 +507,10 @@ fn unlocked_local_session(session: u32) -> io::Result<bool> {
     }
     // SAFETY: Level 1 is the documented union discriminant.
     let info = unsafe { info.Data.WTSInfoExLevel1 };
-    if info.SessionId != session
-        || info.SessionState != WTSActive
-        || info.SessionFlags != WTS_SESSIONSTATE_UNLOCK.cast_signed()
-    {
-        return Ok(false);
+    if info.SessionId != session || info.SessionState != WTSActive {
+        return Ok((false, false));
     }
+    let unlocked = info.SessionFlags == WTS_SESSIONSTATE_UNLOCK.cast_signed();
     let mut protocol = ptr::null_mut();
     // SAFETY: same query contract, this time a USHORT protocol id.
     if unsafe {
@@ -335,7 +530,8 @@ fn unlocked_local_session(session: u32) -> io::Result<bool> {
         return Err(denied());
     }
     // SAFETY: checked 2-byte buffer, only protocol 0 is the physical console.
-    Ok(unsafe { ptr::read_unaligned(protocol.0) } == 0)
+    let physical = unsafe { ptr::read_unaligned(protocol.0) } == 0;
+    Ok((unlocked, physical))
 }
 struct ScHandle(SC_HANDLE);
 impl Drop for ScHandle {
@@ -461,10 +657,10 @@ mod tests {
         server.connect().await.unwrap();
         client.write_all(b"x").await.unwrap();
         assert_eq!(server.read_u8().await.unwrap(), b'x');
-        let result = authenticate(server.as_raw_handle());
+        let result = authenticate(server.as_raw_handle(), SessionPolicy::STRICT);
         // SSH/session 0 must fail; an interactive console test may authenticate.
         if let Ok(auth) = result {
-            assert!(auth.allowed());
+            assert!(auth.allowed(SessionPolicy::STRICT));
         }
         let mut token = ptr::null_mut();
         // SAFETY: query current thread after authentication guard has been dropped.

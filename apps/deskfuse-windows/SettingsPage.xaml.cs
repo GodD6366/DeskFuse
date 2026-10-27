@@ -17,15 +17,29 @@ public sealed partial class SettingsPage : UserControl
     private readonly UIElement workflows;
     private readonly Action loadWorkflows;
     private readonly Action openInputPage;
+    private readonly MainWindow owner;
     private readonly TextBlock serviceStatus = DfUi.Detail("");
     private readonly TextBlock cacheStatus = DfUi.Detail("正在读取缓存…");
     private readonly TextBlock advancedStatus = DfUi.Detail("");
     private readonly TextBlock generalStatus = DfUi.Detail("");
+    private readonly TextBox excludedApps = new() { PlaceholderText = "notepad.exe, Code.exe", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 64 };
+    private readonly TextBlock canonicalStatus = DfUi.Detail("");
+    private bool canonicalSettingsLoaded;
     private readonly TextBlock updateStatus = DfUi.Detail("检查更新会先读取 GitHub Releases，失败时回退到独立域名镜像。");
     private readonly HyperlinkButton openRelease = new() { Content = "打开发布页", Visibility = Visibility.Collapsed, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly DfToggle sync;
     private readonly DfToggle awake;
     private readonly DfToggle capture;
+    private readonly DfToggle startup;
+    private readonly DfToggle lockedSession;
+    private readonly DfToggle remoteSession;
+    private readonly TextBlock sessionPolicyStatus = DfUi.Detail("");
+    private readonly StackPanel permissionRows = new() { Spacing = 0 };
+    private readonly ComboBox syncDevicePicker = new() { MinWidth = 210, PlaceholderText = "选择设备" };
+    private readonly Button syncDeviceButton;
+    private readonly TextBlock syncDeviceStatus = DfUi.Detail("");
+    private string syncDeviceSignature = "";
+    private bool syncingDevice;
     private Grid clipboardModeHost = null!;
     private Grid clipboardHistoryHost = null!;
     private Grid clipboardWorkflowsHost = null!;
@@ -33,9 +47,11 @@ public sealed partial class SettingsPage : UserControl
     private Button workflowsSegment = null!;
     private bool workflowsMode;
     private bool updatingAwake;
+    private bool updatingStartup;
+    private bool updatingSessionPolicy;
 
     public SettingsPage(DesktopClipboardController clipboard, ServiceClient service, PowerStateController power,
-        UIElement workflows, Action loadWorkflows, Action openInputPage)
+        UIElement workflows, Action loadWorkflows, Action openInputPage, MainWindow owner)
     {
         this.clipboard = clipboard;
         this.service = service;
@@ -43,11 +59,16 @@ public sealed partial class SettingsPage : UserControl
         this.workflows = workflows;
         this.loadWorkflows = loadWorkflows;
         this.openInputPage = openInputPage;
+        this.owner = owner;
         InitializeComponent();
 
         sync = DfUi.Switch(clipboard.SyncEnabled, (_, _) => clipboard.SyncEnabled = sync!.IsOn);
         awake = DfUi.Switch(clipboard.KeepAwake, (_, _) => { if (!updatingAwake) SetKeepAwake(awake!.IsOn); });
         capture = DfUi.Switch(clipboard.CaptureEnabled, (_, _) => clipboard.CaptureEnabled = capture!.IsOn);
+        startup = DfUi.Switch(StartupRegistration.IsEnabled, (_, _) => SetStartup());
+        lockedSession = DfUi.Switch(false, (_, _) => SetSessionPolicy());
+        remoteSession = DfUi.Switch(false, (_, _) => SetSessionPolicy());
+        syncDeviceButton = DfUi.Secondary("同步并替换…", async (_, _) => await SyncClipboardFromDeviceAsync());
 
         pages["general"] = BuildGeneral();
         pages["clipboard"] = BuildClipboard();
@@ -57,18 +78,19 @@ public sealed partial class SettingsPage : UserControl
         pages["about"] = BuildAbout();
         pages["advanced"] = BuildAdvanced();
         Show("general");
+        RefreshSyncDevices();
+        if (UpdateChecker.LastResult is { } update) ApplyUpdateResult(update);
     }
 
     // MARK: - Pages
 
     private UIElement BuildGeneral()
     {
-        var startup = new StackPanel
+        var startupContent = new StackPanel
         {
             Children =
             {
-                DfUi.SettingRow("登录时自动启动", "Windows 安装包尚未提供登录项；从开始菜单打开 DeskFuse 即可。",
-                    DfUi.StatusPill("暂不可用", "DFMutedBrush")),
+                DfUi.SettingRow("登录时自动启动", "登录后在后台启动 DeskFuse；不会请求管理员权限。", startup),
                 DfUi.Divider(8, 8),
                 DfUi.SettingRow("关闭窗口后继续在托盘运行", "关闭主窗口不会退出后台组件；从托盘菜单可以退出。",
                     DfUi.StatusPill("始终开启", "DFSuccessBrush")),
@@ -89,10 +111,37 @@ public sealed partial class SettingsPage : UserControl
                 DfUi.SettingRow("后台服务", "DeskFuseService 负责网络、剪贴板与文件传输。", serviceStatus),
             },
         };
+        var relaxed = new StackPanel
+        {
+            Children =
+            {
+                DfUi.SettingRow("锁屏时保持可用", "锁屏期间配对设备仍可同步剪贴板、传输文件和查看状态；键鼠控制在解锁后自动恢复。", lockedSession),
+                DfUi.Divider(8, 8),
+                DfUi.SettingRow("允许远程桌面会话", "允许在远程桌面（RDP）中使用 DeskFuse；配对、键鼠控制与本页开关仍仅限本机已解锁桌面。", remoteSession),
+                sessionPolicyStatus,
+            },
+        };
         return Form(
-            DfUi.Section("启动", startup, "登录项由 Windows 管理；当前构建只提供托盘后台运行。"),
+            DfUi.Section("启动", startupContent),
             DfUi.Section("保持可用", available),
+            DfUi.Section("远程与锁屏", relaxed, "开关保存在本机服务，修改时需要在本机已解锁桌面操作。"),
             DfUi.Section("本机状态", state));
+    }
+
+    private void SetStartup()
+    {
+        if (updatingStartup) return;
+        try
+        {
+            StartupRegistration.SetEnabled(startup.IsOn);
+            generalStatus.Text = startup.IsOn ? "已设置为登录时在后台启动。" : "已取消登录时自动启动。";
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            updatingStartup = true;
+            try { startup.IsOn = StartupRegistration.IsEnabled; } finally { updatingStartup = false; }
+            generalStatus.Text = $"登录启动项保存失败：{ex.Message}";
+        }
     }
 
     private UIElement BuildClipboard()
@@ -149,22 +198,256 @@ public sealed partial class SettingsPage : UserControl
             {
                 DfUi.SettingRow("同步标题与识别文字", "跨设备只同步标题与元数据；图片和文件正文按需获取。",
                     DfUi.StatusPill("始终开启", "DFSuccessBrush")),
+                DfUi.Divider(8, 8),
+                DfUi.SettingRow("已同步的远端索引", "只删除远端搜索记录，不删除本机剪贴板历史。",
+                    DfUi.Secondary("清除…", async (_, _) => await ClearRemoteIndexAsync())),
+                DfUi.Divider(8, 8),
+                DfUi.SettingRow("排除应用", "每行一个应用进程名；这些应用的新复制不会写入历史或搜索索引。",
+                    DfUi.Secondary("保存", async (_, _) => await SaveExcludedAppsAsync())),
+                excludedApps,
+                canonicalStatus,
+            },
+        };
+        var deviceControls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        deviceControls.Children.Add(syncDevicePicker);
+        deviceControls.Children.Add(syncDeviceButton);
+        var deviceSync = new StackPanel
+        {
+            Children =
+            {
+                DfUi.SettingRow("从设备同步剪贴板", "选择一台已连接的已配对设备，以它的历史替换本机剪贴板。", deviceControls),
+                syncDeviceStatus,
             },
         };
         return Form(
             DfUi.Section("普通历史", history, "默认保留 30 天，不限制条数；到期记录会在后台清理。"),
-            DfUi.Section("跨设备搜索", search),
+            DfUi.Section("跨设备搜索与排除", search),
             DfUi.Section("同步", syncRow),
+            DfUi.Section("从设备同步", deviceSync,
+                "先完整拉取并校验所选设备的历史，成功后才原子替换本机历史，并把最新一条写入系统剪贴板。失败时本机现有历史保持不变。文件记录只保留在内容库，不导入本机历史。"),
             DfUi.Detail("本页修改立即生效；剪贴板历史、同步标题与排除应用属于本机配置。"));
+    }
+
+    private void RefreshSyncDevices()
+    {
+        if (syncDevicePicker is null) return;
+        var peers = (service.LatestSnapshot?.Array("peers") ?? Enumerable.Empty<JsonElement>())
+            .Where(peer => peer.String("trust") == "trusted" && peer.String("connection") == "connected")
+            .Select(peer => (Id: peer.String("peer_id"), Name: peer.String("display_name", "未命名设备")))
+            .Where(peer => peer.Id.Length > 0)
+            .ToArray();
+        string signature = string.Join("\n", peers.Select(peer => $"{peer.Id} {peer.Name}"));
+        string? selected = (syncDevicePicker.SelectedItem as ComboBoxItem)?.Tag as string;
+        if (signature != syncDeviceSignature)
+        {
+            syncDeviceSignature = signature;
+            syncDevicePicker.Items.Clear();
+            foreach (var peer in peers)
+                syncDevicePicker.Items.Add(new ComboBoxItem { Content = peer.Name, Tag = peer.Id });
+            int index = selected is null ? -1 : Array.FindIndex(peers, peer => peer.Id == selected);
+            syncDevicePicker.SelectedIndex = index >= 0 ? index : peers.Length > 0 ? 0 : -1;
+        }
+        syncDevicePicker.IsEnabled = peers.Length > 0 && !syncingDevice;
+        syncDeviceButton.IsEnabled = peers.Length > 0 && !syncingDevice;
+        if (peers.Length == 0 && !syncingDevice) syncDeviceStatus.Text = "没有已连接的已配对设备。";
+        else if (!syncingDevice && syncDeviceStatus.Text == "没有已连接的已配对设备。") syncDeviceStatus.Text = "";
+    }
+
+    private async Task SyncClipboardFromDeviceAsync()
+    {
+        if (syncingDevice) return;
+        if (syncDevicePicker.SelectedItem is not ComboBoxItem { Tag: string deviceId } item
+            || string.IsNullOrEmpty(deviceId))
+        {
+            syncDeviceStatus.Text = "请先选择一台已连接的设备。";
+            return;
+        }
+        string deviceName = item.Content?.ToString() ?? "设备";
+        if (!Dialogs.Confirm(owner.Handle,
+                $"用「{deviceName}」的剪贴板历史替换本机剪贴板？\n\n"
+                + "本机现有剪贴板历史会被删除，当前系统剪贴板也会被这台设备的最新一条内容覆盖。\n"
+                + "文件记录不会导入本机历史。内容库和其他设备的数据不受影响。",
+                "同步并替换剪贴板")) return;
+        syncingDevice = true;
+        syncDevicePicker.IsEnabled = false;
+        syncDeviceButton.IsEnabled = false;
+        syncDeviceStatus.Text = $"正在读取「{deviceName}」的历史索引…";
+        try
+        {
+            var items = await LoadDeviceItemsAsync(deviceId, deviceName);
+            if (items.Count == 0) throw new InvalidOperationException("这台设备还没有可导入的剪贴板历史。");
+            syncDeviceStatus.Text = $"已读取 {items.Count} 条索引，正在校验内容…";
+            var adopted = new List<ClipboardEntry>(items.Count);
+            ClipboardEntry? newest = null;
+            int skipped = 0;
+            long bytes = 0;
+            const long byteBudget = 256L * 1024 * 1024;
+            for (int index = 0; index < items.Count; index++)
+            {
+                var source = items[index];
+                if (!source.Available || source.FileCount > 0)
+                {
+                    skipped++;
+                    continue;
+                }
+                // A payload failure aborts the whole import: replacing history
+                // with a silently truncated subset would be worse than retrying.
+                var content = await clipboard.Canonical.ContentAsync(source.Id);
+                if (content.Files is { Count: > 0 }) { skipped++; continue; }
+                long size = content.Data.LongLength + (content.Representations?.Sum(rep => (long)rep.Data.Length) ?? 0);
+                if (bytes + size > byteBudget)
+                {
+                    skipped += items.Count - index;
+                    syncDeviceStatus.Text = "历史内容超过 256 MiB，已导入较新的记录。";
+                    break;
+                }
+                bytes += size;
+                var mapped = CanonicalRow.ToEntry(source);
+                var entry = new ClipboardEntry($"adopted-{source.Id}", content, deviceId, deviceName,
+                    mapped.CopyTimeKnown ? mapped.CreatedAt : DateTimeOffset.Now)
+                {
+                    CustomTitle = string.IsNullOrWhiteSpace(source.Title) ? null : source.Title.Trim(),
+                    SourceApp = string.IsNullOrWhiteSpace(source.SourceAppName) ? null : source.SourceAppName,
+                    CopyTimeKnown = mapped.CopyTimeKnown,
+                };
+                adopted.Add(entry);
+                newest ??= entry;
+                if (index % 20 == 19)
+                    syncDeviceStatus.Text = $"正在校验内容：{index + 1}/{items.Count}…";
+            }
+            if (adopted.Count == 0) throw new InvalidOperationException("这台设备的历史正文暂时不可用，本机历史未改变。");
+            syncDeviceStatus.Text = $"正在原子替换本机历史（{adopted.Count} 条）…";
+            var replaced = await clipboard.History.ReplaceAllAsync(adopted);
+            string restoreError = "";
+            if (newest is not null)
+            {
+                try { clipboard.Restore(newest); }
+                catch (Exception ex) { restoreError = $"；写入系统剪贴板失败：{ex.Message}"; }
+            }
+            owner.Notify(skipped > 0
+                ? $"已用「{deviceName}」的 {replaced.Count} 条历史替换本机剪贴板，跳过 {skipped} 条不可用记录{restoreError}。"
+                : $"已用「{deviceName}」的 {replaced.Count} 条历史替换本机剪贴板{restoreError}。");
+            owner.ShowDeviceHistory(deviceId, deviceName);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException
+            or OperationCanceledException or JsonException)
+        {
+            syncDeviceStatus.Text = $"同步失败，本机历史未改变：{ex.Message}";
+        }
+        finally
+        {
+            syncingDevice = false;
+            RefreshSyncDevices();
+        }
+    }
+
+    private async Task<List<CanonicalItem>> LoadDeviceItemsAsync(string deviceId, string deviceName)
+    {
+        var items = new List<CanonicalItem>();
+        foreach (string source in new[] { deviceId, deviceName }.Distinct(StringComparer.Ordinal))
+        {
+            items.Clear();
+            long offset = 0;
+            while (true)
+            {
+                var page = await clipboard.QueryCanonicalAsync("", null, "all", source, (int)Math.Min(offset, int.MaxValue), 100);
+                items.AddRange(page.Items);
+                if (page.NextOffset is not long next || next <= offset || items.Count >= 2000) break;
+                offset = next;
+            }
+            if (items.Count > 0) return items;
+        }
+        return items;
+    }
+
+    private async Task LoadCanonicalSettingsAsync()
+    {
+        if (canonicalSettingsLoaded || !service.IsConnected) return;
+        try
+        {
+            string json = await clipboard.Canonical.QueryAsync(JsonSerializer.Serialize(new { op = "state" }));
+            using var state = JsonDocument.Parse(json);
+            var apps = state.RootElement.GetProperty("settings").GetProperty("excluded_apps").EnumerateArray()
+                .Select(app => app.GetProperty("bundle_id").GetString() ?? "").Where(id => id.Length > 0);
+            excludedApps.Text = string.Join(Environment.NewLine, apps);
+            canonicalSettingsLoaded = true;
+            canonicalStatus.Text = "";
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { canonicalStatus.Text = $"内容库设置读取失败：{ex.Message}"; }
+    }
+
+    private async Task SaveExcludedAppsAsync()
+    {
+        try
+        {
+            var apps = excludedApps.Text.Split([',', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(name => name.Length <= 200).Distinct(StringComparer.OrdinalIgnoreCase).Take(128)
+                .Select(name => new { bundle_id = name, name }).ToArray();
+            await clipboard.Canonical.MutateAsync(JsonSerializer.Serialize(new { op = "settings", settings = new { excluded_apps = apps } }));
+            canonicalStatus.Text = "排除应用已保存；仅影响之后的新复制。";
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { canonicalStatus.Text = $"排除应用保存失败：{ex.Message}"; }
+    }
+
+    private async Task ClearRemoteIndexAsync()
+    {
+        try
+        {
+            await clipboard.Canonical.MutateAsync(JsonSerializer.Serialize(new { op = "clear_remote_index" }));
+            canonicalStatus.Text = "已清除远端索引；本机历史未改变。";
+        }
+        catch (Exception ex) when (ex is IOException or JsonException) { canonicalStatus.Text = $"远端索引清除失败：{ex.Message}"; }
     }
 
     private UIElement BuildShortcuts()
     {
+        var draft = owner.CurrentClipboardShortcut;
+        var chord = DfUi.Text(draft.Label, 14, true);
+        var enabled = new CheckBox { Content = "启用全局快捷键", IsChecked = draft.Enabled };
+        var feedback = DfUi.Detail("默认 Ctrl+Shift+V。双击、回车可粘贴回打开前的应用。");
+        var record = DfUi.Secondary("录制…", (_, _) =>
+        {
+            feedback.Text = "请按新的组合键；Esc 取消。";
+            owner.BeginClipboardShortcutRecording(value =>
+            {
+                if (value is null) { feedback.Text = "已取消录制，原快捷键未改变。"; return; }
+                if (!value.IsValid) { feedback.Text = "请使用包含 Ctrl、Alt 或 Win 的组合键。"; return; }
+                draft = value;
+                enabled.IsChecked = true;
+                chord.Text = value.Label;
+                feedback.Text = "已录制；点击保存后生效。";
+            });
+        });
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(record, "clipboard-shortcut-record");
+        var save = DfUi.Secondary("保存", (_, _) =>
+        {
+            owner.StopClipboardShortcutRecording();
+            try
+            {
+                var next = draft with { Enabled = enabled.IsChecked == true };
+                owner.SaveClipboardShortcut(next);
+                draft = next; chord.Text = next.Label;
+                feedback.Text = "已保存，立即生效；重启后保留。";
+            }
+            catch (Exception ex) { feedback.Text = ex.Message; }
+        });
+        var reset = DfUi.Plain("恢复默认", (_, _) =>
+        {
+            owner.StopClipboardShortcutRecording();
+            draft = ClipboardHotkey.Default;
+            enabled.IsChecked = true; chord.Text = draft.Label;
+            feedback.Text = "默认组合为 Ctrl+Shift+V；点击保存后生效。";
+        });
+        var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        controls.Children.Add(record); controls.Children.Add(save); controls.Children.Add(reset);
+        var clipboardShortcut = new StackPanel { Spacing = 12 };
+        clipboardShortcut.Children.Add(chord); clipboardShortcut.Children.Add(enabled);
+        clipboardShortcut.Children.Add(controls); clipboardShortcut.Children.Add(feedback);
         var input = new StackPanel
         {
             Children =
             {
-                DfUi.SettingRow("方向切换与锁定快捷键", "在「键鼠共享」页面编辑；保存后由输入运行时校验并持久化。", DfUi.Secondary("打开键鼠共享", (_, _) => openInputPage())),
+                DfUi.SettingRow("鼠标共享", "查看当前主控角色与屏幕排布。", DfUi.Secondary("打开键鼠共享", (_, _) => openInputPage())),
                 DfUi.Divider(8, 8),
                 DfUi.SettingRow("紧急收回", "自定义按键之外，此组合始终可用。", DfUi.StatusPill("Ctrl + Alt + Win + Esc", "DFMutedBrush")),
             },
@@ -185,6 +468,7 @@ public sealed partial class SettingsPage : UserControl
             },
         };
         return Form(
+            DfUi.Section("剪贴板面板", clipboardShortcut, "只影响这台 Windows 的唤起按键，不修改 Mac 的快捷键。"),
             DfUi.Section("键鼠控制", input, "方向切换与锁定遵循键鼠共享状态。"),
             DfUi.Section("工作流", workflowsInfo, "停用的流程不会响应快捷键。"),
             DfUi.Section("固定快捷键", reserved, "这些组合键由 DeskFuse 保留，不能分配给工作流。"));
@@ -217,14 +501,22 @@ public sealed partial class SettingsPage : UserControl
 
     private UIElement BuildPermissions()
     {
-        var permissionRows = new StackPanel { Spacing = 0 };
-        permissionRows.Children.Add(PermissionRow("\uE7E8", "普通桌面输入", "在本机与被控端注入键鼠事件。", "可用", "DFSuccessBrush"));
+        RenderPermissions(service.LatestSnapshot);
+        return Form(
+            DfUi.Section("系统权限", permissionRows, "状态来自当前服务与实际 Windows 会话；安全桌面始终不可注入。"));
+    }
+
+    private void RenderPermissions(JsonElement? snapshot)
+    {
+        var capabilities = snapshot is JsonElement value && value.TryGetProperty("capabilities", out var current) ? current : default;
+        bool ordinary = capabilities.ValueKind == JsonValueKind.Object && capabilities.Bool("input");
+        bool elevated = capabilities.ValueKind == JsonValueKind.Object && capabilities.Bool("elevated_input");
+        permissionRows.Children.Clear();
+        permissionRows.Children.Add(PermissionRow("\uE7E8", "普通桌面输入", ordinary ? "当前用户桌面与输入 helper 已就绪。" : "等待本机已解锁桌面与输入 helper 就绪。", ordinary ? "可用" : "未就绪", ordinary ? "DFSuccessBrush" : "DFMutedBrush"));
         permissionRows.Children.Add(DfUi.Divider(0, 0));
-        permissionRows.Children.Add(PermissionRow("\uE72E", "提升窗口控制", "需要签名并安装到受信任位置的 UIAccess 版本。", "未授权", "DFMutedBrush"));
+        permissionRows.Children.Add(PermissionRow("\uE72E", "提升窗口控制", elevated ? "UIAccess helper 的签名、路径和令牌已通过服务校验。" : "需要签名并安装到受信任位置的 UIAccess 版本。", elevated ? "可用" : "未授权", elevated ? "DFSuccessBrush" : "DFMutedBrush"));
         permissionRows.Children.Add(DfUi.Divider(0, 0));
         permissionRows.Children.Add(PermissionRow("\uE8D7", "登录、UAC 与锁屏桌面", "这些安全桌面始终不可注入。", "不可用", "DFDangerBrush"));
-        return Form(
-            DfUi.Section("系统权限", permissionRows, "状态来自 Windows；仅展示 DeskFuse 实际使用的能力。"));
     }
 
     private UIElement BuildAbout()
@@ -234,11 +526,9 @@ public sealed partial class SettingsPage : UserControl
         brand.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var brandIcon = new Grid { Width = 48, Height = 48 };
         brandIcon.Children.Add(DfUi.Glyph("\uE8A7", 24, DfUi.Accent));
-        brandIcon.Children.Add(new Image
-        {
-            Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri("ms-appx:///Assets/Square44x44Logo.png")),
-            Stretch = Stretch.Uniform,
-        });
+        var brandImage = new Image { Stretch = Stretch.Uniform };
+        BrandMark.Apply(brandImage, this);
+        brandIcon.Children.Add(brandImage);
         brand.Children.Add(new Border
         {
             Width = 48, Height = 48, CornerRadius = new CornerRadius(12),
@@ -269,11 +559,13 @@ public sealed partial class SettingsPage : UserControl
                 DfUi.SettingRow("导出诊断信息", "遇到连接、同步或键鼠问题时，导出给开发者分析；不包含剪贴板正文。", export),
             },
         };
-        var report = DfUi.Secondary("反馈问题…", (_, _) => SupportLinks.ReportProblem(service.LatestSnapshot));
+        var report = DfUi.Secondary("反馈问题…", (_, _) =>
+            SupportLinks.ReportProblem(service.LatestSnapshot, clipboard.Entries.Count,
+                clipboard.HistoryRetentionDays, clipboard.StorageError));
         var known = DfUi.Secondary("已报告的问题", (_, _) => SupportLinks.Open(SupportLinks.IssuesUrl));
         var feedbackActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { report, known } };
         feedback.Children.Add(DfUi.Divider(8, 8));
-        feedback.Children.Add(DfUi.SettingRow("联系开发者", "反馈页会预填版本、系统和服务状态，只需描述发生了什么。", feedbackActions));
+        feedback.Children.Add(DfUi.SettingRow("联系开发者", "反馈页会预填版本、系统和服务状态，并自动导出脱敏诊断；在资源管理器中把选中的文件拖入 issue 即可。", feedbackActions));
         return Form(
             new Border { Child = brand },
             DfUi.Section("更新", update, "DeskFuse 每 12 小时自动检查一次更新。"),
@@ -315,10 +607,30 @@ public sealed partial class SettingsPage : UserControl
                 advancedStatus,
             },
         };
+        // 与 macOS 设置 › 高级一致：重走初次设置 + 本机数据文件夹入口（Windows 端无日志文件）。
+        var debug = new StackPanel
+        {
+            Children =
+            {
+                DfUi.SettingRow("重走初次设置", "重新显示权限说明与功能选择引导。",
+                    DfUi.Secondary("开始", (_, _) => (Application.Current as App)?.RestartOnboarding())),
+                DfUi.Divider(8, 8),
+                DfUi.SettingRow("数据文件夹", "剪贴板历史与客户端设置保存在此。",
+                    DfUi.Secondary("在资源管理器中显示", (_, _) => OpenDataFolder())),
+            },
+        };
         return Form(
             DfUi.Section("功能", features, "工作流属于进阶功能；关闭后所有入口隐藏，已注册的全局快捷键也会停用。"),
             DfUi.Section("剪贴板", clipboardSettings),
-            DfUi.Section("诊断", diagnostics));
+            DfUi.Section("诊断", diagnostics),
+            DfUi.Section("调试", debug, "重走初次设置会沿用当前的功能开关与权限，不会清除任何数据。"));
+    }
+
+    private static void OpenDataFolder()
+    {
+        string directory = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse");
+        System.IO.Directory.CreateDirectory(directory);
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", directory) { UseShellExecute = false });
     }
 
     private Button SegmentButton(string text, bool selected)
@@ -396,7 +708,7 @@ public sealed partial class SettingsPage : UserControl
                     };
                     if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
                 }
-                clipboard.SetHistoryRetentionDays(submitted);
+                await clipboard.SetHistoryRetentionDaysAsync(submitted);
                 message.Text = "已保存";
             }
             catch (IOException ex) { message.Text = ex.Message; }
@@ -446,6 +758,8 @@ public sealed partial class SettingsPage : UserControl
 
     public void Show(string category = "general")
     {
+        owner.StopClipboardShortcutRecording();
+        _ = LoadCanonicalSettingsAsync();
         if (service.LatestSnapshot is JsonElement snapshot) RefreshService(snapshot);
         sync.IsOn = clipboard.SyncEnabled;
         capture.IsOn = clipboard.CaptureEnabled;
@@ -468,6 +782,50 @@ public sealed partial class SettingsPage : UserControl
             cacheStatus.Text = $"{MainWindow.FormatBytes(cache.Number("used_bytes"))} / {MainWindow.FormatBytes(cache.Number("max_bytes"))}";
         sync.IsOn = clipboard.SyncEnabled;
         capture.IsOn = clipboard.CaptureEnabled;
+        RestoreSessionPolicySwitches(snapshot);
+        RenderPermissions(snapshot);
+        RefreshSyncDevices();
+    }
+
+    private void RestoreSessionPolicySwitches(JsonElement? snapshot)
+    {
+        bool allowLocked = false, allowRemote = false, fullPresence = true;
+        if (snapshot is JsonElement value)
+        {
+            fullPresence = value.Bool("session_full_presence");
+            if (value.TryGetProperty("session_policy", out var policy))
+            {
+                allowLocked = policy.Bool("allow_locked");
+                allowRemote = policy.Bool("allow_remote");
+            }
+        }
+        updatingSessionPolicy = true;
+        try
+        {
+            lockedSession.IsOn = allowLocked;
+            remoteSession.IsOn = allowRemote;
+            lockedSession.IsEnabled = fullPresence;
+            remoteSession.IsEnabled = fullPresence;
+        }
+        finally { updatingSessionPolicy = false; }
+        sessionPolicyStatus.Text = fullPresence
+            ? ""
+            : "当前处于锁屏或远程桌面会话：剪贴板、文件与状态可用；修改开关请回到本机已解锁桌面。";
+    }
+
+    private async void SetSessionPolicy()
+    {
+        if (updatingSessionPolicy) return;
+        try
+        {
+            await service.SetSessionPolicyAsync(lockedSession.IsOn, remoteSession.IsOn);
+            sessionPolicyStatus.Text = "";
+        }
+        catch (Exception ex)
+        {
+            RestoreSessionPolicySwitches(service.LatestSnapshot);
+            sessionPolicyStatus.Text = ex.Message;
+        }
     }
 
     private void SetKeepAwake(bool enabled)
@@ -499,14 +857,20 @@ public sealed partial class SettingsPage : UserControl
             Version? current = Version.TryParse(AppVersion.Display.Split(' ')[0], out var parsed) ? parsed : null;
             if (current is null) { updateStatus.Text = "无法读取当前版本号。"; return; }
             var result = await UpdateChecker.CheckAsync(current);
-            updateStatus.Text = result.Summary;
-            if (result.ReleaseUrl is string url && url.Length > 0)
-            {
-                openRelease.NavigateUri = new Uri(url);
-                openRelease.Visibility = Visibility.Visible;
-            }
+            ApplyUpdateResult(result);
         }
         catch (Exception) { updateStatus.Text = "更新检查未完成，请检查网络后重试。"; }
+    }
+
+    internal void ApplyUpdateResult(UpdateChecker.Result result)
+    {
+        updateStatus.Text = result.Summary;
+        openRelease.Visibility = Visibility.Collapsed;
+        if (result.ReleaseUrl is string url && url.Length > 0)
+        {
+            openRelease.NavigateUri = new Uri(url);
+            openRelease.Visibility = Visibility.Visible;
+        }
     }
 
     private async Task ExportDiagnosticsAsync()
@@ -541,11 +905,18 @@ public sealed partial class SettingsPage : UserControl
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot, Title = "清空所有本机剪贴板历史？",
-            Content = "此操作无法撤销。用户源文件和已粘贴文件会保留。",
+            Content = "本机与内容库中的历史记录都会被删除，手动列表成员也会清空。此操作无法撤销，用户源文件和已粘贴文件会保留。",
             PrimaryButtonText = "清空历史", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        try { clipboard.Clear(); advancedStatus.Text = "本机历史已清空。"; }
+        try
+        {
+            clipboard.Clear();
+            if (clipboard.CanonicalConnected) await clipboard.ClearCanonicalHistoryAsync();
+            advancedStatus.Text = "剪贴板历史已清空。";
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        { advancedStatus.Text = $"内容库历史未清空：{ex.Message}"; }
         catch (Exception) { advancedStatus.Text = "历史清理未完成，请检查用户存储目录权限。"; }
     }
 }

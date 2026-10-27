@@ -164,8 +164,9 @@ fn windows_loopback_transfer_writes_real_files() {
     let payload: Vec<u8> = (0..(2 * 1024 * 1024 + 123))
         .map(|i| (i % 249) as u8)
         .collect();
-    let source = sender.root.join("doc.bin");
-    fs::write(&source, &payload).expect("source");
+    let source = sender.root.join("folder");
+    fs::create_dir(&source).expect("source folder");
+    fs::write(source.join("doc.bin"), &payload).expect("source");
     let frames = sender
         .bridge
         .publish_local(&[PEER_B], vec![source])
@@ -233,13 +234,11 @@ fn windows_loopback_transfer_writes_real_files() {
 
 #[test]
 fn windows_store_rejects_reserved_and_oversize_paths() {
-    // Reserved device names are rejected by manifest validation on Windows.
     let make = |path: &str| {
         deskfuse_transfer::TransferEntry::file(path, 1, 0, deskfuse_transfer::sha256_bytes(b"x"))
-            .expect("entry")
     };
-    assert!(TransferManifest::new(vec![make("CON/a.txt")]).is_err());
-    assert!(TransferManifest::new(vec![make("ok.txt")]).is_ok());
+    assert!(make("CON/a.txt").is_err());
+    assert!(TransferManifest::new(vec![make("ok.txt").expect("entry")]).is_ok());
     // Backslash separators are rejected in relative paths.
     assert!(RelativePath::new("a\\b.txt").is_err());
 }

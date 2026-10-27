@@ -545,6 +545,27 @@ impl SQLiteStore {
         Ok(())
     }
 
+    /// Windows service session-gate policy document; absent means strict defaults.
+    pub fn session_policy_json(&self) -> Result<Option<String>> {
+        Ok(self
+            .lock_connection()?
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'session_policy_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Atomically replace the session-gate policy document.
+    pub fn set_session_policy_json(&self, json: &str) -> Result<()> {
+        let _: serde_json::Value = serde_json::from_str(json)?;
+        self.lock_connection()?.execute(
+            "INSERT INTO settings (key,value) VALUES ('session_policy_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![json],
+        )?;
+        Ok(())
+    }
+
     /// Catalog is an atomic document: revisions, tombstones, conflicts and local bindings
     /// are committed together, without replacing any other settings.
     pub fn workflow_catalog_json(&self) -> Result<Option<String>> {
@@ -1674,6 +1695,20 @@ mod tests {
         let reset = store.get_settings().expect("read");
         assert!(reset.clipboard_enabled);
         assert!(!reset.debug_logging);
+    }
+
+    #[test]
+    fn session_policy_json_round_trip() {
+        let store = SQLiteStore::open_in_memory().expect("open store");
+        assert!(store.session_policy_json().expect("read").is_none());
+        store
+            .set_session_policy_json(r#"{"allow_locked":true,"allow_remote":false}"#)
+            .expect("write");
+        assert_eq!(
+            store.session_policy_json().expect("read").as_deref(),
+            Some(r#"{"allow_locked":true,"allow_remote":false}"#)
+        );
+        assert!(store.set_session_policy_json("not json").is_err());
     }
 
     #[test]

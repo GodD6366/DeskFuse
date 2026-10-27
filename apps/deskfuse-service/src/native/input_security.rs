@@ -1,6 +1,6 @@
 //! Kernel-observed helper identity. No PID, token flags or executable path from IPC is trusted.
 use super::security;
-use crate::policy::ClientSession;
+use crate::policy::{ClientSession, SessionPolicy};
 use std::{
     io,
     mem::size_of,
@@ -75,6 +75,7 @@ fn token_value<T: Default>(
 pub(super) fn authenticate(
     pipe: windows_sys::Win32::Foundation::HANDLE,
     auth: ClientSession,
+    policy: SessionPolicy,
 ) -> io::Result<HelperIdentity> {
     let mut pid = 0;
     // SAFETY: connected server pipe and writable PID; identity is supplied by the kernel.
@@ -189,7 +190,7 @@ pub(super) fn authenticate(
         return Err(denied());
     }
     // Recheck the pipe session/token after opening the process, closing PID reuse and impersonation races.
-    if security::authenticate(pipe)? != auth {
+    if security::authenticate(pipe, policy)? != auth {
         return Err(denied());
     }
     Ok(identity)

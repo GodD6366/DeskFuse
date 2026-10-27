@@ -6,7 +6,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../apps/deskfuse-windows/BoundedCache.cs" Link="BoundedCache.cs" />
     <Compile Include="../../apps/deskfuse-windows/ClipboardHistory.cs" Link="ClipboardHistory.cs" />
+    <Compile Include="../../apps/deskfuse-windows/StableCollection.cs" Link="StableCollection.cs" />
+    <Compile Include="../../apps/deskfuse-windows/ClipboardHotkey.cs" Link="ClipboardHotkey.cs" />
+    <Compile Include="../../apps/deskfuse-windows/CanonicalLibraryModels.cs" Link="CanonicalLibraryModels.cs" />
+    <Compile Include="../../apps/deskfuse-windows/CanonicalLibraryQuery.cs" Link="CanonicalLibraryQuery.cs" />
     <Compile Include="../../apps/deskfuse-windows/ClipboardContent.cs" Link="ClipboardContent.cs" />
   </ItemGroup>
 </Project>

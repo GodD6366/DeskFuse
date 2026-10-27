@@ -16,9 +16,10 @@ try {
     $binary = Join-Path $install 'deskfuse-service.exe'
     $firewallGroup = 'DeskFuse Desktop Installer'
     $firewallRules = @(
-        @{ Name='DeskFuse.Installer.Private.QUIC.UDP42424'; Port=42424; Label='DeskFuse private LAN QUIC' },
-        @{ Name='DeskFuse.Installer.Private.Input.UDP42425'; Port=42425; Label='DeskFuse private LAN input' },
-        @{ Name='DeskFuse.Installer.Private.mDNS.UDP5353'; Port=5353; Label='DeskFuse private LAN discovery' }
+        @{ Name='DeskFuse.Installer.Private.QUIC.UDP42424'; Port=42424; Label='DeskFuse private LAN QUIC'; Protocol='UDP' },
+        @{ Name='DeskFuse.Installer.Private.Input.UDP42425'; Port=42425; Label='DeskFuse private LAN input'; Protocol='UDP' },
+        @{ Name='DeskFuse.Installer.Private.mDNS.UDP5353'; Port=5353; Label='DeskFuse private LAN discovery'; Protocol='UDP' },
+        @{ Name='DeskFuse.Installer.Private.LanWeb.TCP42426'; Port=42426; Label='DeskFuse private LAN web uploads'; Protocol='TCP' }
     )
     function Assert-NoAncestorLinks([string]$Path) {
         # Inspect each ancestor before descending. Never enumerate via a junction.
@@ -198,7 +199,7 @@ namespace DeskFuseInstaller {
         Write-Output "DeskFuse installer: $Action / $step"
         Remove-InstallerFirewallRules
         foreach ($definition in $firewallRules) {
-            New-NetFirewallRule -PolicyStore PersistentStore -Name $definition.Name -DisplayName $definition.Label -Group $firewallGroup -Direction Inbound -Action Allow -Enabled True -Profile Private -Program $binary -Protocol UDP -LocalPort $definition.Port -RemoteAddress LocalSubnet -EdgeTraversalPolicy Block | Out-Null
+            New-NetFirewallRule -PolicyStore PersistentStore -Name $definition.Name -DisplayName $definition.Label -Group $firewallGroup -Direction Inbound -Action Allow -Enabled True -Profile Private -Program $binary -Protocol $definition.Protocol -LocalPort $definition.Port -RemoteAddress LocalSubnet -EdgeTraversalPolicy Block | Out-Null
         }
         $step = 'Start service'
         Write-Output "DeskFuse installer: $Action / $step"

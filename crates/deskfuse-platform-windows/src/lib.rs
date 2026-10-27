@@ -36,3 +36,7 @@ pub use sharing::{
 
 #[cfg(windows)]
 pub mod filesystem;
+#[cfg(windows)]
+mod lan;
+#[cfg(windows)]
+pub use lan::{WindowsLanWebPort, lan_ipv4_networks};

@@ -2,58 +2,58 @@
     "schema_version":  1,
     "purpose":  "Microsoft Store / MSIX image assets derived from the existing app mark",
     "source":  "resources/DeskFuse-icon.svg (Edge headless raster)",
-    "source_sha256":  "a944743cacfbe7ea06c103eb92bc45db6cc02cc998f035861a976dbdcfbe8cc7",
-    "generated_at":  "2026-10-04T16:06:30.7948062Z",
+    "source_sha256":  "b6fa5a440f4cfa61c5f0f3a18d71c3112fc89d1a9a4262cf19fa26b46bd3c7b7",
+    "generated_at":  "2026-10-27T05:49:58.7892690Z",
     "generated_on":  "windows-powershell-system.drawing",
     "assets":  [
                    {
                        "path":  "apps/deskfuse-windows/Assets/StoreLogo.png",
                        "width":  50,
                        "height":  50,
-                       "bytes":  2353,
-                       "sha256":  "7360640484af6c32235fd3283abb3a4a6e7071ec7857b40a607582a64a845cbb"
+                       "bytes":  1663,
+                       "sha256":  "9f9cbbc2a105b39f30c94dbf9f3d3959c596204135f3ac281f9228c44312073b"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/Square44x44Logo.png",
                        "width":  44,
                        "height":  44,
-                       "bytes":  2169,
-                       "sha256":  "9cd931ee058065bf9802aaaca0096faacacfa2ebb5a6fd378c5f6b660ce65e6e"
+                       "bytes":  1603,
+                       "sha256":  "830f53dfc31cc3c111b60894524768f44a62aabe113b051ac238692ff61eed36"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/Square150x150Logo.png",
                        "width":  150,
                        "height":  150,
-                       "bytes":  10546,
-                       "sha256":  "0aa2c7ce8886b3599621313e579cbf97d05d8733e15341e34f07b27829f70550"
+                       "bytes":  6276,
+                       "sha256":  "a5af95bad2a2df3ba68e1812e7cf9a2fbeb118a718b52b126ba499028add7188"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/Wide310x150Logo.png",
                        "width":  310,
                        "height":  150,
-                       "bytes":  11228,
-                       "sha256":  "c1ac7692e41bd75371b91fdce2b65cfa7d9d61179b0b63e0c01e5bf6e6539586"
+                       "bytes":  6850,
+                       "sha256":  "3ef6ecd69f1423e9414ad419f2011568ff2eb83182cb5678ecd3a4ecdf89c2fc"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/SplashScreen.png",
                        "width":  620,
                        "height":  300,
-                       "bytes":  30638,
-                       "sha256":  "4c81455d2071ea386d405364eb28343096aab2e61b055ec1d5fd7ccce877cf26"
+                       "bytes":  16826,
+                       "sha256":  "1c0fb64c63fb00e4379baf556be3d324ec7e05669023c8230e198c8db84ba2ce"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/StoreListingLogo-300x300.png",
                        "width":  300,
                        "height":  300,
-                       "bytes":  32427,
-                       "sha256":  "92f99d0c24fe7e3cd43a03f8397befd391e21f9396b05d06da3c3650dafbcfdd"
+                       "bytes":  18714,
+                       "sha256":  "4a1c6c2ad4e066cd43d65b318e2b44aee99f1acb0cb2357b48d9f65f00680fe4"
                    },
                    {
                        "path":  "apps/deskfuse-windows/Assets/Square44x44Logo.targetsize-256.png",
                        "width":  256,
                        "height":  256,
-                       "bytes":  25474,
-                       "sha256":  "dedaf78326bf790acff86134c8d4db0b562aea2d3e6bb5dfe942b41436059a00"
+                       "bytes":  13145,
+                       "sha256":  "644c91286f731bb7a5a83cd094ea908b1af3a3a844ac150697022a8b4e4f00a3"
                    }
                ],
     "notes":  [

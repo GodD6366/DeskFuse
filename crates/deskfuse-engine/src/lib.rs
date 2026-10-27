@@ -5,6 +5,10 @@ pub mod diagnostics;
 #[cfg_attr(test, allow(dead_code))]
 mod diagnostics_file;
 pub mod diagnostics_redact;
+#[cfg(not(windows))]
+mod github_update;
+#[cfg(windows)]
+#[path = "github_update_windows.rs"]
 mod github_update;
 pub mod host;
 pub mod input_coordinator;
@@ -19,12 +23,13 @@ pub mod history_search;
 pub mod mouse_settings;
 pub mod workflow;
 pub mod workflow_catalog;
-pub(crate) mod workflow_image;
+pub mod workflow_image;
 pub mod workflow_sharing;
 
 mod clipboard_echo;
 mod clipboard_image;
 pub mod clipboard_library;
+pub mod library_sync;
 
 pub mod library_files;
 

@@ -29,6 +29,8 @@ public sealed class NativeClipboard : IDisposable
     private uint sequence;
     private IntPtr ownClipboardOwner;
     private uint lastInvalidatedSequence;
+    /// <summary>Tick count of the last clipboard change this process did not make.</summary>
+    private long lastForeignChangeTicks;
     private int retries;
     private bool paused;
     private bool disposed;
@@ -36,6 +38,13 @@ public sealed class NativeClipboard : IDisposable
     public event Action? LocalInvalidated;
     public event Action<string>? Error;
     public uint SequenceNumber => GetClipboardSequenceNumber();
+    /// <summary>
+    /// Milliseconds since another application last wrote the clipboard. Remote
+    /// clipboard application uses this to leave a copy the user just made
+    /// (a screenshot, for example) intact instead of replacing its formats.
+    /// </summary>
+    public long MillisecondsSinceForeignChange =>
+        lastForeignChangeTicks == 0 ? long.MaxValue : Environment.TickCount64 - lastForeignChangeTicks;
 
     public NativeClipboard(DispatcherQueue dispatcher)
     {
@@ -97,6 +106,7 @@ public sealed class NativeClipboard : IDisposable
             if (afterRead is true) return;
             if (afterRead is null || now != checkedSequence || now != GetClipboardSequenceNumber()) { debounce.Start(); return; }
             sequence = now;
+            lastForeignChangeTicks = Environment.TickCount64;
             if (content is not null) Changed?.Invoke(content);
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or ArgumentException or NotSupportedException or ExternalException)
@@ -346,6 +356,20 @@ public sealed class NativeClipboard : IDisposable
                         Add(RegisterClipboardFormat("PNG"), rep.Data);
                         Add(CfDibV5, DibV5(rep.Data)); // CF_DIBV5 fallback for native consumers
                         break;
+                    case "image/jpeg":
+                    case "image/webp":
+                    {
+                        // Workflow conversion may return JPEG/WebP. Windows apps
+                        // consume the native bitmap formats, so publish a PNG
+                        // representation plus CF_DIBV5 from the decoded pixels.
+                        using var bitmap = new Bitmap(new MemoryStream(rep.Data, writable: false));
+                        using var encoded = new MemoryStream();
+                        bitmap.Save(encoded, ImageFormat.Png);
+                        var png = encoded.ToArray();
+                        Add(RegisterClipboardFormat("PNG"), png);
+                        Add(CfDibV5, DibV5(png));
+                        break;
+                    }
                     default: throw new NotSupportedException("暂不支持该剪贴板格式");
                 }
             }

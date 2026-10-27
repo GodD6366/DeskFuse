@@ -222,9 +222,27 @@ fn active_paths() -> PlatformResult<Vec<DISPLAYCONFIG_PATH_INFO>> {
 /// Returns `DisplayUnavailable` if a native query fails, monitor identification
 /// is unavailable, or the resulting geometry is invalid.
 pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
+    // Temporary diagnosis: emit per-step progress when DESKFUSE_DISPLAY_DEBUG is set.
+    let mut debug = std::env::var_os("DESKFUSE_DISPLAY_DEBUG").and_then(|_| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(std::env::temp_dir().join("deskfuse-display-debug.log"))
+            .ok()
+            .map(std::io::BufWriter::new)
+    });
+    let mut step = |name: &str| {
+        if let Some(file) = &mut debug {
+            use std::io::Write;
+            let _ = writeln!(file, "{name}");
+            let _ = file.flush();
+        }
+    };
+    step("dpi_context");
     // SAFETY: PMv2 is supported on the minimum Windows 11 target; restoration is scoped to this thread.
     let old = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if old.is_null() {
+        step("dpi_context_failed");
         return Err(PlatformError::DisplayUnavailable);
     }
     let _dpi = DpiContext(old);
@@ -241,11 +259,17 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
             (&raw mut enumeration) as isize,
         )
     };
+    step(&format!(
+        "enum_monitors ok={ok} count={} failed={}",
+        enumeration.monitors.len(),
+        enumeration.failed
+    ));
     if ok == 0 || enumeration.failed {
         return Err(PlatformError::DisplayUnavailable);
     }
     let mut names = Vec::new();
     for path in active_paths()? {
+        step("active_path");
         let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
         source.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
         source.header.size = u32::try_from(size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>())
@@ -259,15 +283,27 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
         target.header.adapterId = path.targetInfo.adapterId;
         target.header.id = path.targetInfo.id;
         // SAFETY: repr(C) header starts each correctly sized device-info structure.
-        if unsafe { DisplayConfigGetDeviceInfo(&raw mut source.header) } != 0
-            || unsafe { DisplayConfigGetDeviceInfo(&raw mut target.header) } != 0
-        {
+        let source_status = unsafe { DisplayConfigGetDeviceInfo(&raw mut source.header) };
+        let target_status = unsafe { DisplayConfigGetDeviceInfo(&raw mut target.header) };
+        if source_status != 0 || target_status != 0 {
+            step(&format!(
+                "device_name_failed source={source_status} target={target_status}"
+            ));
             return Err(PlatformError::DisplayUnavailable);
         }
-        let device_path = wide_string(&target.monitorDevicePath).to_lowercase();
-        if device_path.is_empty() {
-            return Err(PlatformError::DisplayUnavailable);
-        }
+        // Some driver states (observed live: DisplayPort target, query succeeds
+        // but the path string is empty) leave the persistent device path blank.
+        // The GDI source name still identifies the monitor within the session,
+        // so fall back to it instead of failing the whole topology.
+        let device_path = {
+            let path = wide_string(&target.monitorDevicePath).to_lowercase();
+            if path.is_empty() {
+                step("device_path_empty_fallback_gdi");
+                wide_string(&source.viewGdiDeviceName).to_lowercase()
+            } else {
+                path
+            }
+        };
         let rotation = match path.targetInfo.rotation {
             DISPLAYCONFIG_ROTATION_IDENTITY => 0,
             DISPLAYCONFIG_ROTATION_ROTATE90 => 90,
@@ -285,10 +321,11 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
     names.sort();
     let mut result = Vec::new();
     for monitor in enumeration.monitors {
-        let (_, path, rotation) = names
-            .iter()
-            .find(|(name, _, _)| *name == monitor.name)
-            .ok_or(PlatformError::DisplayUnavailable)?;
+        let Some((_, path, rotation)) = names.iter().find(|(name, _, _)| *name == monitor.name)
+        else {
+            step("monitor_name_unmatched");
+            return Err(PlatformError::DisplayUnavailable);
+        };
         let width = monitor
             .bounds
             .right
@@ -304,6 +341,16 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
             .ok_or(PlatformError::DisplayUnavailable)?
             .cast_unsigned();
         let panel = physical_panel_size(path);
+        step(&format!(
+            "monitor {} bounds ({},{})-({},{}) scale {} panel {:?}",
+            monitor.name,
+            monitor.bounds.left,
+            monitor.bounds.top,
+            monitor.bounds.right,
+            monitor.bounds.bottom,
+            monitor.scale,
+            panel
+        ));
         result.push(NativeDisplay {
             descriptor: DisplayDescriptor {
                 id: stable_monitor_id(path).into(),
@@ -326,7 +373,13 @@ pub fn native_displays() -> PlatformResult<Vec<NativeDisplay>> {
         });
     }
     result.sort_by(|a, b| a.descriptor.id.cmp(&b.descriptor.id));
-    topology_from_native(&result)?;
+    step("validation_start");
+    let validated = topology_from_native(&result);
+    step(&format!(
+        "validation {}",
+        if validated.is_ok() { "ok" } else { "failed" }
+    ));
+    validated?;
     Ok(result)
 }
 

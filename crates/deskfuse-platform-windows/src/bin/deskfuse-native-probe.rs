@@ -2,10 +2,23 @@
 //! creates an identity, installs a service, or switches the active desktop.
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
-    use deskfuse_platform_windows::{native_displays, session::session_capabilities};
+    use deskfuse_platform_windows::{
+        lan_ipv4_networks, native_displays, session::session_capabilities,
+    };
     use serde_json::json;
     let session = session_capabilities();
     let displays = native_displays();
+    let networks = lan_ipv4_networks();
+    let (network_data, network_error) = match networks {
+        Ok(networks) => (
+            networks
+                .into_iter()
+                .map(|(address, prefix)| json!({"address": address.to_string(), "prefix": prefix}))
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(error) => (Vec::new(), Some(error)),
+    };
     let (display_data, display_error) = match displays {
         Ok(displays) => (
             displays
@@ -27,7 +40,8 @@ fn main() -> std::process::ExitCode {
         ),
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
-    let failed = display_error.is_some() || session.native_error.is_some();
+    let failed =
+        display_error.is_some() || session.native_error.is_some() || network_error.is_some();
     println!(
         "{}",
         json!({
@@ -38,6 +52,8 @@ fn main() -> std::process::ExitCode {
             "session": session,
             "displays": display_data,
             "display_error": display_error,
+            "lan_networks": network_data,
+            "lan_error": network_error,
             "runtime_connected": false,
             "service_installed_by_probe": false
         })

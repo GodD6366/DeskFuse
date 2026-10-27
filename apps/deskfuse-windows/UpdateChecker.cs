@@ -15,6 +15,7 @@ internal static class UpdateChecker
     private const string Api = $"https://api.github.com/repos/{Repository}/releases?per_page=100";
     private const string Feed = "https://deskfuse.godd.cc/api/releases.json";
     private static readonly HttpClient Client = Create();
+    public static Result? LastResult { get; private set; }
 
     public sealed record Result(bool Ok, string Summary, string? LatestTag, string? ReleaseUrl)
     {
@@ -22,6 +23,13 @@ internal static class UpdateChecker
     }
 
     public static async Task<Result> CheckAsync(Version current, CancellationToken token = default)
+    {
+        Result result = await CheckCoreAsync(current, token).ConfigureAwait(false);
+        LastResult = result;
+        return result;
+    }
+
+    private static async Task<Result> CheckCoreAsync(Version current, CancellationToken token)
     {
         var (error, releases) = await FetchCandidates(token).ConfigureAwait(false);
         if (releases is null)

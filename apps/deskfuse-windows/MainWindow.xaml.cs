@@ -32,34 +32,70 @@ public sealed partial class MainWindow : Window
     private bool loaded;
     private bool settingsVisible;
     private bool remoteAppsEnabled = true;
-    private string historyKind = "";
     private readonly ClipboardLibrary library;
-    private Button KindAllButton = null!;
-    private Button KindTextButton = null!;
-    private Button KindImageButton = null!;
-    private Button KindFilesButton = null!;
+    private ClipboardLibrary.Selection librarySelection = ClipboardLibrary.Selection.All;
+    private ClipboardEntry[] canonicalRows = [];
+    private ClipboardEntry[] visibleEntries = [];
+    private long lastLibraryRevision = -1;
+    private DateTime lastLibraryDay;
+    private bool historyRefreshRunning;
+    private bool historyRefreshPending;
+    private string? lastHistoryPresentation;
+    private string? lastHistoryFilter;
+    private readonly System.Collections.ObjectModel.ObservableCollection<HistoryGroup> historyGroups = [];
+    private CollectionViewSource? historyView;
+    private ClipboardEntry? previewEntry;
+    private bool previewInitialized;
+    private CanonicalState? canonicalState;
+    private Dictionary<string, long> canonicalCounts = [];
+    private int historyVersion;
+    private bool usingCanonical;
+    private int canonicalOffset;
+    private bool canonicalHasMore;
+    private bool canonicalLoadingMore;
     private string localName = "这台 Windows";
     private string lastSettingsCategory = "general";
     private string? selectedDeviceId;
     private string? remoteSelectedDeviceId;
     private string lastDeviceSnapshot = "";
     private string lastErrorNotice = "";
+    private string lastAutomaticUpdateTag = "";
     private JsonElement? latest;
     private bool busy;
-    private bool updatingInputSettings;
     private readonly List<WorkflowRecord> workflows = [];
     private readonly List<string> stagedFiles = [];
     private string sendTargetSignature = "";
     private WorkflowRecord? editingWorkflow;
     private Border? draggingDisplay;
     private global::Windows.Foundation.Point dragOrigin;
+    /// <summary>Canvas transform of the last layout render, needed to translate a
+    /// dragged tile back into shared display coordinates.</summary>
+    private double layoutScale = 1, layoutOffsetX, layoutOffsetY, layoutOriginX, layoutOriginY;
+    private readonly List<InputLayoutRect> layoutRects = [];
+    private (double X, double Y) dragTranslation;
+    private sealed record PendingLayoutMove(string DeviceId, InputLayoutRect[] Before, double X, double Y);
+    private PendingLayoutMove? pendingLayoutMove;
     private readonly Dictionary<string, ClipboardContentEditorWindow> contentEditors = [];
     private readonly Dictionary<int, WorkflowRecord> hotkeys = [];
     private readonly TextBox manualIp = new() { PlaceholderText = "192.168.1.10" };
     private Button? pairIpButton;
     private DfToggle? featureToggle;
     private DfToggle? inputControllerToggle;
+    private bool? pendingInputController;
+    private DateTime inputControllerDeadline;
+    private DfToggle? lanAccessToggle;
+    private UIElement? lanQrElement;
+    private string lanQrSignature = "";
+    private bool updatingLanWeb;
     private List<(string Tone, string Title, string Detail)> healthIssues = [];
+    private ClipboardPanelWindow? clipboardPanel;
+    private IntPtr clipboardPasteTarget;
+    private ClipboardHotkey clipboardShortcut = ClipboardHotkey.Default;
+    private int clipboardHotkeyId = 0x5600;
+    private bool clipboardHotkeyRegistered;
+    private Action<ClipboardHotkey?>? clipboardShortcutRecorder;
+    private static string ClipboardShortcutPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop", "clipboard-shortcut-v1.json");
+    internal ClipboardHotkey CurrentClipboardShortcut => clipboardShortcut;
     private const uint WmHotKey = 0x0312;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
@@ -76,16 +112,10 @@ public sealed partial class MainWindow : Window
         this.power = power;
         this.library = library;
         InitializeComponent();
-        KindAllButton = KindChip("全部", "");
-        KindTextButton = KindChip("文字", "text");
-        KindImageButton = KindChip("图片", "image");
-        KindFilesButton = KindChip("文件", "files");
-        var kindChips = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Margin = new Thickness(10, 0, 10, 4) };
-        kindChips.Children.Add(KindAllButton);
-        kindChips.Children.Add(KindTextButton);
-        kindChips.Children.Add(KindImageButton);
-        kindChips.Children.Add(KindFilesButton);
-        LibraryListPanel.Children.Add(kindChips);
+        BrandMark.Apply(BrandMarkImage, Root);
+        thumbnailCache = new ClipboardThumbnailCache(clipboard);
+        library.Changed += () => DispatcherQueue.TryEnqueue(RebuildLibrarySidebar);
+        RebuildLibrarySidebar();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBarDragRegion);
         try
@@ -118,27 +148,35 @@ public sealed partial class MainWindow : Window
             if (AllowClose)
             {
                 foreach (var editor in contentEditors.Values.ToArray()) editor.Close();
+                var panel = clipboardPanel;
+                clipboardPanel = null;
+                panel?.Dismiss();
                 RemoveHotkeys();
+                UnregisterHotKey(Handle, clipboardHotkeyId);
+                UnregisterHotKey(Handle, 0x4400);
                 return;
             }
             args.Cancel = true;
             HideToTray();
         };
         workflowExecution = new WindowsWorkflowExecutionPort(service, clipboard);
-        clipboard.Entries.CollectionChanged += (_, _) => RefreshHistory();
+        clipboard.Entries.CollectionChanged += (_, _) => { if (!clipboard.History.IsReplacing) RefreshHistory(); };
         clipboard.Error += Notify;
         clipboard.FileOfferReceived += FileOfferArrived;
         clipboard.FileTransferSettled += FileTransferDone;
         service.SnapshotChanged += SnapshotChanged;
         service.ConnectionChanged += ConnectionChanged;
         Root.KeyDown += KeyboardShortcut;
-        UpdateKindChips();
         RefreshHistory();
         BuildMouseBindings();
         inputControllerToggle = DfUi.Switch(false, InputControllerToggled, false);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(inputControllerToggle, "此电脑作为主控");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(inputControllerToggle, "input-controller-toggle");
         InputControllerToggleHost.Children.Add(inputControllerToggle);
-        LanAccessToggleHost.Children.Add(DfUi.Switch(false, null, false));
+        lanAccessToggle = DfUi.Switch(false, LanAccessToggled, false);
+        LanAccessToggleHost.Children.Add(lanAccessToggle);
         ConnectionChanged(false, "正在连接 DeskFuseService…");
+        RenderLanWeb(default);
         DrawInputLayout(default);
         Root.Loaded += (_, _) =>
         {
@@ -148,7 +186,168 @@ public sealed partial class MainWindow : Window
             UpdateCaptionButtons();
             Root.ActualThemeChanged += (_, _) => UpdateCaptionButtons();
             InstallWorkflowHotkeys();
+            InstallClipboardPanelHotkey();
+            InstallHistoryPaging();
+            WindowMessageHook.Attach(Handle, ShortcutRecorderProc);
         };
+    }
+
+    private bool historyPagingInstalled;
+
+    private void InstallHistoryPaging()
+    {
+        if (historyPagingInstalled) return;
+        var viewer = FindDescendant<ScrollViewer>(HistoryList);
+        if (viewer is null) return;
+        historyPagingInstalled = true;
+        viewer.ViewChanged += (_, _) =>
+        {
+            if (canonicalLoadingMore || !canonicalHasMore) return;
+            if (viewer.ExtentHeight - viewer.VerticalOffset - viewer.ViewportHeight < 240)
+                _ = LoadMoreCanonicalAsync();
+        };
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int index = 0; index < count; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match) return match;
+            if (FindDescendant<T>(child) is { } nested) return nested;
+        }
+        return null;
+    }
+
+    private async Task LoadMoreCanonicalAsync()
+    {
+        if (canonicalLoadingMore || !canonicalHasMore || !usingCanonical) return;
+        canonicalLoadingMore = true;
+        int version = historyVersion;
+        string query = HistorySearch.Text.Trim();
+        string? listId = librarySelection.ListId;
+        string kind = librarySelection.Kind ?? "all";
+        string? source = selectedSource == "所有设备" ? null : selectedSource;
+        try
+        {
+            var page = await clipboard.QueryCanonicalAsync(query, listId, kind, source, canonicalOffset, 100, SelectedRules());
+            if (version != historyVersion) return;
+            canonicalRows = canonicalRows.Concat(page.Items.Select(CanonicalRow.ToEntry)).ToArray();
+            canonicalOffset = (int)(page.NextOffset ?? canonicalRows.Length);
+            canonicalHasMore = page.NextOffset is not null;
+            updatingHistory = true;
+            try { RenderVisibleEntries(canonicalRows, page.Total, (int)page.Total); }
+            finally { updatingHistory = false; }
+            _ = LoadCanonicalThumbnailsAsync(version);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or TimeoutException)
+        {
+            Notify($"加载更多失败：{ex.Message}");
+        }
+        finally { canonicalLoadingMore = false; }
+    }
+
+    private void InstallClipboardPanelHotkey()
+    {
+        WindowMessageHook.Attach(Handle, ClipboardPanelHotkeyProc);
+        try { clipboardShortcut = ClipboardHotkey.Load(ClipboardShortcutPath); }
+        catch (Exception ex) { Notify($"快捷键配置读取失败，暂用 Ctrl+Shift+V：{ex.Message}"); }
+        clipboardHotkeyRegistered = clipboardShortcut.Enabled && RegisterHotKey(Handle, clipboardHotkeyId, clipboardShortcut.Modifiers, clipboardShortcut.Key);
+        if (clipboardShortcut.Enabled && !clipboardHotkeyRegistered)
+            Notify($"无法注册剪贴板快捷键 {clipboardShortcut.Label}；请在设置 → 快捷键更改。");
+        // Ctrl+Shift+D = 0x44 (D key)
+        if (!RegisterHotKey(Handle, 0x4400, ModControl | ModShift, 0x44))
+        {
+            Notify("无法注册暂存区快捷键 Ctrl+Shift+D；可能已被其他应用占用。");
+        }
+    }
+
+    private bool ClipboardPanelHotkeyProc(uint message, IntPtr wParam, IntPtr lParam)
+    {
+        if (clipboardShortcutRecorder is not null && message is 0x0100 or 0x0104 or WmHotKey)
+        {
+            uint key = message == WmHotKey ? (uint)((lParam.ToInt64() >> 16) & 0xffff) : (uint)wParam.ToInt32();
+            if (key is 16 or 17 or 18 or 91 or 92) return true;
+            uint modifiers = message == WmHotKey ? (uint)(lParam.ToInt64() & 15) :
+                (IsDown(global::Windows.System.VirtualKey.Control) ? ModControl : 0)
+                | (IsDown(global::Windows.System.VirtualKey.Menu) ? ModAlt : 0)
+                | (IsDown(global::Windows.System.VirtualKey.Shift) ? ModShift : 0)
+                | (IsDown(global::Windows.System.VirtualKey.LeftWindows) || IsDown(global::Windows.System.VirtualKey.RightWindows) ? ModWin : 0);
+            var callback = clipboardShortcutRecorder;
+            clipboardShortcutRecorder = null;
+            callback(key == 27 && modifiers == 0 ? null : new ClipboardHotkey(key, modifiers));
+            return true;
+        }
+        if (message != WmHotKey) return false;
+        if (wParam.ToInt32() == clipboardHotkeyId)
+        {
+            ToggleClipboardPanel();
+            return true;
+        }
+        if (wParam.ToInt32() == 0x4400)
+        {
+            clipboard.ToggleShelf();
+            return true;
+        }
+        return false;
+    }
+
+    internal void BeginClipboardShortcutRecording(Action<ClipboardHotkey?> callback) => clipboardShortcutRecorder = callback;
+
+    internal void StopClipboardShortcutRecording()
+    {
+        var callback = clipboardShortcutRecorder;
+        clipboardShortcutRecorder = null;
+        callback?.Invoke(null);
+    }
+
+    internal void SaveClipboardShortcut(ClipboardHotkey value)
+    {
+        if (!value.IsValid) throw new InvalidOperationException("快捷键必须包含 Ctrl、Alt 或 Win。");
+        if (value.Enabled && value.Key == 0x44 && value.Modifiers == (ModControl | ModShift))
+            throw new InvalidOperationException("Ctrl+Shift+D 已用于文件暂存区，请选择其他组合。");
+        if (value.Enabled && hotkeys.Values.Any(workflow => workflow.Shortcut is { } shortcut
+            && shortcut.KeyCode == value.Key && WorkflowModifiers(shortcut.Modifiers) == value.Modifiers))
+            throw new InvalidOperationException("此快捷键已用于工作流；原快捷键保持不变。");
+        if (value == clipboardShortcut && (!value.Enabled || clipboardHotkeyRegistered)) return;
+        int candidateId = clipboardHotkeyId == 0x5600 ? 0x5601 : 0x5600;
+        if (value.Enabled && !RegisterHotKey(Handle, candidateId, value.Modifiers, value.Key))
+            throw new InvalidOperationException("此快捷键已被占用；原快捷键保持不变。");
+        try { value.Save(ClipboardShortcutPath); }
+        catch { if (value.Enabled) UnregisterHotKey(Handle, candidateId); throw; }
+        UnregisterHotKey(Handle, clipboardHotkeyId);
+        clipboardHotkeyId = candidateId;
+        clipboardHotkeyRegistered = value.Enabled;
+        clipboardShortcut = value;
+    }
+
+    private void ToggleClipboardPanel()
+    {
+        if (clipboardPanel is not null)
+        {
+            var current = clipboardPanel;
+            clipboardPanel = null;
+            current.Dismiss();
+            return;
+        }
+        // Capture before the panel takes focus. If the hotkey was pressed inside
+        // DeskFuse, retain the most recent external destination instead.
+        var foreground = ClipboardPanelWindow.CaptureExternalTarget();
+        if (foreground != IntPtr.Zero) clipboardPasteTarget = foreground;
+        var panel = new ClipboardPanelWindow(
+            clipboard,
+            library,
+            clipboardPasteTarget,
+            Notify,
+            () => { Navigate(WorkspacePage.Clipboard); Activate(); },
+            SharePeers,
+            ShareEntryAsync,
+            HistoryWorkflows,
+            RunHistoryWorkflow);
+        clipboardPanel = panel;
+        panel.Closed += (_, _) => { if (ReferenceEquals(clipboardPanel, panel)) clipboardPanel = null; };
+        panel.Activate();
     }
 
     private void UpdateCaptionButtons()
@@ -226,11 +425,16 @@ public sealed partial class MainWindow : Window
         WorkspacePage.ShareAndTransfer => "局域网传输",
         WorkspacePage.RemoteApplications => "远程应用",
         WorkspacePage.Microphone => "麦克风共享",
-        WorkspacePage.MouseButtons => "鼠标按键",
+        WorkspacePage.MouseButtons => "鼠标自定义",
         _ => "DeskFuse",
     };
 
-    private static string SectionFor(WorkspacePage page) => page == WorkspacePage.Devices ? "配置" : "功能";
+    private static string SectionFor(WorkspacePage page) => page switch
+    {
+        WorkspacePage.Devices => "配置",
+        WorkspacePage.Clipboard or WorkspacePage.Input or WorkspacePage.ShareAndTransfer => "基础",
+        _ => "高级",
+    };
 
     private static bool IsBeta(WorkspacePage page) =>
         page is WorkspacePage.RemoteApplications or WorkspacePage.Microphone or WorkspacePage.MouseButtons;
@@ -244,13 +448,14 @@ public sealed partial class MainWindow : Window
     private void BuildNavigation()
     {
         NavPanel.Children.Clear();
-        NavPanel.Children.Add(SectionHeader("功能"));
+        NavPanel.Children.Add(SectionHeader("基础"));
         AddNavRow(WorkspacePage.Clipboard, "剪贴板", "\uE8C8", false, null);
         AddNavRow(WorkspacePage.Input, "键鼠共享", "\uE962", false, null);
         AddNavRow(WorkspacePage.ShareAndTransfer, "局域网传输", "\uE8AB", false, null);
+        NavPanel.Children.Add(SectionHeader("高级"));
         AddNavRow(WorkspacePage.RemoteApplications, "远程应用", "\uE8A7", true, null);
         AddNavRow(WorkspacePage.Microphone, "麦克风共享", "\uE720", true, null);
-        AddNavRow(WorkspacePage.MouseButtons, "鼠标按键", "\uE8B1", true, null);
+        AddNavRow(WorkspacePage.MouseButtons, "鼠标自定义", "\uE8B1", true, null);
         NavPanel.Children.Add(SectionHeader("配置"));
         int connected = latest is JsonElement snapshot
             ? snapshot.Array("peers").Count(peer => peer.String("connection") == "connected")
@@ -299,7 +504,7 @@ public sealed partial class MainWindow : Window
         grid.Children.Add(label);
         if (beta)
         {
-            var badge = DfUi.Badge("Beta");
+            var badge = DfUi.Badge("即将支持");
             badge.Margin = new Thickness(6, 0, 0, 0);
             Grid.SetColumn(badge, 2);
             grid.Children.Add(badge);
@@ -385,6 +590,8 @@ public sealed partial class MainWindow : Window
 
     private void ShowPage(WorkspacePage page)
     {
+        StopClipboardShortcutRecording();
+        if (selectedPage == WorkspacePage.Input && page != WorkspacePage.Input) displayWallpapers.Clear();
         selectedPage = page;
         settingsVisible = false;
         SettingsHost.Visibility = Visibility.Collapsed;
@@ -414,6 +621,28 @@ public sealed partial class MainWindow : Window
 
     public void ShowSettings() => ShowSettings(lastSettingsCategory);
 
+    /// <summary>After adopting one device's history, show exactly that device's
+    /// rows so the result of the settings action is visible immediately. The
+    /// canonical source token may be the stable device id while the label is
+    /// the current display name.</summary>
+    internal void ShowDeviceHistory(string sourceToken, string sourceLabel)
+    {
+        selectedSource = sourceToken;
+        SourceFilterLabel.Text = sourceLabel;
+        ShowPage(WorkspacePage.Clipboard);
+        RefreshHistory();
+    }
+
+    internal void ApplyAutomaticUpdateResult(UpdateChecker.Result result)
+    {
+        settings?.ApplyUpdateResult(result);
+        if (result.UpdateAvailable && result.LatestTag is string tag && tag != lastAutomaticUpdateTag)
+        {
+            lastAutomaticUpdateTag = tag;
+            Notify(result.Summary);
+        }
+    }
+
     private void ShowSettings(string category)
     {
         if (settings is null)
@@ -421,8 +650,9 @@ public sealed partial class MainWindow : Window
             PageHost.Children.Remove(WorkflowsPage);
             WorkflowsPage.Visibility = Visibility.Collapsed;
             settings = new SettingsPage(clipboard, service, power, WorkflowsPage, () => _ = LoadWorkflowsAsync(),
-                () => ShowPage(WorkspacePage.Input));
+                () => ShowPage(WorkspacePage.Input), this);
             SettingsHost.Children.Add(settings);
+            if (UpdateChecker.LastResult is { } update) settings.ApplyUpdateResult(update);
         }
         if (category == "workflows")
         {
@@ -459,12 +689,13 @@ public sealed partial class MainWindow : Window
     {
         FeatureControlsHost.Children.Clear();
         featureToggle = null;
+        if (IsBeta(selectedPage) || selectedPage == WorkspacePage.Input) return;
         DfToggle? toggle = selectedPage switch
         {
             WorkspacePage.Clipboard => DfUi.Switch(clipboard.SyncEnabled, ClipboardFeatureToggled),
             WorkspacePage.Input => DfUi.Switch(InputFeatureEnabled(), InputFeatureToggled, latest.HasValue),
             WorkspacePage.RemoteApplications => DfUi.Switch(remoteAppsEnabled, RemoteAppsToggled),
-            WorkspacePage.ShareAndTransfer => DfUi.Switch(true, null, false),
+            WorkspacePage.ShareAndTransfer => DfUi.Switch(FileTransferEnabled(), FileTransferToggled, FileTransferAvailable()),
             WorkspacePage.Microphone or WorkspacePage.MouseButtons => DfUi.Switch(false, null, false),
             _ => null,
         };
@@ -474,9 +705,9 @@ public sealed partial class MainWindow : Window
             WorkspacePage.Clipboard => clipboard.SyncEnabled ? "关闭剪贴板同步并停止相关后台任务" : "开启剪贴板同步",
             WorkspacePage.Input => InputFeatureEnabled() ? "关闭键鼠共享并停止相关后台任务" : "开启键鼠共享",
             WorkspacePage.RemoteApplications => remoteAppsEnabled ? "关闭远程应用" : "开启远程应用",
-            WorkspacePage.ShareAndTransfer => "文件传输由服务自动管理",
+            WorkspacePage.ShareAndTransfer => FileTransferEnabled() ? "关闭文件传输与局域网分享" : "开启文件传输",
             WorkspacePage.Microphone => "Windows 端暂不支持麦克风共享",
-            WorkspacePage.MouseButtons => "Windows 端暂不支持鼠标按键自定义",
+            WorkspacePage.MouseButtons => "Windows 端暂不支持鼠标自定义",
             _ => "总开关",
         };
         ToolTipService.SetToolTip(toggle, tooltip);
@@ -499,12 +730,33 @@ public sealed partial class MainWindow : Window
                         featureToggle.IsEnabled = latest.HasValue;
                         break;
                     case WorkspacePage.RemoteApplications: featureToggle.IsOn = remoteAppsEnabled; break;
+                    case WorkspacePage.ShareAndTransfer:
+                        featureToggle.IsOn = FileTransferEnabled();
+                        featureToggle.IsEnabled = FileTransferAvailable();
+                        break;
                 }
             }
             if (inputControllerToggle is not null)
             {
-                inputControllerToggle.IsOn = InputControllerEnabled();
-                inputControllerToggle.IsEnabled = latest.HasValue && InputFeatureEnabled();
+                bool currentRole = InputControllerEnabled();
+                if (pendingInputController is bool expected)
+                {
+                    if (currentRole == expected) pendingInputController = null;
+                    else if (DateTime.UtcNow >= inputControllerDeadline)
+                    {
+                        pendingInputController = null;
+                        Notify("主控切换尚未生效，已恢复当前状态。请检查输入组件与设备连接后重试。");
+                    }
+                }
+                inputControllerToggle.IsOn = pendingInputController ?? currentRole;
+                bool hasSettings = TryInputSettings(out _);
+                bool managed = latest is JsonElement current && current.TryGetProperty("input", out var input) && input.Bool("managed");
+                inputControllerToggle.IsEnabled = hasSettings && !managed && pendingInputController is null;
+                ToolTipService.SetToolTip(InputControllerToggleHost, !hasSettings
+                    ? "正在连接后台服务，暂时无法更改主控。"
+                    : managed ? "当前由另一台设备控制；先停止被控，再切换主控。"
+                    : pendingInputController is not null ? "正在保存主控设置…"
+                    : "使用本机键鼠控制已添加的设备；不需要连接 Wi-Fi。");
             }
         }
         finally { updatingFeature = false; }
@@ -537,6 +789,53 @@ public sealed partial class MainWindow : Window
         if (featureToggle is not null)
             ToolTipService.SetToolTip(featureToggle, toggle.IsOn ? "关闭剪贴板同步并停止相关后台任务" : "开启剪贴板同步");
         Notify(toggle.IsOn ? "已开启剪贴板同步与历史记录。" : "已关闭剪贴板同步；相关后台任务已停止。");
+    }
+
+    private async void FileTransferToggled(object sender, RoutedEventArgs args)
+    {
+        if (updatingFeature || sender is not DfToggle toggle) return;
+        if (!TryFileTransferSettings(out _))
+        {
+            Notify("文件传输设置尚未就绪，无法修改总开关。");
+            return;
+        }
+        try
+        {
+            updatingFeature = true;
+            await service.SendAsync(ServiceClient.Command("SetFileTransferEnabled", new { enabled = toggle.IsOn }));
+            Notify(toggle.IsOn ? "已开启文件传输。" : "已关闭文件传输与局域网分享，活动任务已停止。");
+        }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "文件传输设置未保存，服务可能已断开。"); }
+        finally
+        {
+            updatingFeature = false;
+            UpdateFeatureToggleState();
+        }
+    }
+
+    private async void LanAccessToggled(object sender, RoutedEventArgs args)
+    {
+        if (updatingLanWeb || sender is not DfToggle toggle) return;
+        if (toggle.IsOn && !FileTransferEnabled())
+        {
+            Notify("文件传输已关闭，请先开启文件传输总开关。");
+            updatingLanWeb = true;
+            toggle.IsOn = false;
+            updatingLanWeb = false;
+            return;
+        }
+        try
+        {
+            updatingLanWeb = true;
+            await service.SendAsync(ServiceClient.Command("ConfigureLanWeb", new { enabled = toggle.IsOn }));
+            Notify(toggle.IsOn ? "已请求开启局域网访问；二维码将在监听成功后显示。" : "已关闭局域网访问。");
+        }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "局域网设置未保存，服务可能已断开。"); }
+        finally
+        {
+            updatingLanWeb = false;
+            if (latest is JsonElement snapshot) RenderLanWeb(snapshot);
+        }
     }
 
     private void RemoteAppsToggled(object sender, RoutedEventArgs args)
@@ -584,13 +883,17 @@ public sealed partial class MainWindow : Window
         {
             updatingFeature = true;
             var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
+            pendingInputController = toggle.IsOn;
+            inputControllerDeadline = DateTime.UtcNow.AddSeconds(5);
+            inputControllerToggle!.IsEnabled = false;
+            if (toggle.IsOn) node["feature_enabled"] = true;
             node["enabled"] = toggle.IsOn;
             node["role"] = toggle.IsOn ? "Controller" : "Disabled";
             await service.SendAsync(ServiceClient.Command("SetInputSharingSettings", new { settings = node }));
-            Notify(toggle.IsOn ? "已开启主控；把指针移到屏幕边缘即可控制已添加设备。" : "已停止主控；本机不再控制其他设备。");
+            Notify(toggle.IsOn ? "已提交主控设置；能否跨屏控制以连接与输入状态为准。" : "已请求停止主控。");
         }
-        catch (FormatException) { Notify("输入设置格式无效。"); }
-        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "主控设置未保存，服务可能已断开。"); }
+        catch (FormatException) { pendingInputController = null; Notify("输入设置格式无效。"); }
+        catch (Exception ex) { pendingInputController = null; Notify(ex is IOException ? ex.Message : "主控设置未保存，服务可能已断开。"); }
         finally
         {
             updatingFeature = false;
@@ -607,18 +910,24 @@ public sealed partial class MainWindow : Window
             && settings.ValueKind == JsonValueKind.Object;
     }
 
+    private bool TryFileTransferSettings(out JsonElement settings)
+    {
+        settings = default;
+        return latest is JsonElement snapshot
+            && snapshot.TryGetProperty("file_settings", out settings)
+            && settings.ValueKind == JsonValueKind.Object;
+    }
+
+    private bool FileTransferAvailable() => TryFileTransferSettings(out _);
+
+    private bool FileTransferEnabled() => TryFileTransferSettings(out var settings) && settings.Bool("enabled");
+
     private void UpdateRemoteApplicationsHost()
     {
         if (RemoteApplicationsHost is null) return;
         RemoteApplicationsHost.Children.Clear();
-        if (!remoteAppsEnabled)
-        {
-            RemoteApplicationsHost.Children.Add(DfUi.EmptyState("\uE8A7", "远程应用已关闭",
-                "相关后台任务已停止。打开右上角总开关即可继续使用。"));
-            return;
-        }
-        var page = new RemoteAppPage(service);
-        RemoteApplicationsHost.Children.Add(page);
+        RemoteApplicationsHost.Children.Add(DfUi.EmptyState("\uE8A7", "即将支持",
+            "Windows 端远程应用尚未开放。鼠标跨屏共享请前往键鼠共享页面。"));
     }
 
     // MARK: - Health
@@ -672,6 +981,15 @@ public sealed partial class MainWindow : Window
         flyout.ShowAt(HealthButton);
     }
 
+    private string? inputHelperFailure;
+
+    internal void ReportInputHelperStatus(string? message)
+    {
+        inputHelperFailure = message;
+        if (latest is JsonElement snapshot) RefreshInputState(snapshot);
+        UpdateHealth(service.IsConnected);
+    }
+
     private void UpdateHealth(bool connected)
     {
         var issues = new List<(string Tone, string Title, string Detail)>();
@@ -680,6 +998,9 @@ public sealed partial class MainWindow : Window
         if (connected && latest is JsonElement snapshot
             && !snapshot.Array("peers").Any(peer => peer.String("connection") == "connected"))
             issues.Add(("DFAccentBrush", "还没有连接其他电脑", "添加另一台电脑后，就能同步剪贴板、共享键鼠和传输文件。"));
+        if (connected && InputFeatureEnabled() && latest is JsonElement inputState
+            && !JsonProperty(inputState, "capabilities").Bool("input"))
+            issues.Add(("DFWarningBrush", "鼠标共享未就绪", inputHelperFailure ?? "本机输入组件未就绪，请在设置 → 权限检查安装与授权状态。"));
         string tone = issues.Any(issue => issue.Tone == "DFDangerBrush") ? "DFDangerBrush"
             : issues.Any(issue => issue.Tone == "DFWarningBrush") ? "DFWarningBrush"
             : issues.Any(issue => issue.Tone == "DFAccentBrush") ? "DFAccentBrush"
@@ -698,82 +1019,855 @@ public sealed partial class MainWindow : Window
 
     // MARK: - History
 
+    private string selectedSource = "所有设备";
+    private string displayMode = "list";
+    private readonly ClipboardThumbnailCache thumbnailCache;
+
+
+    private void SourceFilterClick(object sender, RoutedEventArgs args)
+    {
+        var flyout = new MenuFlyout();
+        var sources = usingCanonical ? CanonicalSources() : new[] { "所有设备" }.Concat(clipboard.Entries.Select(e => e.SourceName).Distinct()).ToArray();
+        foreach (var source in sources)
+        {
+            var item = new MenuFlyoutItem { Text = source };
+            var captured = source;
+            // Query by the stable device id when the display name belongs to a
+            // known device; names can change without rewriting older rows.
+            string token = source == "所有设备"
+                ? source
+                : canonicalState?.Devices.FirstOrDefault(device => device.Name == source)?.Id ?? source;
+            item.Click += (_, _) =>
+            {
+                selectedSource = token;
+                SourceFilterLabel.Text = captured;
+                RefreshHistory();
+            };
+            flyout.Items.Add(item);
+        }
+        flyout.ShowAt(SourceFilterButton);
+    }
+
+    private string[] CanonicalSources()
+    {
+        var names = new SortedSet<string>(StringComparer.CurrentCulture)
+        {
+            "所有设备",
+        };
+        foreach (var entry in canonicalRows) names.Add(entry.SourceName);
+        if (canonicalState is not null)
+            foreach (var device in canonicalState.Devices)
+                if (!string.IsNullOrWhiteSpace(device.Name)) names.Add(device.Name);
+        return names.ToArray();
+    }
+
     private void HistoryFilterChanged(object sender, RoutedEventArgs args) => RefreshHistory();
 
-    private Button KindChip(string label, string kind)
+    private void DisplayModeListClick(object sender, RoutedEventArgs args)
     {
-        var chip = new Button
-        {
-            Content = label,
-            Tag = kind,
-            FontSize = 11,
-            Padding = new Thickness(8, 0, 8, 0),
-            MinHeight = 26,
-            CornerRadius = new CornerRadius(8),
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(1),
-        };
-        chip.Click += KindFilterClick;
-        return chip;
+        displayMode = "list";
+        DisplayModeListButton.Background = DfUi.Control;
+        DisplayModeGridButton.Background = new SolidColorBrush(Colors.Transparent);
+        HistoryList.Visibility = Visibility.Visible;
+        HistoryGrid.Visibility = Visibility.Collapsed;
     }
 
-    private void KindFilterClick(object sender, RoutedEventArgs args)
+    private void DisplayModeGridClick(object sender, RoutedEventArgs args)
     {
-        historyKind = (sender as Button)?.Tag as string ?? "";
-        UpdateKindChips();
-        RefreshHistory();
+        displayMode = "grid";
+        DisplayModeGridButton.Background = DfUi.Control;
+        DisplayModeListButton.Background = new SolidColorBrush(Colors.Transparent);
+        HistoryList.Visibility = Visibility.Collapsed;
+        HistoryGrid.Visibility = Visibility.Visible;
+        RenderGrid(visibleEntries);
     }
 
-    private void UpdateKindChips()
+    // MARK: - Library sidebar
+
+    private void RebuildLibrarySidebar()
     {
-        foreach (var (button, kind) in new[] { (KindAllButton, ""), (KindTextButton, "text"), (KindImageButton, "image"), (KindFilesButton, "files") })
+        if (LibraryListPanel is null) return;
+        LibraryListPanel.Children.Clear();
+        bool online = usingCanonical && canonicalState is not null;
+        LibraryListPanel.Children.Add(LibraryRow("全部", "\uE8A5", ClipboardLibrary.Selection.All,
+            online ? CountFor("all") : clipboard.Entries.Count));
+        LibraryListPanel.Children.Add(DfUi.SectionLabel("类型"));
+        LibraryListPanel.Children.Add(LibraryRow("纯文本", "\uE8E4", ClipboardLibrary.Selection.OfKind("text"),
+            online ? -1 : library.Count(ClipboardLibrary.Selection.OfKind("text"), clipboard.Entries)));
+        LibraryListPanel.Children.Add(LibraryRow("图片", "\uE91B", ClipboardLibrary.Selection.OfKind("image"),
+            online ? -1 : library.Count(ClipboardLibrary.Selection.OfKind("image"), clipboard.Entries)));
+        LibraryListPanel.Children.Add(LibraryRow("文件", "\uE8B7", ClipboardLibrary.Selection.OfKind("files"),
+            online ? -1 : library.Count(ClipboardLibrary.Selection.OfKind("files"), clipboard.Entries)));
+        if (online)
         {
-            bool selected = historyKind == kind;
-            button.Background = selected ? DfUi.Surface : new SolidColorBrush(Colors.Transparent);
-            button.BorderBrush = selected ? DfUi.Line : new SolidColorBrush(Colors.Transparent);
-            button.BorderThickness = new Thickness(1);
-            button.Foreground = selected ? DfUi.PrimaryText : DfUi.Muted;
-            button.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+            var lists = canonicalState!.Lists.OrderBy(list => list.Position).ToArray();
+            if (lists.Length > 0)
+            {
+                LibraryListPanel.Children.Add(DfUi.Divider(8, 8));
+                LibraryListPanel.Children.Add(DfUi.SectionLabel("我的列表"));
+                foreach (var list in lists)
+                {
+                    var row = LibraryRow(list.Name, list.IsSmart ? "\uE71C" : "\uE8FD",
+                        ClipboardLibrary.Selection.OfList(list.Id), CountFor(list.Id));
+                    row.ContextFlyout = LibraryListFlyout(list);
+                    if (list.IsSmart) ToolTipService.SetToolTip(row, SmartListDescription(list));
+                    LibraryListPanel.Children.Add(row);
+                }
+            }
+            LibraryListPanel.Children.Add(DfUi.Divider(8, 8));
+            LibraryListPanel.Children.Add(SidebarAction("\uE710", "新建列表", NewListClick));
+            LibraryListPanel.Children.Add(SidebarAction("\uE710", "新建智能列表", NewSmartListClick));
+            return;
         }
+        if (library.Lists.Count > 0)
+        {
+            LibraryListPanel.Children.Add(DfUi.Divider(8, 8));
+            LibraryListPanel.Children.Add(DfUi.SectionLabel("我的列表"));
+            foreach (var list in library.Lists)
+            {
+                var row = LibraryRow(list.Name, "\uE8FD", ClipboardLibrary.Selection.OfList(list.Id), list.Members.Count);
+                row.ContextFlyout = LibraryListFlyout(list);
+                LibraryListPanel.Children.Add(row);
+            }
+        }
+        LibraryListPanel.Children.Add(DfUi.Divider(8, 8));
+        LibraryListPanel.Children.Add(SidebarAction("\uE710", "新建列表", NewListClick));
+    }
+
+    private int CountFor(string key) => canonicalCounts.TryGetValue(key, out long count) ? (int)count : -1;
+
+    private static string SmartListDescription(CanonicalList list)
+    {
+        if (list.Rules.Count == 0) return $"{list.Name} · 没有筛选条件";
+        var parts = list.Rules.Select(rule => rule.Field switch
+        {
+            "app" => $"应用{(rule.Op == "is_not" ? "不是" : "是")} {rule.Value}",
+            "device" => $"设备{(rule.Op == "is_not" ? "不是" : "是")} {rule.Value}",
+            "kind" => $"类型{(rule.Op == "is_not" ? "不是" : "是")} {rule.Value}",
+            "text" => rule.Op == "not_contains" ? $"不包含「{rule.Value}」" : $"包含「{rule.Value}」",
+            "date" => rule.Op switch
+            {
+                "today" => "今天",
+                "yesterday" => "昨天",
+                "last_days" => $"最近 {rule.Value} 天",
+                _ => "日期范围",
+            },
+            _ => rule.Field,
+        });
+        return $"{list.Name} · {string.Join(list.MatchMode == "any" ? " 或 " : " 且 ", parts)}";
+    }
+
+    private Button SidebarAction(string glyph, string label, RoutedEventHandler click)
+    {
+        var button = new Button
+        {
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 0, 10, 0),
+            MinHeight = 32,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Template = (ControlTemplate)Application.Current.Resources["DFFlatButtonTemplate"],
+        };
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        content.Children.Add(new FontIcon { Glyph = glyph, FontSize = 12, Foreground = DfUi.Accent, VerticalAlignment = VerticalAlignment.Center });
+        content.Children.Add(DfUi.Text(label, 13, false, DfUi.Accent));
+        button.Content = content;
+        button.Click += click;
+        return button;
+    }
+
+    private Button LibraryRow(string name, string glyph, ClipboardLibrary.Selection selection, int count)
+    {
+        bool selected = librarySelection.Equals(selection);
+        var button = new Button
+        {
+            Background = selected ? DfUi.Surface : new SolidColorBrush(Colors.Transparent),
+            BorderBrush = selected ? DfUi.Line : new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 0, 10, 0),
+            MinHeight = 32,
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Template = (ControlTemplate)Application.Current.Resources["DFFlatButtonTemplate"],
+        };
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new FontIcon
+        {
+            Glyph = glyph,
+            FontSize = 13,
+            Foreground = selected ? DfUi.PrimaryText : DfUi.Muted,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var title = DfUi.Text(name, 13, false, selected ? DfUi.PrimaryText : DfUi.Muted);
+        title.Margin = new Thickness(9, 0, 0, 0);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        Grid.SetColumn(title, 1);
+        grid.Children.Add(title);
+        if (count >= 0)
+        {
+            var counter = DfUi.Text(count.ToString(), 11, false, selected ? DfUi.Muted : DfUi.Muted);
+            counter.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(counter, 2);
+            grid.Children.Add(counter);
+        }
+        button.Content = grid;
+        button.Click += (_, _) =>
+        {
+            librarySelection = selection;
+            RebuildLibrarySidebar();
+            RefreshHistory();
+        };
+        return button;
+    }
+
+    private MenuFlyout LibraryListFlyout(CanonicalList list)
+    {
+        var flyout = new MenuFlyout();
+        if (list.IsSmart)
+        {
+            var edit = new MenuFlyoutItem { Text = "编辑条件…" };
+            edit.Click += async (_, _) => await EditSmartListAsync(list);
+            flyout.Items.Add(edit);
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+        var rename = new MenuFlyoutItem { Text = "重命名…" };
+        rename.Click += async (_, _) => await RenameListAsync(list);
+        flyout.Items.Add(rename);
+        var moveUp = new MenuFlyoutItem { Text = "向前移动" };
+        moveUp.Click += async (_, _) => await MoveListAsync(list, -1);
+        flyout.Items.Add(moveUp);
+        var moveDown = new MenuFlyoutItem { Text = "向后移动" };
+        moveDown.Click += async (_, _) => await MoveListAsync(list, 1);
+        flyout.Items.Add(moveDown);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        var delete = new MenuFlyoutItem { Text = "删除列表" };
+        delete.Click += async (_, _) =>
+        {
+            try
+            {
+                if (librarySelection.ListId == list.Id) librarySelection = ClipboardLibrary.Selection.All;
+                await clipboard.DeleteCanonicalListAsync(list.Id);
+                await ReloadCanonicalStateAsync();
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+        };
+        flyout.Items.Add(delete);
+        return flyout;
+    }
+
+    private MenuFlyout LibraryListFlyout(ClipboardLibrary.ManualList list)
+    {
+        var flyout = new MenuFlyout();
+        var rename = new MenuFlyoutItem { Text = "重命名…" };
+        rename.Click += async (_, _) => await RenameListAsync(list);
+        flyout.Items.Add(rename);
+        var moveUp = new MenuFlyoutItem { Text = "向前移动" };
+        moveUp.Click += (_, _) => { library.Move(list.Id, -1); };
+        flyout.Items.Add(moveUp);
+        var moveDown = new MenuFlyoutItem { Text = "向后移动" };
+        moveDown.Click += (_, _) => { library.Move(list.Id, 1); };
+        flyout.Items.Add(moveDown);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        var delete = new MenuFlyoutItem { Text = "删除列表" };
+        delete.Click += (_, _) =>
+        {
+            if (librarySelection.ListId == list.Id) librarySelection = ClipboardLibrary.Selection.All;
+            library.Delete(list.Id);
+            RebuildLibrarySidebar();
+            RefreshHistory();
+        };
+        flyout.Items.Add(delete);
+        return flyout;
+    }
+
+    private async void NewListClick(object sender, RoutedEventArgs args)
+    {
+        var editor = new TextBox { PlaceholderText = "列表名称", MaxLength = 60 };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot,
+            Title = "新建列表",
+            Content = editor,
+            PrimaryButtonText = "创建",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        try
+        {
+            if (usingCanonical && canonicalState is not null)
+            {
+                var list = new CanonicalList
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Name = editor.Text.Trim(),
+                    Kind = "manual",
+                    Position = canonicalState.Lists.Count,
+                };
+                if (list.Name.Length == 0) throw new InvalidOperationException("列表名称不能为空");
+                await clipboard.SaveCanonicalListAsync(list);
+                librarySelection = ClipboardLibrary.Selection.OfList(list.Id);
+                await ReloadCanonicalStateAsync();
+                return;
+            }
+            var created = library.Create(editor.Text);
+            librarySelection = ClipboardLibrary.Selection.OfList(created.Id);
+            RebuildLibrarySidebar();
+            RefreshHistory();
+        }
+        catch (InvalidOperationException ex) { Notify(ex.Message); }
+        catch (Exception ex) when (ex is IOException) { Notify(ex.Message); }
+    }
+
+    private async void NewSmartListClick(object sender, RoutedEventArgs args)
+    {
+        var draft = await ShowSmartListDialogAsync(null);
+        if (draft is null) return;
+        try
+        {
+            await clipboard.SaveCanonicalListAsync(draft);
+            librarySelection = ClipboardLibrary.Selection.OfList(draft.Id);
+            await ReloadCanonicalStateAsync();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    private async Task<CanonicalList?> ShowSmartListDialogAsync(CanonicalList? existing)
+    {
+        var panel = new StackPanel { Spacing = 10, MinWidth = 460 };
+        var name = new TextBox { Text = existing?.Name ?? "", PlaceholderText = "列表名称", MaxLength = 60 };
+        panel.Children.Add(name);
+        var mode = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, SelectedIndex = existing?.MatchMode == "any" ? 1 : 0 };
+        mode.Items.Add("满足全部条件");
+        mode.Items.Add("满足任一条件");
+        panel.Children.Add(mode);
+        var rowsHost = new StackPanel { Spacing = 10 };
+        panel.Children.Add(new ScrollViewer
+        {
+            Content = rowsHost,
+            MaxHeight = 340,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        });
+        var rows = new List<SmartRuleRow>();
+        void AddRow(CanonicalRule? rule)
+        {
+            var row = new SmartRuleRow();
+            row.Build(rule, () =>
+            {
+                if (rows.Count <= 1) return;
+                rowsHost.Children.Remove(row.Host);
+                rows.Remove(row);
+            });
+            rows.Add(row);
+            rowsHost.Children.Add(row.Host);
+        }
+        foreach (var rule in existing?.Rules ?? []) AddRow(rule);
+        if (rows.Count == 0) AddRow(null);
+        panel.Children.Add(DfUi.Secondary("增加条件", (_, _) => AddRow(null)));
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot,
+            Title = existing is null ? "新建智能列表" : "编辑智能列表",
+            Content = panel,
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return null;
+        string listName = name.Text.Trim();
+        if (listName.Length == 0) { Notify("列表名称不能为空"); return null; }
+        var rules = new List<CanonicalRule>();
+        foreach (var row in rows)
+        {
+            if (!row.TryBuild(out var rule, out string? error))
+            {
+                Notify(error ?? "智能条件无效");
+                return null;
+            }
+            rules.Add(rule);
+        }
+        if (rules.Count == 0) { Notify("请至少添加一个条件"); return null; }
+        return new CanonicalList
+        {
+            Id = existing?.Id ?? Guid.NewGuid().ToString("N"),
+            Name = listName,
+            Kind = "smart",
+            MatchMode = mode.SelectedIndex == 1 ? "any" : "all",
+            Rules = rules,
+            Position = existing?.Position ?? (canonicalState?.Lists.Count ?? 0),
+        };
+    }
+
+    /// <summary>One editable smart-list condition: field, operator and value controls.</summary>
+    private sealed class SmartRuleRow
+    {
+        private static readonly string[] Fields = ["text", "app", "device", "kind", "date"];
+        private static readonly string[] FieldLabels = ["内容包含文字", "来自应用", "来自设备", "类型为", "创建日期"];
+        private static readonly string[][] Operators =
+        [
+            ["contains", "not_contains"],
+            ["is", "is_not"],
+            ["is", "is_not"],
+            ["is", "is_not"],
+            ["today", "yesterday", "last_days", "between"],
+        ];
+        private static readonly string[][] OperatorLabels =
+        [
+            ["包含", "不包含"],
+            ["是", "不是"],
+            ["是", "不是"],
+            ["是", "不是"],
+            ["今天", "昨天", "最近天数", "日期范围"],
+        ];
+
+        private readonly ComboBox field = new() { MinWidth = 148, HorizontalAlignment = HorizontalAlignment.Stretch };
+        private readonly ComboBox op = new() { MinWidth = 112 };
+        private readonly TextBox value = new() { PlaceholderText = "值" };
+        private readonly TextBox value2 = new() { PlaceholderText = "结束日期 (yyyy-MM-dd)" };
+        private readonly ComboBox kind = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+        private bool ready;
+
+        public StackPanel Host { get; } = new() { Spacing = 6 };
+
+        public void Build(CanonicalRule? initial, Action remove)
+        {
+            foreach (var label in FieldLabels) field.Items.Add(label);
+            kind.Items.Add("文字");
+            kind.Items.Add("图片");
+            kind.Items.Add("文件");
+            kind.Items.Add("其他格式");
+            var header = new Grid { ColumnSpacing = 8 };
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            header.Children.Add(field);
+            Grid.SetColumn(op, 1);
+            header.Children.Add(op);
+            var delete = DfUi.IconButton("\uE711", (_, _) => remove(), "删除条件");
+            delete.HorizontalAlignment = HorizontalAlignment.Right;
+            Grid.SetColumn(delete, 2);
+            header.Children.Add(delete);
+            Host.Children.Add(header);
+            var values = new Grid { ColumnSpacing = 8 };
+            values.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            values.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            values.Children.Add(value);
+            Grid.SetColumn(value2, 1);
+            values.Children.Add(value2);
+            Host.Children.Add(values);
+            Host.Children.Add(kind);
+
+            field.SelectionChanged += (_, _) => { if (ready) PopulateOperators(); };
+            op.SelectionChanged += (_, _) => { if (ready) RefreshValueControls(); };
+
+            int fieldIndex = initial is null ? 0 : Math.Max(0, Array.IndexOf(Fields, initial.Field));
+            field.SelectedIndex = fieldIndex;
+            PopulateOperators(initial?.Op);
+            value.Text = initial?.Value ?? "";
+            value2.Text = initial?.Value2 ?? "";
+            kind.SelectedIndex = initial?.Value switch { "image" => 1, "files" => 2, "other" => 3, _ => 0 };
+            ready = true;
+            RefreshValueControls();
+        }
+
+        private void PopulateOperators(string? selected = null)
+        {
+            int index = Math.Max(0, field.SelectedIndex);
+            op.Items.Clear();
+            foreach (var label in OperatorLabels[index]) op.Items.Add(label);
+            int wanted = selected is null ? 0 : Array.IndexOf(Operators[index], selected);
+            op.SelectedIndex = wanted < 0 ? 0 : wanted;
+            RefreshValueControls();
+        }
+
+        private void RefreshValueControls()
+        {
+            string name = Fields[Math.Max(0, field.SelectedIndex)];
+            string currentOp = CurrentOp;
+            bool dateRange = name == "date";
+            kind.Visibility = name == "kind" ? Visibility.Visible : Visibility.Collapsed;
+            value.Visibility = name == "kind" || (dateRange && currentOp is "today" or "yesterday")
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            value2.Visibility = dateRange && currentOp == "between" ? Visibility.Visible : Visibility.Collapsed;
+            value.PlaceholderText = name switch
+            {
+                "app" => "应用标识，例如 chrome.exe",
+                "device" => "来源设备标识或名称",
+                "date" => "天数，例如 7",
+                _ => "要包含的文字",
+            };
+            if (dateRange && currentOp == "between")
+            {
+                value.PlaceholderText = "开始日期 (yyyy-MM-dd)";
+                value2.PlaceholderText = "结束日期 (yyyy-MM-dd)";
+            }
+        }
+
+        private string CurrentOp => Operators[Math.Max(0, field.SelectedIndex)][Math.Max(0, op.SelectedIndex)];
+
+        public bool TryBuild(out CanonicalRule rule, out string? error)
+        {
+            rule = new CanonicalRule();
+            error = null;
+            string name = Fields[Math.Max(0, field.SelectedIndex)];
+            string currentOp = CurrentOp;
+            string text = value.Text.Trim();
+            switch (name)
+            {
+                case "kind":
+                    if (kind.SelectedIndex < 0) { error = "请选择内容类型"; return false; }
+                    rule = new CanonicalRule { Field = "kind", Op = currentOp, Value = kind.SelectedIndex switch { 1 => "image", 2 => "files", 3 => "other", _ => "text" } };
+                    return true;
+                case "date" when currentOp is "today" or "yesterday":
+                    rule = new CanonicalRule { Field = "date", Op = currentOp, Value = "" };
+                    return true;
+                case "date" when currentOp == "last_days":
+                    if (!int.TryParse(text, out int days) || days < 1) { error = "最近天数必须大于零"; return false; }
+                    rule = new CanonicalRule { Field = "date", Op = currentOp, Value = days.ToString() };
+                    return true;
+                case "date":
+                    if (!DateTime.TryParse(text, out var start) || !DateTime.TryParse(value2.Text.Trim(), out var end) || end < start)
+                    {
+                        error = "日期范围无效，请使用 yyyy-MM-dd";
+                        return false;
+                    }
+                    rule = new CanonicalRule
+                    {
+                        Field = "date", Op = "between",
+                        Value = start.ToString("yyyy-MM-dd"), Value2 = end.ToString("yyyy-MM-dd"),
+                    };
+                    return true;
+                default:
+                    if (text.Length == 0) { error = "条件内容不能为空"; return false; }
+                    rule = new CanonicalRule { Field = name, Op = currentOp, Value = text };
+                    return true;
+            }
+        }
+    }
+
+    private async Task EditSmartListAsync(CanonicalList list)
+    {
+        var draft = await ShowSmartListDialogAsync(list);
+        if (draft is null) return;
+        try
+        {
+            await clipboard.SaveCanonicalListAsync(draft);
+            await ReloadCanonicalStateAsync();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    private async Task MoveListAsync(CanonicalList list, int delta)
+    {
+        if (canonicalState is null) return;
+        var ids = canonicalState.Lists.OrderBy(item => item.Position).Select(item => item.Id).ToList();
+        int index = ids.IndexOf(list.Id);
+        int target = index + delta;
+        if (index < 0 || target < 0 || target >= ids.Count) return;
+        (ids[index], ids[target]) = (ids[target], ids[index]);
+        try
+        {
+            await clipboard.ReorderCanonicalListsAsync(ids);
+            await ReloadCanonicalStateAsync();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    private async Task RenameListAsync(CanonicalList list)
+    {
+        var editor = new TextBox { Text = list.Name, MaxLength = 60 };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot,
+            Title = "重命名列表",
+            Content = editor,
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        string name = editor.Text.Trim();
+        if (name.Length == 0) { Notify("列表名称不能为空"); return; }
+        try
+        {
+            list.Name = name;
+            await clipboard.SaveCanonicalListAsync(list);
+            await ReloadCanonicalStateAsync();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    private async Task ReloadCanonicalStateAsync()
+    {
+        try
+        {
+            canonicalState = await clipboard.CanonicalStateAsync();
+            usingCanonical = true;
+            RebuildLibrarySidebar();
+            RefreshHistory();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        {
+            usingCanonical = false;
+            RebuildLibrarySidebar();
+            Notify(ex.Message);
+        }
+    }
+
+    private async Task RenameListAsync(ClipboardLibrary.ManualList list)
+    {
+        var editor = new TextBox { Text = list.Name, MaxLength = 60 };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Root.XamlRoot,
+            Title = "重命名列表",
+            Content = editor,
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        try { library.Rename(list.Id, editor.Text); }
+        catch (InvalidOperationException ex) { Notify(ex.Message); }
     }
 
     private void RefreshHistory()
     {
         if (HistoryList is null || updatingHistory) return;
+        ++historyVersion;
+        if (clipboard.CanonicalConnected)
+        {
+            historyRefreshPending = true;
+            if (!historyRefreshRunning) _ = DrainHistoryRefreshAsync();
+            return;
+        }
+        if (usingCanonical)
+        {
+            usingCanonical = false;
+            canonicalState = null;
+            canonicalCounts.Clear();
+            canonicalOffset = 0;
+            canonicalHasMore = false;
+            RebuildLibrarySidebar();
+        }
         updatingHistory = true;
         try
         {
-            string? selected = (HistoryList.SelectedItem as ClipboardEntry)?.Id;
-            string source = SourceFilter.SelectedItem as string ?? "所有设备";
-            var sources = new[] { "所有设备" }.Concat(clipboard.Entries.Select(e => e.SourceName).Distinct()).ToArray();
-            SourceFilter.ItemsSource = sources;
-            SourceFilter.SelectedItem = sources.Contains(source) ? source : "所有设备";
-            string search = HistorySearch.Text.Trim();
-            source = SourceFilter.SelectedItem as string ?? "所有设备";
-            var visible = clipboard.Entries.Where(e =>
-                (historyKind.Length == 0 || e.Kind == historyKind)
-                && (source == "所有设备" || e.SourceName == source)
-                && (search.Length == 0 || $"{e.Title} {e.Preview} {e.SourceName}".Contains(search, StringComparison.CurrentCultureIgnoreCase)))
+            var visible = library.Filter(librarySelection, clipboard.Entries)
+                .Where(MatchesLocalFilter)
                 .ToArray();
-            var groups = new List<HistoryGroup>();
-            foreach (var entry in visible)
-            {
-                string key = HistoryGroupKey(entry.CreatedAt.LocalDateTime);
-                if (groups.Count == 0 || groups[^1].Key != key) groups.Add(new HistoryGroup(key));
-                groups[^1].Add(entry);
-            }
-            var grouped = new CollectionViewSource { IsSourceGrouped = true, Source = groups };
-            HistoryList.ItemsSource = grouped.View;
-            HistoryList.SelectedItem = visible.FirstOrDefault(e => e.Id == selected) ?? visible.FirstOrDefault();
-            HistoryEmpty.Visibility = visible.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            HistoryEmptyTitle.Text = clipboard.Entries.Count == 0 ? "还没有剪贴板历史" : "没有匹配的内容";
-            HistoryEmptyDetail.Text = clipboard.Entries.Count == 0
-                ? "复制文字、图片或文件后\n会显示在这里。"
-                : "试试其他关键词或筛选条件。";
-            HistoryCount.Text = $"{visible.Length} 条";
+            RenderVisibleEntries(visible, visible.Length, clipboard.Entries.Count);
         }
         finally { updatingHistory = false; }
         RefreshPreview();
+    }
+
+    private bool MatchesLocalFilter(ClipboardEntry entry) =>
+        (selectedSource == "所有设备" || entry.SourceName == selectedSource || entry.SourceId == selectedSource)
+        && (HistorySearch.Text.Trim().Length == 0
+            || $"{entry.Title} {entry.Preview} {entry.SourceName}".Contains(HistorySearch.Text.Trim(), StringComparison.CurrentCultureIgnoreCase));
+
+    private IReadOnlyList<CanonicalRule>? SelectedRules() =>
+        canonicalState?.Lists.FirstOrDefault(list => list.Id == librarySelection.ListId)?.Rules;
+
+    private async Task DrainHistoryRefreshAsync()
+    {
+        historyRefreshRunning = true;
+        try
+        {
+            while (historyRefreshPending && clipboard.CanonicalConnected)
+            {
+                historyRefreshPending = false;
+                await RefreshCanonicalHistoryAsync();
+            }
+        }
+        finally { historyRefreshRunning = false; }
+    }
+
+    private async Task RefreshCanonicalHistoryAsync()
+    {
+        int version = historyVersion;
+        string query = HistorySearch.Text.Trim();
+        string? listId = librarySelection.ListId;
+        string kind = librarySelection.Kind ?? "all";
+        string? source = selectedSource == "所有设备" ? null : selectedSource;
+        try
+        {
+            var state = await clipboard.CanonicalStateAsync();
+            if (version != historyVersion) return;
+            usingCanonical = true;
+            canonicalState = state;
+            var page = await clipboard.QueryCanonicalAsync(query, listId, kind, source, 0, 100, SelectedRules());
+            if (version != historyVersion) return;
+            canonicalRows = page.Items.Select(CanonicalRow.ToEntry).ToArray();
+            canonicalOffset = (int)(page.NextOffset ?? canonicalRows.Length);
+            canonicalHasMore = page.NextOffset is not null;
+            updatingHistory = true;
+            try { RenderVisibleEntries(canonicalRows, page.Total, (int)page.Total); }
+            finally { updatingHistory = false; }
+            RebuildLibrarySidebar();
+            RefreshPreview();
+            _ = LoadCanonicalThumbnailsAsync(version);
+            _ = LoadCanonicalCountsAsync(version, state.Lists);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or TimeoutException)
+        {
+            if (version != historyVersion) return;
+            lastLibraryRevision = -1;
+            if (usingCanonical && canonicalRows.Length > 0)
+            {
+                SyncStatus.Text = "内容库刷新暂未完成；保留当前内容并稍后重试。";
+                return;
+            }
+            usingCanonical = false;
+            canonicalState = null;
+            canonicalCounts.Clear();
+            canonicalOffset = 0;
+            canonicalHasMore = false;
+            HistoryEmptyTitle.Text = "内容库暂时不可用";
+            HistoryEmptyDetail.Text = $"{ex.Message}\n本机历史仍可继续使用。";
+            RebuildLibrarySidebar();
+            updatingHistory = true;
+            try
+            {
+                var visible = library.Filter(librarySelection, clipboard.Entries).Where(MatchesLocalFilter).ToArray();
+                RenderVisibleEntries(visible, visible.Length, clipboard.Entries.Count);
+                if (visible.Length == 0) HistoryEmptyTitle.Text = "内容库暂时不可用";
+            }
+            finally { updatingHistory = false; }
+            RefreshPreview();
+        }
+    }
+
+    private async Task LoadCanonicalCountsAsync(int version, IReadOnlyList<CanonicalList> lists)
+    {
+        try
+        {
+            var counts = await clipboard.CanonicalCountsAsync(lists);
+            if (version != historyVersion) return;
+            canonicalCounts = counts;
+            RebuildLibrarySidebar();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException) { }
+    }
+
+    private Task LoadCanonicalThumbnailsAsync(int version) => Task.CompletedTask;
+
+    private void RenderVisibleEntries(ClipboardEntry[] visible, long total, int emptyTotal)
+    {
+        string filter = $"{librarySelection}|{selectedSource}|{HistorySearch.Text.Trim()}";
+        string presentation = JsonSerializer.Serialize(visible.Select(HistoryRowSignature));
+        HistoryCount.Text = $"{total} 条";
+        if (lastHistoryPresentation == presentation && lastHistoryFilter == filter) return;
+        var viewer = FindDescendant<ScrollViewer>(HistoryList);
+        double? scroll = lastHistoryFilter == filter ? viewer?.VerticalOffset : null;
+        lastHistoryPresentation = presentation;
+        lastHistoryFilter = filter;
+        var selectedIds = HistoryList.SelectedItems.OfType<ClipboardEntry>().Select(entry => entry.Id).ToHashSet();
+        var groups = new List<HistoryGroup>();
+        foreach (var entry in visible)
+        {
+            string key = entry.CopyTimeKnown ? HistoryGroupKey(entry.CreatedAt.LocalDateTime) : "复制时间未知";
+            var group = groups.FirstOrDefault(value => value.Key == key);
+            if (group is null) { group = new HistoryGroup(key); groups.Add(group); }
+            group.Add(entry);
+        }
+        StableCollection.Apply(historyGroups, groups, group => group.Key, (_, _) => true);
+        for (int i = 0; i < groups.Count; i++)
+            StableCollection.Apply(historyGroups[i], groups[i], entry => entry.Id,
+                (before, after) => HistoryRowSignature(before) == HistoryRowSignature(after));
+        visibleEntries = historyGroups.SelectMany(group => group).ToArray();
+        if (historyView is null)
+        {
+            historyView = new CollectionViewSource { IsSourceGrouped = true, Source = historyGroups };
+            HistoryList.ItemsSource = historyView.View;
+        }
+        foreach (var entry in visibleEntries.Where(entry => selectedIds.Contains(entry.Id)))
+            if (!HistoryList.SelectedItems.Contains(entry)) HistoryList.SelectedItems.Add(entry);
+        if (HistoryList.SelectedItems.Count == 0 && visibleEntries.Length > 0)
+            HistoryList.SelectedItem = visibleEntries[0];
+        if (scroll is double y && viewer is not null)
+            DispatcherQueue.TryEnqueue(() => viewer.ChangeView(null, y, null, true));
+        HistoryEmpty.Visibility = visible.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        HistoryEmptyTitle.Text = emptyTotal == 0 ? "还没有剪贴板历史" : "没有匹配的内容";
+        HistoryEmptyDetail.Text = emptyTotal == 0
+            ? "复制文字、图片或文件后\n会显示在这里。"
+            : "试试其他关键词或筛选条件。";
+        HistoryCount.Text = $"{total} 条";
+        if (displayMode == "grid") RenderGrid(visible);
+    }
+
+    private static string HistoryRowSignature(ClipboardEntry entry) => JsonSerializer.Serialize(new
+    {
+        entry.Id, entry.Title, entry.Preview, entry.Kind, entry.SourceId, entry.SourceName, entry.SourceApp,
+        entry.CreatedLabel, entry.CopyTimeKnown, entry.Available, entry.Remote, entry.OcrText, entry.SizeBytes,
+        Memberships = entry.MembershipIds.Order(StringComparer.Ordinal).ToArray(),
+    });
+
+    private void HistoryThumbnailLoaded(object sender, RoutedEventArgs args)
+    {
+        if (sender is ClipboardThumbnail thumbnail)
+        {
+            thumbnail.Cache = thumbnailCache;
+            thumbnail.Refresh();
+        }
+    }
+
+    private readonly System.Collections.ObjectModel.ObservableCollection<ClipboardEntry> cardRows = [];
+    private readonly HashSet<Border> realizedCards = [];
+    private void RenderGrid(ClipboardEntry[] items)
+    {
+        if (HistoryCards.ItemsSource is null) HistoryCards.ItemsSource = cardRows;
+        StableCollection.Apply(cardRows, items, entry => entry.Id,
+            (a, b) => HistoryRowSignature(a) == HistoryRowSignature(b));
+        RefreshGridSelection();
+    }
+    private void HistoryContainerChanging(ListViewBase sender, ContainerContentChangingEventArgs args) { }
+    private void HistoryGridViewChanged(object? sender, ScrollViewerViewChangedEventArgs args)
+    {
+        if (displayMode == "grid" && HistoryGrid.ScrollableHeight - HistoryGrid.VerticalOffset < 240)
+            _ = LoadMoreCanonicalAsync();
+    }
+    private void HistoryCardPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
+    {
+        if (args.Element is Border border) { realizedCards.Add(border); StyleHistoryCard(border); }
+    }
+    private void HistoryCardClearing(ItemsRepeater sender, ItemsRepeaterElementClearingEventArgs args)
+    {
+        if (args.Element is Border border) realizedCards.Remove(border);
+    }
+    private void HistoryCardLoaded(object sender, RoutedEventArgs args)
+    {
+        if (sender is Border border) StyleHistoryCard(border);
+    }
+    private void StyleHistoryCard(Border border)
+    {
+        if (border.DataContext is not ClipboardEntry entry) return;
+        bool selected = (HistoryList.SelectedItem as ClipboardEntry)?.Id == entry.Id;
+        border.Background = selected ? DfUi.Surface : DfUi.Canvas;
+        border.BorderBrush = selected ? DfUi.Accent : DfUi.Line;
+        if (FindDescendant<ClipboardThumbnail>(border) is { } thumbnail)
+            thumbnail.Visibility = entry.Kind is "image" or "files" ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private void HistoryCardTapped(object sender, TappedRoutedEventArgs args)
+    {
+        if (sender is Border { DataContext: ClipboardEntry entry }) HistoryList.SelectedItem = entry;
+        RefreshGridSelection();
+    }
+    private void RefreshGridSelection()
+    {
+        foreach (var border in realizedCards) StyleHistoryCard(border);
     }
 
     private static string HistoryGroupKey(DateTime value)
@@ -784,7 +1878,7 @@ public sealed partial class MainWindow : Window
         return value.ToString("M月d日");
     }
 
-    private sealed class HistoryGroup(string key) : List<ClipboardEntry>
+    private sealed class HistoryGroup(string key) : System.Collections.ObjectModel.ObservableCollection<ClipboardEntry>
     {
         public string Key { get; } = key;
     }
@@ -797,10 +1891,21 @@ public sealed partial class MainWindow : Window
         if (!updatingHistory) RefreshPreview();
     }
 
-    private void DeleteSelectedClick(object sender, RoutedEventArgs args)
+    private async void DeleteSelectedClick(object sender, RoutedEventArgs args)
     {
         var selected = HistoryList.SelectedItems?.OfType<ClipboardEntry>().ToArray() ?? [];
         if (selected.Length == 0) return;
+        if (usingCanonical && selected.Any(entry => entry.IsCanonical))
+        {
+            try
+            {
+                await clipboard.DeleteCanonicalAsync(selected);
+                Notify($"已删除 {selected.Length} 条内容库记录；系统剪贴板、用户源文件和已粘贴文件保持不变。");
+                RefreshHistory();
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+            return;
+        }
         foreach (var entry in selected) clipboard.Remove(entry);
         Notify($"已删除 {selected.Length} 条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。");
     }
@@ -810,11 +1915,13 @@ public sealed partial class MainWindow : Window
 
     private async Task SaveEntryAsync(string kind)
     {
-        if (HistoryList.SelectedItem is not ClipboardEntry entry || entry.Kind != kind)
+        if (HistoryList.SelectedItem is not ClipboardEntry row || row.Kind != kind)
         {
             Notify(kind == "image" ? "请选择一条图片记录。" : "请选择一条文字记录。");
             return;
         }
+        var entry = await ResolveSelectedAsync(row);
+        if (entry is null) return;
         try
         {
             var picker = new global::Windows.Storage.Pickers.FileSavePicker();
@@ -840,9 +1947,74 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { Notify(ex is IOException ? ex.Message : "保存未完成。"); }
     }
 
-    private void OpenFileClick(object sender, RoutedEventArgs args)
+    /// <summary>Copies the referenced files or folders into a user-chosen folder.</summary>
+    private async void SaveFilesClick(object sender, RoutedEventArgs args)
     {
-        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "files" } entry) { Notify("请选择一条文件记录。"); return; }
+        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "files" } row)
+        {
+            Notify("请选择一条文件记录。");
+            return;
+        }
+        var entry = await ResolveSelectedAsync(row);
+        if (entry?.Content.Files is not { Count: > 0 } files) return;
+        if (files.Any(path => !File.Exists(path) && !Directory.Exists(path)))
+        {
+            Notify("部分源文件已移动或不可用，未开始保存。");
+            return;
+        }
+        try
+        {
+            var picker = new global::Windows.Storage.Pickers.FolderPicker();
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, Handle);
+            picker.FileTypeFilter.Add("*");
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is null) return;
+            int saved = 0;
+            foreach (var path in files)
+            {
+                string name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                CopyPath(path, UniquePath(Path.Combine(folder.Path, name.Length == 0 ? "未命名" : name)));
+                saved++;
+            }
+            Notify($"已保存 {saved} 项到 {folder.Path}");
+        }
+        catch (Exception ex)
+        {
+            Notify(ex is IOException or UnauthorizedAccessException ? $"保存未完成：{ex.Message}" : "保存未完成。");
+        }
+    }
+
+    private static string UniquePath(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path)) return path;
+        string? directory = Path.GetDirectoryName(path);
+        string stem = Path.GetFileNameWithoutExtension(path);
+        string extension = Path.GetExtension(path);
+        for (int index = 2; ; index++)
+        {
+            string candidate = Path.Combine(directory ?? "", $"{stem} {index}{extension}");
+            if (!File.Exists(candidate) && !Directory.Exists(candidate)) return candidate;
+        }
+    }
+
+    private static void CopyPath(string source, string destination)
+    {
+        if (Directory.Exists(source))
+        {
+            Directory.CreateDirectory(destination);
+            foreach (var child in Directory.EnumerateFileSystemEntries(source))
+                CopyPath(child, Path.Combine(destination, Path.GetFileName(child)));
+            return;
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(destination) ?? ".");
+        File.Copy(source, destination);
+    }
+
+    private async void OpenFileClick(object sender, RoutedEventArgs args)
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "files" } row) { Notify("请选择一条文件记录。"); return; }
+        var entry = await ResolveSelectedAsync(row);
+        if (entry is null) return;
         string? path = entry.Content.Files?.FirstOrDefault(p => File.Exists(p) || Directory.Exists(p));
         if (path is null) { Notify("源文件已移动或不可用。"); return; }
         try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
@@ -850,6 +2022,252 @@ public sealed partial class MainWindow : Window
     }
 
     private void HistoryDoubleClick(object sender, DoubleTappedRoutedEventArgs args) { /* Selection is preview only. */ }
+
+    private void HistoryContextOpening(object sender, object args)
+    {
+        var entry = HistoryList.SelectedItem as ClipboardEntry;
+        UpdateHistorySaveItems(entry);
+        PopulateAddToList(AddToListMenu, entry);
+        PopulateAddToList(AddToListContextMenu, entry);
+        PopulateShareToDevice(entry);
+        PopulateWorkflowHistory(WorkflowHistoryMenu, entry);
+        PopulateWorkflowHistory(WorkflowHistoryMenuCompact, entry);
+    }
+
+    /// <summary>Only the save action matching the selected entry kind is offered.</summary>
+    private void UpdateHistorySaveItems(ClipboardEntry? entry)
+    {
+        string? kind = entry?.Kind;
+        SaveImageContextMenuItem.Visibility = kind == "image" ? Visibility.Visible : Visibility.Collapsed;
+        SaveTextContextMenuItem.Visibility = kind == "text" ? Visibility.Visible : Visibility.Collapsed;
+        SaveFilesContextMenuItem.Visibility = kind == "files" ? Visibility.Visible : Visibility.Collapsed;
+        SaveImageMenuItem.Visibility = SaveImageContextMenuItem.Visibility;
+        SaveTextMenuItem.Visibility = SaveTextContextMenuItem.Visibility;
+        SaveFilesMenuItem.Visibility = SaveFilesContextMenuItem.Visibility;
+        var files = kind == "files" ? Visibility.Visible : Visibility.Collapsed;
+        OpenFileContextMenuItem.Visibility = files;
+        RevealContextMenuItem.Visibility = files;
+        OpenFileMenuItem.Visibility = files;
+    }
+
+    /// <summary>Entries can run any enabled workflow that accepts their kind; output is copy-only.</summary>
+    private void PopulateWorkflowHistory(MenuFlyoutSubItem menu, ClipboardEntry? entry)
+    {
+        menu.Items.Clear();
+        if (entry is null)
+        {
+            menu.IsEnabled = false;
+            return;
+        }
+        var options = HistoryWorkflows(entry);
+        menu.IsEnabled = options.Items.Count > 0;
+        if (options.Items.Count == 0)
+        {
+            menu.Items.Add(new MenuFlyoutItem { Text = options.Hint, IsEnabled = false });
+            return;
+        }
+        foreach (var (id, name) in options.Items)
+        {
+            var item = new MenuFlyoutItem { Text = name };
+            item.Click += async (_, _) => await RunHistoryWorkflow(entry, id);
+            menu.Items.Add(item);
+        }
+    }
+
+    private (IReadOnlyList<(string Id, string Name)> Items, string Hint) HistoryWorkflows(ClipboardEntry entry)
+    {
+        if (!WorkflowsReady) return ([], "工作流执行尚未就绪");
+        if (entry.Kind == "files") return ([], "Windows 工作流暂不支持文件内容");
+        var items = workflows
+            .Where(workflow => workflow.Enabled && WorkflowAccepts(workflow, entry.Kind))
+            .Select(workflow => (workflow.Id, workflow.Name))
+            .ToArray();
+        return (items, items.Length == 0 ? "没有适合此内容的已启用工作流" : "");
+    }
+
+    private async Task RunHistoryWorkflow(ClipboardEntry entry, string workflowId)
+    {
+        var workflow = workflows.FirstOrDefault(item => item.Id == workflowId);
+        if (workflow is null)
+        {
+            Notify("工作流已不存在；请刷新目录后重试。");
+            return;
+        }
+        var resolved = await ResolveSelectedAsync(entry);
+        if (resolved is not null) await ExecuteWorkflowAsync(workflow, resolved.Content);
+    }
+
+    private bool WorkflowsReady =>
+        service.IsConnected && latest is JsonElement snapshot
+        && snapshot.TryGetProperty("capabilities", out var caps)
+        && caps.Bool("workflow_execution");
+
+    private static bool WorkflowAccepts(WorkflowRecord workflow, string kind)
+    {
+        if (WorkflowCompatibilityIssue(workflow) is not null) return false;
+        if (workflow.InputType == "Text" && kind != "text") return false;
+        if (workflow.InputType == "Image" && kind != "image") return false;
+        foreach (var step in workflow.Steps)
+        {
+            if (step.Kind is "TextReplace" or "TextTrim" && kind != "text") return false;
+            if (step.Kind is "Compress" or "Resize" or "Convert" && kind != "image") return false;
+        }
+        return true;
+    }
+
+    private void PopulateShareToDevice(ClipboardEntry? entry)
+    {
+        ShareToDeviceMenu.Items.Clear();
+        if (entry is not { CanonicalId: ulong id })
+        {
+            ShareToDeviceMenu.IsEnabled = false;
+            ShareToDeviceMenu.Items.Add(new MenuFlyoutItem
+            {
+                Text = "仅内容库条目可直接发送",
+                IsEnabled = false,
+            });
+            return;
+        }
+        ShareToDeviceMenu.IsEnabled = true;
+        var peers = SharePeers();
+        if (peers.Count == 0)
+        {
+            ShareToDeviceMenu.Items.Add(new MenuFlyoutItem { Text = "没有已连接的设备", IsEnabled = false });
+            return;
+        }
+        var options = HistoryWorkflows(entry);
+        foreach (var peer in peers)
+        {
+            var peerMenu = new MenuFlyoutSubItem { Text = peer.Name };
+            var direct = new MenuFlyoutItem { Text = "直接发送" };
+            direct.Click += async (_, _) => await ShareEntryToPeer(entry, peer.Id);
+            peerMenu.Items.Add(direct);
+            if (options.Items.Count > 0)
+            {
+                peerMenu.Items.Add(new MenuFlyoutSeparator());
+                foreach (var (workflowId, name) in options.Items)
+                {
+                    var item = new MenuFlyoutItem { Text = $"使用「{name}」发送" };
+                    item.Click += async (_, _) => await ShareEntryWithWorkflow(entry, workflowId, peer.Id);
+                    peerMenu.Items.Add(item);
+                }
+            }
+            ShareToDeviceMenu.Items.Add(peerMenu);
+        }
+    }
+
+    private IReadOnlyList<(string Id, string Name)> SharePeers()
+    {
+        if (latest is not JsonElement snapshot) return [];
+        return snapshot.Array("peers")
+            .Where(peer => peer.String("trust") == "trusted" && peer.String("connection") == "connected")
+            .Select(peer => (Id: peer.String("peer_id"), Name: peer.String("display_name", "未命名设备")))
+            .Where(peer => peer.Id.Length > 0)
+            .ToArray();
+    }
+
+    private async Task ShareEntryToPeer(ClipboardEntry entry, string peerId)
+    {
+        if (entry.CanonicalId is not ulong id)
+        {
+            Notify("仅内容库条目可直接发送。");
+            return;
+        }
+        try
+        {
+            var reply = await service.SendAsync(ServiceClient.Command("ShareLibraryEntry",
+                new { id, peer_id = peerId }));
+            Notify(reply.TryGetProperty("Queued", out var queued)
+                ? queued.String("message", "已发送；等待目标设备应用。")
+                : "已发送；以目标设备的实际状态为准。");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    /// <summary>Runs the workflow locally and sends only the result; the clipboard is untouched.</summary>
+    private async Task ShareEntryWithWorkflow(ClipboardEntry entry, string workflowId, string peerId)
+    {
+        if (!WorkflowsReady || latest is not JsonElement snapshot)
+        {
+            Notify("工作流执行尚未就绪。");
+            return;
+        }
+        var workflow = workflows.FirstOrDefault(item => item.Id == workflowId);
+        if (workflow is null)
+        {
+            Notify("工作流已不存在；请刷新目录后重试。");
+            return;
+        }
+        var resolved = await ResolveSelectedAsync(entry);
+        if (resolved is null) return;
+        try
+        {
+            var output = await workflowExecution.ExecuteToContentAsync(
+                workflow.Id, resolved.Content, snapshot.Number("session_epoch"), DateTime.UtcNow.Ticks, CancellationToken.None);
+            var formats = (output.Representations ?? [new ClipboardRepresentation(output.Mime, output.Data)])
+                .Select(item => new { mime = item.Mime, data_base64 = Convert.ToBase64String(item.Data) })
+                .ToArray();
+            var reply = await service.SendAsync(ServiceClient.Command("ShareContent",
+                new { peer_id = peerId, formats }));
+            Notify(reply.TryGetProperty("Queued", out var queued)
+                ? queued.String("message", "已发送处理结果；等待目标设备应用。")
+                : "已发送；以目标设备的实际状态为准。");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+    }
+
+    private Task ShareEntryAsync(ClipboardEntry entry, string? workflowId, string peerId) =>
+        workflowId is null ? ShareEntryToPeer(entry, peerId) : ShareEntryWithWorkflow(entry, workflowId, peerId);
+
+    private void PopulateAddToList(MenuFlyoutSubItem menu, ClipboardEntry? entry)
+    {
+        menu.Items.Clear();
+        menu.IsEnabled = entry is { Available: true };
+        if (entry is null || !entry.Available) return;
+        if (usingCanonical && canonicalState is not null)
+        {
+            var lists = canonicalState.Lists.Where(list => !list.IsSmart).ToArray();
+            if (lists.Length == 0)
+            {
+                menu.Items.Add(new MenuFlyoutItem { Text = "请先新建手动列表", IsEnabled = false });
+                return;
+            }
+            foreach (var list in lists)
+            {
+                bool present = entry.MembershipIds.Contains(list.Id);
+                var item = new ToggleMenuFlyoutItem { Text = list.Name, IsChecked = present };
+                item.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        await clipboard.SetCanonicalMembershipAsync(list.Id, entry, !present);
+                        RefreshHistory();
+                    }
+                    catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+                };
+                menu.Items.Add(item);
+            }
+            return;
+        }
+        if (library.Lists.Count == 0)
+        {
+            menu.Items.Add(new MenuFlyoutItem { Text = "请先新建手动列表", IsEnabled = false });
+            return;
+        }
+        var memberships = library.Memberships(entry.Id);
+        foreach (var list in library.Lists.ToArray())
+        {
+            bool present = memberships.Contains(list.Name);
+            var item = new ToggleMenuFlyoutItem { Text = list.Name, IsChecked = present };
+            item.Click += (_, _) =>
+            {
+                if (present) library.Remove(list.Id, [entry.Id]);
+                else library.Add(list.Id, [entry.Id]);
+                RefreshHistory();
+            };
+            menu.Items.Add(item);
+        }
+    }
 
     private void HistoryMenuClick(object sender, RoutedEventArgs args)
     {
@@ -861,9 +2279,10 @@ public sealed partial class MainWindow : Window
         clear.Click += (_, _) =>
         {
             HistorySearch.Text = "";
-            historyKind = "";
-            SourceFilter.SelectedItem = "所有设备";
-            UpdateKindChips();
+            librarySelection = ClipboardLibrary.Selection.All;
+            selectedSource = "所有设备";
+            SourceFilterLabel.Text = "所有设备";
+            RebuildLibrarySidebar();
             RefreshHistory();
         };
         flyout.Items.Add(clear);
@@ -873,43 +2292,133 @@ public sealed partial class MainWindow : Window
     private void RefreshPreview()
     {
         var entry = HistoryList.SelectedItem as ClipboardEntry;
+        if (previewInitialized && ReferenceEquals(previewEntry, entry)) return;
+        previewInitialized = true;
+        previewEntry = entry;
         CopyButton.IsEnabled = entry is not null;
-        EditTitleButton.IsEnabled = entry is not null;
-        EditContentButton.IsEnabled = entry?.Kind == "text";
-        AddShelfButton.IsEnabled = entry is not null;
+        AddShelfButton.IsEnabled = entry is { Kind: "files", Available: true };
+        MoreActionsButton.IsEnabled = entry is not null;
         ImagePreview.Source = null;
-        ImagePreview.Visibility = Visibility.Collapsed;
+        ImagePreviewHost.Visibility = Visibility.Collapsed;
         TextPreview.Visibility = Visibility.Visible;
         RevealButton.Visibility = Visibility.Collapsed;
         FitButton.Visibility = Visibility.Collapsed;
+        MetaOcrRow.Visibility = Visibility.Collapsed;
         if (entry is null)
         {
-            PreviewTitle.Text = "复制内容，从这里接着用";
+            PreviewTitle.Text = "";
+            PreviewTitle.Visibility = Visibility.Collapsed;
             PreviewMetadata.Text = "在任意应用里复制，内容会在可信设备之间同步。";
             TextPreview.Visibility = Visibility.Collapsed;
             PreviewEmpty.Visibility = Visibility.Visible;
-            FormatMetadata.Text = "";
+            MetadataCard.Visibility = Visibility.Collapsed;
             return;
         }
         PreviewEmpty.Visibility = Visibility.Collapsed;
-        TextPreview.Visibility = Visibility.Visible;
-        PreviewTitle.Text = entry.Title.Replace('\r', ' ').Replace('\n', ' ');
-        PreviewMetadata.Text = $"{entry.SourceLabel} · {entry.CreatedAt.LocalDateTime:g}";
-        FormatMetadata.Text = entry.Kind switch
+        if (entry.IsCanonical && !entry.ContentLoaded)
         {
-            "files" => $"种类：文件 · {entry.Content.Files?.Count ?? 0} 项 · {FormatBytes(entry.SizeBytes)}",
-            "image" => $"种类：图片 · {FormatBytes(entry.SizeBytes)}",
-            _ => $"种类：文字 · {FormatBytes(entry.SizeBytes)}",
-        };
-        TextPreview.Text = entry.Preview;
+            ShowCanonicalPreviewPlaceholder(entry);
+            if (entry.Available) _ = ResolvePreviewAsync(entry);
+            return;
+        }
+        RenderPreview(entry);
+    }
+
+    private void ShowCanonicalPreviewPlaceholder(ClipboardEntry entry)
+    {
+        PreviewTitle.Text = entry.DetailTitle ?? "";
+        PreviewTitle.Visibility = entry.DetailTitle is null ? Visibility.Collapsed : Visibility.Visible;
+        PreviewMetadata.Text = entry.Kind == "files"
+            ? $"来自 {entry.SourceName} · {entry.CanonicalFileCount} 项"
+            : $"来自 {entry.SourceName} · {FormatBytes(entry.SizeBytes)}";
+        PreviewMetadata.Text += entry.Remote ? " · 来自其他设备" : "";
+        MetadataCard.Visibility = Visibility.Visible;
+        MetaKind.Text = entry.Kind switch { "files" => $"{entry.CanonicalFileCount} 个文件", "image" => "图片", _ => "文字" };
+        MetaSize.Text = entry.Kind == "files" ? $"{entry.CanonicalFileCount} 项" : FormatBytes(entry.SizeBytes);
+        MetaSource.Text = entry.SourceName;
+        MetaTime.Text = entry.CopyTimeKnown ? entry.CreatedAt.LocalDateTime.ToString("yyyy/M/d HH:mm") : "复制时间未知";
+        if (!string.IsNullOrWhiteSpace(entry.CustomTitle)) PreviewTitle.Text = entry.CustomTitle;
+        EditTitleMenuItem.IsEnabled = true;
+        EditContentMenuItem.IsEnabled = entry.Kind == "text" && entry.Available;
+        SaveImageMenuItem.IsEnabled = false;
+        SaveTextMenuItem.IsEnabled = false;
+        OpenFileMenuItem.IsEnabled = entry.Kind == "files" && entry.Available;
+        if (!entry.Available)
+        {
+            TextPreview.Text = "内容正在从来源设备获取，请稍后重试。查询索引仍然可用，正文不会伪造。";
+            CopyButton.IsEnabled = false;
+            AddShelfButton.IsEnabled = false;
+            return;
+        }
         if (entry.Kind == "image")
         {
-            var image = ClipboardImages.Create(entry.Content.Data);
+            TextPreview.Text = "正在读取图片…";
+        }
+        else
+        {
+            TextPreview.Text = entry.Preview.Length > 0 ? entry.Preview : "正在读取内容…";
+        }
+    }
+
+    private async Task ResolvePreviewAsync(ClipboardEntry entry)
+    {
+        try
+        {
+            var loaded = await clipboard.ResolveCanonicalAsync(entry);
+            if ((HistoryList.SelectedItem as ClipboardEntry)?.Id == entry.Id) RenderPreview(loaded);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        {
+            if ((HistoryList.SelectedItem as ClipboardEntry)?.Id != entry.Id) return;
+            previewEntry = null;
+            TextPreview.Text = ex.Message;
+            CopyButton.IsEnabled = false;
+            AddShelfButton.IsEnabled = false;
+        }
+    }
+
+    private async void RenderPreview(ClipboardEntry entry)
+    {
+        TextPreview.Visibility = Visibility.Visible;
+        PreviewTitle.Text = entry.DetailTitle ?? "";
+        PreviewTitle.Visibility = entry.DetailTitle is null ? Visibility.Collapsed : Visibility.Visible;
+        PreviewMetadata.Text = entry.Kind == "files"
+            ? $"来自 {entry.SourceName} · {entry.Content.Files?.Count ?? entry.CanonicalFileCount} 项"
+            : $"来自 {entry.SourceName} · {FormatBytes(entry.SizeBytes)}";
+        PreviewMetadata.Text += entry.Remote ? " · 来自其他设备" : "";
+        TextPreview.Text = entry.Preview;
+
+        MetadataCard.Visibility = Visibility.Visible;
+        MetaKind.Text = entry.Kind switch
+        {
+            "files" => $"{entry.Content.Files?.Count ?? entry.CanonicalFileCount} 个文件",
+            "image" => entry.OcrText.Length > 0 ? "图片 · 已识别文字" : "图片",
+            _ => "文字",
+        };
+        MetaSize.Text = entry.Kind == "files"
+            ? $"{entry.Content.Files?.Count ?? entry.CanonicalFileCount} 项"
+            : FormatBytes(entry.SizeBytes);
+        MetaSource.Text = entry.SourceName;
+        MetaTime.Text = entry.CopyTimeKnown ? entry.CreatedAt.LocalDateTime.ToString("yyyy/M/d HH:mm") : "复制时间未知";
+        bool hasOcr = !string.IsNullOrWhiteSpace(entry.OcrText);
+        MetaOcrRow.Visibility = hasOcr ? Visibility.Visible : Visibility.Collapsed;
+        MetaOcr.Text = entry.OcrText;
+
+        EditTitleMenuItem.IsEnabled = true;
+        EditContentMenuItem.IsEnabled = entry.Kind == "text";
+        SaveImageMenuItem.IsEnabled = entry.Kind == "image";
+        SaveTextMenuItem.IsEnabled = entry.Kind == "text";
+        OpenFileMenuItem.IsEnabled = entry.Kind == "files";
+
+        if (entry.Kind == "image")
+        {
+            var image = await ClipboardImages.CreateAsync(entry.Content.Data, 1400);
+            if ((HistoryList.SelectedItem as ClipboardEntry)?.Id != entry.Id) return;
             if (image is null) { TextPreview.Text = "图片无法预览，可能已损坏或超过解码限制。"; CopyButton.IsEnabled = false; }
             else
             {
                 ImagePreview.Source = image;
-                ImagePreview.Visibility = Visibility.Visible;
+                ImagePreviewHost.Visibility = Visibility.Visible;
                 TextPreview.Visibility = Visibility.Collapsed;
                 FitButton.Visibility = Visibility.Visible;
             }
@@ -923,20 +2432,36 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void EditHistoryContentClick(object sender, RoutedEventArgs args)
+    private async void EditHistoryContentClick(object sender, RoutedEventArgs args)
     {
-        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "text" } entry) return;
+        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "text" } row) return;
+        var entry = await ResolveSelectedAsync(row);
+        if (entry is null) return;
         if (!contentEditors.TryGetValue(entry.Id, out var editor))
         {
             editor = new ClipboardContentEditorWindow(entry, content =>
             {
-                clipboard.SaveEditedContent(content);
-                Notify("编辑内容已复制；开启历史记录时将保存为新记录。");
+                _ = SaveEditedContentAsync(entry, content);
             });
             editor.Closed += () => contentEditors.Remove(entry.Id);
             contentEditors.Add(entry.Id, editor);
         }
         editor.Show();
+    }
+
+    private async Task SaveEditedContentAsync(ClipboardEntry entry, ClipboardContent content)
+    {
+        try
+        {
+            if (entry.IsCanonical) await clipboard.SaveEditedContentAsync(entry, content);
+            else clipboard.SaveEditedContent(content);
+            Notify("编辑内容已复制；开启历史记录时将保存为新记录。");
+            if (entry.IsCanonical) RefreshHistory();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            Notify(ex.Message);
+        }
     }
 
     private async void EditHistoryTitleClick(object sender, RoutedEventArgs args)
@@ -952,38 +2477,86 @@ public sealed partial class MainWindow : Window
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         try
         {
-            clipboard.History.SetTitle(entry.Id, editor.Text);
+            if (entry.IsCanonical) await clipboard.SetCanonicalTitleAsync(entry, editor.Text);
+            else clipboard.History.SetTitle(entry.Id, editor.Text);
             Notify("标题已更新。");
+            if (entry.IsCanonical) RefreshHistory();
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
     }
 
-    private void DeleteHistoryClick(object sender, RoutedEventArgs args)
+    private async void DeleteHistoryClick(object sender, RoutedEventArgs args)
     {
         if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
+        if (entry.IsCanonical)
+        {
+            try
+            {
+                await clipboard.DeleteCanonicalAsync([entry]);
+                Notify("已删除这条内容库记录；系统剪贴板、用户源文件和已粘贴文件保持不变。");
+                RefreshHistory();
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException) { Notify(ex.Message); }
+            return;
+        }
         clipboard.Remove(entry);
         Notify("已删除这条本机历史；系统剪贴板、用户源文件和已粘贴文件保持不变。");
     }
 
-    private void CopyClick(object sender, RoutedEventArgs args) => CopySelection();
+    private async void CopyClick(object sender, RoutedEventArgs args) => await CopySelectionAsync();
 
     /// <summary>Tray "recent clipboard" entry point.</summary>
     public void RestoreEntry(ClipboardEntry entry)
     {
+        if (entry.IsCanonical) { _ = RestoreEntryAsync(entry); return; }
         try { Notify(clipboard.SyncEnabled ? "已恢复本机剪贴板；跨设备结果取决于真实连接与服务回执。" : "已恢复本机系统剪贴板。"); clipboard.Restore(entry); }
         catch (Exception) { Notify("无法恢复剪贴板。请检查文件是否仍存在、当前会话是否可用或剪贴板是否被占用。"); }
     }
 
-    private void CopySelection()
+    private async Task RestoreEntryAsync(ClipboardEntry entry)
     {
-        if (HistoryList.SelectedItem is ClipboardEntry entry) RestoreEntry(entry);
+        try
+        {
+            var resolved = entry.IsCanonical ? await ResolveSelectedAsync(entry) : entry;
+            if (resolved is null) return;
+            clipboard.Restore(resolved);
+            Notify(clipboard.SyncEnabled ? "已恢复本机剪贴板；跨设备结果取决于真实连接与服务回执。" : "已恢复本机系统剪贴板。");
+        }
+        catch (Exception) { Notify("无法恢复剪贴板。请检查文件是否仍存在、当前会话是否可用或剪贴板是否被占用。"); }
     }
 
-    private void AddShelfClick(object sender, RoutedEventArgs args) { if (HistoryList.SelectedItem is ClipboardEntry entry) clipboard.ShowShelf(entry); }
-
-    private void SendClipboardFilesClick(object sender, RoutedEventArgs args)
+    private async Task CopySelectionAsync()
     {
-        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "files" } entry || entry.Content.Files is not { Count: > 0 } files)
+        if (HistoryList.SelectedItem is ClipboardEntry entry) await RestoreEntryAsync(entry);
+    }
+
+    private async Task<ClipboardEntry?> ResolveSelectedAsync(ClipboardEntry entry)
+    {
+        if (!entry.IsCanonical) return entry;
+        try { return await clipboard.ResolveCanonicalAsync(entry); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        {
+            Notify(ex is InvalidOperationException ? ex.Message : "内容暂时不可用，请稍后重试。");
+            return null;
+        }
+    }
+
+    private async void AddShelfClick(object sender, RoutedEventArgs args)
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry entry) return;
+        var resolved = await ResolveSelectedAsync(entry);
+        if (resolved is not null) clipboard.ShowShelf(resolved);
+    }
+
+    private async void SendClipboardFilesClick(object sender, RoutedEventArgs args)
+    {
+        if (HistoryList.SelectedItem is not ClipboardEntry { Kind: "files" } row)
+        {
+            Notify("请先在剪贴板历史中选择一条本地文件记录。");
+            return;
+        }
+        var entry = await ResolveSelectedAsync(row);
+        if (entry?.Content.Files is not { Count: > 0 } files)
         {
             Notify("请先在剪贴板历史中选择一条本地文件记录。");
             return;
@@ -1005,6 +2578,20 @@ public sealed partial class MainWindow : Window
             AddStagedFiles(files.Select(file => file.Path));
         }
         catch (Exception ex) { Notify(ex is IOException ? ex.Message : "文件选择未完成。"); }
+    }
+
+    private async void PickFolderClick(object sender, RoutedEventArgs args)
+    {
+        if (busy) return;
+        try
+        {
+            var picker = new global::Windows.Storage.Pickers.FolderPicker();
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, Handle);
+            picker.FileTypeFilter.Add("*");
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is not null) AddStagedFiles([folder.Path]);
+        }
+        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "文件夹选择未完成。"); }
     }
 
     private static bool CanStage(string path) =>
@@ -1071,7 +2658,7 @@ public sealed partial class MainWindow : Window
         AddToShelfButton.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
         StagedHeaderText.Text = any ? $"{stagedFiles.Count} 个项目 · {FormatBytes(totalBytes)}" : "";
         SendStagedButton.Content = any ? $"发送 {stagedFiles.Count} 个项目" : "发送";
-        SendStagedButton.IsEnabled = any && !busy && SelectedSendTarget() is not null;
+        SendStagedButton.IsEnabled = any && CanSendStagedFiles();
     }
 
     private void SetDropTargeted(bool targeted)
@@ -1111,8 +2698,11 @@ public sealed partial class MainWindow : Window
         SendTargetPicker.Visibility = hasPeers ? Visibility.Visible : Visibility.Collapsed;
         SendNoPeersText.Visibility = hasPeers ? Visibility.Collapsed : Visibility.Visible;
         SendGoAddButton.Visibility = hasPeers ? Visibility.Collapsed : Visibility.Visible;
-        SendStagedButton.IsEnabled = stagedFiles.Count > 0 && !busy && SelectedSendTarget() is not null;
+        SendStagedButton.IsEnabled = stagedFiles.Count > 0 && CanSendStagedFiles();
     }
+
+    private bool CanSendStagedFiles() => !busy && latest.HasValue && service.IsConnected
+        && FileTransferEnabled() && clipboard.FilesEnabled && SelectedSendTarget() is not null;
 
     private string? SelectedSendTarget() => (SendTargetPicker?.SelectedItem as ComboBoxItem)?.Tag as string;
 
@@ -1143,22 +2733,23 @@ public sealed partial class MainWindow : Window
 
     private async void SendStagedClick(object sender, RoutedEventArgs args)
     {
-        if (busy || stagedFiles.Count == 0) return;
+        if (stagedFiles.Count == 0 || !CanSendStagedFiles()) return;
         string? target = SelectedSendTarget();
         if (target is null)
         {
             Notify("还没有已连接的电脑；先到设备页添加。");
             return;
         }
+        var submitted = stagedFiles.ToArray();
         busy = true;
         RenderStagedFiles();
         try
         {
-            bool sent = await clipboard.PublishFilesAsync(stagedFiles.ToArray(), target);
+            bool sent = await clipboard.PublishFilesAsync(submitted, target);
             if (sent)
             {
-                stagedFiles.Clear();
-                Notify("已发送文件引用；对方在传输任务中选择接收。");
+                foreach (var path in submitted) stagedFiles.Remove(path);
+                Notify("已提交文件发送请求；接收状态请查看传输任务。");
             }
             else Notify("文件发送未完成。");
         }
@@ -1210,9 +2801,11 @@ public sealed partial class MainWindow : Window
         RestoreFromTray();
     }
 
-    private void RevealClick(object sender, RoutedEventArgs args)
+    private async void RevealClick(object sender, RoutedEventArgs args)
     {
-        if (HistoryList.SelectedItem is not ClipboardEntry entry || entry.Content.Files?.FirstOrDefault() is not string path) return;
+        if (HistoryList.SelectedItem is not ClipboardEntry row) return;
+        var entry = await ResolveSelectedAsync(row);
+        if (entry?.Content.Files?.FirstOrDefault() is not string path) return;
         try { var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false }; start.ArgumentList.Add("/select,"); start.ArgumentList.Add(path); Process.Start(start); }
         catch (Exception) { Notify("资源管理器无法打开此文件位置。"); }
     }
@@ -1246,6 +2839,7 @@ public sealed partial class MainWindow : Window
             : "桌面同步尚未就绪；本机历史可用";
         if (pairIpButton is not null) pairIpButton.IsEnabled = !busy && snapshot.Bool("network_running");
         RefreshInputState(snapshot);
+        RenderLanWeb(snapshot);
         RenderTransfers(snapshot);
         RenderSendTargets(snapshot);
         UpdateHealth(true);
@@ -1261,6 +2855,13 @@ public sealed partial class MainWindow : Window
         if (error.Length > 0 && error != lastErrorNotice) Notify(error);
         lastErrorNotice = error;
         settings?.RefreshService(snapshot);
+        long revision = snapshot.Number("library_revision", -1);
+        if (revision != lastLibraryRevision || lastLibraryDay != DateTime.Today)
+        {
+            lastLibraryRevision = revision;
+            lastLibraryDay = DateTime.Today;
+            RefreshHistory();
+        }
     }
 
     private void ConnectionChanged(bool connected, string message)
@@ -1268,16 +2869,21 @@ public sealed partial class MainWindow : Window
         if (!connected)
         {
             latest = null;
+            pendingInputController = null;
+            lastLibraryRevision = -1;
             updatingSync = true;
             SyncCheck.IsChecked = clipboard.SyncEnabled;
             SyncCheck.IsEnabled = clipboard.SyncEnabled;
             updatingSync = false;
             SyncStatus.Text = "同步暂停；重新连接不会重发旧历史";
             if (pairIpButton is not null) pairIpButton.IsEnabled = false;
-            InputAvailability.Text = "普通桌面输入 helper 正在等待服务重连；不会接受新的远端输入。";
-            InputReceiverReady.IsChecked = false;
-            ReclaimInputButton.IsEnabled = false;
+            InputAvailability.Text = "后台服务已断开，正在重新连接；鼠标共享暂不可用。";
+            InputAvailability.Visibility = Visibility.Visible;
+            ReclaimInputButton.Visibility = Visibility.Collapsed;
             ClearInputQuality();
+            MouseSharingPill.Visibility = Visibility.Collapsed;
+            DrawInputLayout(default);
+            RenderSendTargets(default);
             lastDeviceSnapshot = "";
             lastErrorNotice = "";
             RebuildDevices();
@@ -1290,6 +2896,7 @@ public sealed partial class MainWindow : Window
         wasConnected = connected;
         UpdateHealth(connected);
         UpdateFeatureToggleState();
+        RefreshHistory();
     }
 
     internal void ApplyOnboarding(OnboardingResult result)
@@ -1843,9 +3450,10 @@ public sealed partial class MainWindow : Window
         bool capable = snapshot.TryGetProperty("capabilities", out var capabilities) && capabilities.Bool("input");
         if (!snapshot.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Object)
         {
-            InputAvailability.Text = "当前服务未提供 Windows 输入 helper 状态。";
-            InputReceiverReady.IsChecked = false;
-            ReclaimInputButton.IsEnabled = false;
+            InputAvailability.Text = "正在等待后台服务提供鼠标共享状态。";
+            InputAvailability.Visibility = Visibility.Visible;
+            ReclaimInputButton.Visibility = Visibility.Collapsed;
+            MouseSharingPill.Visibility = Visibility.Collapsed;
             ClearInputQuality();
             if (WifiIdentityButton is not null)
             {
@@ -1862,10 +3470,10 @@ public sealed partial class MainWindow : Window
         string controllerId = input.String("controller_id");
         string controller = snapshot.Array("peers").FirstOrDefault(peer => peer.String("peer_id") == controllerId).String("display_name", controllerId);
         bool ready = capable && status.Equals("Ready", StringComparison.OrdinalIgnoreCase);
-        InputReceiverReady.IsChecked = ready;
         ReclaimInputButton.IsEnabled = managed;
+        ReclaimInputButton.Visibility = managed ? Visibility.Visible : Visibility.Collapsed;
         InputAvailability.Text = !capable
-            ? "普通桌面输入 helper 尚未就绪；远端输入保持关闭。"
+            ? inputHelperFailure ?? "本机输入组件尚未就绪，暂时无法跨屏控制。请在设置 → 权限查看安装和授权状态。"
             : managed
                 ? $"{(ready ? "正在被控" : "被控准备中")} · 主控：{(controller.Length > 0 ? controller : "已授权设备")}{(reason.Length > 0 ? $"\n{reason}" : "")}"
                 : $"输入 helper 已连接 · {input.Number("display_count")} 个本机显示器 · 等待设备网络中的主控。";
@@ -1873,15 +3481,17 @@ public sealed partial class MainWindow : Window
         inputSnapshotValid = true;
         var settings = input.TryGetProperty("settings", out var sharing) && sharing.ValueKind == JsonValueKind.Object ? sharing : default;
         bool controllerEnabled = settings.ValueKind == JsonValueKind.Object && settings.Bool("enabled") && settings.String("role") == "Controller";
-        if (controllerEnabled)
+        // 与 macOS 鼠标自定义页一致：键鼠共享开启且本机作为主控时展示生效状态。
+        bool sharingActive = controllerEnabled && settings.Bool("feature_enabled") && !managed;
+        MouseSharingPill.Visibility = sharingActive ? Visibility.Visible : Visibility.Collapsed;
+        InputAvailability.Visibility = !capable || managed ? Visibility.Visible : Visibility.Collapsed;
+        if (controllerEnabled && capable)
         {
             string controllingId = input.TryGetProperty("controlling", out var controlling) && controlling.ValueKind == JsonValueKind.Object ? controlling.String("peer_id") : "";
             string target = input.TryGetProperty("controlling", out var controlling2) && controlling2.ValueKind == JsonValueKind.Object ? controlling2.String("target_display") : "";
             string peer = snapshot.Array("peers").FirstOrDefault(p => p.String("peer_id") == controllingId).String("display_name", controllingId);
             InputAvailability.Text += $"\n本机已开启主控{(peer.Length > 0 && controllingId.Length > 0 ? $"：正在控制 {peer}{(target.Length > 0 ? $"（{target}）" : "")}" : "；把指针移到屏幕边缘即可控制对端")}";
         }
-        RenderInputParticipants(settings, snapshot, input);
-        RenderShortcutBindings(input);
         RenderQualityBadge(input);
         RenderWifiIdentity(input, snapshot);
         DrawInputLayout(input);
@@ -1900,54 +3510,8 @@ public sealed partial class MainWindow : Window
         WifiIdentitySummary.Text = reference.Length > 0 ? reference : "未连接 Wi-Fi";
         WifiIdentityWarning.Visibility = attention ? Visibility.Visible : Visibility.Collapsed;
         WifiIdentityGlyph.Foreground = attention ? DfUi.Warning : DfUi.Muted;
-        if (SaveEnvironmentLayoutButton is not null)
-            SaveEnvironmentLayoutButton.IsEnabled = service.IsConnected && effective.Length > 0 && !busy;
-        if (LayoutScenesPanel is null) return;
-        LayoutScenesPanel.Children.Clear();
-        var scenes = input.TryGetProperty("scenes", out var list) && list.ValueKind == JsonValueKind.Array ? list : default;
-        if (scenes.ValueKind != JsonValueKind.Array || scenes.GetArrayLength() == 0)
-        {
-            LayoutScenesPanel.Children.Add(DfUi.Text("还没有保存的布局；拖动显示器排布后保存到当前 Wi-Fi，回到该网络会自动恢复。", 12, false, DfUi.Muted));
-            return;
-        }
-        foreach (var scene in scenes.EnumerateArray())
-        {
-            string sceneId = scene.String("id");
-            string sceneSsid = scene.String("ssid");
-            var row = new Grid { Margin = new Thickness(0, 2, 0, 2), ColumnSpacing = 8 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.Children.Add(DfUi.Text($"{scene.String("name", "未命名布局")}{(sceneSsid.Length > 0 ? " · Wi-Fi" : "")}{(sceneSsid.Length > 0 && sceneSsid == effective ? "（当前网络）" : "")}", 12));
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            string captured = sceneId;
-            var apply = DfUi.Secondary("应用", async (_, _) =>
-            {
-                if (busy) return;
-                busy = true;
-                try { await service.ApplySceneAsync(captured); Notify("已请求应用布局；以屏幕上的实际排布为准。"); }
-                catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（应用布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
-                finally { busy = false; }
-            });
-            apply.IsEnabled = service.IsConnected && !busy;
-            var delete = DfUi.Secondary("删除", async (_, _) =>
-            {
-                if (busy) return;
-                if (!Dialogs.Confirm(Handle, "删除该已保存的布局？删除后回到对应 Wi-Fi 不再自动恢复。", "删除布局")) return;
-                busy = true;
-                try { await service.DeleteSceneAsync(captured); Notify("已请求删除布局。"); }
-                catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（删除布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
-                finally { busy = false; }
-            });
-            delete.IsEnabled = service.IsConnected && !busy;
-            actions.Children.Add(apply);
-            actions.Children.Add(delete);
-            Grid.SetColumn(actions, 1);
-            row.Children.Add(actions);
-            LayoutScenesPanel.Children.Add(row);
-        }
     }
 
-    /// <summary>Wi-Fi 标识详情：本机读取、场景判定、首选主控与各对端上报。</summary>
     private void ShowWifiIdentityFlyout()
     {
         if (!inputSnapshotValid || latest is not JsonElement snapshot) return;
@@ -2065,202 +3629,221 @@ public sealed partial class MainWindow : Window
         }.ShowAt(WifiIdentityButton);
     }
 
-    private async void SaveEnvironmentLayoutClick(object sender, RoutedEventArgs args)
-    {
-        if (busy) return;
-        busy = true;
-        try
-        {
-            await service.SaveEnvironmentLayoutAsync(null);
-            Notify("已请求把当前布局绑定到当前 Wi-Fi；回到该网络会自动恢复排布。");
-        }
-        catch (Exception ex) { Notify(ex is IOException ? $"{ex.Message}（绑定布局需要匹配版本的服务）" : "操作未完成，服务可能已断开。"); }
-        finally { busy = false; }
-    }
-
-    private void RenderShortcutBindings(JsonElement input)
-    {
-        if (ShortcutBindings is null || updatingInputSettings || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
-        if (!settings.TryGetProperty("shortcuts", out var shortcuts) || shortcuts.ValueKind != JsonValueKind.Object) return;
-        string[] names = ["left", "right", "up", "down", "lock", "emergency"];
-        var lines = names.Select(name =>
-        {
-            var shortcut = shortcuts.TryGetProperty(name, out var value) ? value : default;
-            return $"{shortcut.Number("key_code")}, {shortcut.Number("modifiers")}";
-        });
-        updatingInputSettings = true;
-        ShortcutBindings.Text = string.Join(Environment.NewLine, lines);
-        updatingInputSettings = false;
-    }
-
     /// <summary>Draws the shared screen layout: local displays plus remote
     /// participant topologies, positioned like the runtime layout resolver.</summary>
+    private readonly DisplayWallpapers displayWallpapers = new();
+
     private void DrawInputLayout(JsonElement input)
     {
-        if (DisplayCanvas is null || DisplayCanvas.ActualWidth < 10 || DisplayCanvas.ActualHeight < 10) return;
+        if (DisplayCanvas is null || DisplayCanvas.ActualWidth < 10 || DisplayCanvas.ActualHeight < 10 || draggingDisplay is not null) return;
+        if (pendingLayoutMove is { } pending)
+        {
+            // An IPC acknowledgement only queues the command. Ignore heartbeat
+            // snapshots until every screen in the moved desktop is confirmed.
+            if (!InputLayout.Confirms(JsonProperty(input, "settings"), pending.Before, pending.DeviceId, pending.X, pending.Y)) return;
+            pendingLayoutMove = null;
+            Notify("屏幕布局已保存。");
+        }
         DisplayCanvas.Children.Clear();
         var monitors = MonitorLayout.All();
         if (monitors.Count == 0) return;
-        int left = monitors.Min(m => m.Left), top = monitors.Min(m => m.Top);
-        int right = monitors.Max(m => m.Left + m.Width), bottom = monitors.Max(m => m.Top + m.Height);
-        double scale = Math.Min((DisplayCanvas.ActualWidth - 50) / Math.Max(1, right - left), (DisplayCanvas.ActualHeight - 110) / Math.Max(1, bottom - top));
-        scale = Math.Max(0.01, scale);
-        double offsetX = (DisplayCanvas.ActualWidth - (right - left) * scale) / 2;
-        double offsetY = Math.Max(20, (DisplayCanvas.ActualHeight - 70 - (bottom - top) * scale) / 2);
-        for (int i = 0; i < monitors.Count; i++)
+        var tiles = new List<(string Peer, string Id, string Name, double X, double Y, double Width, double Height, BitmapImage? Wallpaper)>();
+        // 画布统一用逻辑点：远端屏幕的 frame_x 和尺寸本来就来自服务端的逻辑坐标。
+        // 本机显示器是物理像素枚举的，150% 的 4K 屏会被画成 1.5 倍大，
+        // 旁边 HiDPI 的 1080p Mac 就显得巨小。这里按各自缩放比换算。
+        var local = monitors
+            .Select(m => new
+            {
+                Monitor = m,
+                X = m.Left / m.Scale,
+                Y = m.Top / m.Scale,
+                Width = Math.Ceiling(m.Width / m.Scale),
+                Height = Math.Ceiling(m.Height / m.Scale),
+            })
+            .ToList();
+        double originX = local.Min(m => m.X), originY = local.Min(m => m.Y);
+        foreach (var monitor in local)
+            tiles.Add(("", monitor.Monitor.DeviceName, latest?.String("local_name", "本机") ?? "本机",
+                monitor.X - originX, monitor.Y - originY, monitor.Width, monitor.Height,
+                selectedPage == WorkspacePage.Input ? displayWallpapers.Local(monitor.Monitor) : null));
+        // 未摆放过的远端屏幕紧贴本机组摆放；留 96 的空隙会让它看起来是浮着的。
+        double fallbackX = tiles.Max(t => t.X + t.Width);
+        var layoutSettings = JsonProperty(input, "settings");
+        var wallpapers = JsonProperty(input, "remote_wallpapers");
+        foreach (var remote in input.Array("remote_topologies"))
         {
-            var monitor = monitors[i];
-            var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(8) };
-            content.Children.Add(new TextBlock { Text = (i + 1).ToString(), FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextAlignment = TextAlignment.Center });
-            content.Children.Add(new TextBlock { Text = monitor.DeviceName, FontSize = 12, TextAlignment = TextAlignment.Center });
-            content.Children.Add(new TextBlock { Text = $"{monitor.Width} × {monitor.Height} px{(monitor.Primary ? " · 主屏" : "")}", FontSize = 12, TextAlignment = TextAlignment.Center });
+            string peer = remote.String("peer_id");
+            string name = latest?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", "远端") ?? "远端";
+            var displays = JsonProperty(remote, "topology").Array("displays").ToArray();
+            double minX = displays.Length == 0 ? 0 : displays.Min(d => LayoutNumber(d, "frame_x"));
+            double minY = displays.Length == 0 ? 0 : displays.Min(d => LayoutNumber(d, "frame_y"));
+            foreach (var display in displays)
+            {
+                string id = display.String("id");
+                var placement = InputLayout.Placement(layoutSettings, peer, id);
+                double x = placement?.X ?? fallbackX + LayoutNumber(display, "frame_x") - minX;
+                double y = placement?.Y ?? LayoutNumber(display, "frame_y") - minY;
+                double width = display.Number("width"), height = display.Number("height");
+                if (width <= 0 || height <= 0) continue;
+                string encoded = JsonProperty(wallpapers, peer).String(id);
+                tiles.Add((peer, id, name, x, y, width, height,
+                    selectedPage == WorkspacePage.Input ? displayWallpapers.Remote(peer, id, encoded) : null));
+            }
+            fallbackX = tiles.Max(t => t.X + t.Width);
+        }
+        double left = tiles.Min(t => t.X), top = tiles.Min(t => t.Y);
+        double contentWidth = tiles.Max(t => t.X + t.Width) - left, contentHeight = tiles.Max(t => t.Y + t.Height) - top;
+        // 四周留出 30% 余量：画面正好铺满画布时，最左/最上的屏幕贴着边缘，
+        // 用户根本没有空间把它拖到别的屏幕另一侧。
+        const double DragMargin = 0.3;
+        double totalWidth = contentWidth * (1 + 2 * DragMargin), totalHeight = contentHeight * (1 + 2 * DragMargin);
+        double scale = Math.Max(0.001, Math.Min((DisplayCanvas.ActualWidth - 48) / totalWidth, (DisplayCanvas.ActualHeight - 48) / totalHeight));
+        double offsetX = (DisplayCanvas.ActualWidth - totalWidth * scale) / 2 + contentWidth * DragMargin * scale;
+        double offsetY = (DisplayCanvas.ActualHeight - totalHeight * scale) / 2 + contentHeight * DragMargin * scale;
+        layoutScale = scale; layoutOffsetX = offsetX; layoutOffsetY = offsetY;
+        layoutOriginX = left; layoutOriginY = top;
+        layoutRects.Clear();
+        foreach (var tile in tiles)
+        {
+            var surface = new Grid { Background = DfUi.Brush("DFControlStrongBrush") };
+            if (tile.Wallpaper is not null) surface.Children.Add(new Image { Source = tile.Wallpaper, Stretch = Stretch.UniformToFill });
+            var caption = new Border
+            {
+                Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(165, 0, 0, 0)),
+                Padding = new Thickness(10, 5, 10, 5), VerticalAlignment = VerticalAlignment.Bottom,
+                Child = new TextBlock { Text = tile.Name + (tile.Peer.Length == 0 ? " · 本机" : ""), FontSize = 12,
+                    Foreground = new SolidColorBrush(Colors.White), TextTrimming = TextTrimming.CharacterEllipsis },
+            };
+            surface.Children.Add(caption);
             var rectangle = new Border
             {
-                Width = monitor.Width * scale,
-                Height = monitor.Height * scale,
-                BorderBrush = DfUi.Brush("DFAccentBrush"),
-                BorderThickness = new Thickness(2),
-                Background = DfUi.Brush("DFAccentSubtleBrush"),
-                CornerRadius = new CornerRadius(4),
-                Child = content,
+                Width = tile.Width * scale, Height = tile.Height * scale,
+                BorderBrush = DfUi.Line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
+                Child = surface,
             };
-            Canvas.SetLeft(rectangle, offsetX + (monitor.Left - left) * scale);
-            Canvas.SetTop(rectangle, offsetY + (monitor.Top - top) * scale);
+            ToolTipService.SetToolTip(rectangle, $"{tile.Name} · {tile.Width} × {tile.Height} px");
+            if (tile.Peer.Length > 0)
+            {
+                rectangle.Tag = new RemoteDisplayDrag(tile.Peer, tile.Id, tile.X, tile.Y, scale, tile.Width, tile.Height);
+                rectangle.PointerPressed += DisplayDragStarted;
+                rectangle.PointerMoved += DisplayDragMoved;
+                rectangle.PointerReleased += DisplayDragFinished;
+                rectangle.PointerCanceled += DisplayDragCanceled;
+                rectangle.PointerCaptureLost += DisplayDragCanceled;
+                var menu = new MenuFlyout();
+                var reconnect = new MenuFlyoutItem { Text = "重新连接" };
+                reconnect.Click += async (_, _) =>
+                {
+                    try { await service.SendAsync(ServiceClient.Command("RestartInputControl", new { peer_id = tile.Peer })); }
+                    catch (Exception ex) { Notify(ex is IOException ? ex.Message : "重新连接请求未完成。"); }
+                };
+                var remove = new MenuFlyoutItem { Text = "移除此设备的屏幕" };
+                remove.Click += async (_, _) => await RemoveInputParticipantAsync(tile.Peer);
+                menu.Items.Add(reconnect); menu.Items.Add(remove);
+                rectangle.ContextFlyout = menu;
+            }
+            double canvasLeft = offsetX + (tile.X - left) * scale;
+            double canvasTop = offsetY + (tile.Y - top) * scale;
+            layoutRects.Add(new(tile.Peer, tile.Id, tile.X, tile.Y, tile.Width, tile.Height));
+            Canvas.SetLeft(rectangle, canvasLeft);
+            Canvas.SetTop(rectangle, canvasTop);
             DisplayCanvas.Children.Add(rectangle);
         }
-        int screenCount = monitors.Count;
-        double remoteOffset = offsetX + (right - left) * scale + 24;
-        double remoteY = offsetY;
-        var seen = new HashSet<string>();
-        if (input.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var remote in input.Array("remote_topologies"))
-            {
-                string peer = remote.String("peer_id");
-                if (!seen.Add(peer)) continue;
-                string name = service.LatestSnapshot?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", "远端") ?? "远端";
-                var topology = remote.GetProperty("topology");
-                int minX = int.MaxValue, minY = int.MaxValue, maxX = 0, maxY = 0;
-                foreach (var display in topology.Array("displays"))
-                {
-                    int x = (int)display.Number("frame_x");
-                    int y = (int)display.Number("frame_y");
-                    int width = (int)display.Number("width");
-                    int height = (int)display.Number("height");
-                    minX = Math.Min(minX, x); minY = Math.Min(minY, y);
-                    maxX = Math.Max(maxX, x + width); maxY = Math.Max(maxY, y + height);
-                }
-                if (minX == int.MaxValue) continue;
-                foreach (var display in topology.Array("displays"))
-                {
-                    int x = (int)display.Number("frame_x");
-                    int y = (int)display.Number("frame_y");
-                    int width = (int)display.Number("width");
-                    int height = (int)display.Number("height");
-                    var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(6) };
-                    content.Children.Add(new TextBlock { Text = name, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextAlignment = TextAlignment.Center });
-                    content.Children.Add(new TextBlock { Text = $"{width} × {height} px", FontSize = 11, TextAlignment = TextAlignment.Center });
-                    var rectangle = new Border
-                    {
-                        Width = width * scale,
-                        Height = height * scale,
-                        BorderBrush = DfUi.Brush("DFSuccessBrush"),
-                        BorderThickness = new Thickness(2),
-                        Background = DfUi.Brush("DFSuccessSubtleBrush"),
-                        CornerRadius = new CornerRadius(4),
-                        Child = content,
-                        Tag = new RemoteDisplayDrag(peer, display.String("id"), x, y, scale),
-                    };
-                    rectangle.PointerPressed += DisplayDragStarted;
-                    rectangle.PointerMoved += DisplayDragMoved;
-                    rectangle.PointerReleased += DisplayDragFinished;
-                    ToolTipService.SetToolTip(rectangle, $"{name} · {width} × {height}");
-                    var displayMenu = new MenuFlyout();
-                    var reconnect = new MenuFlyoutItem { Text = "重新连接" };
-                    reconnect.Click += async (_, _) =>
-                    {
-                        try
-                        {
-                            await service.SendAsync(ServiceClient.Command("RestartInputControl", new { peer_id = peer }));
-                            Notify($"已请求重新连接 {name}。");
-                        }
-                        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "重新连接请求未完成。"); }
-                    };
-                    displayMenu.Items.Add(reconnect);
-                    var removeDisplay = new MenuFlyoutItem { Text = "移除此设备的屏幕" };
-                    removeDisplay.Click += async (_, _) => await RemoveInputParticipantAsync(peer);
-                    displayMenu.Items.Add(removeDisplay);
-                    rectangle.ContextFlyout = displayMenu;
-                    Canvas.SetLeft(rectangle, remoteOffset + (x - minX) * scale);
-                    Canvas.SetTop(rectangle, remoteY + (y - minY) * scale);
-                    DisplayCanvas.Children.Add(rectangle);
-                    screenCount++;
-                }
-                remoteY += (maxY - minY) * scale + 24;
-            }
-        }
-        InputLayoutSummary.Text = $"{screenCount} 个屏幕";
+        InputLayoutSummary.Text = $"{tiles.Count} 个屏幕";
     }
 
-    private async void SaveShortcutBindingsClick(object sender, RoutedEventArgs args)
+    private static double LayoutNumber(JsonElement value, string name)
     {
-        if (updatingInputSettings || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings)) return;
-        var lines = ShortcutBindings.Text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (lines.Length != 6) { Notify("需要按左、右、上、下、锁定、紧急释放顺序填写六行快捷键。 "); return; }
-        try
-        {
-            var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
-            var shortcuts = node["shortcuts"]?.AsObject() ?? throw new FormatException();
-            string[] names = ["left", "right", "up", "down", "lock", "emergency"];
-            for (int i = 0; i < names.Length; i++)
-            {
-                var values = lines[i].Split(',', StringSplitOptions.TrimEntries);
-                if (values.Length != 2 || !ushort.TryParse(values[0], out var key) || !ulong.TryParse(values[1], out var modifiers)) throw new FormatException();
-                shortcuts[names[i]] = new JsonObject { ["key_code"] = key, ["modifiers"] = modifiers };
-            }
-            await service.SendAsync(ServiceClient.Command("SetInputSharingSettings", new { settings = node }));
-            Notify("快捷键已提交；以输入状态和服务持久化结果为准。");
-        }
-        catch (FormatException) { Notify("快捷键格式无效，请使用 key code, modifiers，每行一组。"); }
-        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "快捷键未保存，服务可能已断开。"); }
+        var field = JsonProperty(value, name);
+        return field.ValueKind == JsonValueKind.Number && field.TryGetDouble(out double number) && double.IsFinite(number) ? number : 0;
     }
 
-    private sealed record RemoteDisplayDrag(string DeviceId, string DisplayId, double X, double Y, double Scale);
+    private static JsonElement JsonProperty(JsonElement value, string name) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property) ? property : default;
+
+    private sealed record RemoteDisplayDrag(
+        string DeviceId, string DisplayId, double X, double Y, double Scale, double Width, double Height);
 
     private void DisplayDragStarted(object sender, PointerRoutedEventArgs args)
     {
-        if (sender is not Border border || border.Tag is not RemoteDisplayDrag || latest is not JsonElement snapshot || !snapshot.TryGetProperty("input", out var input) || !input.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object) return;
-        if (!settings.TryGetProperty("role", out var role) || role.GetString() != "Controller" || !settings.Bool("enabled")) { Notify("只有已启用的本机主控可以编辑远端布局。"); return; }
+        if (sender is not Border border || border.Tag is not RemoteDisplayDrag || pendingLayoutMove is not null) return;
+        if (!args.GetCurrentPoint(DisplayCanvas).Properties.IsLeftButtonPressed) return;
+        if (!TryInputSettings(out var settings) || settings.String("role") != "Controller" || !settings.Bool("enabled"))
+        {
+            Notify("请先开启「此电脑作为主控」，再调整屏幕布局。");
+            return;
+        }
+        if (!border.CapturePointer(args.Pointer)) return;
         draggingDisplay = border;
         dragOrigin = args.GetCurrentPoint(DisplayCanvas).Position;
-        border.CapturePointer(args.Pointer);
+        dragTranslation = (0, 0);
         args.Handled = true;
+    }
+
+    private void PreviewDisplayDrag(Border border, global::Windows.Foundation.Point position)
+    {
+        if (border.Tag is not RemoteDisplayDrag drag) return;
+        // Absolute displacement from pointer-down, never from the snapped tile.
+        dragTranslation = InputLayout.SnapMove(layoutRects, drag.DeviceId,
+            (position.X - dragOrigin.X) / layoutScale, (position.Y - dragOrigin.Y) / layoutScale);
+        foreach (var tile in DisplayCanvas.Children.OfType<Border>())
+        {
+            if (tile.Tag is not RemoteDisplayDrag member || member.DeviceId != drag.DeviceId) continue;
+            Canvas.SetLeft(tile, layoutOffsetX + (member.X + dragTranslation.X - layoutOriginX) * layoutScale);
+            Canvas.SetTop(tile, layoutOffsetY + (member.Y + dragTranslation.Y - layoutOriginY) * layoutScale);
+        }
     }
 
     private void DisplayDragMoved(object sender, PointerRoutedEventArgs args)
     {
-        if (draggingDisplay is not Border border || border.Tag is not RemoteDisplayDrag drag || !ReferenceEquals(border, sender)) return;
-        var position = args.GetCurrentPoint(DisplayCanvas).Position;
-        double deltaX = position.X - dragOrigin.X;
-        double deltaY = position.Y - dragOrigin.Y;
-        Canvas.SetLeft(border, Canvas.GetLeft(border) + deltaX);
-        Canvas.SetTop(border, Canvas.GetTop(border) + deltaY);
-        dragOrigin = position;
-        border.Tag = drag with { X = drag.X + deltaX / Math.Max(0.01, drag.Scale), Y = drag.Y + deltaY / Math.Max(0.01, drag.Scale) };
+        if (draggingDisplay is not Border border || !ReferenceEquals(border, sender)) return;
+        PreviewDisplayDrag(border, args.GetCurrentPoint(DisplayCanvas).Position);
+        args.Handled = true;
+    }
+
+    private void DisplayDragCanceled(object sender, PointerRoutedEventArgs args)
+    {
+        if (!ReferenceEquals(draggingDisplay, sender)) return;
+        draggingDisplay = null;
+        DrawInputLayout(inputSnapshotValid ? inputSnapshot : default);
     }
 
     private async void DisplayDragFinished(object sender, PointerRoutedEventArgs args)
     {
-        if (sender is not Border border || border.Tag is not RemoteDisplayDrag drag) return;
-        border.ReleasePointerCapture(args.Pointer);
+        if (sender is not Border border || border.Tag is not RemoteDisplayDrag drag || !ReferenceEquals(draggingDisplay, border)) return;
+        PreviewDisplayDrag(border, args.GetCurrentPoint(DisplayCanvas).Position);
         draggingDisplay = null;
+        border.ReleasePointerCapture(args.Pointer);
+        args.Handled = true;
+        if (Math.Abs(dragTranslation.X) < 0.001 && Math.Abs(dragTranslation.Y) < 0.001)
+        {
+            DrawInputLayout(inputSnapshotValid ? inputSnapshot : default);
+            return;
+        }
+        var pending = new PendingLayoutMove(drag.DeviceId, layoutRects.ToArray(), dragTranslation.X, dragTranslation.Y);
+        pendingLayoutMove = pending;
+        double x = drag.X + pending.X, y = drag.Y + pending.Y;
+        Notify("正在保存屏幕布局…");
         try
         {
-            await service.SendAsync(ServiceClient.Command("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x = drag.X, y = drag.Y }));
-            Notify("布局位置已提交；运行时会进行吸附并持久化。");
+            await service.SendAsync(ServiceClient.Command("MoveControlDevice", new { device_id = drag.DeviceId, display_id = drag.DisplayId, x, y }));
+            // The command response means the runtime accepted and persisted the
+            // placement. Keep the preview only until the next heartbeat confirms
+            // it; this short watchdog is a fallback, not a UI save delay.
+            DrawInputLayout(inputSnapshotValid ? inputSnapshot : default);
+            Notify("布局已保存，正在同步显示状态。");
+            await Task.Delay(TimeSpan.FromMilliseconds(1500));
+            if (!ReferenceEquals(pendingLayoutMove, pending)) return;
+            pendingLayoutMove = null;
+            DrawInputLayout(inputSnapshotValid ? inputSnapshot : default);
         }
-        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。"); }
-        args.Handled = true;
+        catch (Exception ex)
+        {
+            if (!ReferenceEquals(pendingLayoutMove, pending)) return;
+            pendingLayoutMove = null;
+            Notify(ex is IOException ? ex.Message : "布局未保存，服务可能已断开。");
+            DrawInputLayout(inputSnapshotValid ? inputSnapshot : default);
+        }
     }
 
     private async void ReclaimInputClick(object sender, RoutedEventArgs args)
@@ -2275,48 +3858,85 @@ public sealed partial class MainWindow : Window
 
     private async void AddInputDeviceClick(object sender, RoutedEventArgs args)
     {
-        if (!TryInputSettings(out var settings) || latest is not JsonElement snapshot)
+        if (!TryInputSettings(out _) || latest is not JsonElement snapshot)
         {
             Notify("输入运行时尚未就绪，无法添加设备。");
             return;
         }
-        var participants = settings.Array("participants")
-            .Where(value => value.ValueKind == JsonValueKind.String)
-            .Select(value => value.GetString() ?? "")
-            .Where(value => value.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
-        var candidates = snapshot.Array("peers")
-            .Where(peer => peer.String("trust") == "trusted" && !participants.Contains(peer.String("peer_id")))
-            .ToArray();
-        if (candidates.Length == 0)
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(DfUi.Detail("选择已配对的电脑，添加它的全部屏幕。屏幕尺寸由对端提供，连接就绪后才能跨屏操作。"));
+        var rows = new StackPanel { Spacing = 8 };
+        panel.Children.Add(new ScrollViewer { Content = rows, MaxHeight = 320 });
+        var hint = DfUi.Detail("");
+        panel.Children.Add(hint);
+        var pending = new Dictionary<string, (bool Included, DateTime Deadline)>();
+        var controls = new Dictionary<string, (TextBlock Status, Button Action)>();
+        void Refresh(JsonElement state)
         {
-            Notify("没有可添加的已配对设备。请先在设备页完成配对。");
-            return;
+            var settings = JsonProperty(JsonProperty(state, "input"), "settings");
+            var included = settings.Array("participants").Select(p => p.GetString() ?? "").ToHashSet();
+            var activations = JsonProperty(state, "input").Array("activations").ToArray();
+            foreach (var peer in state.Array("peers").Where(p => p.String("trust") == "trusted"))
+            {
+                string id = peer.String("peer_id");
+                if (!controls.TryGetValue(id, out var control))
+                {
+                    var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(0, 8, 0, 8) };
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    var body = new StackPanel { Spacing = 4 };
+                    body.Children.Add(DfUi.Text(peer.String("display_name", "未命名设备"), 13, true));
+                    var status = DfUi.Detail(""); body.Children.Add(status); row.Children.Add(body);
+                    var action = DfUi.Secondary("添加", async (_, _) =>
+                    {
+                        if (!TryInputSettings(out var current) || pending.ContainsKey(id)) return;
+                        var members = current.Array("participants").Select(p => p.GetString() ?? "").Where(p => p.Length > 0).ToHashSet();
+                        bool add = !members.Contains(id);
+                        if (add) members.Add(id); else members.Remove(id);
+                        pending[id] = (add, DateTime.UtcNow.AddSeconds(5));
+                        if (latest is JsonElement before) Refresh(before);
+                        if (!await SetInputParticipants(members)) pending.Remove(id);
+                        if (latest is JsonElement after) Refresh(after);
+                    });
+                    Grid.SetColumn(action, 1); row.Children.Add(action); rows.Children.Add(row);
+                    control = (status, action); controls[id] = control;
+                }
+                bool member = included.Contains(id);
+                if (pending.TryGetValue(id, out var change) && (change.Included == member || change.Deadline <= DateTime.UtcNow))
+                {
+                    if (change.Included != member) hint.Text = "设备设置尚未生效，请稍后重试。";
+                    pending.Remove(id);
+                }
+                string reason = activations.FirstOrDefault(a => a.String("peer_id") == id).String("reason");
+                bool screensReady = JsonProperty(state, "input").Array("remote_topologies").Any(t => t.String("peer_id") == id);
+                string progress = !member ? "在线" : !JsonProperty(state, "capabilities").Bool("input")
+                    ? "本机输入组件未就绪" : screensReady ? "屏幕已连接" : "等待对端提供屏幕";
+                control.Status.Text = pending.ContainsKey(id) ? "正在保存…" : (member ? "已添加 · " : "")
+                    + (peer.String("connection") == "connected" ? progress : "离线")
+                    + (reason.Length > 0 ? " · " + reason : "");
+                control.Action.Content = member ? "移除" : "添加";
+                control.Action.IsEnabled = !pending.ContainsKey(id);
+            }
+            var trusted = state.Array("peers").Where(p => p.String("trust") == "trusted").Select(p => p.String("peer_id")).ToHashSet();
+            foreach (var (id, control) in controls.Where(pair => !trusted.Contains(pair.Key)))
+            {
+                control.Status.Text = "设备已不在已配对列表中";
+                control.Action.IsEnabled = false;
+            }
+            if (controls.Count == 0) hint.Text = "先到设备页配对另一台电脑，再回来添加屏幕。";
         }
-        var panel = new StackPanel { Spacing = 8 };
-        var choices = new List<(string Id, CheckBox Box)>();
-        foreach (var peer in candidates)
-        {
-            string id = peer.String("peer_id");
-            string name = peer.String("display_name", "未命名设备");
-            string connection = peer.String("connection") == "connected" ? "在线" : "离线";
-            var box = new CheckBox { Content = $"{name} · {connection}", Tag = id, IsChecked = true };
-            choices.Add((id, box));
-            panel.Children.Add(box);
-        }
+        Refresh(snapshot);
         var dialog = new ContentDialog
         {
-            XamlRoot = Root.XamlRoot,
-            Title = "添加设备屏幕",
-            Content = new ScrollViewer { Content = panel, MaxHeight = 360 },
-            PrimaryButtonText = "添加",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Root.XamlRoot, Title = "添加设备屏幕", Content = panel,
+            PrimaryButtonText = "完成", SecondaryButtonText = "前往设备页配对", DefaultButton = ContentDialogButton.Primary,
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        var selected = choices.Where(choice => choice.Box.IsChecked == true).Select(choice => choice.Id).ToArray();
-        if (selected.Length == 0) return;
-        await SetInputParticipants(participants.Concat(selected));
+        service.SnapshotChanged += Refresh;
+        try
+        {
+            if (await dialog.ShowAsync() == ContentDialogResult.Secondary) ShowPage(WorkspacePage.Devices);
+        }
+        finally { service.SnapshotChanged -= Refresh; }
     }
 
     private async Task RemoveInputParticipantAsync(string peerId)
@@ -2330,9 +3950,9 @@ public sealed partial class MainWindow : Window
         await SetInputParticipants(remaining);
     }
 
-    private async Task SetInputParticipants(IEnumerable<string> ids)
+    private async Task<bool> SetInputParticipants(IEnumerable<string> ids)
     {
-        if (!TryInputSettings(out var settings)) return;
+        if (!TryInputSettings(out var settings)) return false;
         try
         {
             var node = JsonNode.Parse(settings.GetRawText())?.AsObject() ?? throw new FormatException();
@@ -2340,66 +3960,12 @@ public sealed partial class MainWindow : Window
             foreach (string id in ids.Distinct(StringComparer.Ordinal)) array.Add(id);
             node["participants"] = array;
             await service.SendAsync(ServiceClient.Command("SetInputSharingSettings", new { settings = node }));
-            Notify("参与者已更新。");
+            Notify("设备设置请求已提交；屏幕与激活状态以对端实际就绪情况为准。");
+            return true;
         }
         catch (FormatException) { Notify("输入设置格式无效。"); }
         catch (Exception ex) { Notify(ex is IOException ? ex.Message : "参与者未保存，服务可能已断开。"); }
-    }
-
-    private void RenderInputParticipants(JsonElement settings, JsonElement snapshot, JsonElement input)
-    {
-        if (InputParticipantsPanel is null) return;
-        InputParticipantsPanel.Children.Clear();
-        var participants = settings.Array("participants")
-            .Where(value => value.ValueKind == JsonValueKind.String)
-            .Select(value => value.GetString() ?? "")
-            .Where(value => value.Length > 0)
-            .ToArray();
-        InputParticipantsEmpty.Visibility = participants.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        var topologyPeers = input.Array("remote_topologies")
-            .Select(item => item.String("peer_id"))
-            .Where(id => id.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
-        for (int index = 0; index < participants.Length; index++)
-        {
-            string id = participants[index];
-            var peer = snapshot.Array("peers").FirstOrDefault(item => item.String("peer_id") == id);
-            string name = peer.ValueKind == JsonValueKind.Object ? peer.String("display_name", id) : id;
-            bool online = peer.ValueKind == JsonValueKind.Object && peer.String("connection") == "connected";
-            bool ready = topologyPeers.Contains(id);
-            string status = ready ? "已就绪" : online ? "等待对端准备" : "离线";
-            var row = new Grid { Padding = new Thickness(0, 8, 0, 8), ColumnSpacing = 10 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.Children.Add(new Border
-            {
-                Width = 32, Height = 32, CornerRadius = new CornerRadius(8),
-                Background = DfUi.Control,
-                Child = DfUi.Glyph("\uE7F4", 15, DfUi.Muted),
-            });
-            var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-            text.Children.Add(DfUi.Text(name, 13, true, DfUi.PrimaryText, wrap: false));
-            var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            statusRow.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
-            {
-                Width = 6, Height = 6,
-                Fill = ready ? DfUi.Success : online ? DfUi.Warning : new SolidColorBrush(Colors.Gray),
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            statusRow.Children.Add(DfUi.Detail(status));
-            text.Children.Add(statusRow);
-            Grid.SetColumn(text, 1);
-            row.Children.Add(text);
-            string captured = id;
-            var remove = DfUi.Secondary("移除", async (_, _) => await SetInputParticipants(participants.Where(item => item != captured)));
-            remove.MinHeight = 28;
-            remove.FontSize = 12;
-            Grid.SetColumn(remove, 2);
-            row.Children.Add(remove);
-            InputParticipantsPanel.Children.Add(row);
-            if (index < participants.Length - 1) InputParticipantsPanel.Children.Add(DfUi.Divider(0, 0));
-        }
+        return false;
     }
 
     private void BuildMouseBindings()
@@ -2435,6 +4001,100 @@ public sealed partial class MainWindow : Window
 
     private sealed record TransferRow(string Id, string Title, string Detail, string State, double Progress,
         bool CanReceive, bool CanCancel, bool Outgoing, string Percent, bool CanOpen);
+
+    private void RenderLanWeb(JsonElement snapshot)
+    {
+        if (LanWebContent is null || lanAccessToggle is null) return;
+        var lan = snapshot.ValueKind == JsonValueKind.Object && snapshot.TryGetProperty("lan_web", out var value)
+            ? value
+            : default;
+        bool available = lan.ValueKind == JsonValueKind.Object;
+        bool enabled = available && lan.Bool("enabled");
+        bool running = available && lan.Bool("running");
+        updatingLanWeb = true;
+        lanAccessToggle.IsOn = enabled;
+        lanAccessToggle.IsEnabled = available && (FileTransferEnabled() || enabled);
+        updatingLanWeb = false;
+        LanWebContent.Children.Clear();
+        if (!available)
+        {
+            LanWebContent.Children.Add(DfUi.Glyph("\uE8AB", 36, DfUi.Muted));
+            LanWebContent.Children.Add(DfUi.Text("局域网服务状态不可用", 15, true, wrap: false));
+            LanWebContent.Children.Add(DfUi.Detail("请更新服务和客户端到同一版本。"));
+            return;
+        }
+        if (!enabled)
+        {
+            lanQrSignature = "";
+            lanQrElement = null;
+            LanWebContent.Children.Add(DfUi.Glyph("\uE8AB", 36, DfUi.Muted));
+            LanWebContent.Children.Add(DfUi.Text("开启后扫码传输", 15, true, wrap: false));
+            LanWebContent.Children.Add(DfUi.Detail("仅当前电脑所在局域网可访问，不会创建配对或信任。"));
+            return;
+        }
+        if (!running)
+        {
+            lanQrSignature = "";
+            lanQrElement = null;
+            LanWebContent.Children.Add(DfUi.Glyph("\uE8AB", 36, DfUi.Muted));
+            LanWebContent.Children.Add(DfUi.Text("局域网服务未运行", 15, true, wrap: false));
+            string message = lan.String("error");
+            if (message.Length == 0)
+                message = lan.Bool("session_available") ? "正在监听局域网地址…" : "等待本机桌面解锁与服务连接。";
+            LanWebContent.Children.Add(DfUi.Detail(message));
+            return;
+        }
+        string address = lan.String("address");
+        if (address.Length == 0)
+        {
+            LanWebContent.Children.Add(DfUi.Detail("监听已建立，但没有可供手机访问的局域网地址。"));
+            return;
+        }
+        if (BuildLanQr(lan, address) is UIElement qr) LanWebContent.Children.Add(qr);
+        var addressText = DfUi.Text(address, 14, true, DfUi.Accent, wrap: false);
+        addressText.IsTextSelectionEnabled = true;
+        LanWebContent.Children.Add(addressText);
+        LanWebContent.Children.Add(DfUi.Detail("手机与这台电脑连接到同一局域网后扫码，即可发送文字或照片。"));
+        var task = lan.Array("tasks").FirstOrDefault();
+        if (task.ValueKind == JsonValueKind.Object && task.String("message") is string taskMessage && taskMessage.Length > 0)
+            LanWebContent.Children.Add(DfUi.Detail($"最近上传：{taskMessage}"));
+    }
+
+    private UIElement? BuildLanQr(JsonElement lan, string address)
+    {
+        int size = (int)lan.Number("qr_size");
+        string signature = $"{address}:{size}";
+        if (lanQrElement is not null && signature == lanQrSignature) return lanQrElement;
+        var modules = lan.Array("qr_modules").ToArray();
+        if (size <= 0 || modules.Length != checked(size * size)) return null;
+        var grid = new Grid { Width = 168, Height = 168, Background = new SolidColorBrush(Colors.White) };
+        for (int row = 0; row < size; row++) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        for (int column = 0; column < size; column++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (int row = 0; row < size; row++)
+        {
+            for (int column = 0; column < size; column++)
+            {
+                if (!modules[row * size + column].GetBoolean()) continue;
+                var cell = new Border { Background = new SolidColorBrush(Colors.Black) };
+                Grid.SetRow(cell, row);
+                Grid.SetColumn(cell, column);
+                grid.Children.Add(cell);
+            }
+        }
+        var border = new Border
+        {
+            Background = new SolidColorBrush(Colors.White),
+            BorderBrush = DfUi.Line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(8),
+            Child = grid,
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(border, "局域网传输二维码");
+        lanQrSignature = signature;
+        lanQrElement = border;
+        return border;
+    }
 
     private void RenderTransfers(JsonElement snapshot)
     {
@@ -2581,25 +4241,95 @@ public sealed partial class MainWindow : Window
             if (editingWorkflow is not null) WorkflowList.SelectedItem = workflows.FirstOrDefault(w => w.Id == editingWorkflow.Id);
         }
         catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流目录暂时不可用。"; }
+        await RefreshWorkflowCatalogAsync();
     }
+
+    private async void RefreshWorkflowCatalogClick(object sender, RoutedEventArgs args) => await RefreshWorkflowCatalogAsync();
+
+    private async Task RefreshWorkflowCatalogAsync()
+    {
+        if (!service.IsConnected)
+        {
+            WorkflowSyncStatus.Text = "服务未连接，工作流同步暂不可用。";
+            WorkflowConflictList.Children.Clear();
+            return;
+        }
+        try
+        {
+            var reply = await service.SendAsync("GetWorkflowCatalog");
+            if (!reply.TryGetProperty("WorkflowCatalog", out var envelope)
+                || !envelope.TryGetProperty("json", out var jsonValue)
+                || jsonValue.ValueKind != JsonValueKind.String)
+            {
+                WorkflowSyncStatus.Text = "同步状态不可用。";
+                return;
+            }
+            using var document = JsonDocument.Parse(jsonValue.GetString() ?? "{}");
+            var root = document.RootElement;
+            string status = root.TryGetProperty("sync_status", out var statusValue) ? statusValue.GetString() ?? "pending" : "pending";
+            WorkflowSyncStatus.Text = status switch
+            {
+                "synced" => "工作流已在已配对设备间同步。",
+                "pending" => "等待同步：设备连接后会自动交换工作流定义。",
+                "waiting_for_devices" => "等待已配对设备连接。",
+                "error" => "同步失败，已保留本地修改。",
+                _ => $"同步状态：{status}",
+            };
+            WorkflowConflictList.Children.Clear();
+            if (!root.TryGetProperty("conflicts", out var conflicts) || conflicts.ValueKind != JsonValueKind.Array) return;
+            foreach (var conflict in conflicts.EnumerateArray())
+            {
+                string id = conflict.TryGetProperty("id", out var idValue) ? idValue.GetString() ?? "" : "";
+                if (id.Length == 0) continue;
+                string name = "工作流";
+                if (conflict.TryGetProperty("record", out var record)
+                    && record.TryGetProperty("definition", out var definition)
+                    && definition.TryGetProperty("value", out var workflow)
+                    && workflow.TryGetProperty("name", out var nameValue))
+                    name = nameValue.GetString() ?? name;
+                var body = new StackPanel { Spacing = 4 };
+                body.Children.Add(DfUi.Text(name, 12, true));
+                body.Children.Add(DfUi.Detail("其他设备有并发修改；恢复会覆盖当前版本。"));
+                var restore = DfUi.Secondary("恢复保留版本");
+                string conflictId = id;
+                restore.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        await service.SendAsync(ServiceClient.Command("RestoreWorkflowConflict", new { conflict_id = conflictId }));
+                        await LoadWorkflowsAsync();
+                    }
+                    catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "恢复失败。"; }
+                };
+                body.Children.Add(restore);
+                WorkflowConflictList.Children.Add(DfUi.Card(body, padding: 10, radius: 8, background: DfUi.Control));
+            }
+        }
+        catch (Exception ex) { WorkflowSyncStatus.Text = ex is IOException ? ex.Message : "同步状态暂时不可用。"; }
+    }
+
+    private bool hotkeyHookInstalled;
+
+    private static uint WorkflowModifiers(ulong value) =>
+        ((value & 0x80000) != 0 ? ModAlt : 0) | ((value & 0x40000) != 0 ? ModControl : 0)
+        | ((value & 0x20000) != 0 ? ModShift : 0) | ((value & 0x100000) != 0 ? ModWin : 0);
 
     private void InstallWorkflowHotkeys()
     {
         if (!loaded) return;
         RemoveHotkeys();
-        WindowMessageHook.Attach(Handle, HotkeyWindowProc);
+        if (!hotkeyHookInstalled)
+        {
+            WindowMessageHook.Attach(Handle, HotkeyWindowProc);
+            hotkeyHookInstalled = true;
+        }
         int hotkeyId = 0x5540;
         foreach (var workflow in workflows.Where(w => w.Enabled && w.Shortcut is not null))
         {
             var shortcut = workflow.Shortcut!;
-            uint modifiers = shortcut.Modifiers switch
-            {
-                var value when (value & 0x80000) != 0 => ModAlt,
-                _ => 0,
-            };
-            if ((shortcut.Modifiers & 0x40000) != 0) modifiers |= ModControl;
-            if ((shortcut.Modifiers & 0x20000) != 0) modifiers |= ModShift;
-            if ((shortcut.Modifiers & 0x100000) != 0) modifiers |= ModWin;
+            uint modifiers = WorkflowModifiers(shortcut.Modifiers);
+            if (clipboardShortcut.Enabled && shortcut.KeyCode == clipboardShortcut.Key && modifiers == clipboardShortcut.Modifiers) continue;
+            if (shortcut.KeyCode == 0x44 && modifiers == (ModControl | ModShift)) continue;
             if (modifiers == 0 || !RegisterHotKey(Handle, hotkeyId, modifiers, shortcut.KeyCode)) continue;
             hotkeys[hotkeyId++] = workflow;
         }
@@ -2613,6 +4343,7 @@ public sealed partial class MainWindow : Window
 
     private bool HotkeyWindowProc(uint message, IntPtr wParam, IntPtr lParam)
     {
+        if (clipboardShortcutRecorder is not null) return false;
         if (message == WmHotKey && hotkeys.TryGetValue(wParam.ToInt32(), out var workflow))
         {
             _ = ExecuteWorkflowAsync(workflow);
@@ -2621,20 +4352,112 @@ public sealed partial class MainWindow : Window
         return false;
     }
 
-    private async Task ExecuteWorkflowAsync(WorkflowRecord workflow)
+    private sealed class WorkflowRunEntry
+    {
+        public required string Id { get; init; }
+        public required string Name { get; init; }
+        public string Phase { get; set; } = "running";
+        public string Message { get; set; } = "正在处理剪贴板内容…";
+        public string OutputMime { get; set; } = "";
+        public long OutputBytes { get; set; }
+    }
+
+    private readonly List<WorkflowRunEntry> workflowRuns = [];
+
+    private async void RunWorkflowClick(object sender, RoutedEventArgs args)
+    {
+        if (editingWorkflow is not null && workflows.Contains(editingWorkflow))
+            await ExecuteWorkflowAsync(editingWorkflow);
+    }
+
+    private async Task ExecuteWorkflowAsync(WorkflowRecord workflow, ClipboardContent? source = null)
     {
         if (!service.IsConnected || latest is not JsonElement snapshot || !snapshot.TryGetProperty("capabilities", out var caps) || !caps.Bool("workflow_execution"))
         {
             Notify("工作流执行能力尚未就绪；没有向服务发送剪贴板内容。");
             return;
         }
+        var run = new WorkflowRunEntry { Id = Guid.NewGuid().ToString(), Name = workflow.Name };
+        EnterWorkflowRun(run);
         try
         {
             long epoch = snapshot.Number("session_epoch");
-            await workflowExecution.ExecuteAsync(workflow.Id, epoch, DateTime.UtcNow.Ticks, CancellationToken.None);
-            Notify($"已执行工作流：{workflow.Name}");
+            // History-entry runs only produce a copy; the quick hotkey path still
+            // honours a trailing paste step.
+            bool paste = source is null && workflow.Steps.Count > 0 && workflow.Steps[^1].Kind == "Paste";
+            // Capture the external foreground window before any DeskFuse UI can
+            // take focus. A missing target is reported after the result is copied.
+            IntPtr target = paste ? ClipboardPanelNative.CaptureExternalTarget() : IntPtr.Zero;
+            var output = await workflowExecution.ExecuteAsync(workflow.Id, paste, target, epoch, DateTime.UtcNow.Ticks, CancellationToken.None, source);
+            run.Phase = "completed";
+            run.OutputMime = output.Mime;
+            run.OutputBytes = output.SizeBytes;
+            run.Message = paste ? "结果已写入剪贴板并发送粘贴。" : "结果已写入剪贴板。";
+            Notify(paste ? $"已执行工作流并发送粘贴：{workflow.Name}" : $"已执行工作流：{workflow.Name}");
         }
-        catch (Exception ex) { Notify(ex is IOException ? ex.Message : "工作流未执行，剪贴板保持不变。"); }
+        catch (OperationCanceledException)
+        {
+            run.Phase = "cancelled";
+            run.Message = "执行已取消，剪贴板保持不变。";
+        }
+        catch (Exception ex)
+        {
+            run.Phase = "failed";
+            run.Message = ex is IOException or InvalidOperationException ? ex.Message : "工作流未执行，剪贴板保持不变。";
+            Notify(run.Message);
+        }
+        finally { RenderWorkflowRuns(); }
+    }
+
+    private void EnterWorkflowRun(WorkflowRunEntry run)
+    {
+        // Keep running jobs visible and the five most recent terminal results,
+        // matching the macOS run list's bounded history.
+        workflowRuns.Insert(0, run);
+        var running = workflowRuns.Where(entry => entry.Phase == "running").ToList();
+        var recent = workflowRuns.Where(entry => entry.Phase != "running").Take(5).ToList();
+        workflowRuns.Clear();
+        workflowRuns.AddRange(running.Concat(recent));
+        RenderWorkflowRuns();
+    }
+
+    private void RenderWorkflowRuns()
+    {
+        WorkflowRunsHeader.Visibility = workflowRuns.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        WorkflowRunsPanel.Children.Clear();
+        foreach (var run in workflowRuns.Take(3))
+        {
+            var body = new StackPanel { Spacing = 3 };
+            var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            header.Children.Add(new FontIcon
+            {
+                Glyph = run.Phase switch
+                {
+                    "completed" => "\uE73E",
+                    "cancelled" => "\uE711",
+                    "running" => "\uE895",
+                    _ => "\uE7BA",
+                },
+                FontSize = 11,
+                Foreground = run.Phase == "failed" ? DfUi.Warning : DfUi.Muted,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            header.Children.Add(DfUi.Text(run.Phase switch
+            {
+                "running" => $"{run.Name} · 执行中",
+                "completed" => $"{run.Name} · 已完成",
+                "cancelled" => $"{run.Name} · 已取消",
+                _ => $"{run.Name} · 失败",
+            }, 12, true));
+            body.Children.Add(header);
+            if (run.Message.Length > 0)
+                body.Children.Add(DfUi.Text(run.Message, 11, foreground: DfUi.Muted));
+            if (run.Phase == "completed" && run.OutputBytes > 0)
+                body.Children.Add(DfUi.Text(
+                    $"{(run.OutputMime.StartsWith("image/", StringComparison.Ordinal) ? "图片结果" : "文字结果")} · {FormatBytes(run.OutputBytes)}",
+                    11, foreground: DfUi.Muted));
+            WorkflowRunsPanel.Children.Add(DfUi.Card(body, padding: 10, radius: 8, background: DfUi.Control));
+        }
     }
 
     private void NewWorkflowClick(object sender, RoutedEventArgs args)
@@ -2650,17 +4473,336 @@ public sealed partial class MainWindow : Window
         RenderWorkflowEditor();
     }
 
+    private bool updatingWorkflowEditor;
+    private bool recordingShortcut;
+
+    private void WorkflowInputTypeChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (updatingWorkflowEditor || editingWorkflow is null) return;
+        if (WorkflowInputType.SelectedItem is ComboBoxItem { Tag: string kind })
+            editingWorkflow.InputType = kind;
+        RefreshWorkflowCompatibility();
+    }
+
     private void RenderWorkflowEditor()
     {
+        StopShortcutRecording();
         var workflow = editingWorkflow;
         bool enabled = workflow is not null;
-        WorkflowName.IsEnabled = enabled; WorkflowEnabled.IsEnabled = enabled; WorkflowShortcut.IsEnabled = enabled;
-        SaveWorkflowButton.IsEnabled = enabled;
-        DeleteWorkflowButton.IsEnabled = workflow is not null && workflows.Contains(workflow);
-        if (workflow is null) { WorkflowName.Text = ""; WorkflowEnabled.IsChecked = false; WorkflowShortcut.Text = ""; return; }
-        WorkflowName.Text = workflow.Name; WorkflowEnabled.IsChecked = workflow.Enabled;
-        WorkflowShortcut.Text = workflow.Shortcut is null ? "" : $"{workflow.Shortcut.KeyCode}, {workflow.Shortcut.Modifiers}";
-        WorkflowNotice.Text = "";
+        updatingWorkflowEditor = true;
+        try
+        {
+            WorkflowName.IsEnabled = enabled; WorkflowEnabled.IsEnabled = enabled;
+            WorkflowShortcut.IsEnabled = enabled; WorkflowShortcutRecord.IsEnabled = enabled;
+            WorkflowInputType.IsEnabled = enabled;
+            AddWorkflowStepButton.IsEnabled = enabled && workflow!.Steps.Count < 32;
+            SaveWorkflowButton.IsEnabled = enabled;
+            RunWorkflowButton.IsEnabled = workflow is not null && workflows.Contains(workflow);
+            DeleteWorkflowButton.IsEnabled = workflow is not null && workflows.Contains(workflow);
+            WorkflowStepList.Children.Clear();
+            if (workflow is null)
+            {
+                WorkflowName.Text = ""; WorkflowEnabled.IsChecked = false; WorkflowShortcut.Text = "";
+                WorkflowInputType.SelectedIndex = 0;
+                WorkflowNotice.Text = "";
+                WorkflowCompatibility.Visibility = Visibility.Collapsed;
+                return;
+            }
+            WorkflowName.Text = workflow.Name; WorkflowEnabled.IsChecked = workflow.Enabled;
+            WorkflowShortcut.Text = workflow.Shortcut is null ? "" : $"{workflow.Shortcut.KeyCode}, {workflow.Shortcut.Modifiers}";
+            int selected = 0;
+            for (int index = 0; index < WorkflowInputType.Items.Count; index++)
+                if (WorkflowInputType.Items[index] is ComboBoxItem { Tag: string tag } && tag == workflow.InputType) selected = index;
+            WorkflowInputType.SelectedIndex = selected;
+            if (WorkflowInputType.SelectedItem is ComboBoxItem { Tag: string current }) workflow.InputType = current;
+            for (int index = 0; index < workflow.Steps.Count; index++)
+                WorkflowStepList.Children.Add(BuildWorkflowStepCard(workflow, index));
+            WorkflowNotice.Text = "";
+        }
+        finally { updatingWorkflowEditor = false; }
+        RefreshWorkflowCompatibility();
+    }
+
+    private static string WorkflowStepTitle(string kind) => kind switch
+    {
+        "TextReplace" => "文字替换",
+        "TextTrim" => "去除首尾空白",
+        "Compress" => "压缩图片",
+        "Resize" => "调整尺寸",
+        "Convert" => "转换格式",
+        "Rename" => "重命名文件",
+        "Zip" => "打包 ZIP",
+        "SystemShortcut" => "系统快捷指令",
+        "Paste" => "粘贴到当前应用",
+        _ => "复制到剪贴板",
+    };
+
+    private static bool IsWorkflowOutputStep(WorkflowStepRecord step) => step.Kind is "Copy" or "Paste";
+
+    private static string? WorkflowCompatibilityIssue(WorkflowRecord workflow)
+    {
+        if (workflow.Steps.Count is 0 or > 32) return "流程需要 1–32 个步骤。";
+        if (!IsWorkflowOutputStep(workflow.Steps[^1])) return "流程必须以复制或粘贴步骤结束。";
+        if (workflow.Steps.Take(workflow.Steps.Count - 1).Any(IsWorkflowOutputStep)) return "复制或粘贴只能作为最后一步。";
+        bool text = workflow.Steps.Any(step => step.Kind is "TextReplace" or "TextTrim");
+        bool image = workflow.Steps.Any(step => step.Kind is "Compress" or "Resize" or "Convert");
+        if (text && image) return "文字步骤与图片步骤不能混用。";
+        if (workflow.InputType == "Text" && image) return "接受文字时不能包含图片步骤。";
+        if (workflow.InputType == "Image" && text) return "接受图片时不能包含文字步骤。";
+        foreach (var step in workflow.Steps)
+        {
+            if (step.Kind is "Rename" or "Zip" or "SystemShortcut")
+                return "Windows 不支持重命名、ZIP 或 macOS 快捷指令步骤；请移除后再保存。";
+            if (step.Kind == "TextReplace" && step.Find.Length == 0) return "文字替换需要填写查找内容。";
+            if (step.Kind == "Resize" && (step.MaxEdge is null) == (step.ScalePercent is null))
+                return "尺寸步骤请选择最长边或比例中的一种。";
+            if (step.Kind == "Convert" && step.Format == "Heic") return "Windows 不支持 HEIC 编码；请选择 PNG、JPEG 或 WebP。";
+            if (step.Quality is < 1 or > 100) return "图片质量必须为 1–100。";
+        }
+        return null;
+    }
+
+    private void RefreshWorkflowCompatibility()
+    {
+        if (editingWorkflow is null) return;
+        string? issue = WorkflowCompatibilityIssue(editingWorkflow);
+        WorkflowCompatibility.Text = issue ?? "";
+        WorkflowCompatibility.Visibility = issue is null ? Visibility.Collapsed : Visibility.Visible;
+        SaveWorkflowButton.IsEnabled = issue is null;
+    }
+
+    private Border BuildWorkflowStepCard(WorkflowRecord workflow, int index)
+    {
+        var step = workflow.Steps[index];
+        bool terminal = index == workflow.Steps.Count - 1;
+        var body = new StackPanel { Spacing = 10 };
+        var header = new Grid { ColumnSpacing = 8 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = $"{index + 1}",
+            Foreground = DfUi.Muted,
+            VerticalAlignment = VerticalAlignment.Center,
+            MinWidth = 16,
+        });
+        var title = new TextBlock
+        {
+            Text = WorkflowStepTitle(step.Kind),
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetColumn(title, 1); header.Children.Add(title);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        if (!terminal)
+        {
+            var up = DfUi.IconButton("\uE70E", (_, _) => MoveWorkflowStep(index, -1), "上移");
+            up.IsEnabled = index > 0;
+            var down = DfUi.IconButton("\uE70D", (_, _) => MoveWorkflowStep(index, 1), "下移");
+            down.IsEnabled = index + 1 < workflow.Steps.Count - 1;
+            var remove = DfUi.IconButton("\uE738", (_, _) => RemoveWorkflowStep(index), "移除步骤");
+            actions.Children.Add(up); actions.Children.Add(down); actions.Children.Add(remove);
+        }
+        Grid.SetColumn(actions, 2); header.Children.Add(actions);
+        body.Children.Add(header);
+        if (step.Kind is "Rename" or "Zip" or "SystemShortcut")
+        {
+            body.Children.Add(DfUi.Detail("Windows 不支持此步骤，保存前请移除。"));
+        }
+        else switch (step.Kind)
+        {
+            case "TextReplace":
+                body.Children.Add(WorkflowField("查找", step.Find, value => step.Find = value));
+                body.Children.Add(WorkflowField("替换为", step.Replacement, value => step.Replacement = value));
+                body.Children.Add(DfUi.Detail("区分大小写，按原文匹配，不使用正则表达式。"));
+                break;
+            case "TextTrim":
+                body.Children.Add(DfUi.Detail("仅去除整段文字首尾的空格、制表符和换行，保留段落内部格式。"));
+                break;
+            case "Compress":
+            {
+                body.Children.Add(WorkflowCombo("模式", [("质量", "quality"), ("目标体积", "target")],
+                    step.TargetBytes is null ? "quality" : "target", value =>
+                    {
+                        step.TargetBytes = value == "target" ? 512_000 : null;
+                        RenderWorkflowEditor();
+                    }));
+                if (step.TargetBytes is { } bytes)
+                {
+                    body.Children.Add(WorkflowNumber(bytes / 1024.0, 1, 131_072, value => step.TargetBytes = (ulong)Math.Round(value) * 1024, "最终输出上限（KiB）"));
+                    body.Children.Add(DfUi.Detail("在后续转换完成后检查；无法达标时不会复制结果。多个上限取最严格值。"));
+                }
+                else
+                {
+                    body.Children.Add(WorkflowNumber(step.Quality, 1, 100, value => step.Quality = (byte)Math.Round(value), "质量"));
+                }
+                break;
+            }
+            case "Resize":
+            {
+                body.Children.Add(WorkflowCombo("方式", [("最长边", "edge"), ("比例", "scale")],
+                    step.MaxEdge is null ? "scale" : "edge", value =>
+                    {
+                        step.MaxEdge = value == "edge" ? 2048 : null;
+                        step.ScalePercent = value == "edge" ? null : 75;
+                        RenderWorkflowEditor();
+                    }));
+                if (step.MaxEdge is { } edge)
+                    body.Children.Add(WorkflowNumber(edge, 1, 16_384, value => step.MaxEdge = (uint)Math.Round(value), "最长边（px）"));
+                else
+                    body.Children.Add(WorkflowNumber(step.ScalePercent ?? 75, 1, 100, value => step.ScalePercent = (uint)Math.Round(value), "缩放比例（%）"));
+                body.Children.Add(DfUi.Detail("保持比例，不放大图片。"));
+                break;
+            }
+            case "Convert":
+            {
+                body.Children.Add(WorkflowCombo("格式", [("PNG", "Png"), ("JPEG", "Jpeg"), ("WebP", "Webp"), ("HEIC（Windows 不支持）", "Heic")],
+                    step.Format, value => { step.Format = value; RenderWorkflowEditor(); }));
+                if (step.Format != "Png")
+                    body.Children.Add(WorkflowNumber(step.Quality, 1, 100, value => step.Quality = (byte)Math.Round(value), "质量"));
+                body.Children.Add(DfUi.Detail("保持当前尺寸；透明区域在 JPEG 输出中不保留。"));
+                break;
+            }
+            default:
+                body.Children.Add(WorkflowCombo("最后执行", [("复制到剪贴板", "Copy"), ("粘贴到当前应用", "Paste")],
+                    step.Kind, value => { step.Kind = value; RefreshWorkflowCompatibility(); }));
+                body.Children.Add(DfUi.Detail("粘贴会等待快捷键释放后发送到原应用；目标不可用时保留复制结果。"));
+                break;
+        }
+        return DfUi.Card(body, padding: 12, radius: 10, background: DfUi.Control);
+    }
+
+    private TextBox WorkflowField(string header, string value, Action<string> apply)
+    {
+        var box = new TextBox { Header = header, Text = value };
+        box.TextChanged += (_, _) => { apply(box.Text); RefreshWorkflowCompatibility(); };
+        return box;
+    }
+
+    private ComboBox WorkflowCombo(string header, (string Label, string Value)[] items, string selected, Action<string> apply)
+    {
+        var combo = new ComboBox { Header = header, MinWidth = 160, HorizontalAlignment = HorizontalAlignment.Left };
+        foreach (var (label, value) in items)
+            combo.Items.Add(new ComboBoxItem { Content = label, Tag = value });
+        int index = Array.FindIndex(items, item => item.Value == selected);
+        combo.SelectedIndex = index < 0 ? 0 : index;
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (updatingWorkflowEditor) return;
+            if (combo.SelectedItem is ComboBoxItem { Tag: string value })
+            {
+                apply(value);
+                RefreshWorkflowCompatibility();
+            }
+        };
+        return combo;
+    }
+
+    private NumberBox WorkflowNumber(double value, double minimum, double maximum, Action<double> apply, string header)
+    {
+        var box = new NumberBox
+        {
+            Header = header,
+            Value = value,
+            Minimum = minimum,
+            Maximum = maximum,
+            SmallChange = 1,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+            ValidationMode = NumberBoxValidationMode.Disabled,
+            Width = 160,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        box.ValueChanged += (_, args) =>
+        {
+            if (double.IsNaN(args.NewValue)) return;
+            apply(Math.Clamp(args.NewValue, minimum, maximum));
+            RefreshWorkflowCompatibility();
+        };
+        return box;
+    }
+
+    private void AddWorkflowStepClick(object sender, RoutedEventArgs args)
+    {
+        if (editingWorkflow is null || sender is not MenuFlyoutItem { Tag: string kind }) return;
+        var steps = editingWorkflow.Steps;
+        if (steps.Count >= 32) { WorkflowNotice.Text = "流程最多 32 个步骤。"; return; }
+        if (steps.Count == 0 || !IsWorkflowOutputStep(steps[^1])) steps.Add(WorkflowStepRecord.Copy());
+        var step = kind switch
+        {
+            "Compress" => new WorkflowStepRecord { Kind = kind, Quality = 85 },
+            "Resize" => new WorkflowStepRecord { Kind = kind, MaxEdge = 2048, ScalePercent = null },
+            "Convert" => new WorkflowStepRecord { Kind = kind, Format = "Jpeg" },
+            _ => new WorkflowStepRecord { Kind = kind },
+        };
+        steps.Insert(steps.Count - 1, step);
+        RenderWorkflowEditor();
+    }
+
+    private void MoveWorkflowStep(int index, int offset)
+    {
+        if (editingWorkflow is null) return;
+        var steps = editingWorkflow.Steps;
+        int target = index + offset;
+        if (index < 0 || index >= steps.Count - 1 || target < 0 || target >= steps.Count - 1) return;
+        (steps[index], steps[target]) = (steps[target], steps[index]);
+        RenderWorkflowEditor();
+    }
+
+    private void RemoveWorkflowStep(int index)
+    {
+        if (editingWorkflow is null) return;
+        var steps = editingWorkflow.Steps;
+        if (index < 0 || index >= steps.Count - 1) return;
+        steps.RemoveAt(index);
+        RenderWorkflowEditor();
+    }
+
+    private void RecordWorkflowShortcutClick(object sender, RoutedEventArgs args)
+    {
+        if (editingWorkflow is null) return;
+        recordingShortcut = !recordingShortcut;
+        WorkflowShortcutRecord.Content = recordingShortcut ? "请按快捷键…（Esc 取消）" : "录制…";
+        if (recordingShortcut) WorkflowNotice.Text = "按下包含 Ctrl、Alt 或 Win 的组合键。";
+    }
+
+    private void StopShortcutRecording()
+    {
+        recordingShortcut = false;
+        if (WorkflowShortcutRecord is not null) WorkflowShortcutRecord.Content = "录制…";
+    }
+
+    private bool ShortcutRecorderProc(uint message, IntPtr wParam, IntPtr lParam)
+    {
+        if (!recordingShortcut || message is not (0x0100 or 0x0104)) return false;
+        int key = wParam.ToInt32();
+        if (key is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C) return true;
+        if (key == 0x1B)
+        {
+            StopShortcutRecording();
+            WorkflowNotice.Text = "已取消快捷键录制。";
+            return true;
+        }
+        ulong modifiers = 0;
+        if (IsDown(global::Windows.System.VirtualKey.Control)) modifiers |= 0x40000;
+        if (IsDown(global::Windows.System.VirtualKey.Menu)) modifiers |= 0x80000;
+        if (IsDown(global::Windows.System.VirtualKey.Shift)) modifiers |= 0x20000;
+        if (IsDown(global::Windows.System.VirtualKey.LeftWindows) || IsDown(global::Windows.System.VirtualKey.RightWindows)) modifiers |= 0x100000;
+        if ((modifiers & 0x1c0000) == 0)
+        {
+            WorkflowNotice.Text = "快捷键必须包含 Ctrl、Alt 或 Win。";
+            return true;
+        }
+        if (key > 127)
+        {
+            WorkflowNotice.Text = "该按键不受支持，请使用字母、数字或 F1–F12。";
+            return true;
+        }
+        WorkflowShortcut.Text = $"{key}, {modifiers}";
+        StopShortcutRecording();
+        WorkflowNotice.Text = "快捷键已记录；保存后生效。";
+        return true;
     }
 
     private async void SaveWorkflowClick(object sender, RoutedEventArgs args)
@@ -2676,16 +4818,21 @@ public sealed partial class MainWindow : Window
                 if (values.Length != 2 || !ushort.TryParse(values[0], out var key) || !ulong.TryParse(values[1], out var modifiers)) throw new FormatException();
                 shortcut = new ShortcutRecord { KeyCode = key, Modifiers = modifiers };
             }
-            editingWorkflow.Name = WorkflowName.Text.Trim(); editingWorkflow.Enabled = WorkflowEnabled.IsChecked == true; editingWorkflow.Shortcut = shortcut;
+            editingWorkflow.Name = WorkflowName.Text.Trim();
+            editingWorkflow.Enabled = WorkflowEnabled.IsChecked == true;
+            editingWorkflow.Shortcut = shortcut;
+            if (WorkflowInputType.SelectedItem is ComboBoxItem { Tag: string inputType }) editingWorkflow.InputType = inputType;
             if (editingWorkflow.Steps.Count == 0) editingWorkflow.Steps = [WorkflowStepRecord.Copy()];
+            if (!IsWorkflowOutputStep(editingWorkflow.Steps[^1])) editingWorkflow.Steps.Add(WorkflowStepRecord.Copy());
+            if (WorkflowCompatibilityIssue(editingWorkflow) is string issue) { WorkflowNotice.Text = issue; return; }
             await service.SendAsync(ServiceClient.Command("SaveWorkflow", new { workflow = editingWorkflow }));
             if (!workflows.Contains(editingWorkflow)) workflows.Add(editingWorkflow);
             InstallWorkflowHotkeys();
             WorkflowList.ItemsSource = null; WorkflowList.ItemsSource = workflows;
             WorkflowList.SelectedItem = editingWorkflow;
-            WorkflowNotice.Text = "已提交；服务端 Rust 模型校验并持久化。";
+            WorkflowNotice.Text = "已保存；服务端 Rust 模型校验并持久化。";
         }
-        catch (FormatException) { WorkflowNotice.Text = "快捷键格式无效，请使用 key code, modifiers。"; }
+        catch (FormatException) { WorkflowNotice.Text = "快捷键格式无效，请使用录制按钮或 key code, modifiers。"; }
         catch (Exception ex) { WorkflowNotice.Text = ex is IOException ? ex.Message : "工作流保存失败。"; }
     }
 
@@ -2712,12 +4859,8 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var reply = await service.SendAsync("Snapshot");
-            if (reply.TryGetProperty("Snapshot", out var snapshot))
-            {
-                SnapshotChanged(snapshot);
-                Notify("设备状态已刷新。");
-            }
+            await service.SendAsync("RefreshPeers");
+            Notify("已请求重新发现设备并刷新连接状态。");
         }
         catch (Exception ex) { Notify(ex is IOException ? ex.Message : "刷新设备失败，服务可能已断开。"); }
     }
@@ -2875,9 +5018,9 @@ public sealed partial class MainWindow : Window
         if (allowRemoteApp && device.Peer.ValueKind == JsonValueKind.Object
             && device.Peer.String("trust") == "trusted" && device.Peer.String("connection") == "connected")
         {
-            bool capable = latest is JsonElement snapshot && snapshot.TryGetProperty("capabilities", out var caps) && caps.Bool("remote_app");
             var launch = DfUi.IconButton("\uE8A7", (_, _) => { selectedDeviceId = device.Id; RenderDeviceDetails(); ShowPage(WorkspacePage.RemoteApplications); }, "打开远程应用", 26, 12);
-            launch.IsEnabled = capable;
+            launch.IsEnabled = false;
+            ToolTipService.SetToolTip(launch, "远程应用 · 即将支持");
             Grid.SetColumn(launch, 2);
             grid.Children.Add(launch);
         }
@@ -3057,12 +5200,10 @@ public sealed partial class MainWindow : Window
         info.Children.Add(DfUi.Detail(device.Detail));
         Grid.SetColumn(info, 1);
         header.Children.Add(info);
-        bool canRemoteApp = latest is JsonElement remoteSnapshot
-            && remoteSnapshot.TryGetProperty("capabilities", out var remoteCaps) && remoteCaps.Bool("remote_app");
         var more = DfUi.IconButton("\uE712", (sender, _) =>
         {
             var flyout = new MenuFlyout();
-            var open = new MenuFlyoutItem { Text = "打开远程应用", IsEnabled = connected && canRemoteApp };
+            var open = new MenuFlyoutItem { Text = "远程应用 · 即将支持", IsEnabled = false };
             open.Click += (_, _) => ShowPage(WorkspacePage.RemoteApplications);
             flyout.Items.Add(open);
             flyout.Items.Add(new MenuFlyoutSeparator());
@@ -3233,12 +5374,7 @@ public sealed partial class MainWindow : Window
             if (connected)
                 actions.Children.Add(DfUi.Secondary("断开连接", async (_, _) => await RunCommand("Disconnect", new { peer_id = device.Id })));
             else
-            {
-                var reconnect = DfUi.Secondary("重新连接");
-                reconnect.IsEnabled = false;
-                ToolTipService.SetToolTip(reconnect, "网络会在设备恢复后自动重连");
-                actions.Children.Add(reconnect);
-            }
+                actions.Children.Add(DfUi.Secondary("重新连接", async (_, _) => await RunCommand("Connect", new { peer_id = device.Id })));
             actions.Children.Add(DfUi.Secondary("忘记设备", async (_, _) =>
             {
                 if (!Dialogs.Confirm(Handle, $"忘记「{device.Name}」？\n\n该设备会从列表中移除；重新发现后可再次配对。", "忘记设备")) return;
@@ -3396,7 +5532,7 @@ public sealed partial class MainWindow : Window
             HistoryList.SelectAll();
             args.Handled = true;
         }
-        else if (args.Key == global::Windows.System.VirtualKey.Enter && ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), HistoryList)) { CopySelection(); args.Handled = true; }
+        else if (args.Key == global::Windows.System.VirtualKey.Enter && ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), HistoryList)) { _ = CopySelectionAsync(); args.Handled = true; }
         else if (args.Key is global::Windows.System.VirtualKey.Delete or global::Windows.System.VirtualKey.Back && ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), HistoryList))
         {
             DeleteSelectedClick(sender, args);

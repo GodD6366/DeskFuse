@@ -1,32 +1,30 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage.Streams;
 
 namespace DeskFuse.Windows;
 
-/// <summary>
-/// PNG to WinUI image conversion for clipboard previews. The PNG dimensions were
-/// already bounded when the clipboard content was read, so this only wraps the
-/// bytes in an in-memory stream; no HTML and no file body is touched.
-/// </summary>
 internal static class ClipboardImages
 {
-    public static BitmapImage? Create(byte[] png)
+    // WinRT I/O and image decoding must never synchronously wait on the UI
+    // dispatcher. Decode only display-sized pixels, not the original bitmap.
+    public static async Task<BitmapImage?> CreateAsync(byte[] bytes, int pixelSize, CancellationToken token = default)
     {
-        if (png.Length < 24 || png.Length > NativeClipboard.MaxContentBytes) return null;
+        if (bytes.Length < 24 || bytes.Length > NativeClipboard.MaxContentBytes) return null;
         try
         {
-            var stream = new InMemoryRandomAccessStream();
-            using (var writer = new DataWriter(stream))
-            {
-                writer.WriteBytes(png);
-                writer.StoreAsync().AsTask().GetAwaiter().GetResult();
-                writer.DetachStream();
-            }
+            using var stream = new InMemoryRandomAccessStream();
+            await stream.WriteAsync(bytes.AsBuffer()).AsTask(token);
             stream.Seek(0);
-            var image = new BitmapImage();
-            image.SetSource(stream);
+            var image = new BitmapImage
+            {
+                DecodePixelWidth = pixelSize,
+                DecodePixelHeight = pixelSize,
+            };
+            await image.SetSourceAsync(stream).AsTask(token);
             return image;
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or InvalidOperationException or OutOfMemoryException) { return null; }
+        catch (Exception ex) when (ex is ArgumentException or IOException or InvalidOperationException
+            or System.Runtime.InteropServices.COMException or OutOfMemoryException) { return null; }
     }
 }

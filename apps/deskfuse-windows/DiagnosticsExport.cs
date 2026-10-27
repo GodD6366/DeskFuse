@@ -12,7 +12,8 @@ namespace DeskFuse.Windows;
 /// </summary>
 internal static class DiagnosticsExport
 {
-    public static string Export(JsonElement? snapshot, int historyEntries, int historyRetentionDays, string? clipboardStorageError)
+    public static string Export(JsonElement? snapshot, int? historyEntries = null,
+        int? historyRetentionDays = null, string? clipboardStorageError = null)
     {
         string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "diagnostics");
         Directory.CreateDirectory(directory);
@@ -28,13 +29,14 @@ internal static class DiagnosticsExport
                 ["private_mb"] = Math.Round(process.PrivateMemorySize64 / 1048576.0, 1),
                 ["gc_total_mb"] = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1),
             },
-            ["clipboard_history"] = new JsonObject
+        };
+        if (historyEntries is not null || historyRetentionDays is not null || clipboardStorageError is not null)
+            payload["clipboard_history"] = new JsonObject
             {
                 ["entries"] = historyEntries,
                 ["retention_days"] = historyRetentionDays,
                 ["storage_error"] = clipboardStorageError,
-            },
-        };
+            };
         if (snapshot is JsonElement state && state.ValueKind == JsonValueKind.Object)
             payload["service"] = JsonNode.Parse(state.GetRawText());
         File.WriteAllText(path, payload.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));

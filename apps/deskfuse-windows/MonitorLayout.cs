@@ -2,7 +2,8 @@ using System.Runtime.InteropServices;
 
 namespace DeskFuse.Windows;
 
-internal sealed record MonitorInfo(string DeviceName, int Left, int Top, int Width, int Height, bool Primary);
+internal sealed record MonitorInfo(
+    string DeviceName, int Left, int Top, int Width, int Height, bool Primary, double Scale);
 
 /// <summary>Win32 replacement for System.Windows.Forms.Screen (WinUI 3 does not
 /// reference WinForms). Coordinates are physical pixels in virtual-screen space.</summary>
@@ -33,13 +34,21 @@ internal static class MonitorLayout
             var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>(), DeviceName = string.Empty };
             if (GetMonitorInfoW(monitor, ref info))
             {
+                // Same source and convention as the service's topology
+                // (`GetScaleFactorForMonitor`, 100 = 100%), so canvas coordinates
+                // and the placement coordinates the service stores agree.
+                double scale = GetScaleFactorForMonitor(monitor, out int percent) >= 0
+                    && percent is >= 25 and <= 800
+                    ? percent / 100.0
+                    : 1.0;
                 monitors.Add(new MonitorInfo(
                     info.DeviceName,
                     info.Monitor.Left,
                     info.Monitor.Top,
                     info.Monitor.Right - info.Monitor.Left,
                     info.Monitor.Bottom - info.Monitor.Top,
-                    (info.Flags & MonitorInfoPrimary) != 0));
+                    (info.Flags & MonitorInfoPrimary) != 0,
+                    scale));
             }
             return true;
         }
@@ -56,4 +65,7 @@ internal static class MonitorLayout
     [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetMonitorInfoW(IntPtr monitor, ref MonitorInfoEx info);
+
+    [DllImport("Shcore.dll")]
+    private static extern int GetScaleFactorForMonitor(IntPtr monitor, out int scale);
 }

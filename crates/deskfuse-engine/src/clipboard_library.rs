@@ -435,7 +435,7 @@ fn placeholders(count: usize) -> String {
 // Keep original records and manual-list membership intact. Ordinary history
 // presents one exact image, preferring a usable native image over a file alias
 // or a remote index that has not downloaded its payload.
-const UNIQUE_IMAGE_ROW: &str = "(i.ordinary=0 OR i.digest NOT LIKE 'image-v1:%' OR NOT EXISTS(SELECT 1 FROM cl_items d WHERE d.ordinary=1 AND d.digest=i.digest AND (d.payload IS NOT NULL,COALESCE(json_extract(d.summary,'$.file_count'),0)=0,d.id) > (i.payload IS NOT NULL,COALESCE(json_extract(i.summary,'$.file_count'),0)=0,i.id)))";
+const UNIQUE_IMAGE_ROW: &str = "(i.ordinary=0 OR i.digest NOT LIKE 'image-v1:%' OR NOT EXISTS(SELECT 1 FROM cl_items d /*DF_IMAGE_INDEX*/ WHERE d.ordinary=1 AND d.digest=i.digest AND (d.payload IS NOT NULL,COALESCE(json_extract(d.summary,'$.file_count'),0)=0,d.id) > (i.payload IS NOT NULL,COALESCE(json_extract(i.summary,'$.file_count'),0)=0,i.id)))";
 const QUERY_ORDER: &str =
     "MAX(COALESCE(i.last_used,0),COALESCE(i.copied,i.imported)) DESC,i.id DESC";
 // Metadata after the payload column can live on SQLite overflow pages. Merely
@@ -515,18 +515,33 @@ pub fn global() -> Result<Arc<Library>> {
 impl Library {
     #[cfg(test)]
     pub(crate) fn open() -> Result<Self> {
-        Self::open_database(tempfile::tempdir().map_err(err)?)
+        let test_directory = tempfile::tempdir().map_err(err)?;
+        let database_path = test_directory.path().join("state.sqlite3");
+        Self::open_database(database_path, test_directory)
     }
     #[cfg(not(test))]
     fn open() -> Result<Self> {
-        Self::open_database()
+        Self::open_database(deskfuse_store::SQLiteStore::default_path().map_err(err)?)
     }
-    fn open_database(#[cfg(test)] test_directory: tempfile::TempDir) -> Result<Self> {
+    /// Open an additional canonical user library without replacing the process
+    /// singleton used by the macOS FFI. The host supplies its per-user database
+    /// and local network identity explicitly; no second identity is generated.
+    #[cfg(not(test))]
+    pub fn open_at(
+        database_path: std::path::PathBuf,
+        local_device_id: String,
+    ) -> Result<Arc<Self>> {
+        let library = Arc::new(Self::open_database(database_path)?);
+        library.set_local_device(local_device_id)?;
+        work::start(&library);
+        library.reconcile_index()?;
+        Ok(library)
+    }
+    fn open_database(
+        database_path: std::path::PathBuf,
+        #[cfg(test)] test_directory: tempfile::TempDir,
+    ) -> Result<Self> {
         // Ensure the canonical store has performed its own versioned migrations first.
-        #[cfg(test)]
-        let database_path = test_directory.path().join("state.sqlite3");
-        #[cfg(not(test))]
-        let database_path = deskfuse_store::SQLiteStore::default_path().map_err(err)?;
         let _canonical = deskfuse_store::SQLiteStore::open(&database_path).map_err(err)?;
         let mut db = Connection::open(&database_path).map_err(err)?;
         deskfuse_store::configure_connection(&mut db).map_err(err)?;
@@ -1071,6 +1086,20 @@ END;").map_err(err)?;
         }
         Ok(id)
     }
+    /// Ingest through a host-native source probe. Windows supplies the process
+    /// identity from the interactive desktop instead of the macOS frontmost-app API.
+    pub fn ingest_with_origin(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+        origin: Origin,
+    ) -> Result<Option<u64>> {
+        let id = self.ingest_record_with_origin(snapshot, source, origin)?;
+        if let Some(id) = id {
+            self.publication_committed(id)?;
+        }
+        Ok(id)
+    }
     /// Blocking capture paths compute the image digest once in their single
     /// decode pass and reuse it here instead of decoding the snapshot again.
     pub(crate) fn ingest_with_image_digest(
@@ -1098,6 +1127,14 @@ END;").map_err(err)?;
     }
     fn ingest_record(&self, snapshot: &PasteboardSnapshot, source: &str) -> Result<Option<u64>> {
         let origin = self.origin(snapshot, source);
+        self.ingest_record_with_origin(snapshot, source, origin)
+    }
+    fn ingest_record_with_origin(
+        &self,
+        snapshot: &PasteboardSnapshot,
+        source: &str,
+        origin: Origin,
+    ) -> Result<Option<u64>> {
         // 占位内容（清空、恢复、自动生成）不是一次复制，本地采集与远端同步
         // 都不应该为它建历史行。
         if origin.no_history
@@ -1422,6 +1459,15 @@ END;").map_err(err)?;
                 max_pixel_size,
             )
             .unwrap_or_default());
+        }
+        #[cfg(not(target_os = "macos"))]
+        if let [path] = snapshot.file_urls.as_slice()
+            && image_file_mime(path).is_some()
+        {
+            return Ok(std::fs::read(path)
+                .ok()
+                .and_then(|bytes| crate::workflow_image::preview_png(&bytes, max_pixel_size).ok())
+                .unwrap_or_default());
         }
         Ok(
             crate::tokio_bridge::clipboard_preview_png_at_size(&snapshot, max_pixel_size, None)
@@ -2383,6 +2429,9 @@ END;").map_err(err)?;
                 if !hash.is_empty() {
                     self.want_blob(&hash)?;
                 }
+            }
+            "clear_history" => {
+                self.clear_history()?;
             }
             "clear_remote_index" => {
                 let db = self.writer()?;

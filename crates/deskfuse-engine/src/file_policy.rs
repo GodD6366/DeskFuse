@@ -67,9 +67,9 @@ impl FilePolicy {
             .unwrap_or_else(|| std::env::temp_dir().join("Downloads"))
     }
 
-    pub(super) fn capture_reference(&self) -> Option<deskfuse_platform_macos::FilePasteReference> {
+    pub(super) fn capture_reference(&self) -> Option<FilePasteReference> {
         let offer = self.pending.as_ref()?;
-        Some(deskfuse_platform_macos::FilePasteReference {
+        Some(FilePasteReference {
             transfer_id: offer.id.to_string(),
             peer_id: offer.peer.to_hex(),
             change_count: offer.change_count,
@@ -86,7 +86,7 @@ impl FilePolicy {
     }
     pub(super) async fn request_captured(
         &mut self,
-        reference: &deskfuse_platform_macos::FilePasteReference,
+        reference: &FilePasteReference,
         runtime: &RuntimeHandle,
         sequence: &ClipboardSequence,
         ui: &UnboundedSender<UiEvent>,

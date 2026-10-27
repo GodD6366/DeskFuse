@@ -1,7 +1,11 @@
 //! Service-owned control and input transports; no GUI identity/runtime fallback.
-use super::{file_transfer, remote_app, wifi};
-use deskfuse_core::{Capabilities, ConnectionState, RequestId, RouteHealth, TrustState};
-use deskfuse_discovery::{DiscoveryHandle, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
+use super::{file_transfer, lan_web, remote_app, wifi};
+use deskfuse_core::{
+    Capabilities, DeviceId, RequestId, RouteCandidate, RouteHealth, RouteSource, TrustState,
+};
+use deskfuse_discovery::{
+    DiscoveryEvent, DiscoveryHandle, DiscoveryProvider, PlatformDiscovery, ServiceRecord,
+};
 use deskfuse_identity::{TrustStore, WindowsServiceDataDirectory, WindowsServiceIdentityProvider};
 use deskfuse_runtime::{
     ControlTransportAdapter, InputOnlyRuntime, RuntimeBuilder, RuntimeConfig, RuntimeHandle,
@@ -10,7 +14,7 @@ use deskfuse_runtime::{
 use deskfuse_store::{PeerStore, SQLiteStore, SettingsStore};
 use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -33,10 +37,17 @@ pub struct Network {
     /// the only writer; the WPF process accesses it through authenticated IPC.
     pub store: SQLiteStore,
     pub workflow_catalog: super::workflow::Catalog,
+    pub lan_web: lan_web::LanWebService,
     pub control_port: u16,
     input_transport: QuinnTransport,
     remote_app_transport: QuinnTransport,
     input_authorized: Mutex<BTreeSet<deskfuse_core::DeviceId>>,
+    /// One authority refresh at a time; it runs off the service's accept loop
+    /// because transport calls can wait for an in-flight input dial.
+    input_sync_busy: Arc<std::sync::atomic::AtomicBool>,
+    /// `_deskfuse-input` endpoints per peer. The input transport listens on its
+    /// own port and namespace, so control transport routes never reach it.
+    input_routes: Mutex<BTreeMap<DeviceId, Vec<RouteCandidate>>>,
     _input_discovery: Mutex<PlatformDiscovery>,
     input_discovery_events: Mutex<DiscoveryHandle>,
     // Keep the parent directories and exclusive runtime lease pinned for SQLite.
@@ -103,6 +114,9 @@ impl Network {
             .with_trust_store(store.clone())
             .with_external_discovery(discovery)
             .with_control_transport(control_transport)
+            .with_lan_networks(|| {
+                deskfuse_platform_windows::lan_ipv4_networks().unwrap_or_default()
+            })
             .build()
             .map_err(|_| stage(26))?;
 
@@ -139,15 +153,22 @@ impl Network {
         let workflow_catalog =
             super::workflow::Catalog::open(store.clone(), identity.device_id().to_string())
                 .map_err(|_| stage(22))?;
+        let lan_web = lan_web::LanWebService::new(
+            directory.database_path().with_file_name("lan-web.json"),
+            file_transfer::computer_display_name(),
+        );
         let network = Self {
             runtime,
             input_runtime,
             store,
             workflow_catalog,
+            lan_web,
             control_port,
             input_transport,
             remote_app_transport,
             input_authorized: Mutex::new(BTreeSet::new()),
+            input_sync_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            input_routes: Mutex::new(BTreeMap::new()),
             _input_discovery: Mutex::new(input_discovery),
             input_discovery_events: Mutex::new(input_events),
             _directory: directory,
@@ -157,15 +178,31 @@ impl Network {
         Ok(network)
     }
 
-    pub async fn sync_input_authority(&self) -> io::Result<()> {
-        if let Ok(events) = self.input_discovery_events.lock() {
-            for _ in 0..64 {
-                if events.try_recv().ok().flatten().is_none() {
-                    break;
-                }
-            }
+    /// Refresh the input authority without blocking the service loop: a dial in
+    /// progress holds transport locks, and awaiting it here starved pipe accepts.
+    pub fn schedule_input_authority(self: &Arc<Self>) {
+        if self
+            .input_sync_busy
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
         }
-        let view = input_view(self.runtime.snapshot_view());
+        let network = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                network.sync_input_authority(),
+            )
+            .await;
+            network
+                .input_sync_busy
+                .store(false, std::sync::atomic::Ordering::Release);
+        });
+    }
+
+    pub async fn sync_input_authority(&self) -> io::Result<()> {
+        self.refresh_input_routes();
+        let mut view = input_view(self.runtime.snapshot_view());
         let allowed = view
             .snapshot
             .peers
@@ -201,6 +238,55 @@ impl Network {
             .map_err(|_| io::Error::other("input authority lock poisoned"))? = allowed;
         self.input_runtime.update_view(view);
         Ok(())
+    }
+
+    /// Merge `_deskfuse-input` advertisements into per-peer input endpoints.
+    /// The input transport only dials its own port, so an authoritative control
+    /// view alone can never satisfy a link request.
+    fn refresh_input_routes(&self) {
+        let (Ok(mut events), Ok(mut routes)) =
+            (self.input_discovery_events.lock(), self.input_routes.lock())
+        else {
+            return;
+        };
+        for _ in 0..64 {
+            let Ok(Some(event)) = events.try_recv() else {
+                break;
+            };
+            match event {
+                DiscoveryEvent::Found(service) | DiscoveryEvent::Updated(service) => {
+                    let id = service.device_id();
+                    let mut endpoints: Vec<RouteCandidate> = service
+                        .endpoints
+                        .iter()
+                        .filter(|endpoint| endpoint.port == INPUT_PORT)
+                        .map(|endpoint| {
+                            RouteCandidate::new(
+                                endpoint.clone(),
+                                RouteSource::Mdns,
+                                RouteHealth::Unknown,
+                                INPUT_CAPABILITIES,
+                            )
+                        })
+                        .collect();
+                    if let Some(previous) = routes.get(&id) {
+                        for candidate in &mut endpoints {
+                            if let Some(known) = previous
+                                .iter()
+                                .find(|known| known.endpoint == candidate.endpoint)
+                            {
+                                candidate.id = known.id;
+                            }
+                        }
+                    }
+                    endpoints.truncate(32);
+                    routes.insert(id, endpoints);
+                }
+                // A disappearance is not revocation: the signed identity and the
+                // link supervisor already decide whether a route may be used.
+                DiscoveryEvent::Removed(_) | DiscoveryEvent::Error(_) => {}
+            }
+        }
     }
 
     /// Drain and serve pending remote-app sessions from trusted peers. Incoming
@@ -287,7 +373,7 @@ async fn bind_transport(
         include_bytes!("../../../../resources/deskfuse-transport-key.der").to_vec(),
         include_bytes!("../../../../resources/deskfuse-transport-cert.der").to_vec(),
     )
-    .with_lan_port(Arc::new(deskfuse_platform::ports::FailClosedLanPort));
+    .with_lan_port(Arc::new(deskfuse_platform_windows::WindowsLanWebPort));
     QuinnTransport::bind(
         hello,
         if input {
@@ -308,7 +394,9 @@ fn input_view(mut view: SnapshotView) -> SnapshotView {
             && !view.device_network.blocked_peer_ids.contains(&peer.id)
     });
     for peer in &mut view.snapshot.peers {
-        peer.connection = ConnectionState::Disconnected;
+        // Keep the host control state: the input transport has its own socket,
+        // but it belongs to the same device session, and the input actor uses
+        // that state to refuse control after the control session drops.
         peer.selected_route = None;
         peer.routes.retain(|route| !route.source.is_public());
         for route in &mut peer.routes {

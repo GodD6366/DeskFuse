@@ -148,12 +148,17 @@ impl Library {
     pub(super) fn metadata_sql(&self, sql: &str) -> String {
         if !self.metadata_ready.load(Ordering::Acquire) {
             return sql.replace("i.payload IS NOT NULL", "(i.payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=i.blob_hash))")
-                .replace("d.payload IS NOT NULL", "(d.payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=d.blob_hash))");
+                .replace("d.payload IS NOT NULL", "(d.payload IS NOT NULL OR EXISTS(SELECT 1 FROM cl_blobs WHERE hash=d.blob_hash))")
+                .replace("/*DF_IMAGE_INDEX*/", "INDEXED BY cl_items_image_identity");
         }
         sql.replace("cl_items i", "cl_item_metadata i")
             .replace("cl_items d", "cl_item_metadata d")
             .replace("cl_items a", "cl_item_metadata a")
             .replace("cl_items base", "cl_item_metadata base")
+            // The duplicate-image winner query must probe by digest; without
+            // this hint SQLite can choose the expiry index and scan every
+            // ordinary row for each candidate (seconds on a 5k-item library).
+            .replace("/*DF_IMAGE_INDEX*/", "INDEXED BY cl_metadata_image")
     }
     pub(super) fn storage_step(&self) -> Result<bool> {
         if !self.metadata_ready.load(Ordering::Acquire) {

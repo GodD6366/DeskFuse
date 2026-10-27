@@ -193,6 +193,10 @@ pub struct HeldPhysicalInput {
 
 struct Shared {
     origin: Instant,
+    /// Only an exclusive capture may suppress local input, so the process keeps
+    /// at most one; observer-only captures (the emergency chord watchdog) run
+    /// alongside it.
+    exclusive: bool,
     stop: AtomicBool,
     alive: AtomicBool,
     initial_caps_lock: AtomicBool,
@@ -204,9 +208,10 @@ struct Shared {
     notification: Arc<Notify>,
 }
 impl Shared {
-    fn new() -> Self {
+    fn new(exclusive: bool) -> Self {
         Self {
             origin: Instant::now(),
+            exclusive,
             stop: AtomicBool::new(false),
             alive: AtomicBool::new(false),
             initial_caps_lock: AtomicBool::new(false),
@@ -486,6 +491,9 @@ mod native {
         },
     };
 
+    /// Guards the single suppressing capture; observer-only captures are
+    /// unlimited, so the helper can watch for the emergency chord while the
+    /// sharing controller owns the exclusive tap.
     static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
     const STOP_MESSAGE: u32 = WM_APP + 0x234;
     thread_local! {
@@ -507,20 +515,36 @@ mod native {
         pub fn start(queue_capacity: usize) -> Result<Self, CaptureError> {
             Self::start_with_notification(queue_capacity, Arc::new(Notify::new()))
         }
+        /// Install an observation-only capture that never suppresses input and
+        /// never blocks the exclusive capture. Used for the emergency chord
+        /// watchdog, which must stay alive while the controller owns the tap.
+        /// # Errors
+        /// Returns invalid configuration or a native failure.
+        pub fn start_observer(queue_capacity: usize) -> Result<Self, CaptureError> {
+            Self::start_inner(queue_capacity, Arc::new(Notify::new()), false)
+        }
         pub fn start_with_notification(
             queue_capacity: usize,
             notification: Arc<Notify>,
         ) -> Result<Self, CaptureError> {
+            Self::start_inner(queue_capacity, notification, true)
+        }
+        fn start_inner(
+            queue_capacity: usize,
+            notification: Arc<Notify>,
+            exclusive: bool,
+        ) -> Result<Self, CaptureError> {
             if !(16..=16_384).contains(&queue_capacity) {
                 return Err(CaptureError::InvalidQueueCapacity);
             }
-            if CAPTURE_ACTIVE
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
+            if exclusive
+                && CAPTURE_ACTIVE
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
             {
                 return Err(CaptureError::AlreadyRunning);
             }
-            let mut shared = Shared::new();
+            let mut shared = Shared::new(exclusive);
             shared.notification = notification;
             let shared = Arc::new(shared);
             let worker_shared = Arc::clone(&shared);
@@ -539,7 +563,9 @@ mod native {
                     SHARED.with(|cell| *cell.borrow_mut() = None);
                 })
             else {
-                CAPTURE_ACTIVE.store(false, Ordering::Release);
+                if exclusive {
+                    CAPTURE_ACTIVE.store(false, Ordering::Release);
+                }
                 return Err(CaptureError::ThreadStartFailed);
             };
             let thread_id = match ready_receiver.recv_timeout(Duration::from_secs(5)) {
@@ -654,7 +680,9 @@ mod native {
             if !self.0.stop.load(Ordering::Acquire) {
                 self.0.trip(CaptureFault::ThreadStopped);
             }
-            CAPTURE_ACTIVE.store(false, Ordering::Release);
+            if self.0.exclusive {
+                CAPTURE_ACTIVE.store(false, Ordering::Release);
+            }
         }
     }
     struct Hook(HHOOK);
@@ -1056,7 +1084,7 @@ mod native {
         // Construct callback state only. No hooks, GetAsyncKeyState, capture thread,
         // suppression, or SendInput calls are performed by these tests.
         fn context(capacity: usize) -> (HookContext, Receiver<CaptureEvent>) {
-            let shared = Arc::new(Shared::new());
+            let shared = Arc::new(Shared::new(true));
             shared.alive.store(true, Ordering::Release);
             let (sender, receiver) = sync_channel(capacity);
             (
@@ -1286,7 +1314,7 @@ mod native {
 
         #[test]
         fn held_physical_release_unblocks_suppression() {
-            let shared = Shared::new();
+            let shared = Shared::new(true);
             shared.alive.store(true, Ordering::Release);
             // Model a modifier delivered locally before the handover; the
             // injected release path clears it, then the lease can start.
@@ -1410,7 +1438,7 @@ mod tests {
     }
     #[test]
     fn suppression_is_bounded_and_cannot_start_with_held_input() {
-        let shared = Shared::new();
+        let shared = Shared::new(true);
         shared.alive.store(true, Ordering::Release);
         assert_eq!(
             shared.request_suppression(Duration::ZERO),
@@ -1434,7 +1462,7 @@ mod tests {
     }
     #[test]
     fn lost_key_up_has_out_of_band_fault_and_discards_queued_down() {
-        let shared = Shared::new();
+        let shared = Shared::new(true);
         shared.alive.store(true, Ordering::Release);
         let (sender, receiver) = sync_channel(1);
         assert!(shared.publish(&sender, key(true)));
@@ -1452,7 +1480,7 @@ mod tests {
     }
     #[test]
     fn consumer_disconnect_and_stop_never_suppress() {
-        let shared = Shared::new();
+        let shared = Shared::new(true);
         shared.alive.store(true, Ordering::Release);
         let (sender, receiver) = sync_channel(1);
         drop(receiver);

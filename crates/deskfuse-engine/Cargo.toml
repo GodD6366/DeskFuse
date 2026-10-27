@@ -43,10 +43,11 @@ deskfuse-transport = { path = "../deskfuse-transport" }
 deskfuse-discovery = { path = "../deskfuse-discovery" }
 deskfuse-store = { path = "../deskfuse-store" }
 deskfuse-identity = { path = "../deskfuse-identity" }
-deskfuse-platform-macos = { path = "../deskfuse-platform-macos" }
 deskfuse-transfer = { path = "../deskfuse-transfer" }
 dirs.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+deskfuse-platform-macos = { path = "../deskfuse-platform-macos" }
 
 [lints.rust]
 unsafe_code = "warn"

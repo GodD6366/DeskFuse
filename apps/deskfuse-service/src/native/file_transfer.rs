@@ -6,13 +6,17 @@ use deskfuse_core::DeviceId;
 use deskfuse_runtime::RuntimeHandle;
 use deskfuse_transfer::{ClipboardFileFrame, FileBridge, FileFrameSink};
 use std::io;
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use tokio::sync::mpsc;
 
 const MAX_PENDING_FRAMES: usize = 256;
+type QueuedFrame = (u64, DeviceId, ClipboardFileFrame);
 
 static SINK: OnceLock<FileSink> = OnceLock::new();
-static CONSUMER: std::sync::Mutex<Option<mpsc::Receiver<(DeviceId, ClipboardFileFrame)>>> =
+static CONSUMER: std::sync::Mutex<Option<mpsc::Receiver<QueuedFrame>>> =
     std::sync::Mutex::new(None);
 static CACHE_ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
 
@@ -31,7 +35,26 @@ pub fn global_sink() -> &'static FileSink {
 
 struct SinkCore {
     runtime: OnceLock<RuntimeHandle>,
-    queue: mpsc::Sender<(DeviceId, ClipboardFileFrame)>,
+    queue: mpsc::Sender<QueuedFrame>,
+    enabled: AtomicBool,
+    generation: AtomicU64,
+}
+
+impl SinkCore {
+    fn set_enabled(&self, enabled: bool) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    fn ticket(&self) -> Option<u64> {
+        self.enabled
+            .load(Ordering::Acquire)
+            .then(|| self.generation.load(Ordering::Acquire))
+    }
+
+    fn current(&self, ticket: u64) -> bool {
+        self.enabled.load(Ordering::Acquire) && self.generation.load(Ordering::Acquire) == ticket
+    }
 }
 
 /// Fire-and-forget frame sink shared by the desktop bridge and its worker
@@ -45,13 +68,15 @@ pub struct FileSink {
 
 impl FileSink {
     #[must_use]
-    pub fn new() -> (Self, mpsc::Receiver<(DeviceId, ClipboardFileFrame)>) {
+    pub fn new() -> (Self, mpsc::Receiver<QueuedFrame>) {
         let (queue, consumer) = mpsc::channel(MAX_PENDING_FRAMES);
         (
             Self {
                 core: Arc::new(SinkCore {
                     runtime: OnceLock::new(),
                     queue,
+                    enabled: AtomicBool::new(false),
+                    generation: AtomicU64::new(0),
                 }),
             },
             consumer,
@@ -75,7 +100,10 @@ impl FileFrameSink for FileSink {
         if self.core.runtime.get().is_none() {
             return Err("文件通道尚未就绪".into());
         }
-        match self.core.queue.try_send((peer, frame)) {
+        let Some(ticket) = self.core.ticket() else {
+            return Err("文件传输已关闭".into());
+        };
+        match self.core.queue.try_send((ticket, peer, frame)) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Err("文件通道队列已满".into()),
             Err(mpsc::error::TrySendError::Closed(_)) => Err("文件通道已关闭".into()),
@@ -86,12 +114,16 @@ impl FileFrameSink for FileSink {
 /// Consumes queued frames and delivers them over the runtime. Frames must
 /// ride the peer's current control generation; a stale generation is dropped
 /// because the receiving side would refuse it anyway.
-pub fn spawn_consumer(
+fn spawn_consumer(
     runtime: RuntimeHandle,
-    mut consumer: mpsc::Receiver<(DeviceId, ClipboardFileFrame)>,
+    mut consumer: mpsc::Receiver<QueuedFrame>,
+    core: Arc<SinkCore>,
 ) {
     tokio::spawn(async move {
-        while let Some((peer, frame)) = consumer.recv().await {
+        while let Some((ticket, peer, frame)) = consumer.recv().await {
+            if !core.current(ticket) {
+                continue;
+            }
             let Ok(data) = frame.encode() else { continue };
             let Ok(payload) = deskfuse_core::ClipboardPayload::new(
                 deskfuse_transfer::CLIPBOARD_FILE_MIME,
@@ -103,6 +135,9 @@ pub fn spawn_consumer(
             let Some(generation) = runtime.control_generation(peer) else {
                 continue;
             };
+            if !core.current(ticket) {
+                continue;
+            }
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 runtime.send_clipboard_on_session(peer, generation, payload),
@@ -244,11 +279,42 @@ pub fn session_bridge() -> FileBridge {
     FileBridge::with_default_store(cache_root(), Arc::new(global_sink().clone()))
 }
 
+pub fn set_delivery_enabled(enabled: bool) {
+    global_sink().core.set_enabled(enabled);
+}
+
+pub fn delivery_ticket() -> Option<u64> {
+    global_sink().core.ticket()
+}
+
+pub fn delivery_current(ticket: u64) -> bool {
+    global_sink().core.current(ticket)
+}
+
 /// Activates frame delivery and starts the single consumer task. Called once
 /// per service process after the runtime exists.
 pub fn start_delivery(runtime: RuntimeHandle) {
     global_sink().attach_runtime(runtime.clone());
     if let Some(consumer) = CONSUMER.lock().ok().and_then(|mut guard| guard.take()) {
-        spawn_consumer(runtime, consumer);
+        spawn_consumer(runtime, consumer, global_sink().core.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_delivery_tickets_stay_invalid_after_reenable() {
+        let (sink, _) = FileSink::new();
+        assert!(sink.core.ticket().is_none());
+        sink.core.set_enabled(true);
+        let queued = sink.core.ticket().unwrap();
+        assert!(sink.core.current(queued));
+        sink.core.set_enabled(false);
+        assert!(!sink.core.current(queued));
+        sink.core.set_enabled(true);
+        assert!(!sink.core.current(queued));
+        assert!(sink.core.current(sink.core.ticket().unwrap()));
     }
 }
