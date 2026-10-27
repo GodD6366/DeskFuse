@@ -82,6 +82,41 @@ impl ConnectionContext {
             && !self.remote_addr.ip().is_loopback()
     }
 }
+/// 某台设备的键鼠共享允许走哪类物理线路。
+///
+/// 锁定后该类线路断开只暂停键鼠共享，不换到其他线路；设备连接、剪贴板和文件
+/// 传输不受影响。按线路类型而非地址锁定：雷电桥和 DHCP 地址都会变。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputPathPolicy {
+    /// 雷电 > 有线 > Wi-Fi，断开后自动换到下一条。
+    #[default]
+    Auto,
+    Only(InterfaceKind),
+}
+impl InputPathPolicy {
+    pub fn permits(self, context: &ConnectionContext) -> bool {
+        context.input_eligible()
+            && match self {
+                Self::Auto => true,
+                Self::Only(kind) => context.interface_kind == kind,
+            }
+    }
+    fn valid(self) -> bool {
+        match self {
+            Self::Auto => true,
+            Self::Only(kind) => matches!(
+                kind,
+                InterfaceKind::WiFi | InterfaceKind::Ethernet | InterfaceKind::Thunderbolt
+            ),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InputPathSetting {
+    pub device_id: DeviceId,
+    pub policy: InputPathPolicy,
+}
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct DisplayId(pub String);
 impl DisplayId {
@@ -238,6 +273,8 @@ pub struct InputSharingSettings {
     pub switch_mode: EdgeSwitchMode,
     pub placements: Vec<DisplayPlacementSetting>,
     pub layout_profiles: Vec<DisplayLayoutProfile>,
+    /// 只记录非自动的设备；属于设备本身，不随场景切换。
+    pub input_paths: Vec<InputPathSetting>,
 }
 impl Default for InputSharingSettings {
     fn default() -> Self {
@@ -253,10 +290,26 @@ impl Default for InputSharingSettings {
             switch_mode: EdgeSwitchMode::Instant,
             placements: vec![],
             layout_profiles: vec![],
+            input_paths: vec![],
         }
     }
 }
 impl InputSharingSettings {
+    pub fn input_path(&self, peer: DeviceId) -> InputPathPolicy {
+        self.input_paths
+            .iter()
+            .find(|path| path.device_id == peer)
+            .map_or(InputPathPolicy::Auto, |path| path.policy)
+    }
+    pub fn set_input_path(&mut self, peer: DeviceId, policy: InputPathPolicy) {
+        self.input_paths.retain(|path| path.device_id != peer);
+        if policy != InputPathPolicy::Auto {
+            self.input_paths.push(InputPathSetting {
+                device_id: peer,
+                policy,
+            });
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         let shortcuts = [
             &self.shortcuts.left,
@@ -339,6 +392,18 @@ impl InputSharingSettings {
                 != self.layout_profiles.len()
             || self.placements.len() > 128
             || self.participants.iter().collect::<BTreeSet<_>>().len() != self.participants.len()
+            || self.input_paths.len() > 128
+            || self
+                .input_paths
+                .iter()
+                .any(|p| p.policy == InputPathPolicy::Auto || !p.policy.valid())
+            || self
+                .input_paths
+                .iter()
+                .map(|p| p.device_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.input_paths.len()
             || self
                 .placements
                 .iter()
@@ -358,6 +423,53 @@ impl InputSharingSettings {
             return Err(invalid("invalid input sharing settings"));
         }
         Ok(())
+    }
+}
+/// 触控板滚动阶段，取值沿用 Quartz。`scroll` 是 kCGScrollWheelEventScrollPhase
+/// （1 开始、2 变化、4 结束、8 取消、128 可能开始），`momentum` 是
+/// kCGScrollWheelEventMomentumPhase（1 开始、2 继续、3 结束）。0 表示没有该阶段，
+/// 两者都为 0 就是普通滚轮。应用靠它做回弹和双指左右滑动翻页。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScrollPhase {
+    pub scroll: u8,
+    pub momentum: u8,
+}
+impl ScrollPhase {
+    pub const NONE: Self = Self {
+        scroll: 0,
+        momentum: 0,
+    };
+    pub fn is_none(&self) -> bool {
+        *self == Self::NONE
+    }
+    pub fn is_valid(self) -> bool {
+        matches!(self.scroll, 0 | 1 | 2 | 4 | 8 | 128) && self.momentum <= 3
+    }
+}
+/// 连续手势的阶段。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GesturePhase {
+    Began,
+    Changed,
+    Ended,
+    Cancelled,
+}
+impl SharedInputEvent {
+    /// 不带阶段的普通滚轮。
+    pub const fn scroll(dx: f64, dy: f64) -> Self {
+        Self::Scroll {
+            dx,
+            dy,
+            phase: ScrollPhase::NONE,
+        }
+    }
+    /// 旧对端无法解码手势，发送前要按 `INPUT_GESTURE_V1` 过滤。
+    pub fn is_gesture(&self) -> bool {
+        matches!(
+            self,
+            Self::Magnify { .. } | Self::Rotate { .. } | Self::SmartMagnify
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -382,7 +494,23 @@ pub enum SharedInputEvent {
     Scroll {
         dx: f64,
         dy: f64,
+        /// 旧版本不认识该字段，会按普通滚轮处理。
+        #[serde(default, skip_serializing_if = "ScrollPhase::is_none")]
+        phase: ScrollPhase,
     },
+    /// 双指捏合。`magnification` 是本次增量，与 NSEvent.magnification 一致。
+    /// 只发给协商了 `INPUT_GESTURE_V1` 的对端。
+    Magnify {
+        phase: GesturePhase,
+        magnification: f64,
+    },
+    /// 双指旋转。`degrees` 是本次增量，逆时针为正，与 NSEvent.rotation 一致。
+    Rotate {
+        phase: GesturePhase,
+        degrees: f64,
+    },
+    /// 双指轻点两下的智能缩放。
+    SmartMagnify,
     /// 设备计数相对位移。+x 向右，+y 向下。只在进程内从接收走到注入，不进入可靠 Hybrid JSON。
     RelativeMotion {
         dx: f64,
@@ -400,9 +528,18 @@ impl SharedInputEvent {
                     && *x <= 65536.0
                     && *y <= 65536.0
             }
-            Self::Scroll { dx, dy } => {
-                dx.is_finite() && dy.is_finite() && dx.abs() <= 65536.0 && dy.abs() <= 65536.0
+            Self::Scroll { dx, dy, phase } => {
+                dx.is_finite()
+                    && dy.is_finite()
+                    && dx.abs() <= 65536.0
+                    && dy.abs() <= 65536.0
+                    && phase.is_valid()
             }
+            Self::Magnify { magnification, .. } => {
+                magnification.is_finite() && magnification.abs() <= 16.0
+            }
+            Self::Rotate { degrees, .. } => degrees.is_finite() && degrees.abs() <= 360.0,
+            Self::SmartMagnify => true,
             Self::Button { button, .. } => *button <= 31,
             Self::Key { code, .. } => *code <= 255,
             Self::Modifiers { .. } => true,
@@ -1182,6 +1319,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scroll_phase_stays_compatible_with_older_peers() {
+        // 无阶段的滚动与旧版本 JSON 完全一致；旧版本收到新字段也能解码。
+        let plain = serde_json::to_string(&SharedInputEvent::scroll(1.0, 2.0)).unwrap();
+        assert_eq!(plain, r#"{"Scroll":{"dx":1.0,"dy":2.0}}"#);
+        let phased: SharedInputEvent = serde_json::from_str(
+            r#"{"Scroll":{"dx":0.0,"dy":0.0,"phase":{"scroll":4,"momentum":0}}}"#,
+        )
+        .unwrap();
+        assert!(phased.validate().is_ok());
+        for invalid in [
+            SharedInputEvent::Scroll {
+                dx: 0.0,
+                dy: 0.0,
+                phase: ScrollPhase {
+                    scroll: 3,
+                    momentum: 0,
+                },
+            },
+            SharedInputEvent::Magnify {
+                phase: GesturePhase::Changed,
+                magnification: f64::NAN,
+            },
+            SharedInputEvent::Rotate {
+                phase: GesturePhase::Changed,
+                degrees: 720.0,
+            },
+        ] {
+            assert!(invalid.validate().is_err());
+        }
+    }
     #[test]
     fn wallpaper_preview_is_bounded_and_uses_compact_wire_encoding() {
         let message = InputShareMessage::DisplayWallpaper {

@@ -862,7 +862,7 @@ mod tests {
                 modifiers: 0,
                 repeat: false,
             },
-            SharedInputEvent::Scroll { dx: 1.0, dy: 2.0 },
+            SharedInputEvent::scroll(1.0, 2.0),
             SharedInputEvent::Modifiers { modifiers: 1 },
         ] {
             let mut barrier = with_sequence(first.clone(), 2);

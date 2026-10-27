@@ -70,13 +70,14 @@ impl InputActor {
             let best = contexts
                 .iter()
                 .filter(|c| {
-                    c.input_eligible() && self.transport.input_motion_available(peer, c.session_id)
+                    self.path_permits(peer, c)
+                        && self.transport.input_motion_available(peer, c.session_id)
                 })
                 .min_by_key(|c| deskfuse_transport::routes::input_path_rank(c.interface_kind));
             if let Some(best) = best {
                 let rank = deskfuse_transport::routes::input_path_rank(best.interface_kind);
                 if contexts.iter().any(|c| {
-                    c.input_eligible()
+                    self.path_permits(peer, c)
                         && deskfuse_transport::routes::input_path_rank(c.interface_kind) > rank
                 }) {
                     self.transport.select_input_route(peer, best.session_id);
@@ -171,7 +172,7 @@ impl InputActor {
                         .transport
                         .input_contexts(done.peer)
                         .iter()
-                        .any(ConnectionContext::input_eligible)
+                        .any(|c| self.path_permits(done.peer, c))
                     {
                         self.links.retries.remove(&done.peer);
                         self.links.failures.remove(&done.peer);
@@ -190,12 +191,19 @@ impl InputActor {
                     self.attempted.remove(&done.peer);
                 }
                 Err(error) => {
+                    let waiting = self.input_path_waiting(done.peer).is_some();
                     let retry = self.links.retries.entry(done.peer).or_insert(Retry {
                         generation: done.generation,
                         failures: 0,
                         due: Instant::now(),
                     });
-                    let delay = (1u64 << retry.failures.min(5)).min(30);
+                    // 等锁定线路时重试不退避：插回线缆后应在几秒内恢复，而这时
+                    // 控制连接往往还在其他线路上，不会换代清掉退避。
+                    let delay = if waiting {
+                        2
+                    } else {
+                        (1u64 << retry.failures.min(5)).min(30)
+                    };
                     retry.failures = retry.failures.saturating_add(1);
                     retry.due = Instant::now() + Duration::from_secs(delay);
                     let failure = match &error {
@@ -209,11 +217,13 @@ impl InputActor {
                             done.generation
                         )
                     });
-                    if !self
-                        .transport
-                        .input_contexts(done.peer)
-                        .iter()
-                        .any(ConnectionContext::input_eligible)
+                    // 锁定线路断开是预期的暂停，状态里已有说明，不再当作故障上报。
+                    if !waiting
+                        && !self
+                            .transport
+                            .input_contexts(done.peer)
+                            .iter()
+                            .any(|c| self.path_permits(done.peer, c))
                     {
                         self.emit(RuntimeEvent::InputLinkUnavailable {
                             peer_id: done.peer,
@@ -243,10 +253,11 @@ impl InputActor {
         let id = self.links.next;
         let tx = self.links.tx.clone();
         let transport = self.transport.clone();
+        let path = self.snapshot.settings.input_path(peer);
         let recover = async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(12),
-                transport.ensure_input_link(peer, endpoints),
+                transport.ensure_input_link(peer, endpoints, path),
             )
             .await
             .unwrap_or_else(|_| {
@@ -277,6 +288,11 @@ impl InputActor {
                 task,
             },
         );
+    }
+    /// 线路策略变了，旧线路下的退避和失败记录不再适用。
+    pub(super) fn reset_link_backoff(&mut self) {
+        self.links.retries.clear();
+        self.links.failures.clear();
     }
     pub(super) async fn reap_links(&mut self) {
         for task in std::mem::take(&mut self.links.retired) {

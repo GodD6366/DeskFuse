@@ -22,6 +22,44 @@ use std::{
 /// Distinct from the file-paste marker; every synthetic sharing event is tagged.
 pub const SYNTHETIC_SHARING_EVENT_MARKER: i64 = 0x5544_5348;
 
+/// Quartz 没有公开触控板手势的类型和字段，这里是 CGSEventTypes 的私有值，
+/// 与 Hammerspoon `hs.eventtap.event.newGesture` 使用的一致。
+mod gesture {
+    use deskfuse_core::GesturePhase;
+    /// NSEventTypeGesture。捏合、旋转、智能缩放都以它到达，靠 `HID_TYPE` 区分。
+    pub(super) const EVENT_TYPE: u32 = 29;
+    pub(super) const HID_TYPE: u32 = 110;
+    pub(super) const ZOOM_VALUE: u32 = 113;
+    pub(super) const ROTATION_VALUE: u32 = 114;
+    pub(super) const PHASE: u32 = 132;
+    /// IOHIDEventType。
+    pub(super) const HID_ROTATION: i64 = 5;
+    pub(super) const HID_ZOOM: i64 = 8;
+    pub(super) const HID_SMART_MAGNIFY: i64 = 22;
+    /// kCGScrollWheelEventScrollPhase / kCGScrollWheelEventMomentumPhase。
+    pub(super) const SCROLL_PHASE: u32 = 99;
+    pub(super) const MOMENTUM_PHASE: u32 = 123;
+
+    /// 与 NSEvent.Phase 相同的位值。“可能开始”不产生缩放量，不转发。
+    pub(super) fn phase_from_raw(raw: i64) -> Option<GesturePhase> {
+        match raw {
+            1 => Some(GesturePhase::Began),
+            2 => Some(GesturePhase::Changed),
+            4 => Some(GesturePhase::Ended),
+            8 => Some(GesturePhase::Cancelled),
+            _ => None,
+        }
+    }
+    pub(super) fn phase_to_raw(phase: GesturePhase) -> i64 {
+        match phase {
+            GesturePhase::Began => 1,
+            GesturePhase::Changed => 2,
+            GesturePhase::Ended => 4,
+            GesturePhase::Cancelled => 8,
+        }
+    }
+}
+
 // IOLLEvent.h: NX_ALPHASHIFT_STATELESS_MASK and
 // NX_DEVICE_ALPHASHIFT_STATELESS_MASK describe the physical Caps key, not
 // the latched NX_ALPHASHIFTMASK used for uppercase text.

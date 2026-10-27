@@ -52,11 +52,13 @@ impl InputActor {
             .iter_mut()
             .find(|scene| scene.ssid.as_deref() == Some(ssid.as_str()))
         {
-            if scene.settings.placements == settings.placements
+            if scene.settings.participants == settings.participants
+                && scene.settings.placements == settings.placements
                 && scene.settings.layout_profiles == settings.layout_profiles
             {
                 return None;
             }
+            scene.settings.participants = settings.participants.clone();
             scene.settings.placements = settings.placements.clone();
             scene.settings.layout_profiles = settings.layout_profiles.clone();
         } else {
@@ -79,9 +81,10 @@ impl InputActor {
         true
     }
 
-    /// Apply the arrangement remembered for this network. Only the display
-    /// arrangement travels with the network; sharing switches, participants and
-    /// consent stay with the device, so a network change never turns input on.
+    /// Apply the arrangement remembered for this network: which devices' screens
+    /// are added and where they sit. Sharing switches, role and consent stay with
+    /// the device, so a network change never turns input on; an added device
+    /// still has to grant its own control lease.
     pub(super) fn apply_environment_layout(&mut self, ssid: Option<&str>) -> bool {
         if !self.snapshot.can_configure_layout() {
             self.layout_restore_diagnostic(ssid, "deferred_not_local_controller");
@@ -97,6 +100,7 @@ impl InputActor {
             return false;
         };
         let mut settings = self.snapshot.settings.clone();
+        settings.participants = scene.settings.participants.clone();
         settings.placements = scene.settings.placements.clone();
         settings.layout_profiles = scene.settings.layout_profiles.clone();
         if settings == self.snapshot.settings {
@@ -108,6 +112,13 @@ impl InputActor {
             return false;
         }
         self.release_all("Wi-Fi environment layout changed");
+        if settings.participants != self.snapshot.settings.participants {
+            // Activation intents follow the added devices; the periodic policy
+            // flush persists them alongside the restored settings.
+            self.controller_intents = self.policy_for_settings(&settings).controller_intents;
+            self.environment.dirty = true;
+            self.attempted.clear();
+        }
         self.snapshot.settings = settings.clone();
         self.layout_persistence.dirty = true;
         self.emit(RuntimeEvent::InputSharingSettingsChanged(settings));

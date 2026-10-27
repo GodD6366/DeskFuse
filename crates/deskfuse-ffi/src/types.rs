@@ -34,6 +34,12 @@ pub struct Device {
     pub remote_app_rdp: bool,
     /// The selected live route negotiated support for remote update triggers.
     pub can_trigger_update: bool,
+    /// 键鼠共享允许走的线路。
+    pub input_path: InputPath,
+    /// 该设备出现过的线路类型，按雷电、有线、Wi-Fi 排列。
+    pub input_paths_seen: Vec<InputPath>,
+    /// 设备在线、本机正共享键鼠给它，但锁定的线路没有连接。
+    pub input_path_paused: bool,
 }
 /// A discovered/cached route is a candidate, not proof of a live session.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -264,6 +270,61 @@ impl From<PermissionKind> for deskfuse_platform::PermissionKind {
             PermissionKind::InputMonitoring => Self::InputMonitoring,
         }
     }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum InputPath {
+    Auto,
+    Thunderbolt,
+    Ethernet,
+    WiFi,
+}
+impl From<core::InputPathPolicy> for InputPath {
+    fn from(policy: core::InputPathPolicy) -> Self {
+        match policy {
+            core::InputPathPolicy::Only(core::InterfaceKind::Thunderbolt) => Self::Thunderbolt,
+            core::InputPathPolicy::Only(core::InterfaceKind::Ethernet) => Self::Ethernet,
+            core::InputPathPolicy::Only(core::InterfaceKind::WiFi) => Self::WiFi,
+            _ => Self::Auto,
+        }
+    }
+}
+impl From<InputPath> for core::InputPathPolicy {
+    fn from(path: InputPath) -> Self {
+        match path {
+            InputPath::Auto => Self::Auto,
+            InputPath::Thunderbolt => Self::Only(core::InterfaceKind::Thunderbolt),
+            InputPath::Ethernet => Self::Only(core::InterfaceKind::Ethernet),
+            InputPath::WiFi => Self::Only(core::InterfaceKind::WiFi),
+        }
+    }
+}
+fn input_path_paused(m: &model::AppModel, device: &model::Device) -> bool {
+    let Ok(id) = device.id.parse::<core::DeviceId>() else {
+        return false;
+    };
+    let settings = &m.input_sharing.settings;
+    device.health == model::Health::Ready
+        && settings.input_path(id) != core::InputPathPolicy::Auto
+        && settings.enabled
+        && settings.participants.contains(&id)
+        && m.input_sharing
+            .links
+            .iter()
+            .any(|link| link.peer_id == id && link.context.is_none())
+}
+fn input_paths_seen(device: &model::Device) -> Vec<InputPath> {
+    [InputPath::Thunderbolt, InputPath::Ethernet, InputPath::WiFi]
+        .into_iter()
+        .filter(|path| {
+            let core::InputPathPolicy::Only(kind) = (*path).into() else {
+                return false;
+            };
+            device
+                .routes
+                .iter()
+                .any(|route| route.path_kind == Some(kind))
+        })
+        .collect()
 }
 #[derive(Clone, Copy, Debug, uniffi::Enum)]
 pub enum SwitchMode {
@@ -638,6 +699,11 @@ pub enum EngineCommand {
     SetInput {
         settings: InputSettings,
     },
+    /// 只改这台设备的键鼠线路，其余键鼠设置保持不变。
+    SetInputPath {
+        device_id: String,
+        path: InputPath,
+    },
     /// Resume one device after a local reclaim without toggling the switch.
     RestartInputActivation {
         peer_id: String,
@@ -903,6 +969,14 @@ impl From<&EngineState> for EngineSnapshot {
                                     .capabilities
                                     .contains(core::Capabilities::LAN_UPDATE_TRIGGER)
                         }),
+                        input_path: d
+                            .id
+                            .parse::<core::DeviceId>()
+                            .map_or(InputPath::Auto, |id| {
+                                m.input_sharing.settings.input_path(id).into()
+                            }),
+                        input_paths_seen: input_paths_seen(d),
+                        input_path_paused: input_path_paused(m, d),
                     });
                 }
                 devices

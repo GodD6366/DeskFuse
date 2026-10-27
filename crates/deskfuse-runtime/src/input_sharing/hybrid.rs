@@ -792,6 +792,75 @@ mod tests {
         actor.tick_motion();
         assert!(transport.sent.lock().unwrap().iter().any(|(_,_,m)|matches!(m,InputShareMessage::Hybrid{update:HybridInputUpdate::Snapshot{position,..},..} if position.x==30.0)));
     }
+    #[tokio::test]
+    async fn gestures_reach_only_peers_that_negotiated_them() {
+        for negotiated in [false, true] {
+            let (mut actor, peer, context, transport, _) = setup(true);
+            enable(&transport, &context);
+            if negotiated {
+                let mut caps = transport.capabilities.lock().unwrap();
+                caps.get_mut(&context.session_id)
+                    .unwrap()
+                    .insert(Capabilities::INPUT_GESTURE_V1);
+            }
+            actor.request(peer, "display".into());
+            let id = *actor.leases.keys().next().unwrap();
+            receive(
+                &mut actor,
+                peer,
+                &context,
+                InputShareMessage::GrantHybrid {
+                    session_id: id,
+                    token: InputToken::new(),
+                    ttl_ms: 1500,
+                    motion_enabled: true,
+                    pointer_mode: MotionPointerMode::Absolute,
+                    pointer_fallback: None,
+                },
+            );
+            actor.hybrid_enter(id, "display".into(), 1.0, 10.0);
+            let magnify = SharedInputEvent::Magnify {
+                phase: GesturePhase::Began,
+                magnification: 0.1,
+            };
+            for events in [
+                vec![magnify.clone()],
+                vec![magnify.clone(), SharedInputEvent::scroll(0.0, 1.0)],
+            ] {
+                actor
+                    .command(RuntimeCommand::SendSharedInput {
+                        session_id: id,
+                        target_display: "display".into(),
+                        relative: None,
+                        events,
+                    })
+                    .await;
+            }
+            assert!(actor.leases.contains_key(&id));
+            let sent = transport
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(_, _, m)| match m {
+                    InputShareMessage::Hybrid {
+                        update: HybridInputUpdate::Transition { events, .. },
+                        ..
+                    } => Some(events.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let expected = if negotiated {
+                vec![
+                    vec![magnify.clone()],
+                    vec![magnify, SharedInputEvent::scroll(0.0, 1.0)],
+                ]
+            } else {
+                vec![vec![SharedInputEvent::scroll(0.0, 1.0)]]
+            };
+            assert_eq!(sent, expected);
+        }
+    }
     #[test]
     fn fallback_mode_is_fixed_and_never_changes_on_a_renewal_grant() {
         let (mut actor, peer, context, transport, _) = setup(true);

@@ -18,7 +18,7 @@ use crate::{
     },
     input::{MouseButton, OrdinaryDesktopInjector, VirtualDesktopPixels},
 };
-use deskfuse_core::{DisplayDescriptor, InputSessionId, SharedInputEvent};
+use deskfuse_core::{DisplayDescriptor, GesturePhase, InputSessionId, SharedInputEvent};
 use deskfuse_input::sharing::HotkeyBindings;
 use deskfuse_platform::{
     CaptureEvent, CaptureMode, CaptureSample, PlatformError, PlatformResult, SharedInputCapture,
@@ -313,10 +313,7 @@ impl WindowsSharingCapture {
                 vertical,
                 horizontal,
                 ..
-            } => SharedInputEvent::Scroll {
-                dx: f64::from(horizontal),
-                dy: f64::from(vertical),
-            },
+            } => SharedInputEvent::scroll(f64::from(horizontal), f64::from(vertical)),
             NativeCaptureEvent::Key {
                 usage,
                 down,
@@ -612,6 +609,7 @@ fn injection_worker(
     };
     let mut state_epoch = 0;
     let mut scroll_residual = (0.0, 0.0);
+    let mut zoom_residual = 0.0;
     let mut motion_residual = (0.0, 0.0);
     loop {
         let command = match receiver.recv_timeout(Duration::from_millis(20)) {
@@ -645,6 +643,7 @@ fn injection_worker(
                         &display,
                         &events,
                         &mut scroll_residual,
+                        &mut zoom_residual,
                         &mut motion_residual,
                     )
                 }
@@ -674,6 +673,10 @@ fn injection_worker(
     }
 }
 
+/// 精确式触控板在 Windows 上把捏合报告成 Ctrl+滚轮。一次完整捏合的放大量约为 1，
+/// 对应 5 格滚轮（浏览器缩放 5 档）。
+const ZOOM_WHEEL_PER_MAGNIFICATION: f64 = 600.0;
+
 #[allow(clippy::cast_possible_truncation)]
 fn inject_batch(
     injector: &mut OrdinaryDesktopInjector,
@@ -682,6 +685,7 @@ fn inject_batch(
     display: &DisplayDescriptor,
     events: &[SharedInputEvent],
     scroll_residual: &mut (f64, f64),
+    zoom_residual: &mut f64,
     motion_residual: &mut (f64, f64),
 ) -> PlatformResult<()> {
     let displays = native_displays()?;
@@ -752,7 +756,7 @@ fn inject_batch(
                 }
                 *motion_residual = next;
             }
-            SharedInputEvent::Scroll { dx, dy } => {
+            SharedInputEvent::Scroll { dx, dy, .. } => {
                 scroll_residual.0 += dx;
                 scroll_residual.1 += dy;
                 let horizontal = scroll_residual.0.round();
@@ -763,6 +767,23 @@ fn inject_batch(
                     .scroll(vertical as i32, horizontal as i32)
                     .map_err(|_| PlatformError::InputInjectionFailed)?;
             }
+            SharedInputEvent::Magnify {
+                phase,
+                magnification,
+            } => {
+                *zoom_residual += magnification * ZOOM_WHEEL_PER_MAGNIFICATION;
+                let wheel = zoom_residual.round();
+                *zoom_residual = if matches!(phase, GesturePhase::Ended | GesturePhase::Cancelled) {
+                    0.0
+                } else {
+                    *zoom_residual - wheel
+                };
+                injector
+                    .zoom(wheel as i32)
+                    .map_err(|_| PlatformError::InputInjectionFailed)?;
+            }
+            // Windows 没有通用的旋转和智能缩放输入，丢弃而不是猜一个快捷键。
+            SharedInputEvent::Rotate { .. } | SharedInputEvent::SmartMagnify => {}
         }
         // 慢注入计数和阶段均值各记一份：均值会把少数几次长卡顿摊平到看不见。
         let inject_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);

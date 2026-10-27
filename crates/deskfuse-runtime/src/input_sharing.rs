@@ -88,7 +88,8 @@ fn settings_without_peer(
         || settings
             .placements
             .iter()
-            .any(|placement| placement.display.device_id == peer);
+            .any(|placement| placement.display.device_id == peer)
+        || settings.input_path(peer) != InputPathPolicy::Auto;
     if !referenced {
         return None;
     }
@@ -102,6 +103,7 @@ fn settings_without_peer(
     if settings.authorized_controller == Some(peer) {
         settings.authorized_controller = None;
     }
+    settings.set_input_path(peer, InputPathPolicy::Auto);
     Some(settings)
 }
 fn lease_now_ms() -> u64 {
@@ -457,8 +459,24 @@ impl InputActor {
                     .is_some_and(|a| a.peer == peer && a.ready())
             }
     }
+    /// 本机为该设备锁定的线路是否允许这条连接承载键鼠。
+    fn path_permits(&self, peer: DeviceId, context: &ConnectionContext) -> bool {
+        self.snapshot.settings.input_path(peer).permits(context)
+    }
+    /// 锁定的线路当前没有连接时给出说明；自动模式或线路在线时为 None。
+    fn input_path_waiting(&self, peer: DeviceId) -> Option<String> {
+        let InputPathPolicy::Only(kind) = self.snapshot.settings.input_path(peer) else {
+            return None;
+        };
+        (!self
+            .transport
+            .input_contexts(peer)
+            .iter()
+            .any(|c| self.path_permits(peer, c)))
+        .then(|| format!("{}未连接，键鼠共享已暂停", kind.label()))
+    }
     fn context_live(&self, peer: DeviceId, context: &ConnectionContext) -> bool {
-        context.input_eligible()
+        self.path_permits(peer, context)
             && self
                 .transport
                 .input_contexts(peer)
@@ -745,6 +763,10 @@ impl InputActor {
                 };
                 let mut settings = scene.settings.clone();
                 settings.feature_enabled = self.snapshot.settings.feature_enabled;
+                // 线路锁定属于设备本身，不随场景切换。
+                settings
+                    .input_paths
+                    .clone_from(&self.snapshot.settings.input_paths);
                 RuntimeCommand::SetInputSharingSettings(settings)
             }
             RuntimeCommand::ForgetInputPeer { peer_id } => {
@@ -884,7 +906,14 @@ impl InputActor {
                             self.outgoing.clear();
                             self.stop_links().await;
                         }
+                        if self.snapshot.settings.input_paths != settings.input_paths {
+                            self.reset_link_backoff();
+                        }
                         self.snapshot.settings = settings.clone();
+                        // 增删设备属于当前网络的屏幕排布，回到该网络时一并恢复。
+                        if self.refresh_environment_scene() {
+                            self.layout_persistence.dirty = true;
+                        }
                         self.published_topologies.clear();
                         self.published_wallpapers.clear();
                         self.attempted.clear();
@@ -1011,7 +1040,7 @@ impl InputActor {
             RuntimeCommand::SendSharedInput {
                 session_id,
                 target_display,
-                events,
+                mut events,
                 relative,
             } => {
                 let Some(lease) = self.leases.get(&session_id) else {
@@ -1031,6 +1060,17 @@ impl InputActor {
                     return;
                 };
                 let generation = topology.generation;
+                // 旧对端解码不了手势，会断开整条输入流；只丢手势，其余照发。
+                if !self
+                    .transport
+                    .input_capabilities(lease.peer, lease.context.session_id)
+                    .contains(Capabilities::INPUT_GESTURE_V1)
+                {
+                    events.retain(|event| !event.is_gesture());
+                    if events.is_empty() {
+                        return;
+                    }
+                }
                 if events.is_empty()||events.len()>256||events.iter().any(|e|e.validate().is_err() || matches!(e,SharedInputEvent::Motion{x,y} if !topology.displays.iter().any(|d|d.id==target_display && d.contains(*x,*y)))){self.release(session_id,"invalid input frame",true);return}
                 if self.leases[&session_id].hybrid.enabled {
                     let relative = relative
@@ -1815,7 +1855,7 @@ impl InputActor {
                 .collect::<Vec<_>>();
             self.maintain_link(id, endpoints.clone());
             let contexts = self.transport.input_contexts(id);
-            let Some(context) = contexts.into_iter().find(ConnectionContext::input_eligible) else {
+            let Some(context) = contexts.into_iter().find(|c| self.path_permits(id, c)) else {
                 self.start_link(id, endpoints);
                 continue;
             };
@@ -1860,7 +1900,7 @@ impl InputActor {
                     self.transport
                         .input_contexts(peer.id)
                         .into_iter()
-                        .find(ConnectionContext::input_eligible)
+                        .find(|c| self.path_permits(peer.id, c))
                 });
                 let ready = lease.is_some_and(|(_, l)| {
                     !l.expired()
@@ -1877,7 +1917,11 @@ impl InputActor {
                 } else if !self.network_allowed(peer.id) {
                     Some("Requires a trusted connected peer with input sharing capability".into())
                 } else if context.is_none() {
-                    Some("No verified physical on-link LAN connection".into())
+                    Some(
+                        self.input_path_waiting(peer.id).unwrap_or_else(|| {
+                            "No verified physical on-link LAN connection".into()
+                        }),
+                    )
                 } else if !ready {
                     Some("Awaiting authorized input lease".into())
                 } else {
@@ -2002,6 +2046,7 @@ mod tests {
             &self,
             peer: DeviceId,
             _endpoints: Vec<Endpoint>,
+            _path: deskfuse_core::InputPathPolicy,
         ) -> ProviderFuture<()> {
             self.ensured.lock().unwrap().push(peer);
             Box::pin(async { Ok(()) })
@@ -2431,7 +2476,7 @@ mod tests {
                 modifiers: 0,
                 repeat: false,
             },
-            SharedInputEvent::Scroll { dx: 0.0, dy: 1.0 },
+            SharedInputEvent::scroll(0.0, 1.0),
             SharedInputEvent::Modifiers { modifiers: 1 },
         ] {
             barriers.push(RuntimeCommand::SendSharedInput {
@@ -2611,6 +2656,55 @@ mod tests {
             },
         );
         assert!(actor.leases.is_empty());
+    }
+    #[test]
+    fn locked_input_path_pauses_instead_of_falling_back() {
+        let (mut actor, peer, wifi, transport, _) = setup(false);
+        receiver_grant(&mut actor, peer, &wifi);
+        assert_eq!(actor.leases.len(), 1);
+        actor
+            .snapshot
+            .settings
+            .set_input_path(peer, InputPathPolicy::Only(InterfaceKind::Thunderbolt));
+        // 雷电断开后只剩 Wi-Fi：租约结束，Wi-Fi 上的新请求也不接受。
+        actor.tick();
+        assert!(actor.leases.is_empty());
+        assert_eq!(
+            actor.input_path_waiting(peer).as_deref(),
+            Some("雷电未连接，键鼠共享已暂停")
+        );
+        receive(
+            &mut actor,
+            peer,
+            &wifi,
+            InputShareMessage::Request {
+                session_id: InputSessionId::new(),
+                target_display: "display".into(),
+            },
+        );
+        assert!(actor.leases.is_empty());
+        // 雷电恢复后照常授权。
+        let mut thunderbolt = wifi.clone();
+        thunderbolt.session_id = TransportSessionId::new();
+        thunderbolt.interface_name = Some("bridge0".into());
+        thunderbolt.interface_kind = InterfaceKind::Thunderbolt;
+        transport.contexts.lock().unwrap().push(thunderbolt.clone());
+        assert!(actor.input_path_waiting(peer).is_none());
+        // 主控会在雷电上重新启用，本机适配器随后就绪；这里直接给出这两步的结果。
+        actor.incoming = Some(Activation::ready_fixture(peer, thunderbolt.clone()));
+        actor.available = true;
+        receiver_grant(&mut actor, peer, &thunderbolt);
+        assert_eq!(actor.leases.len(), 1);
+    }
+    #[test]
+    fn forgetting_device_clears_its_input_path() {
+        let peer = DeviceId::from_public_key([9; 32]).unwrap();
+        let mut settings = InputSharingSettings::default();
+        settings.set_input_path(peer, InputPathPolicy::Only(InterfaceKind::Ethernet));
+        assert!(settings.validate().is_ok());
+        let forgotten = settings_without_peer(&settings, peer).unwrap();
+        assert_eq!(forgotten.input_path(peer), InputPathPolicy::Auto);
+        assert!(forgotten.input_paths.is_empty());
     }
     #[test]
     fn second_controller_session_conflicts_and_lease_expires() {

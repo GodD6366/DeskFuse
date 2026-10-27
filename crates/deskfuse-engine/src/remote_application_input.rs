@@ -377,10 +377,7 @@ impl Owner {
                 modifiers: packet.flags,
                 repeat: packet.repeat,
             }),
-            "scroll" => events.push(SharedInputEvent::Scroll {
-                dx: packet.dx,
-                dy: packet.dy,
-            }),
+            "scroll" => events.push(SharedInputEvent::scroll(packet.dx, packet.dy)),
             "move" | "flags" => {}
             _ => return,
         }

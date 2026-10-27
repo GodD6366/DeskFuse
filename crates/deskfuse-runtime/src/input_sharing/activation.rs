@@ -852,7 +852,11 @@ impl InputActor {
                     .find(|context| self.activation_capable(peer, context))
             });
             let Some(context) = context else {
-                if self.transport.input_contexts(peer).is_empty() {
+                if let Some(reason) = self.input_path_waiting(peer) {
+                    let activation = self.outgoing.get_mut(&peer).unwrap();
+                    activation.status = InputActivationStatus::Unavailable;
+                    activation.reason = Some(reason);
+                } else if self.transport.input_contexts(peer).is_empty() {
                     // 输入链路还没建立：有建链失败记录时如实展示原因，
                     // 不能停在初始的 Preparing 让界面一直显示“正在准备”。
                     // 链路恢复后首次发送会把状态重置回 Preparing。

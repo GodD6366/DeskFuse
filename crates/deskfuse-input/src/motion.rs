@@ -467,7 +467,7 @@ mod tests {
                 repeat: false,
             },
             button(false),
-            SharedInputEvent::Scroll { dx: 1., dy: 2. },
+            SharedInputEvent::scroll(1., 2.),
         ];
         let update = HybridInputUpdate::Transition {
             position: position(2),

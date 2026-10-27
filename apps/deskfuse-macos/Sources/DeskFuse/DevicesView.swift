@@ -513,7 +513,13 @@ struct DevicesView: View {
             deviceHeader(device)
                 .padding(20)
                 .dfCard()
-            DeviceRoutesPanel(routes: device.routes) { store.send(.refreshDevices) }
+            DeviceRoutesPanel(
+                routes: device.routes,
+                inputPath: device.inputPath,
+                seenPaths: device.inputPathsSeen,
+                setInputPath: { store.send(.setInputPath(deviceId: device.id, path: $0)) },
+                refresh: { store.send(.refreshDevices) }
+            )
                 .dfCard()
             transferActivity
             operations(for: device)
@@ -757,6 +763,7 @@ struct DevicesView: View {
 
     private func listDetail(for device: Device) -> String {
         let status = statusLabel(for: device)
+        if device.inputPathPaused { return "\(status) · 等待\(device.inputPath.label)，键鼠已暂停" }
         let endpoint = device.endpoint.isEmpty ? device.detail : device.endpoint
         return endpoint.isEmpty ? status : "\(status) · \(endpoint)"
     }

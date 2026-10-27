@@ -489,6 +489,18 @@ impl Engine {
                     )?,
                 ))
             }
+            EngineCommand::SetInputPath { device_id, path } => {
+                let mut settings = self
+                    .state
+                    .lock()
+                    .map_err(failure)?
+                    .model
+                    .input_sharing
+                    .settings
+                    .clone();
+                settings.set_input_path(device(&device_id)?, path.into());
+                TokioCommand::Runtime(RuntimeCommand::SetInputSharingSettings(settings))
+            }
             EngineCommand::RestartInputActivation { peer_id } => {
                 TokioCommand::Runtime(RuntimeCommand::RestartInputActivation {
                     peer_id: device(&peer_id)?,

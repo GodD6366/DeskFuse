@@ -1,6 +1,6 @@
 use super::{
     CAPS_LOCK_KEYCODE, CAPS_LOCK_STATELESS_FLAGS, Deadline, SYNTHETIC_SHARING_EVENT_MARKER,
-    permission_result,
+    gesture, permission_result,
 };
 use crate::{PlatformError, PlatformResult};
 #[cfg(not(test))]
@@ -10,7 +10,7 @@ use core_graphics::{
     event_source::{CGEventSource, CGEventSourceStateID},
     geometry::CGPoint,
 };
-use deskfuse_core::{DisplayDescriptor, InputSessionId, SharedInputEvent};
+use deskfuse_core::{DisplayDescriptor, GesturePhase, InputSessionId, SharedInputEvent};
 use foreign_types::ForeignType;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -27,6 +27,8 @@ use tokio::sync::Notify;
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventSetLocation(event: core_graphics::sys::CGEventRef, location: CGPoint);
+    // 手势类型不在 core-graphics 的 CGEventType 枚举里，只能按原始值设置。
+    fn CGEventSetType(event: core_graphics::sys::CGEventRef, kind: u32);
     fn CGEventSourceSetUserData(source: core_graphics::sys::CGEventSourceRef, user_data: i64);
     // 空事件源返回的事件只用来读当前光标位置，读完必须释放。
     // 测试用注入的假光标，不需要这几个符号。
@@ -858,6 +860,8 @@ struct NativeInjector {
     #[cfg(test)]
     caps_key_posts: std::cell::RefCell<Vec<bool>>,
     scroll_residual: (f64, f64),
+    /// 已开始但未结束的手势（IOHIDEventType）。捏合和旋转可以同时进行。
+    gestures: BTreeSet<i64>,
     /// 相对移动的小数残差。整数部分才发给 Quartz。
     motion_residual: (f64, f64),
     clicks: BTreeMap<u8, (Instant, CGPoint, i64)>,
@@ -898,6 +902,7 @@ impl NativeInjector {
             #[cfg(test)]
             caps_key_posts: std::cell::RefCell::new(Vec::new()),
             scroll_residual: (0.0, 0.0),
+            gestures: BTreeSet::new(),
             motion_residual: (0.0, 0.0),
             clicks: BTreeMap::new(),
             // 首次相对移动就该对账，因此把上次时刻推到间隔之前。
@@ -1101,7 +1106,7 @@ impl NativeInjector {
                 self.set_modifiers(*modifiers, None)?;
                 self.sync_caps_lock(*modifiers);
             }
-            SharedInputEvent::Scroll { dx, dy } => {
+            SharedInputEvent::Scroll { dx, dy, phase } => {
                 // Point-delta fields are integers, while fixed-point fields
                 // preserve 16.16 fractions. Carry fractional points for clients
                 // which only consume the integer fields instead of losing them.
@@ -1145,7 +1150,25 @@ impl NativeInjector {
                     EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2,
                     *dx,
                 );
+                event.set_integer_value_field(gesture::SCROLL_PHASE, i64::from(phase.scroll));
+                event.set_integer_value_field(gesture::MOMENTUM_PHASE, i64::from(phase.momentum));
                 self.post(event);
+            }
+            SharedInputEvent::Magnify {
+                phase,
+                magnification,
+            } => self.post_gesture(
+                gesture::HID_ZOOM,
+                Some(*phase),
+                Some((gesture::ZOOM_VALUE, *magnification)),
+            )?,
+            SharedInputEvent::Rotate { phase, degrees } => self.post_gesture(
+                gesture::HID_ROTATION,
+                Some(*phase),
+                Some((gesture::ROTATION_VALUE, *degrees)),
+            )?,
+            SharedInputEvent::SmartMagnify => {
+                self.post_gesture(gesture::HID_SMART_MAGNIFY, None, None)?
             }
         }
         let inject_time = inject_start.elapsed();
@@ -1160,6 +1183,37 @@ impl NativeInjector {
         // 慢注入计数和阶段均值各记一份：均值会把少数几次长卡顿摊平到看不见。
         deskfuse_core::note_injection_duration(inject_micros);
         deskfuse_core::record_input_stage(deskfuse_core::InputStage::Inject, inject_micros);
+        Ok(())
+    }
+    fn post_gesture(
+        &mut self,
+        hid_type: i64,
+        phase: Option<GesturePhase>,
+        value: Option<(u32, f64)>,
+    ) -> PlatformResult<()> {
+        let event =
+            CGEvent::new(self.source.clone()).map_err(|()| PlatformError::InputInjectionFailed)?;
+        // SAFETY: event is a live owned Quartz event; 29 is NSEventTypeGesture.
+        // 手势和滚轮一样落在受控指针所在的窗口上。
+        unsafe {
+            CGEventSetType(event.as_ptr(), gesture::EVENT_TYPE);
+            if self.positioned {
+                CGEventSetLocation(event.as_ptr(), self.position);
+            }
+        }
+        event.set_integer_value_field(gesture::HID_TYPE, hid_type);
+        if let Some((field, value)) = value {
+            event.set_double_value_field(field, value);
+        }
+        if let Some(phase) = phase {
+            event.set_integer_value_field(gesture::PHASE, gesture::phase_to_raw(phase));
+            if matches!(phase, GesturePhase::Began | GesturePhase::Changed) {
+                self.gestures.insert(hid_type);
+            } else {
+                self.gestures.remove(&hid_type);
+            }
+        }
+        self.post(event);
         Ok(())
     }
     fn post_button(&self, button: u8, pressed: bool, count: i64) -> PlatformResult<()> {
@@ -1289,6 +1343,12 @@ impl NativeInjector {
         self.clicks.clear();
         if self.caps_hid_down {
             self.post_caps_key(false);
+        }
+        // 控制中断时应用仍停在缩放/旋转中，补发取消让它收尾。
+        for hid_type in std::mem::take(&mut self.gestures) {
+            if let Err(e) = self.post_gesture(hid_type, Some(GesturePhase::Cancelled), None) {
+                error = Some(e);
+            }
         }
         // The receiver keeps its latch; the next controller re-syncs it.
         self.caps_latch = None;
@@ -1493,10 +1553,7 @@ mod tests {
         let mut state = armed_mailbox();
         for _ in 0..MAILBOX_CAPACITY - 1 {
             state
-                .push(pending(
-                    &state,
-                    SharedInputEvent::Scroll { dx: 0.0, dy: 1.0 },
-                ))
+                .push(pending(&state, SharedInputEvent::scroll(0.0, 1.0)))
                 .unwrap();
         }
         let input = batch(
@@ -1613,10 +1670,7 @@ mod tests {
             .push(pending(&state, SharedInputEvent::Motion { x: 3.0, y: 1.0 }))
             .unwrap();
         state
-            .push(pending(
-                &state,
-                SharedInputEvent::Scroll { dx: 0.0, dy: 1.0 },
-            ))
+            .push(pending(&state, SharedInputEvent::scroll(0.0, 1.0)))
             .unwrap();
         state
             .push(pending(&state, SharedInputEvent::Motion { x: 4.0, y: 1.0 }))
@@ -1684,10 +1738,7 @@ mod tests {
         let mut state = armed_mailbox();
         for _ in 0..MAILBOX_CAPACITY {
             state
-                .push(pending(
-                    &state,
-                    SharedInputEvent::Scroll { dx: 1.0, dy: 0.0 },
-                ))
+                .push(pending(&state, SharedInputEvent::scroll(1.0, 0.0)))
                 .unwrap();
         }
         let old = pending(
@@ -2107,9 +2158,63 @@ mod tests {
         assert!(n.modifier_keys.is_empty());
     }
     #[test]
+    fn trackpad_gestures_and_scroll_phases_reach_quartz() {
+        let mut n = NativeInjector::new().unwrap();
+        n.inject(
+            &display(),
+            &SharedInputEvent::Scroll {
+                dx: 0.0,
+                dy: 0.0,
+                phase: deskfuse_core::ScrollPhase {
+                    scroll: 1,
+                    momentum: 0,
+                },
+            },
+        )
+        .unwrap();
+        n.inject(
+            &display(),
+            &SharedInputEvent::Magnify {
+                phase: GesturePhase::Began,
+                magnification: 0.25,
+            },
+        )
+        .unwrap();
+        n.inject(
+            &display(),
+            &SharedInputEvent::Rotate {
+                phase: GesturePhase::Changed,
+                degrees: -3.0,
+            },
+        )
+        .unwrap();
+        {
+            let events = n.posted.borrow();
+            assert_eq!(events[0].get_integer_value_field(gesture::SCROLL_PHASE), 1);
+            assert_eq!(events[1].get_integer_value_field(gesture::HID_TYPE), 8);
+            assert_eq!(events[1].get_double_value_field(gesture::ZOOM_VALUE), 0.25);
+            assert_eq!(events[1].get_integer_value_field(gesture::PHASE), 1);
+            assert_eq!(
+                events[2].get_double_value_field(gesture::ROTATION_VALUE),
+                -3.0
+            );
+        }
+        assert_eq!(n.gestures.len(), 2);
+        // 控制中断时，未结束的捏合和旋转都要补发取消。
+        n.release_all().unwrap();
+        assert!(n.gestures.is_empty());
+        let events = n.posted.borrow();
+        let cancelled = events
+            .iter()
+            .filter(|e| e.get_integer_value_field(gesture::PHASE) == 8)
+            .map(|e| e.get_integer_value_field(gesture::HID_TYPE))
+            .collect::<Vec<_>>();
+        assert_eq!(cancelled, vec![5, 8]);
+    }
+    #[test]
     fn scroll_marker_allows_downstream_smoothing_to_retag_events() {
         let mut n = NativeInjector::new().unwrap();
-        n.inject(&display(), &SharedInputEvent::Scroll { dx: 0.0, dy: -10.0 })
+        n.inject(&display(), &SharedInputEvent::scroll(0.0, -10.0))
             .unwrap();
         let events = n.posted.borrow();
         let event = events.last().unwrap();
@@ -2140,7 +2245,7 @@ mod tests {
         n.inject(&d, &SharedInputEvent::Motion { x: 40.0, y: 50.0 })
             .unwrap();
         for (dx, dy) in [(0.0, -10.0), (20.0, 0.0), (0.25, -0.5)] {
-            n.inject(&d, &SharedInputEvent::Scroll { dx, dy }).unwrap();
+            n.inject(&d, &SharedInputEvent::scroll(dx, dy)).unwrap();
             let events = n.posted.borrow();
             let event = events.last().unwrap();
             assert_eq!(event.get_type() as u32, CGEventType::ScrollWheel as u32);
@@ -2186,14 +2291,8 @@ mod tests {
             n.posted.borrow().last().unwrap().get_flags().bits() & flags,
             flags
         );
-        n.inject(
-            &d,
-            &SharedInputEvent::Scroll {
-                dx: 0.25,
-                dy: -1.75,
-            },
-        )
-        .unwrap();
+        n.inject(&d, &SharedInputEvent::scroll(0.25, -1.75))
+            .unwrap();
         assert_eq!(
             n.posted
                 .borrow()
@@ -2247,8 +2346,7 @@ mod tests {
         let mut n = NativeInjector::new().unwrap();
         let d = display();
         for _ in 0..4 {
-            n.inject(&d, &SharedInputEvent::Scroll { dx: 0.25, dy: 0.0 })
-                .unwrap();
+            n.inject(&d, &SharedInputEvent::scroll(0.25, 0.0)).unwrap();
         }
         assert_eq!(
             n.posted

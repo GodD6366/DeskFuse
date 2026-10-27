@@ -120,6 +120,40 @@ fn wifi_layout_restores_after_disconnected_transition_resumes_controller() {
     assert_eq!(actor.snapshot.scenes[0].settings.placements, expected);
 }
 
+#[test]
+fn wifi_layout_restores_added_devices_and_their_activation_intents() {
+    let (mut actor, peer, _, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    let office_peer = DeviceId::from_public_key([7; 32]).unwrap();
+    actor.environment.rules.insert("home".into(), local);
+    actor.environment.rules.insert("office".into(), local);
+    bind_layout(&mut actor, peer, "home", 1000.0);
+    bind_layout(&mut actor, office_peer, "office", -1000.0);
+    actor.snapshot.scenes[1].settings.participants = vec![office_peer];
+
+    settle(&mut actor, Some("office"));
+    assert_eq!(actor.snapshot.settings.participants, vec![office_peer]);
+    assert!(actor.controller_intents.contains_key(&office_peer));
+    assert!(!actor.controller_intents.contains_key(&peer));
+
+    settle(&mut actor, Some("home"));
+    assert_eq!(actor.snapshot.settings.participants, vec![peer]);
+    assert!(actor.controller_intents.contains_key(&peer));
+    assert!(!actor.controller_intents.contains_key(&office_peer));
+    assert!(actor.snapshot.settings.enabled);
+    // Adding a device at home is remembered for home only.
+    actor.snapshot.settings.participants.push(office_peer);
+    assert!(actor.refresh_environment_scene());
+    assert_eq!(
+        actor.snapshot.scenes[0].settings.participants,
+        vec![peer, office_peer]
+    );
+    assert_eq!(
+        actor.snapshot.scenes[1].settings.participants,
+        vec![office_peer]
+    );
+}
+
 #[tokio::test]
 async fn wifi_layout_waits_for_local_handover_without_overwriting_saved_scene() {
     let (mut actor, peer, _, _, _) = setup(true);

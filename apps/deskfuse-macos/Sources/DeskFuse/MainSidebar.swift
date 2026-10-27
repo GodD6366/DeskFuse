@@ -8,6 +8,8 @@ struct MainSidebar: View {
     @Bindable var store: AppStore
 
     @Environment(\.colorScheme) private var scheme
+    @State private var rowFrames: [Page: CGRect] = [:]
+    @State private var indicator = SidebarIndicator()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +40,13 @@ struct MainSidebar: View {
                     if !needsFirstDevice { devicesSection }
                 }
                 .padding(.horizontal, DFSpace.s + 2)
+                .coordinateSpace(name: Self.navSpace)
+                .onPreferenceChange(SidebarRowFrames.self) { frames in
+                    rowFrames = frames
+                    placeIndicator()
+                }
+                .onChange(of: store.selectedPage) { old, new in moveIndicator(from: old, to: new) }
+                .overlay(alignment: .topLeading) { indicatorBar }
                 // 给选中行阴影留出空间，避免被滚动区域裁切。
                 .padding(.bottom, DFSpace.xs)
             }
@@ -96,6 +105,63 @@ struct MainSidebar: View {
             if page == .settings { store.openSettings() } else { store.selectedPage = page }
         } label: { label() }
         .buttonStyle(.plain)
+        .background {
+            if page != .settings {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: SidebarRowFrames.self,
+                                           value: [page: proxy.frame(in: .named(Self.navSpace))])
+                }
+            }
+        }
+    }
+
+    private static let navSpace = "sidebar-nav"
+
+    /// 选中行左侧的指示条；设置页在滚动区外，选中时淡出。
+    private var indicatorBar: some View {
+        Capsule()
+            .fill(DFPalette.accent)
+            .frame(width: 3, height: max(indicator.bottom - indicator.top, 0))
+            .offset(x: DFSpace.xxs, y: indicator.top)
+            .opacity(indicator.visible ? 1 : 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    private func indicatorSpan(_ page: Page) -> (top: CGFloat, bottom: CGFloat)? {
+        rowFrames[page].map { ($0.minY + DFSpace.xs, $0.maxY - DFSpace.xs) }
+    }
+
+    /// 布局变化（首次出现、设备区换位）直接落位，不播放过渡。
+    private func placeIndicator() {
+        guard let span = indicatorSpan(store.selectedPage) else {
+            indicator.visible = false
+            return
+        }
+        indicator = SidebarIndicator(top: span.top, bottom: span.bottom, visible: true)
+    }
+
+    /// 朝移动方向的一端先走，另一端稍后跟上，指示条在途中拉长再收回。
+    private func moveIndicator(from old: Page, to new: Page) {
+        guard let target = indicatorSpan(new) else {
+            withMotion(DFMotion.snappy) { indicator.visible = false }
+            return
+        }
+        guard indicator.visible, indicatorSpan(old) != nil else {
+            placeIndicator()
+            indicator.visible = false
+            withMotion(DFMotion.snappy) { indicator.visible = true }
+            return
+        }
+        let lead = DFMotion.snappy
+        let trail = DFMotion.snappy.delay(0.08)
+        if target.top > indicator.top {
+            withMotion(lead) { indicator.bottom = target.bottom }
+            withMotion(trail) { indicator.top = target.top }
+        } else {
+            withMotion(lead) { indicator.top = target.top }
+            withMotion(trail) { indicator.bottom = target.bottom }
+        }
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -110,6 +176,19 @@ struct MainSidebar: View {
     }
 }
 
+private struct SidebarIndicator {
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
+    var visible = false
+}
+
+private struct SidebarRowFrames: PreferenceKey {
+    static let defaultValue: [Page: CGRect] = [:]
+
+    static func reduce(value: inout [Page: CGRect], nextValue: () -> [Page: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
 
 private struct SidebarDevicesRow: View {
     let store: AppStore

@@ -324,6 +324,29 @@ mod native {
             }
             Ok(())
         }
+        /// Windows 应用把 Ctrl+滚轮当作缩放，精确式触控板的捏合也是这样上报的。
+        /// 用户已按住 Ctrl 时不重复按下，也不替用户松开。
+        /// # Errors
+        /// Returns unsupported input, unavailable desktop, or a native injection failure.
+        pub fn zoom(&mut self, wheel: i32) -> Result<(), InputError> {
+            if wheel == 0 {
+                return Ok(());
+            }
+            let held = [0xe0, 0xe4]
+                .into_iter()
+                .filter_map(keyboard_usage_to_scan_code)
+                .any(|scan| self.keys.contains(&scan));
+            if held {
+                return self.scroll(wheel, 0);
+            }
+            let control =
+                keyboard_usage_to_scan_code(0xe0).ok_or(InputError::UnsupportedUsage(0xe0))?;
+            self.key(control, true)?;
+            let result = self.scroll(wheel, 0);
+            let release = self.key(control, false);
+            result?;
+            release.map(|_| ())
+        }
         /// # Errors
         /// Returns unsupported input, unavailable desktop, or a native injection failure.
         pub fn secure_attention_sequence(&self) -> Result<(), InputError> {

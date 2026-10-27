@@ -805,6 +805,7 @@ pub trait ControlTransport: Send + Sync {
         &self,
         _peer: DeviceId,
         _endpoints: Vec<Endpoint>,
+        _path: deskfuse_core::InputPathPolicy,
     ) -> Result<(), TransportError> {
         Err(TransportError::Closed)
     }
@@ -1584,7 +1585,8 @@ fn lan_fingerprint<'a>(entries: impl Iterator<Item = (&'a str, std::net::IpAddr)
 /// reader. Discovery therefore moves to its own endpoint on the probe executor,
 /// so probing an unreachable address can no longer delay live input. Cached for
 /// the process because a dialed connection must outlive the call that made it.
-static INPUT_DIALERS: OnceLock<Mutex<BTreeMap<std::net::IpAddr, CachedDialer>>> = OnceLock::new();
+static INPUT_DIALERS: OnceLock<Mutex<BTreeMap<(String, std::net::IpAddr), CachedDialer>>> =
+    OnceLock::new();
 
 struct CachedDialer {
     endpoint: Arc<quinn::Endpoint>,
@@ -1610,10 +1612,47 @@ struct InputDialer {
     usage: String,
 }
 
-fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<InputDialer> {
+/// Bind like the LAN listener on the same interface: address plus interface
+/// scope. An address-only bind leaves the egress interface to the kernel's
+/// source-address lookup; after sleep/wake it returned EHOSTUNREACH for every
+/// fresh dialer while the interface-scoped listener beside it kept sending.
+fn bind_input_dialer_socket(local: SocketAddr, interface: &str) -> Option<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(local),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        let index = if_addrs::get_if_addrs()
+            .ok()?
+            .into_iter()
+            .find(|candidate| candidate.name == interface && candidate.ip() == local.ip())
+            .and_then(|candidate| candidate.index)
+            .and_then(std::num::NonZeroU32::new)?;
+        if local.is_ipv4() {
+            socket.bind_device_by_index_v4(Some(index)).ok()?;
+        } else {
+            socket.bind_device_by_index_v6(Some(index)).ok()?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = interface;
+    socket.bind(&SocketAddr::new(local.ip(), 0).into()).ok()?;
+    socket.set_nonblocking(true).ok()?;
+    Some(socket.into())
+}
+
+fn input_dialer(
+    config: &QuinnTransportConfig,
+    local: SocketAddr,
+    interface: &str,
+) -> Option<InputDialer> {
     let dialers = INPUT_DIALERS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut dialers = dialers.lock().ok()?;
-    if let Some(cached) = dialers.get_mut(&local.ip()) {
+    let key = (interface.to_owned(), local.ip());
+    if let Some(cached) = dialers.get_mut(&key) {
         cached.uses += 1;
         return Some(InputDialer {
             endpoint: cached.endpoint.clone(),
@@ -1621,8 +1660,7 @@ fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<Inpu
         });
     }
     let (_, client) = build_input_quic_configs(config).ok()?;
-    let socket = std::net::UdpSocket::bind(SocketAddr::new(local.ip(), 0)).ok()?;
-    socket.set_nonblocking(true).ok()?;
+    let socket = bind_input_dialer_socket(local, interface)?;
     let mut endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         None,
@@ -1640,21 +1678,22 @@ fn input_dialer(config: &QuinnTransportConfig, local: SocketAddr) -> Option<Inpu
         uses: 1,
     };
     let usage = cached.usage();
-    dialers.insert(local.ip(), cached);
+    dialers.insert(key, cached);
     Some(InputDialer { endpoint, usage })
 }
 
 /// Drop a cached dialer after a failed attempt: the interface address it was
 /// bound to may be gone, and the next candidate deserves a fresh socket.
-fn forget_input_dialer(local: SocketAddr, endpoint: &Arc<quinn::Endpoint>) {
+fn forget_input_dialer(local: SocketAddr, interface: &str, endpoint: &Arc<quinn::Endpoint>) {
     let Some(dialers) = INPUT_DIALERS.get() else {
         return;
     };
+    let key = (interface.to_owned(), local.ip());
     if let Ok(mut dialers) = dialers.lock()
         && dialers
-            .get(&local.ip())
+            .get(&key)
             .is_some_and(|cached| Arc::ptr_eq(&cached.endpoint, endpoint))
-        && let Some(cached) = dialers.remove(&local.ip())
+        && let Some(cached) = dialers.remove(&key)
     {
         socket_diag::record(
             "dialer_forgotten",
@@ -1888,12 +1927,14 @@ impl QuinnTransport {
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
+        path: deskfuse_core::InputPathPolicy,
     ) -> Result<(), TransportError> {
+        // 锁定线路时只看、只拨该类线路；其他线路上的连接不算已就绪。
         let current_rank = self
             .input
             .contexts(peer)
             .iter()
-            .filter(|c| c.input_eligible())
+            .filter(|c| path.permits(c))
             .map(|c| routes::input_path_rank(c.interface_kind))
             .min();
         let expected = self
@@ -1959,6 +2000,9 @@ impl QuinnTransport {
                     ));
                     continue;
                 }
+                if !path.permits(&context) {
+                    continue;
+                }
                 let rank = routes::input_path_rank(context.interface_kind);
                 if current_rank.is_some_and(|current| rank >= current) {
                     continue;
@@ -1979,7 +2023,7 @@ impl QuinnTransport {
                 .input
                 .contexts(peer)
                 .iter()
-                .any(|c| c.input_eligible() && routes::input_path_rank(c.interface_kind) <= rank)
+                .any(|c| path.permits(c) && routes::input_path_rank(c.interface_kind) <= rank)
             {
                 return Ok(());
             }
@@ -1987,7 +2031,7 @@ impl QuinnTransport {
             let Some(InputDialer {
                 endpoint: probe_endpoint,
                 usage: dialer_usage,
-            }) = input_dialer(&self.config, local)
+            }) = input_dialer(&self.config, local, &interface)
             else {
                 failures.record(
                     InputPathFailure::Other,
@@ -2015,7 +2059,7 @@ impl QuinnTransport {
                         _ => unreachable!(),
                     };
                     // 缓存的拨号 socket 可能已随网卡失效，下次换新的。
-                    forget_input_dialer(local, &probe_endpoint);
+                    forget_input_dialer(local, &interface, &probe_endpoint);
                     failures.record(InputPathFailure::Probe, format!(
                         "local={local} remote={remote} interface={interface} stage=identity_probe error={error} {dialer_usage}"
                     ));
@@ -2041,7 +2085,7 @@ impl QuinnTransport {
             }
         }
         // An unreachable upgrade must never tear down a working fallback.
-        if self.input.contexts(peer).iter().any(|c| c.input_eligible()) {
+        if self.input.contexts(peer).iter().any(|c| path.permits(c)) {
             Ok(())
         } else {
             Err(TransportError::InputLinkUnavailable {
@@ -2545,16 +2589,12 @@ impl ControlTransport for QuinnTransport {
         &self,
         peer: DeviceId,
         endpoints: Vec<Endpoint>,
+        path: deskfuse_core::InputPathPolicy,
     ) -> Result<(), TransportError> {
         if self.config.input_service {
-            return self.ensure_service_input_link(peer, endpoints).await;
+            return self.ensure_service_input_link(peer, endpoints, path).await;
         }
-        if self
-            .input
-            .contexts(peer)
-            .iter()
-            .any(deskfuse_core::ConnectionContext::input_eligible)
-        {
+        if self.input.contexts(peer).iter().any(|c| path.permits(c)) {
             return Ok(());
         }
         let session = self
@@ -2621,11 +2661,11 @@ impl ControlTransport for QuinnTransport {
                 else {
                     continue;
                 };
-                if !context.input_eligible() || context.interface_name.as_deref() != Some(interface)
-                {
+                if !path.permits(&context) || context.interface_name.as_deref() != Some(interface) {
                     continue;
                 }
-                let dialer = input_dialer(&self.config, local).map(|dialer| dialer.endpoint);
+                let dialer =
+                    input_dialer(&self.config, local, interface).map(|dialer| dialer.endpoint);
                 let mut dedicated = self.clone();
                 dedicated.endpoint = Some(dialer.clone().unwrap_or_else(|| endpoint.clone()));
                 dedicated.bound_addr = local;
@@ -2635,7 +2675,7 @@ impl ControlTransport for QuinnTransport {
                 if !matches!(attempt, Ok(Ok(_)))
                     && let Some(dialer) = &dialer
                 {
-                    forget_input_dialer(local, dialer);
+                    forget_input_dialer(local, interface, dialer);
                 }
                 if let Ok(Ok(connected)) = attempt {
                     if session.close_reason().is_some() {

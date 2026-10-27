@@ -5164,6 +5164,7 @@ fn runtime_config(runtime: &dyn deskfuse_platform::ports::HostRuntimePort) -> Ru
             | Capabilities::CLIPBOARD_SYNC_V2
             | Capabilities::REMOTE_APPLICATION
             | Capabilities::MICROPHONE
+            | Capabilities::INPUT_GESTURE_V1
             | mouse_settings_capability()
             | motion_mode_capabilities(
                 runtime.environment("DESKFUSE_INPUT_MOTION_MODE").as_deref(),
@@ -5661,6 +5662,7 @@ mod tests {
                 | Capabilities::CLIPBOARD_SYNC_V2
                 | Capabilities::REMOTE_APPLICATION
                 | Capabilities::MICROPHONE
+                | Capabilities::INPUT_GESTURE_V1
                 | mouse_settings_capability()
                 | motion_mode_capabilities(
                     std::env::var("DESKFUSE_INPUT_MOTION_MODE").ok().as_deref()

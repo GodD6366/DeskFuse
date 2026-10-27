@@ -1,6 +1,6 @@
 use super::{
     CAPS_LOCK_KEYCODE, CAPS_LOCK_STATELESS_FLAGS, Deadline, SYNTHETIC_SHARING_EVENT_MARKER,
-    may_capture,
+    gesture, may_capture,
 };
 use crate::{PlatformError, PlatformResult, SYNTHETIC_PASTE_EVENT_MARKER};
 use core_foundation::{
@@ -18,7 +18,7 @@ use core_graphics::{
     geometry::CGPoint,
     sys::CGEventRef,
 };
-use deskfuse_core::SharedInputEvent;
+use deskfuse_core::{ScrollPhase, SharedInputEvent};
 use deskfuse_input::sharing::HotkeyBindings;
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -722,7 +722,9 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
     ];
     let mask = event_types
         .iter()
-        .fold(0_u64, |mask, event| mask | (1_u64 << (*event as u32)));
+        .fold(1_u64 << gesture::EVENT_TYPE, |mask, event| {
+            mask | (1_u64 << (*event as u32))
+        });
     // SAFETY: callback ABI matches CGEventTapCallBack using raw u32 event types
     // (including non-event notifications). Box address is stable, and callbacks
     // run only in this thread's run loop until the tap is invalidated below.
@@ -996,7 +998,14 @@ unsafe extern "C" fn tap_callback(
         // SAFETY: live callback event, as established above.
         let sample = unsafe { decode_event(kind, event) };
         let Some(mut sample) = sample else {
-            return event;
+            // 远端控制期间，不转发的手势帧（触摸点、三指轻扫等）也不能落到本机。
+            return if kind == gesture::EVENT_TYPE
+                && context.shared.exclusive.load(Ordering::Acquire)
+            {
+                ptr::null_mut()
+            } else {
+                event
+            };
         };
         if matches!(sample.event, SharedInputEvent::Motion { .. }) {
             context.diagnostics.motion += 1;
@@ -1139,6 +1148,18 @@ unsafe extern "C" fn tap_callback(
         }
     }
 }
+/// 未知阶段值按普通滚轮处理，不让一个异常字段丢掉整次滚动。
+fn scroll_phase(scroll: i64, momentum: i64) -> ScrollPhase {
+    let phase = ScrollPhase {
+        scroll: u8::try_from(scroll).unwrap_or(0),
+        momentum: u8::try_from(momentum).unwrap_or(0),
+    };
+    if phase.is_valid() {
+        phase
+    } else {
+        ScrollPhase::NONE
+    }
+}
 /// # Safety
 /// `event` is a non-null CGEvent retained by CoreGraphics for this invocation;
 /// `kind` has been checked to exclude notification event types.
@@ -1235,6 +1256,24 @@ unsafe fn decode_event(kind: u32, event: CGEventRef) -> Option<CaptureSample> {
                 EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1,
                 EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1,
             ),
+            phase: scroll_phase(
+                integer(gesture::SCROLL_PHASE),
+                integer(gesture::MOMENTUM_PHASE),
+            ),
+        }
+    } else if kind == gesture::EVENT_TYPE {
+        let phase = || gesture::phase_from_raw(integer(gesture::PHASE));
+        match integer(gesture::HID_TYPE) {
+            gesture::HID_ZOOM => SharedInputEvent::Magnify {
+                phase: phase()?,
+                magnification: double(gesture::ZOOM_VALUE),
+            },
+            gesture::HID_ROTATION => SharedInputEvent::Rotate {
+                phase: phase()?,
+                degrees: double(gesture::ROTATION_VALUE),
+            },
+            gesture::HID_SMART_MAGNIFY => SharedInputEvent::SmartMagnify,
+            _ => return None,
         }
     } else {
         return None;
@@ -1363,7 +1402,7 @@ mod tests {
                 button: 0,
                 pressed: true,
             },
-            SharedInputEvent::Scroll { dx: 0.0, dy: 3.0 },
+            SharedInputEvent::scroll(0.0, 3.0),
             SharedInputEvent::Key {
                 code: 1,
                 pressed: false,
@@ -1854,13 +1893,7 @@ mod tests {
         event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1, 0);
         event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2, 0);
         event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 0);
-        assert_eq!(
-            decoded(&event).event,
-            SharedInputEvent::Scroll {
-                dx: -10.0,
-                dy: 20.0
-            }
-        );
+        assert_eq!(decoded(&event).event, SharedInputEvent::scroll(-10.0, 20.0));
         event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 1);
         event.set_double_value_field(
             EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_1,
@@ -1870,15 +1903,9 @@ mod tests {
             EventField::SCROLL_WHEEL_EVENT_FIXED_POINT_DELTA_AXIS_2,
             -0.5,
         );
-        assert_eq!(
-            decoded(&event).event,
-            SharedInputEvent::Scroll { dx: -0.5, dy: 0.25 }
-        );
+        assert_eq!(decoded(&event).event, SharedInputEvent::scroll(-0.5, 0.25));
         event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1, 17);
-        assert_eq!(
-            decoded(&event).event,
-            SharedInputEvent::Scroll { dx: -0.5, dy: 17.0 }
-        );
+        assert_eq!(decoded(&event).event, SharedInputEvent::scroll(-0.5, 17.0));
     }
     #[test]
     fn quartz_key_repeat_and_flags_changed_are_captured() {

@@ -4,6 +4,9 @@ import DeskFuseEngine
 /// Source and health are supplied by Rust, not guessed from private-IP prefixes.
 struct DeviceRoutesPanel: View {
     let routes: [DeviceRoute]
+    let inputPath: InputPath
+    let seenPaths: [InputPath]
+    let setInputPath: (InputPath) -> Void
     let refresh: () -> Void
 
     var body: some View {
@@ -34,12 +37,34 @@ struct DeviceRoutesPanel: View {
                         .font(DFType.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("同一地址只显示一次。自动模式按实测握手延迟选择最快可达线路；刷新会立即重测候选地址，不会中断当前连接。")
+            inputPathRow
+            Text(inputPath == .auto
+                 ? "同一地址只显示一次。自动模式按实测握手延迟选择最快可达线路；刷新会立即重测候选地址，不会中断当前连接。"
+                 : "键鼠共享只走\(inputPath.label)，\(inputPath.label)断开时暂停，不切换到其他线路；剪贴板和文件传输不受影响。")
                 .font(DFType.caption).foregroundStyle(.secondary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
+    }
+
+    private var inputPathRow: some View {
+        HStack(spacing: 12) {
+            Text("键鼠线路").font(DFType.detail)
+            Spacer()
+            Picker("键鼠线路", selection: Binding(get: { inputPath }, set: { setInputPath($0) })) {
+                Text(InputPath.auto.label).tag(InputPath.auto)
+                Divider()
+                ForEach([InputPath.thunderbolt, .ethernet, .wiFi], id: \.self) { path in
+                    // 没出现过的线路锁上就等于关掉键鼠共享，当前已选的除外。
+                    Text("仅\(path.label)").tag(path)
+                        .selectionDisabled(path != inputPath && !seenPaths.contains(path))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
     }
 
     private var routeTable: some View {
@@ -138,4 +163,15 @@ struct DeviceRoutesPanel: View {
         }
     }
 
+}
+
+extension InputPath {
+    var label: String {
+        switch self {
+        case .auto: "自动"
+        case .thunderbolt: "雷电"
+        case .ethernet: "有线"
+        case .wiFi: "Wi-Fi"
+        }
+    }
 }

@@ -28,7 +28,7 @@ pub mod input_service_types;
 
 use deskfuse_core::{
     ConnectionContext, DisplayId, DisplayTopology, InputActivationId, InputActivationPolicy,
-    InputActivationStatus, InputSessionId, InputShareMessage, InputSharingScene,
+    InputActivationStatus, InputPathPolicy, InputSessionId, InputShareMessage, InputSharingScene,
     InputSharingSettings, InputSharingSnapshot, SharedInputEvent, TransportSessionId,
 };
 use deskfuse_identity::{NetworkTrustOrigins, SignedNetworkRoster};
@@ -394,7 +394,12 @@ pub trait TransportProvider: Send + Sync {
     }
     fn select_input_route(&self, _peer: DeviceId, _session: TransportSessionId) {}
     fn sample_input_quality(&self) {}
-    fn ensure_input_link(&self, _peer: DeviceId, _endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
+    fn ensure_input_link(
+        &self,
+        _peer: DeviceId,
+        _endpoints: Vec<Endpoint>,
+        _path: InputPathPolicy,
+    ) -> ProviderFuture<()> {
         Box::pin(async { Err(RuntimeError::Transport("LAN connection unavailable".into())) })
     }
 
@@ -613,8 +618,13 @@ where
     fn sample_input_quality(&self) {
         (**self).sample_input_quality();
     }
-    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
-        (**self).ensure_input_link(peer, endpoints)
+    fn ensure_input_link(
+        &self,
+        peer: DeviceId,
+        endpoints: Vec<Endpoint>,
+        path: InputPathPolicy,
+    ) -> ProviderFuture<()> {
+        (**self).ensure_input_link(peer, endpoints, path)
     }
     fn register_peer_identity(
         &self,
@@ -4604,11 +4614,16 @@ where
     fn sample_input_quality(&self) {
         self.inner.sample_input_quality();
     }
-    fn ensure_input_link(&self, peer: DeviceId, endpoints: Vec<Endpoint>) -> ProviderFuture<()> {
+    fn ensure_input_link(
+        &self,
+        peer: DeviceId,
+        endpoints: Vec<Endpoint>,
+        path: InputPathPolicy,
+    ) -> ProviderFuture<()> {
         let inner = self.inner.clone();
         Box::pin(async move {
             inner
-                .ensure_input_link(peer, endpoints)
+                .ensure_input_link(peer, endpoints, path)
                 .await
                 .map_err(|error| match error {
                     deskfuse_transport::TransportError::InputLinkUnavailable {

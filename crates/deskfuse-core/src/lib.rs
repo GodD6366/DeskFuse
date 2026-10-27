@@ -395,6 +395,8 @@ impl Capabilities {
     pub const INPUT_MOTION_DATAGRAM_V1: Self = Self(1 << 9);
     /// Device-count relative motion on the same datagram path. Absence keeps absolute motion.
     pub const INPUT_RELATIVE_MOTION_V1: Self = Self(1 << 16);
+    /// Trackpad magnify/rotate/smart-magnify events inside reliable input.
+    pub const INPUT_GESTURE_V1: Self = Self(1 << 20);
 
     /// Synchronized workflow definitions and sender-side rules.
     pub const WORKFLOW_SYNC: Self = Self(1 << 14);
@@ -1649,6 +1651,7 @@ mod tests {
             Capabilities::LAN_UPDATE_TRIGGER,
             Capabilities::INPUT_MOTION_DATAGRAM_V1,
             Capabilities::INPUT_RELATIVE_MOTION_V1,
+            Capabilities::INPUT_GESTURE_V1,
             Capabilities::INPUT_ENVIRONMENT,
             Capabilities::CLIPBOARD_SYNC_V2,
             Capabilities::REMOTE_APPLICATION,

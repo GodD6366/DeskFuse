@@ -502,7 +502,7 @@ impl RuntimeHandle {
         }
         let _ = self
             .update_transport
-            .ensure_input_link(peer, Vec::new())
+            .ensure_input_link(peer, Vec::new(), deskfuse_core::InputPathPolicy::Auto)
             .await;
         let context = self
             .update_transport
@@ -1052,7 +1052,7 @@ async fn cycle(
         }
         let _ = runtime
             .update_transport
-            .ensure_input_link(peer, Vec::new())
+            .ensure_input_link(peer, Vec::new(), deskfuse_core::InputPathPolicy::Auto)
             .await;
         let Some(context) = runtime
             .update_transport

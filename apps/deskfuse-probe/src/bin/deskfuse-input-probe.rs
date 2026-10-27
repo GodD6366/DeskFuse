@@ -239,7 +239,7 @@ fn frame(round: u32, index: u32) -> Vec<SharedInputEvent> {
             repeat: false,
         },
         SharedInputEvent::Modifiers { modifiers: 0 },
-        SharedInputEvent::Scroll { dx: 1.0, dy: -2.0 },
+        SharedInputEvent::scroll(1.0, -2.0),
         SharedInputEvent::Button {
             button: 0,
             pressed: true,
