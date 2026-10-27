@@ -440,7 +440,12 @@ impl InputActor {
         // A verified, live activation is the current controller. Wi-Fi votes
         // must not revoke its lease or switch the receiver back to a stale
         // preference; a later selection takes effect after that activation ends.
-        if !busy && self.environment.pending.is_none() && self.incoming.is_none() {
+        // 不参与选举的主控（不在候选中）发来的激活不能冻结本机赢得的选举：
+        // 否则本机停在被控、对方又让位给本机，两台主控都在等对方。
+        let incoming_holds = self.incoming.as_ref().is_some_and(|activation| {
+            selected != Some(local) || candidates.contains(&activation.peer)
+        });
+        if !busy && self.environment.pending.is_none() && !incoming_holds {
             // Conflicting rules keep the existing effective controller stable,
             // but an unmatched saved scene must not retain a stale controller.
             if !conflict

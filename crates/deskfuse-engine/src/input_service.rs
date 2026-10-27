@@ -83,13 +83,7 @@ async fn run(
     if identity.device_id() != child.bootstrap.authority.local {
         return Err("input identity mismatch".into());
     }
-    let caps = Capabilities::INPUT_SHARING
-        | Capabilities::DEVICE_NETWORK
-        | Capabilities::INPUT_ACTIVATION
-        | Capabilities::INPUT_ENVIRONMENT
-        | Capabilities::INPUT_MOTION_DATAGRAM_V1
-        | Capabilities::INPUT_RELATIVE_MOTION_V1
-        | Capabilities::INPUT_GESTURE_V1;
+    let caps = Capabilities::INPUT_TRANSPORT;
     let nonce = identity.device_id().into_bytes();
     let hello = PeerHello::signed(&identity, child.bootstrap.display_name.clone(), caps, nonce)
         .map_err(|e| e.to_string())?;

@@ -504,6 +504,20 @@ impl InputActor {
                 self.stop_outgoing(peer_id, "被远程设备强制接管控制权", true, true);
             }
         }
+        // 选举出的主控优先于先到的其他主控（例如不参与选举的旧版或 Windows 主控）；
+        // 否则被控端一旦被抢占，选出的主控只能收到 BusyOtherController，两台设备永远连不上。
+        // 对方光标正停留在本机时不打断，选出的主控按心跳重试，待其离开后接管。
+        if !force
+            && self.snapshot.environment.selected == Some(peer)
+            && !self.snapshot.environment.conflict
+            && self
+                .incoming
+                .as_ref()
+                .is_some_and(|current| current.peer != peer)
+            && !self.leases.values().any(|lease| lease.entered)
+        {
+            self.end_incoming("elected controller took over", true);
+        }
         if let Some(current) = &self.incoming {
             if current.id == id
                 && (current.peer != peer || current.context.as_ref() != Some(&context))
@@ -1432,6 +1446,45 @@ mod tests {
                 ..
             }
         ));
+    }
+    #[test]
+    fn elected_controller_takes_over_from_a_controller_outside_the_election() {
+        // setup(false) 已处于另一台主控的 Ready 激活之下。
+        let (mut actor, outsider, context, transport, _) = setup(false);
+        let elected = add_peer(&mut actor);
+        actor.snapshot.environment.selected = Some(elected);
+        let held = actor.incoming.as_ref().unwrap().id;
+        assert_eq!(actor.incoming.as_ref().unwrap().peer, outsider);
+
+        // 对方光标停留在本机时不打断，选出的主控暂时收到 BusyOtherController。
+        let (session, _) =
+            crate::input_sharing::tests::receiver_grant(&mut actor, outsider, &context);
+        actor.leases.get_mut(&session).unwrap().entered = true;
+        offer(
+            &mut actor,
+            elected,
+            &context,
+            InputActivationId::new(),
+            InputActivationId::new(),
+            1,
+        );
+        assert_eq!(actor.incoming.as_ref().unwrap().peer, outsider);
+        actor.leases.get_mut(&session).unwrap().entered = false;
+
+        let id = InputActivationId::new();
+        offer(
+            &mut actor,
+            elected,
+            &context,
+            id,
+            InputActivationId::new(),
+            1,
+        );
+        assert_eq!(actor.incoming.as_ref().unwrap().id, id);
+        assert!(transport.sent.lock().unwrap().iter().any(|(to, _, message)| {
+            *to == outsider
+                && matches!(message, InputShareMessage::Deactivate { activation_id, .. } if *activation_id == held)
+        }));
     }
     #[test]
     fn activation_acks_require_exact_context_sequence_and_live_deadline() {

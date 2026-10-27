@@ -22,14 +22,9 @@ use std::{
 
 const CONTROL_PORT: u16 = 42424;
 const INPUT_PORT: u16 = 42425;
-const INPUT_CAPABILITIES: Capabilities = Capabilities::from_bits(
-    Capabilities::INPUT_SHARING.bits()
-        | Capabilities::DEVICE_NETWORK.bits()
-        | Capabilities::INPUT_ACTIVATION.bits()
-        | Capabilities::INPUT_MOTION_DATAGRAM_V1.bits()
-        | Capabilities::INPUT_RELATIVE_MOTION_V1.bits()
-        | Capabilities::INPUT_GESTURE_V1.bits(),
-);
+// INPUT_ENVIRONMENT 让本机参与 Wi-Fi 主控选举；缺少它时 Mac 看不到本机的主控声明，
+// 本机也不会让位，被控端会被先到的一方抢占。
+const INPUT_CAPABILITIES: Capabilities = Capabilities::INPUT_TRANSPORT;
 
 pub struct Network {
     pub runtime: RuntimeHandle,

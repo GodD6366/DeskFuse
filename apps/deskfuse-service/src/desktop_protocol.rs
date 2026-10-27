@@ -342,6 +342,8 @@ pub struct Response {
     pub request_id: u64,
     pub result: Reply,
 }
+// 每次 IPC 请求只构造一次并立即序列化，枚举大小不影响性能。
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Reply {
     Snapshot(Snapshot),

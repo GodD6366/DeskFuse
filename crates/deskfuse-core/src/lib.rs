@@ -413,6 +413,18 @@ impl Capabilities {
     /// macOS mouse-button mapping synchronization (v1).
     pub const MAC_MOUSE_SETTINGS: Self = Self(1 << 17);
 
+    /// Feature set advertised by every platform's dedicated input transport.
+    /// Shared so a new input feature cannot drop out of one platform's negotiation.
+    pub const INPUT_TRANSPORT: Self = Self(
+        Self::INPUT_SHARING.0
+            | Self::DEVICE_NETWORK.0
+            | Self::INPUT_ACTIVATION.0
+            | Self::INPUT_ENVIRONMENT.0
+            | Self::INPUT_MOTION_DATAGRAM_V1.0
+            | Self::INPUT_RELATIVE_MOTION_V1.0
+            | Self::INPUT_GESTURE_V1.0,
+    );
+
     /// No capabilities.
     pub const NONE: Self = Self(0);
 

@@ -342,6 +342,26 @@ fn later_controller_claim_demotes_the_earlier_controller() {
 }
 
 #[test]
+fn controller_outside_the_election_cannot_hold_back_the_claim_winner() {
+    let (mut actor, peer, context, _, _) = setup(true);
+    let local = actor.network.borrow().snapshot.local_device_id;
+    actor.controller_claimed_at_ms = Some(1_000);
+    settle(&mut actor, Some("home"));
+    claim_presence(&mut actor, peer, 2_000);
+    actor.tick_environment();
+    assert!(actor.snapshot.environment.local_suspended);
+    // 让位期间被一台不参与选举的主控接管。
+    let outsider = DeviceId::from_public_key([10; 32]).unwrap();
+    actor.incoming = Some(Activation::ready_fixture(outsider, context));
+    // 本机随后再次被设为主控：选举不能被这次激活冻结。
+    actor.controller_claimed_at_ms = Some(3_000);
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.environment.selected, Some(local));
+    assert!(!actor.snapshot.environment.local_suspended);
+    assert!(actor.incoming.is_none());
+}
+
+#[test]
 fn earlier_remote_claim_cannot_take_over_the_newer_controller() {
     let (mut actor, peer, _, _, _) = setup(true);
     let local = actor.network.borrow().snapshot.local_device_id;
