@@ -422,6 +422,8 @@ pub enum TransportError {
 enum InputPathFailure {
     /// 已通过物理链路检查，但对端身份探测失败。
     Probe,
+    /// 本机内核拒绝发送（`EHOSTUNREACH`），探测包从未离开本机。
+    LocalRefused,
     /// 身份探测成功，正式连接失败。
     Connect,
     /// 路由经过 VPN/代理隧道等覆盖网络。
@@ -475,6 +477,8 @@ impl InputLinkFailures {
             && self.count(InputPathFailure::Probe) + self.count(InputPathFailure::Connect) > 0
         {
             Failure::PeerUnresponsive
+        } else if candidates > 0 && self.count(InputPathFailure::LocalRefused) > 0 {
+            Failure::LocalSendRefused
         } else if self.count(InputPathFailure::Overlay) > 0
             && self.count(InputPathFailure::Route) == 0
             && self.count(InputPathFailure::Other) == 0
@@ -1613,9 +1617,10 @@ struct InputDialer {
 }
 
 /// Bind like the LAN listener on the same interface: address plus interface
-/// scope. An address-only bind leaves the egress interface to the kernel's
-/// source-address lookup; after sleep/wake it returned EHOSTUNREACH for every
-/// fresh dialer while the interface-scoped listener beside it kept sending.
+/// scope, so the egress interface is the one the candidate was chosen for.
+/// Scoping does not cure a process whose every fresh socket gets EHOSTUNREACH
+/// while older sockets keep sending: that refusal is per process, see
+/// `socket_diag::send_refused_locally`.
 fn bind_input_dialer_socket(local: SocketAddr, interface: &str) -> Option<std::net::UdpSocket> {
     let socket = socket2::Socket::new(
         socket2::Domain::for_address(local),
@@ -2017,6 +2022,8 @@ impl QuinnTransport {
         }
         candidates.sort_by_key(|(rank, local, remote, _, _)| (*rank, *local, *remote));
         let candidate_count = candidates.len();
+        let mut refused = BTreeSet::new();
+        let mut reached = BTreeSet::new();
         for (rank, local, remote, interface, endpoint) in candidates {
             // An inbound dial may have won while inspection was in flight.
             if self
@@ -2050,6 +2057,8 @@ impl QuinnTransport {
             .await
             {
                 Ok(Ok((connection, _))) => {
+                    reached.insert(remote.ip());
+                    socket_diag::clear_local_refusal(remote.ip());
                     connection.close(QUIC_CLOSE_CODE, b"input probe complete")
                 }
                 result => {
@@ -2058,9 +2067,19 @@ impl QuinnTransport {
                         Err(_) => "timeout (1s)".into(),
                         _ => unreachable!(),
                     };
+                    // 本机内核拒发与对端不应答是两回事：前者探测包根本没出本机。
+                    let kind = if probe_endpoint
+                        .local_addr()
+                        .is_ok_and(socket_diag::send_refused_locally)
+                    {
+                        refused.insert(remote.ip());
+                        InputPathFailure::LocalRefused
+                    } else {
+                        InputPathFailure::Probe
+                    };
                     // 缓存的拨号 socket 可能已随网卡失效，下次换新的。
                     forget_input_dialer(local, &interface, &probe_endpoint);
-                    failures.record(InputPathFailure::Probe, format!(
+                    failures.record(kind, format!(
                         "local={local} remote={remote} interface={interface} stage=identity_probe error={error} {dialer_usage}"
                     ));
                     continue;
@@ -2083,6 +2102,9 @@ impl QuinnTransport {
                     ));
                 }
             }
+        }
+        for remote in refused.difference(&reached) {
+            socket_diag::record_local_refusal(*remote);
         }
         // An unreachable upgrade must never tear down a working fallback.
         if self.input.contexts(peer).iter().any(|c| path.permits(c)) {
@@ -4059,6 +4081,15 @@ mod tests {
         assert_eq!(overlay.classify(3, 2, 0), Failure::OverlayOnly);
         overlay.record(InputPathFailure::Route, "route=en0".into());
         assert_eq!(overlay.classify(3, 2, 0), Failure::NoLanRoute);
+
+        // 长寿输入进程：每个新拨号 socket 都被本机内核以 EHOSTUNREACH 拒发。
+        let mut refused = InputLinkFailures::default();
+        refused.record(InputPathFailure::Route, "route=en0".into());
+        refused.record(InputPathFailure::LocalRefused, "remote=10.0.0.2".into());
+        assert_eq!(refused.classify(2, 2, 1), Failure::LocalSendRefused);
+        // 只要有一条路径的探测包真正发出去了，仍按对端无响应处理。
+        refused.record(InputPathFailure::Probe, "remote=10.0.0.3".into());
+        assert_eq!(refused.classify(2, 2, 2), Failure::PeerUnresponsive);
 
         let empty = InputLinkFailures::default();
         assert_eq!(empty.classify(0, 2, 0), Failure::NoLocalLan);

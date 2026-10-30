@@ -19,6 +19,10 @@ pub struct NativeStatus {
     pub recording_ready: bool,
     #[serde(default)]
     pub observer_recovery_required: bool,
+    /// Peer addresses this process persistently cannot send to: the kernel
+    /// refuses each fresh socket before a packet leaves the host.
+    #[serde(default)]
+    pub locally_refused_hosts: Vec<std::net::IpAddr>,
     pub update_paused: bool,
     pub remote_application_viewer_paused: bool,
     pub remote_application_lease: Option<String>,
@@ -42,6 +46,8 @@ pub struct ServiceControl {
     pub diagnostics: Arc<Mutex<String>>,
     pub quality: Arc<Mutex<InputServiceQuality>>,
     pub(crate) sequence: Arc<Mutex<u64>>,
+    /// Last restart for a locally refused LAN send; bounds a restart loop.
+    pub(crate) send_recovery_at: Arc<Mutex<Option<std::time::Instant>>>,
 }
 impl ServiceControl {
     pub fn signal(&self, byte: u8) -> bool {

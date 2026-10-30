@@ -340,6 +340,7 @@ async fn run(
                 status.native.persistence_pending = pending;
                 if let Some(error) = error { status.native.error = Some(format!("输入设置尚未保存：{error}")); }
                 status.native.update_paused = child.pause.load(Ordering::Acquire) == 2;
+                status.native.locally_refused_hosts = deskfuse_transport::socket_diag::locally_refused_hosts();
                 // Always send chart metadata, even when debug logging is disabled
                 // and no pointer events or input-state changes are occurring.
                 if quality_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {

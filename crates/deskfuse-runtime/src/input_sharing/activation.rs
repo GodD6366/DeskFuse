@@ -235,10 +235,13 @@ impl InputActor {
         let Some(_) = activation.context else {
             return;
         };
-        // IDs remain retired even after their QUIC context closes. Never evict
-        // an ID that could otherwise be replayed on a replacement connection.
+        // IDs remain retired even after their QUIC context closes, so a
+        // controller still renewing one gets an explicit Deactivate. That
+        // happens within seconds of retirement; an ID a thousand retirements
+        // old was answered long ago. Refusing new activations once the history
+        // filled made flapping links disable input until the app restarted.
         if self.retired_activations.len() >= 1024 {
-            return;
+            self.retired_activations.pop_front();
         }
         self.retired_activations.push_back(RetiredActivation {
             id: activation.id,
@@ -518,6 +521,15 @@ impl InputActor {
         {
             self.end_incoming("elected controller took over", true);
         }
+        // 每台主控对一台被控只维持一个激活：同一主控换线或重启后发来新激活，
+        // 说明旧激活已作废，不能把它当成“另一台主控”拒绝。用户暂停的激活保持暂停。
+        if self
+            .incoming
+            .as_ref()
+            .is_some_and(|current| current.peer == peer && current.id != id && !current.suppressed)
+        {
+            self.end_incoming("controller replaced its activation", false);
+        }
         if let Some(current) = &self.incoming {
             if current.id == id
                 && (current.peer != peer || current.context.as_ref() != Some(&context))
@@ -545,12 +557,11 @@ impl InputActor {
                 return;
             }
         } else {
-            if self.retired_activations.len() >= 1024
-                || (self.paused_intents.len() >= 1024
-                    && !self
-                        .paused_intents
-                        .iter()
-                        .any(|(paused_peer, _)| *paused_peer == peer))
+            if self.paused_intents.len() >= 1024
+                && !self
+                    .paused_intents
+                    .iter()
+                    .any(|(paused_peer, _)| *paused_peer == peer)
             {
                 self.activation_diagnostic(peer, "activation_history_exhausted", || {
                     format!(
@@ -1193,6 +1204,58 @@ mod tests {
         actor.network = network;
         id
     }
+    #[test]
+    fn same_controller_replacing_its_activation_is_not_busy() {
+        let (mut actor, controller, context, transport, _) = setup(false);
+        let stale = actor.incoming.as_ref().unwrap().id;
+        let id = InputActivationId::new();
+        offer(
+            &mut actor,
+            controller,
+            &context,
+            id,
+            InputActivationId::new(),
+            1,
+        );
+        assert_eq!(actor.incoming.as_ref().unwrap().id, id);
+        assert!(actor.retired_activations.iter().any(|a| a.id == stale));
+        assert!(
+            !transport
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, message)| matches!(
+                    message,
+                    InputShareMessage::Activated {
+                        status: InputActivationStatus::BusyOtherController,
+                        ..
+                    }
+                ))
+        );
+    }
+    #[test]
+    fn full_retired_history_evicts_oldest_instead_of_refusing_activation() {
+        let (mut actor, peer, context, _, _) = setup(false);
+        actor.incoming = None;
+        let oldest = InputActivationId::new();
+        let mut retired = Activation::new(peer);
+        retired.context = Some(context.clone());
+        for index in 0..1025 {
+            retired.id = if index == 0 {
+                oldest
+            } else {
+                InputActivationId::new()
+            };
+            actor.retire_activation(&retired);
+        }
+        assert_eq!(actor.retired_activations.len(), 1024);
+        assert!(actor.retired_activations.iter().all(|a| a.id != oldest));
+        let id = InputActivationId::new();
+        offer(&mut actor, peer, &context, id, InputActivationId::new(), 1);
+        assert_eq!(actor.incoming.as_ref().unwrap().id, id);
+    }
+
     #[test]
     fn idle_controller_becomes_receiver_when_added_by_another_controller() {
         let (mut actor, peer, context, _, _) = setup(true);
