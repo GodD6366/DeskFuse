@@ -48,7 +48,7 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 BINARY_PATH="$CONTENTS_DIR/MacOS/deskfuse-app"
 python3 "$ROOT_DIR/scripts/macos-rpaths.py" "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
-for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
+for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt THIRD_PARTY_UI.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
@@ -196,9 +196,12 @@ codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper"
 [[ -x "$CONTENTS_DIR/MacOS/deskfuse-history-files" ]] || { echo "error: history file importer missing" >&2; exit 1; }
 [[ "$(lipo -archs "$CONTENTS_DIR/MacOS/deskfuse-history-files")" == "$EXPECTED_ARCH" ]] || { echo "error: history file importer architecture" >&2; exit 1; }
 codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-history-files"
+[[ -x "$CONTENTS_DIR/MacOS/deskfuse-mygo" ]] || { echo "error: WebView client missing" >&2; exit 1; }
+[[ "$(lipo -archs "$CONTENTS_DIR/MacOS/deskfuse-mygo")" == "$EXPECTED_ARCH" ]] || { echo "error: WebView client architecture" >&2; exit 1; }
+codesign --verify --strict "$CONTENTS_DIR/MacOS/deskfuse-mygo"
 # Inspect all shipped Mach-O files: Info.plist alone cannot establish the
 # deployment target, and Rust must be statically linked into the native client.
-python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper" "$CONTENTS_DIR/MacOS/deskfuse-history-files" <<'PYNATIVE'
+python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper" "$CONTENTS_DIR/MacOS/deskfuse-history-files" "$CONTENTS_DIR/MacOS/deskfuse-mygo" <<'PYNATIVE'
 import re, subprocess, sys
 for binary in sys.argv[1:]:
     load = subprocess.check_output(["otool", "-l", binary], text=True)
@@ -211,6 +214,11 @@ for binary in sys.argv[1:]:
     links = subprocess.check_output(["otool", "-L", binary], text=True)
     if re.search(r"gpui|libdeskfuse_ffi", links, re.I):
         raise SystemExit(f"error: unexpected client dynamic dependency: {binary}")
+    if binary.endswith("/deskfuse-mygo"):
+        foreign = [line.strip() for line in links.splitlines()[1:]
+                   if line.strip() and not line.strip().startswith(("/usr/lib/", "/System/Library/"))]
+        if foreign:
+            raise SystemExit(f"error: WebView client links a non-system library: {foreign}")
     if binary.endswith("/deskfuse-app") and "SwiftUI.framework" not in links:
         raise SystemExit("error: native SwiftUI framework dependency missing")
     print(f"Mach-O: {binary.rsplit('/', 1)[-1]} minimum macOS {versions[0]}, SDK {sdks[0] if sdks else 'unknown'}")

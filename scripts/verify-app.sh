@@ -34,7 +34,7 @@ case "$MACOS_ARCH" in
   *) echo "error: DESKFUSE_MACOS_ARCH must be arm64 or x86_64" >&2; exit 2 ;;
 esac
 
-for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
+for resource in LICENSE LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md LICENSE-LUCIDE THIRD_PARTY_DEPENDENCIES.txt THIRD_PARTY_UI.txt DeskFuse.icns DeskFuse-icon-1024.png DeskFuse-icon-light-1024.png deskfuse-status-icon.png; do
   [[ -s "$CONTENTS_DIR/Resources/$resource" ]] || { echo "error: bundle resource missing: $resource" >&2; exit 1; }
 done
 
@@ -138,7 +138,7 @@ if entitlements.get("com.apple.security.automation.apple-events") is not True:
 print("Finder automation: signed Apple Events entitlement present")
 PYAUTOMATION
 
-for helper in deskfuse-update-helper deskfuse-input-service deskfuse-ocr-helper deskfuse-history-files; do
+for helper in deskfuse-update-helper deskfuse-input-service deskfuse-ocr-helper deskfuse-history-files deskfuse-mygo; do
   [[ -x "$CONTENTS_DIR/MacOS/$helper" ]] || { echo "error: $helper missing" >&2; exit 1; }
   [[ "$(lipo -archs "$CONTENTS_DIR/MacOS/$helper")" == "$EXPECTED_ARCH" ]] || {
     echo "error: $helper architecture" >&2; exit 1;
@@ -148,7 +148,7 @@ done
 
 # Rust must stay statically linked, and the native client must keep the modern
 # SDK/deployment contract that verify-dmg.sh enforces for distribution.
-python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper" "$CONTENTS_DIR/MacOS/deskfuse-history-files" <<'PYNATIVE'
+python3 - "$BINARY_PATH" "$CONTENTS_DIR/MacOS/deskfuse-update-helper" "$CONTENTS_DIR/MacOS/deskfuse-input-service" "$CONTENTS_DIR/MacOS/deskfuse-ocr-helper" "$CONTENTS_DIR/MacOS/deskfuse-history-files" "$CONTENTS_DIR/MacOS/deskfuse-mygo" <<'PYNATIVE'
 import re, subprocess, sys
 for binary in sys.argv[1:]:
     load = subprocess.check_output(["otool", "-l", binary], text=True)
@@ -161,6 +161,11 @@ for binary in sys.argv[1:]:
     links = subprocess.check_output(["otool", "-L", binary], text=True)
     if re.search(r"gpui|libdeskfuse_ffi", links, re.I):
         raise SystemExit(f"error: unexpected client dynamic dependency: {binary}")
+    if binary.endswith("/deskfuse-mygo"):
+        foreign = [line.strip() for line in links.splitlines()[1:]
+                   if line.strip() and not line.strip().startswith(("/usr/lib/", "/System/Library/"))]
+        if foreign:
+            raise SystemExit(f"error: WebView client links a non-system library: {foreign}")
     if binary.endswith("/deskfuse-app") and "SwiftUI.framework" not in links:
         raise SystemExit("error: native SwiftUI framework dependency missing")
     print(f"Mach-O: {binary.rsplit('/', 1)[-1]} minimum macOS {versions[0]}, SDK {sdks[0] if sdks else 'unknown'}")

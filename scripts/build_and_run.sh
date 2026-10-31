@@ -34,6 +34,10 @@ codesign --force --deep --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$
 cp "$ROOT_DIR/resources/microphone/"* "$RESOURCES_DIR/Microphone/"
 cp "$ROOT_DIR/config/previous-installation.json" "$RESOURCES_DIR/Microphone/previous-installation.json"
 cp "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$RESOURCES_DIR/Microphone/"
+# The product window is the MyGo WebView client beside the app executable;
+# without it MyGoUIHost falls back to the retired native scene.
+"$ROOT_DIR/scripts/build-mygo-ui.sh" "$MACOS_DIR/deskfuse-mygo"
+codesign --force --strict --timestamp=none --identifier com.deskfuse.app.ui --sign "$CODESIGN_IDENTITY" "$MACOS_DIR/deskfuse-mygo"
 cp "$(dirname "$BUILD_BINARY")/deskfuse-input-service" "$MACOS_DIR/deskfuse-input-service"
 cp "$(dirname "$BUILD_BINARY")/build-id" "$MACOS_DIR/build-id"
 codesign --force --strict --timestamp=none --identifier com.deskfuse.app.input-service --sign "$CODESIGN_IDENTITY" "$MACOS_DIR/deskfuse-input-service"

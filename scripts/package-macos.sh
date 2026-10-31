@@ -11,7 +11,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for command_name in cargo swift codesign hdiutil lipo security python3 ditto shasum; do
+for command_name in cargo swift codesign hdiutil lipo security python3 ditto shasum go npm node; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "error: required command not found: $command_name" >&2
     exit 127
@@ -112,11 +112,14 @@ case "$MACOS_ARCH" in
     TARGET_TRIPLE="aarch64-apple-darwin"
     EXPECTED_ARCH="arm64"
     ARTIFACT_SUFFIX="arm64"
+    GO_ARCH="arm64"
     ;;
   x86_64)
     TARGET_TRIPLE="x86_64-apple-darwin"
     EXPECTED_ARCH="x86_64"
     ARTIFACT_SUFFIX="x86_64"
+    # WebView 客户端用 Go 交叉编译，Intel 包同样在 arm64 打包机上产出。
+    GO_ARCH="amd64"
     if [[ "$PACKAGE_MODE" == lan ]]; then
       echo "error: Intel packages require --homebrew or --manual; LAN peer updates currently target arm64 only" >&2
       exit 2
@@ -452,6 +455,10 @@ cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-update-helper" "$CONTENTS_
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-update-helper"
 cp "$CARGO_OUTPUT_DIR/$TARGET_TRIPLE/release/deskfuse-history-files" "$CONTENTS_DIR/MacOS/deskfuse-history-files"
 deskfuse_codesign "$CONTENTS_DIR/MacOS/deskfuse-history-files"
+# 产品窗口由 WebView 客户端提供：缺少它时应用会回退到已退役的原生界面，
+# 因此正式包必须构建、签名并按目标架构交叉编译这个可执行文件。
+DESKFUSE_GOARCH="$GO_ARCH" "$ROOT_DIR/scripts/build-mygo-ui.sh" "$CONTENTS_DIR/MacOS/deskfuse-mygo"
+deskfuse_codesign --identifier com.deskfuse.app.ui "$CONTENTS_DIR/MacOS/deskfuse-mygo"
 cp "$RELEASE_METADATA" "$CONTENTS_DIR/Resources/release.json"
 cp "$ROOT_DIR/config/previous-installation.json" "$CONTENTS_DIR/Resources/previous-installation.json"
 if [[ "$PACKAGE_MODE" == homebrew ]]; then
@@ -465,6 +472,8 @@ chmod 0755 "$CONTENTS_DIR/MacOS/$BINARY_NAME"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/LICENSE-MIT" "$ROOT_DIR/LICENSE-APACHE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$CONTENTS_DIR/Resources/"
 cp "$ROOT_DIR/resources/icons/LICENSE" "$CONTENTS_DIR/Resources/LICENSE-LUCIDE"
 python3 "$ROOT_DIR/scripts/third-party-notices.py" --output "$CONTENTS_DIR/Resources/THIRD_PARTY_DEPENDENCIES.txt"
+# WebView 客户端内嵌 Go 模块与 npm 生产依赖，单独导出其许可声明。
+python3 "$ROOT_DIR/scripts/ui-third-party-notices.py" --output "$CONTENTS_DIR/Resources/THIRD_PARTY_UI.txt"
 # Ship the editable vector sources alongside the native macOS representations.
 cp "$ROOT_DIR/resources/DeskFuse-icon.svg" "$CONTENTS_DIR/Resources/DeskFuse-icon.svg"
 cp "$ROOT_DIR/resources/DeskFuse-icon-light.svg" "$CONTENTS_DIR/Resources/DeskFuse-icon-light.svg"

@@ -5,9 +5,13 @@ deskfuse_stop_for_install() {
   local binary_name="$1" wait_round
   pkill -x "$binary_name" 2>/dev/null || true
   pkill -x "deskfuse-input-service" 2>/dev/null || true
+  # WebView 界面是独立进程：宿主被直接结束后它要么自己检测到管道关闭退出，
+  # 要么在这里被收掉，避免安装后留下旧版本的第二个 Dock 图标。
+  pkill -x "deskfuse-mygo" 2>/dev/null || true
   for ((wait_round = 0; wait_round < 20; wait_round++)); do
     if ! pgrep -x "$binary_name" >/dev/null 2>&1 \
-      && ! pgrep -x "deskfuse-input-service" >/dev/null 2>&1; then
+      && ! pgrep -x "deskfuse-input-service" >/dev/null 2>&1 \
+      && ! pgrep -x "deskfuse-mygo" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.5
