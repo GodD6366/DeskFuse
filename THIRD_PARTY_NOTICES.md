@@ -19,6 +19,18 @@ python3 scripts/third-party-notices.py --output dist/THIRD_PARTY_DEPENDENCIES.tx
 
 未知依赖缺少许可文本且不在已审阅记录中时，生成器失败，要求补齐来源，而不是静默略过。
 
+## WebView 客户端依赖
+
+- 产品窗口由 `apps/deskfuse-go` 的 WebView 客户端提供：Go 静态构建，内嵌 Vite 打包的 Vue 3 前端。Go 模块版本以 `apps/deskfuse-go/go.mod` 为准，npm 包版本以 `apps/deskfuse-go/frontend/package-lock.json` 为准。
+- `scripts/ui-third-party-notices.py` 从 `go list -deps ./cmd/deskfuse` 与锁文件导出实际参与编译的 Go 模块、npm 生产依赖及其许可证正文；DMG 内对应文件为 `DeskFuse.app/Contents/Resources/THIRD_PARTY_UI.txt`。
+- WebView 与 JavaScript 运行时由 macOS 系统提供（WKWebView/WebKit），不随应用复制浏览器二进制；前端资源全部内嵌，不在运行时加载远程代码。
+
+重新生成：
+
+```sh
+python3 scripts/ui-third-party-notices.py --output dist/THIRD_PARTY_UI.txt
+```
+
 ## UniFFI
 
 UniFFI 0.32.1 及其绑定运行时按 MPL-2.0 分发，项目未修改其上游源码。对应源码可从 [Mozilla UniFFI 固定版本](https://github.com/mozilla/uniffi-rs/tree/35a47433d8f015302fbf608f2b395eff6972c36f) 获取；许可证全文随依赖声明打包。生成的应用接口使用项目自身类型，不改变上游文件的许可。

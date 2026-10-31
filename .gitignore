@@ -63,6 +63,12 @@ identity.key
 /apps/deskfuse-macos/SDK/*.modulemap
 /apps/deskfuse-macos/SDK/deskfuse-input-macos
 /apps/deskfuse-macos/SDK/manifest.json
+
+# Go WebView client: npm install output and the Vite bundle embedded by go:embed.
+/apps/deskfuse-go/frontend/node_modules/
+/apps/deskfuse-go/frontend/dist/
+/apps/deskfuse-go/frontend/public/deskfuse-icon.png
+/apps/deskfuse-go/frontend/public/deskfuse-icon-light.png
 /apps/deskfuse-macos/SDK/.rust-fingerprint
 /apps/deskfuse-macos/SDK/.rust-fingerprint-*
 /apps/deskfuse-macos/SDK/.swift-fingerprint-*
