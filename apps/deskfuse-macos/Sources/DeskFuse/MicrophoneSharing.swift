@@ -340,7 +340,20 @@ private final class MicrophoneWorker: @unchecked Sendable {
         lock.lock(); systemLocked = screenLocked || !onConsole; lock.unlock()
     }
     func start(onStopped: @escaping @Sendable () -> Void) {
-        Thread.detachNewThread { [self] in run(); onStopped() }
+        let thread = Thread { [self] in
+            // The engine drops the session (and reports this Mac as unavailable)
+            // when the 200ms native heartbeat is missing for 2s. App Nap throttles
+            // this loop after the app idles in the background, so opt out while
+            // the worker runs. Idle system sleep stays allowed; sleep and screen
+            // lock already stop audio explicitly.
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                reason: "DeskFuse microphone sharing")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
+            run(); onStopped()
+        }
+        thread.qualityOfService = .userInitiated
+        thread.start()
     }
     private func run() {
         var channel: MicrophoneChannel?

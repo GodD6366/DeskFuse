@@ -362,6 +362,35 @@ fn controller_outside_the_election_cannot_hold_back_the_claim_winner() {
 }
 
 #[test]
+fn newly_elected_peer_controller_takes_over_from_an_outsider() {
+    // 本机是被控端，被一台不参与选举的旧主控占着。
+    let (mut actor, outsider, _, transport, _) = setup(false);
+    settle(&mut actor, Some("home"));
+    let elected = DeviceId::from_public_key([10; 32]).unwrap();
+    let mut view = actor.network.borrow().clone();
+    let mut peer = view.snapshot.peers[0].clone();
+    peer.id = elected;
+    peer.public_key = [10; 32];
+    view.snapshot.peers.push(peer);
+    actor.network = watch::channel(view).1;
+    // 新主控上线并声明：选举结果是它，旧主控必须下线。
+    claim_presence(&mut actor, elected, 2_000);
+    actor.tick_environment();
+    assert_eq!(actor.snapshot.environment.selected, Some(elected));
+    assert!(actor.incoming.is_none());
+    assert!(
+        transport
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(to, _, message)| {
+                *to == outsider && matches!(message, InputShareMessage::Deactivate { .. })
+            })
+    );
+}
+
+#[test]
 fn earlier_remote_claim_cannot_take_over_the_newer_controller() {
     let (mut actor, peer, _, _, _) = setup(true);
     let local = actor.network.borrow().snapshot.local_device_id;

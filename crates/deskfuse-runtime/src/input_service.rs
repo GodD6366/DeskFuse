@@ -342,6 +342,65 @@ mod build_identity_tests {
     }
 
     #[test]
+    fn refused_input_sends_restart_service_only_when_control_reaches_the_same_address() {
+        use super::*;
+        use crate::{NetworkSnapshot, SnapshotView};
+        use deskfuse_core::{
+            Capabilities, ConnectionState, DeviceId, Endpoint, LivenessState, PeerSnapshot,
+            RouteCandidate, RouteHealth, RouteSource, TrustState,
+        };
+        let view = |connection| {
+            let route = RouteCandidate::new(
+                Endpoint::new("10.0.0.2", 42424).unwrap(),
+                RouteSource::Mdns,
+                RouteHealth::Healthy,
+                Capabilities::INPUT_SHARING,
+            );
+            let selected = Some(route.id);
+            SnapshotView {
+                snapshot: NetworkSnapshot::new(
+                    1,
+                    DeviceId::from_public_key([1; 32]).unwrap(),
+                    vec![
+                        PeerSnapshot::new(
+                            DeviceId::from_public_key([2; 32]).unwrap(),
+                            "office",
+                            [2; 32],
+                            LivenessState::Online,
+                            TrustState::Trusted,
+                            connection,
+                            vec![route],
+                            selected,
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap(),
+                discovered_peers: vec![],
+                device_network: Default::default(),
+            }
+        };
+        let control = ServiceControl::default();
+        let connected = view(ConnectionState::Connected);
+        assert_eq!(send_recovery_required(&control, &connected), None);
+        // 拒发的是另一个地址：可能只是那个地址的主机不在。
+        control.status.lock().unwrap().locally_refused_hosts = vec!["10.0.0.9".parse().unwrap()];
+        assert_eq!(send_recovery_required(&control, &connected), None);
+        // 对端离线时本机拒发同样可能只是 ARP 失败，不重启。
+        control.status.lock().unwrap().locally_refused_hosts = vec!["10.0.0.2".parse().unwrap()];
+        assert_eq!(
+            send_recovery_required(&control, &view(ConnectionState::Backoff)),
+            None
+        );
+        assert_eq!(
+            send_recovery_required(&control, &connected).as_deref(),
+            Some("office")
+        );
+        // 重启后的新进程仍被拒时不循环重启，交给状态说明。
+        assert_eq!(send_recovery_required(&control, &connected), None);
+    }
+
+    #[test]
     fn authority_preserves_control_connection_for_input_gate() {
         use crate::{NetworkSnapshot, SnapshotView, input_service::Authority};
         use deskfuse_core::{
@@ -564,6 +623,36 @@ fn process_recovery_required(control: &ServiceControl) -> bool {
         .status
         .lock()
         .is_ok_and(|status| status.observer_recovery_required)
+}
+
+/// Restart the input service when the system refuses its LAN sends to a peer
+/// that this process reaches over the same address right now.
+///
+/// Refusal alone is ambiguous: a fresh socket to an absent on-link host also
+/// gets `EHOSTUNREACH` once ARP gives up. A live control session to the same
+/// IP proves the peer is there, so the refusal belongs to the input process
+/// (macOS evaluates local-network policy per process and a long-lived one can
+/// stay denied until relaunched). Returns the peer's name. At most one restart
+/// per interval: if a fresh process is refused too, the status reason tells
+/// the user instead of looping.
+fn send_recovery_required(control: &ServiceControl, view: &SnapshotView) -> Option<String> {
+    const INTERVAL: Duration = Duration::from_secs(600);
+    let refused = control.status.lock().ok()?.locally_refused_hosts.clone();
+    let peer = view.snapshot.peers.iter().find(|peer| {
+        peer.connection == deskfuse_core::ConnectionState::Connected
+            && peer
+                .routes
+                .iter()
+                .find(|route| Some(route.id) == peer.selected_route)
+                .and_then(|route| route.endpoint.host.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| refused.contains(&ip))
+    })?;
+    let mut last = control.send_recovery_at.lock().ok()?;
+    if last.is_some_and(|at| at.elapsed() < INTERVAL) {
+        return None;
+    }
+    *last = Some(std::time::Instant::now());
+    Some(peer.display_name.clone())
 }
 
 /// The input service is the only component that can capture and inject input.
@@ -846,6 +935,16 @@ async fn run_process(
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                     return Err("原生输入检查持续无响应，正在重启输入服务".into());
+                }
+                let refused_peer = send_recovery_required(control, &network.borrow());
+                if let Some(peer) = refused_peer {
+                    control.signal(b'Q');
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if process.0.try_wait().map_err(|e|e.to_string())?.is_some() { break; }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    return Err(format!("输入服务无法向「{peer}」发送局域网数据，正在重启输入服务"));
                 }
                 control.signal(if deskfuse_core::debug_logging::enabled() { b'D' } else { b'd' });
             },

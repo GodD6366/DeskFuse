@@ -1040,6 +1040,8 @@ pub enum InputLinkFailure {
     NoLanRoute,
     /// 存在可用的局域网路径，但对端输入服务没有应答。
     PeerUnresponsive,
+    /// 本机系统拒绝输入服务向对端发送（`EHOSTUNREACH`），探测包没有离开本机。
+    LocalSendRefused,
     /// 其他传输错误或恢复超时。
     Other,
 }
@@ -1057,6 +1059,9 @@ impl InputLinkFailure {
             Self::NoLanRoute => "到对端的路由没有经过可用的局域网接口",
             Self::PeerUnresponsive => {
                 "对端输入服务无响应，请检查对端「本地网络」权限、防火墙与 DeskFuse 是否运行"
+            }
+            Self::LocalSendRefused => {
+                "本机系统拒绝输入服务访问局域网，正在自动重启输入服务；若持续出现，请在「系统设置 › 隐私与安全性 › 本地网络」中确认已允许 DeskFuse"
             }
             Self::Other => "输入链路暂不可用，正在重试",
         }

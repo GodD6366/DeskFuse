@@ -8,16 +8,16 @@
 //! receive errors, so without these records the cause is invisible.
 //! Metadata only: addresses, interface names and errno values.
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
-        Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use quinn::udp::{RecvMeta, Transmit, UdpSocketState};
@@ -122,6 +122,87 @@ impl ErrorSummary {
     }
 }
 
+/// Whether a socket has ever handed a datagram to the kernel, and how often the
+/// kernel refused one with `EHOSTUNREACH` before it left the host.
+#[derive(Debug, Default)]
+struct SendHealth {
+    sent: AtomicU64,
+    unreachable: AtomicU64,
+}
+
+static SEND_HEALTH: Mutex<BTreeMap<SocketAddr, Weak<SendHealth>>> = Mutex::new(BTreeMap::new());
+
+/// The kernel refused every datagram this socket tried to send with
+/// `EHOSTUNREACH`, synchronously and before anything reached the wire.
+///
+/// That is a local verdict, not a silent peer. A long-lived process can get it
+/// for every *new* socket while its older sockets, and other processes, still
+/// reach the same address (macOS local-network/NECP policy is evaluated per
+/// process). The process only recovers once it is relaunched.
+pub(crate) fn send_refused_locally(local: SocketAddr) -> bool {
+    SEND_HEALTH
+        .lock()
+        .ok()
+        .and_then(|sockets| sockets.get(&local).and_then(Weak::upgrade))
+        .is_some_and(|health| {
+            health.sent.load(Ordering::Relaxed) == 0
+                && health.unreachable.load(Ordering::Relaxed) > 0
+        })
+}
+
+/// Rounds in which every fresh dialer to an address was refused locally.
+struct Refusal {
+    rounds: u32,
+    last: Instant,
+}
+
+static REFUSALS: Mutex<BTreeMap<IpAddr, Refusal>> = Mutex::new(BTreeMap::new());
+/// A route flap clears within a round or two; three in a row is persistent.
+const REFUSAL_ROUNDS: u32 = 3;
+/// Older evidence no longer describes this process's current state.
+const REFUSAL_WINDOW: Duration = Duration::from_secs(60);
+
+/// Count one link attempt in which every dialer to `remote` was refused locally.
+pub(crate) fn record_local_refusal(remote: IpAddr) {
+    if let Ok(mut refusals) = REFUSALS.lock() {
+        let now = Instant::now();
+        let refusal = refusals.entry(remote).or_insert(Refusal {
+            rounds: 0,
+            last: now,
+        });
+        if now.duration_since(refusal.last) > REFUSAL_WINDOW {
+            refusal.rounds = 0;
+        }
+        refusal.rounds += 1;
+        refusal.last = now;
+    }
+}
+
+/// A dialer reached `remote`, so this process can send there again.
+pub(crate) fn clear_local_refusal(remote: IpAddr) {
+    if let Ok(mut refusals) = REFUSALS.lock() {
+        refusals.remove(&remote);
+    }
+}
+
+/// Addresses this process has persistently been unable to send to.
+///
+/// Only the host process can tell whether that is the peer being offline or
+/// this process being denied: it checks whether its own live control session
+/// reaches the same address right now.
+#[must_use]
+pub fn locally_refused_hosts() -> Vec<IpAddr> {
+    let Ok(mut refusals) = REFUSALS.lock() else {
+        return Vec::new();
+    };
+    refusals.retain(|_, refusal| refusal.last.elapsed() <= REFUSAL_WINDOW);
+    refusals
+        .iter()
+        .filter(|(_, refusal)| refusal.rounds >= REFUSAL_ROUNDS)
+        .map(|(ip, _)| *ip)
+        .collect()
+}
+
 /// Quinn's Tokio UDP socket with the same semantics, plus error records.
 #[derive(Debug)]
 pub(crate) struct InputUdpSocket {
@@ -131,11 +212,17 @@ pub(crate) struct InputUdpSocket {
     created: Instant,
     send_errors: ErrorSummary,
     recv_errors: ErrorSummary,
+    health: Arc<SendHealth>,
 }
 
 impl InputUdpSocket {
     pub(crate) fn new(socket: std::net::UdpSocket) -> io::Result<Self> {
         let local = socket.local_addr()?;
+        let health = Arc::<SendHealth>::default();
+        if let Ok(mut sockets) = SEND_HEALTH.lock() {
+            sockets.retain(|_, health| health.strong_count() > 0);
+            sockets.insert(local, Arc::downgrade(&health));
+        }
         Ok(Self {
             inner: UdpSocketState::new((&socket).into())?,
             io: tokio::net::UdpSocket::from_std(socket)?,
@@ -143,6 +230,7 @@ impl InputUdpSocket {
             created: Instant::now(),
             send_errors: ErrorSummary::new("send_error"),
             recv_errors: ErrorSummary::new("recv_error"),
+            health,
         })
     }
 }
@@ -165,13 +253,19 @@ impl quinn::AsyncUdpSocket for InputUdpSocket {
         match self.io.try_io(Interest::WRITABLE, || {
             self.inner.try_send((&self.io).into(), transmit)
         }) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.health.sent.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(error),
             // Expected for MTU probes; quinn-udp ignores it as well.
             Err(error) if error.raw_os_error() == Some(EMSGSIZE) => Ok(()),
             Err(error) => {
                 // quinn-udp drops other send errors so one bad path cannot kill
                 // the connection; keep that behaviour and only record it.
+                if error.kind() == io::ErrorKind::HostUnreachable {
+                    self.health.unreachable.fetch_add(1, Ordering::Relaxed);
+                }
                 self.send_errors.observe(self.created, self.local, &error);
                 Ok(())
             }
