@@ -245,6 +245,7 @@ import DeskFuseEngine
 
     private func present(atPointer: Bool) {
         guard featureEnabled, !suspended else { return }
+        if presentInWebView(atPointer: atPointer) { return }
         // A status-item popover otherwise inherits the menu bar anchor's
         // appearance rather than an app-wide appearance override.
         popover.appearance = NSApp.appearance
@@ -303,12 +304,94 @@ import DeskFuseEngine
         }
     }
 
+    /// The WebView panel replaces the AppKit popover when the MyGo client runs.
+    /// Target capture, shortcut and feature gating stay here; only the content
+    /// and its window move to the shared UI.
+    private func presentInWebView(atPointer: Bool) -> Bool {
+        guard MyGoUIHost.shared.isActive else { return false }
+        capturePasteTarget()
+        guard let screen = atPointer
+            ? (NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main)
+            : (item?.button?.window?.screen ?? NSScreen.main) else { return true }
+        let visible = screen.visibleFrame
+        let height = Int(min(780, max(240, visible.height - 40)))
+        let width = 440
+        var x: CGFloat
+        var y: CGFloat
+        if atPointer {
+            let mouse = NSEvent.mouseLocation
+            x = mouse.x + 12 + CGFloat(width) <= visible.maxX ? mouse.x + 12 : mouse.x - CGFloat(width) - 12
+            y = min(max(mouse.y + 16, visible.minY), max(visible.minY, visible.maxY - CGFloat(height)))
+        } else if let button = item?.button, let window = button.window {
+            let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+            x = frame.midX - CGFloat(width) / 2
+            y = frame.minY - CGFloat(height) - 4
+        } else { return true }
+        x = min(max(x, visible.minX), max(visible.minX, visible.maxX - CGFloat(width)))
+        y = min(max(y, visible.minY), max(visible.minY, visible.maxY - CGFloat(height)))
+        session = UUID()
+        pasteTask?.cancel()
+        pastingFromWebViewPanel = true
+        MyGoUIHost.shared.togglePanel(x: Double(x), y: Double(visible.maxY - (y + CGFloat(height))),
+                                     width: width, height: height)
+        return true
+    }
+
+    /// Remember which app was frontmost before the panel took focus, so a paste
+    /// can return there. DeskFuse itself is never a valid target.
+    private func capturePasteTarget() {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if let frontmost, frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           !frontmost.isTerminated {
+            lastExternalTarget = frontmost
+        }
+        let current = frontmost.flatMap { app in
+            app.processIdentifier == ProcessInfo.processInfo.processIdentifier || app.isTerminated ? nil : app
+        }
+        target = current ?? (lastExternalTarget?.isTerminated == false ? lastExternalTarget : nil)
+    }
+
+    /// Paste after the WebView panel copied the content. It repeats the popover
+    /// path's safety checks without the AppKit presentation it no longer owns.
+    func pasteFromWebViewPanel(expectedChangeCount: Int64) async throws {
+        guard AXIsProcessTrusted() else {
+            throw ClipboardPanelFailure.message("请在系统设置 → 隐私与安全性 → 辅助功能中授权 DeskFuse；内容已复制，可手动粘贴。")
+        }
+        guard let target = (target?.isTerminated == false ? target : nil)
+                ?? (lastExternalTarget?.isTerminated == false ? lastExternalTarget : nil) else {
+            throw ClipboardPanelFailure.message("原目标应用不可用；内容已复制，可手动粘贴。")
+        }
+        let presentation = session
+        MyGoUIHost.shared.hidePanel()
+        pastingFromWebViewPanel = true
+        guard target.activate(options: []) else {
+            throw ClipboardPanelFailure.message("无法激活原目标应用；内容已复制。")
+        }
+        for _ in 0..<100 {
+            try Task.checkCancellation()
+            guard presentation == session else { throw ClipboardPanelFailure.cancelled }
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier,
+               NSEvent.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                try clipboardPasteIfCurrent(targetPid: target.processIdentifier, expectedChangeCount: expectedChangeCount)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw ClipboardPanelFailure.message("目标应用未获得焦点或修饰键尚未释放，已取消自动粘贴。")
+    }
+
+    /// The panel lives in another process now; closing it cannot be observed here.
+    func webViewPanelDidClose() { session = UUID() }
+
+    @ObservationIgnored private var pastingFromWebViewPanel = false
+
     func reportPasteFailure(_ message: String) { error = message }
 
     func close() {
         closingForPaste = false
         session = UUID()
         pasteTask?.cancel()
+        if MyGoUIHost.shared.isActive { MyGoUIHost.shared.hidePanel() }
         // 嵌套的预览气泡会让外层面板的 performClose 失败，必须先卸掉。
         ClipboardQuickLookController.shared.close()
         popover.performClose(nil)
@@ -319,9 +402,8 @@ import DeskFuseEngine
     private func restoreActivationPolicyIfNeeded() {
         guard restoreRegularPolicy else { return }
         restoreRegularPolicy = false
-        if !AppStore.shared.hideDockIcon {
-            NSApp.setActivationPolicy(.regular)
-        }
+        // 统一走 Dock 策略：WebView 模式下宿主要保持 accessory。
+        AppStore.shared.applyDockIconPolicy()
     }
 
     func popoverDidClose(_ notification: Notification) {

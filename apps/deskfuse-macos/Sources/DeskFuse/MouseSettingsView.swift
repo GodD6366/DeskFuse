@@ -155,7 +155,7 @@ struct MouseSettingsView: View {
                 Picker("滚轮模式", selection: Binding(
                     get: { freespin },
                     set: { value in
-                        controller.setWheelMode(name: info.name, freespin: value)
+                        Task { await controller.setWheelMode(name: info.name, freespin: value) }
                     })) {
                     Text("自由滚动").tag(true)
                     Text("棘轮").tag(false)

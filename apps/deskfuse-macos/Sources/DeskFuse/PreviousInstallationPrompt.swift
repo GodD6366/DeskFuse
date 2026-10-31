@@ -69,12 +69,15 @@ final class PreviousInstallationController {
         self.completion = completion
         wasPresented = true
         isPresented = true
+        // WebView 模式下原生主窗口默认收起；迁移 sheet 挂在它上面，先放回前台。
+        MyGoUIHost.revealNativeMainWindow()
     }
 
     func finish() {
         guard !busy else { return }
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         isPresented = false
+        MyGoUIHost.suppressNativeMainWindowIfActive()
         let completion = completion
         self.completion = nil
         // Allow the import sheet to close before presenting permission guidance.

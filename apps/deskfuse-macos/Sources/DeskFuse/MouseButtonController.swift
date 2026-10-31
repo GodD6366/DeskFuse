@@ -270,14 +270,13 @@ final class MouseButtonController {
     }
 
     /// Toggle the SmartShift wheel mode for the mouse with the given name.
-    func setWheelMode(name: String, freespin: Bool) {
-        Task { [weak self] in
-            guard let self else { return }
-            let ok = await self.hid.setWheelMode(name: name, freespin: freespin)
-            if ok {
-                self.wheelInfo = self.hid.wheelInfo()
-            }
+    @discardableResult
+    func setWheelMode(name: String, freespin: Bool) async -> Bool {
+        let ok = await hid.setWheelMode(name: name, freespin: freespin)
+        if ok {
+            wheelInfo = hid.wheelInfo()
         }
+        return ok
     }
     func openInputMonitoringSettings() {
         hid.prepareCapture()

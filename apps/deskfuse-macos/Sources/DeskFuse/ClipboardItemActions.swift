@@ -41,7 +41,12 @@ enum ClipboardPreviewPolicy {
     }
 
     static func save(_ item: HistoryItem) {
-        Task { await saveContent(item) }
+        Task { await saveContent(id: item.id, hasImage: item.hasImage, fileCount: Int(item.fileCount)) }
+    }
+
+    /// WebView 页面只有条目 id 与几个展示字段；保存只需要这三项。
+    static func save(id: UInt64, hasImage: Bool, fileCount: Int) {
+        Task { await saveContent(id: id, hasImage: hasImage, fileCount: fileCount) }
     }
 
     static func revealInFinder(_ id: UInt64) {
@@ -55,7 +60,11 @@ enum ClipboardPreviewPolicy {
     /// `point` 是触发编辑的屏幕坐标（右键位置等），编辑窗口就近弹出；
     /// 键盘触发时为 nil，窗口居中。
     static func edit(_ item: HistoryItem, title: String?, at point: NSPoint? = nil) {
-        Task { await presentEditor(item, title: title, at: point) }
+        Task { await presentEditor(id: item.id, title: title ?? item.clipboardTitle, hasImage: item.hasImage, fileCount: Int(item.fileCount), at: point) }
+    }
+
+    static func edit(id: UInt64, title: String?, hasImage: Bool, fileCount: Int, at point: NSPoint? = nil) {
+        Task { await presentEditor(id: id, title: title, hasImage: hasImage, fileCount: fileCount, at: point) }
     }
 
     static func writePlainText(_ text: String) -> Int64 {
@@ -82,6 +91,43 @@ enum ClipboardPreviewPolicy {
         }
         let rtf = styled ? attributed.rtf(from: range).map(Array.init) : nil
         ClipboardLibraryStore.shared.updateText(id, text: attributed.string, rtf: rtf)
+    }
+
+    /// WebView 面板/页面等待真实完成：返回写入后的 change count，失败抛出原始错误。
+    static func performAwaiting(id: UInt64, plainText: Bool, paste: Bool) async throws -> Int64 {
+        guard let client = AppStore.shared.client else { throw ClipboardActionFailure.message("引擎尚未就绪") }
+        let changeCount = plainText
+            ? writePlainText(try await loadContent(id, client: client).text)
+            : try await client.prepareClipboardPaste(id, session: UUID().uuidString)
+        if paste {
+            try await ClipboardPanelController.shared.pasteFromWebViewPanel(expectedChangeCount: changeCount)
+        } else {
+            ClipboardPanelController.shared.webViewPanelDidClose()
+        }
+        return changeCount
+    }
+
+    /// Copy or paste from the WebView clipboard panel. The panel runs in another
+    /// process, so the AppKit popover session check does not apply; focus
+    /// handoff and change-count validation still do.
+    static func copyFromWebViewPanel(_ id: UInt64, plainText: Bool = false, paste: Bool) {
+        Task { await performFromWebViewPanel(id, plainText: plainText, paste: paste) }
+    }
+
+    private static func performFromWebViewPanel(_ id: UInt64, plainText: Bool, paste: Bool) async {
+        guard let client = AppStore.shared.client else { report("引擎尚未就绪"); return }
+        do {
+            let changeCount = plainText
+                ? writePlainText(try await loadContent(id, client: client).text)
+                : try await client.prepareClipboardPaste(id, session: UUID().uuidString)
+            guard paste else {
+                ClipboardPanelController.shared.webViewPanelDidClose()
+                return
+            }
+            try await ClipboardPanelController.shared.pasteFromWebViewPanel(expectedChangeCount: changeCount)
+        } catch {
+            report(error.userFacingMessage)
+        }
     }
 
     private static func perform(_ id: UInt64, plainText: Bool, paste: Bool) async {
@@ -118,11 +164,11 @@ enum ClipboardPreviewPolicy {
         }
     }
 
-    private static func saveContent(_ item: HistoryItem) async {
+    private static func saveContent(id: UInt64, hasImage: Bool, fileCount: Int) async {
         guard let client = AppStore.shared.client else { report("引擎尚未就绪"); return }
         do {
-            let content = try await loadContent(item.id, client: client)
-            if item.hasImage, !content.imagePng.isEmpty {
+            let content = try await loadContent(id, client: client)
+            if hasImage, !content.imagePng.isEmpty {
                 await saveData(content.imagePng, name: "剪贴板图片.png", types: [.png])
             } else if !content.filePaths.isEmpty {
                 let urls = content.filePaths.map { URL(fileURLWithPath: $0) }
@@ -149,6 +195,68 @@ enum ClipboardPreviewPolicy {
         }
     }
 
+    /// WebView 的保存动作等待用户选完保存位置：返回是否保存以及保存路径，
+    /// 失败抛出真实错误，页面据此提示，而不是只确认“已派发”。
+    static func saveAwaiting(id: UInt64, hasImage: Bool, fileCount: Int) async throws -> [String: Any] {
+        guard let client = AppStore.shared.client else { throw ClipboardActionFailure.message("引擎尚未就绪") }
+        let content = try await loadContent(id, client: client)
+        if hasImage, !content.imagePng.isEmpty {
+            return try await saveDataAwaiting(content.imagePng, name: "剪贴板图片.png", types: [.png])
+        }
+        if !content.filePaths.isEmpty {
+            let urls = content.filePaths.map { URL(fileURLWithPath: $0) }
+            guard urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+                throw ClipboardActionFailure.message("文件已不可用，请重新获取。")
+            }
+            guard let folder = await chooseFolderAwaiting() else { return ["saved": false] }
+            for url in urls {
+                let destination = folder.appendingPathComponent(url.lastPathComponent)
+                try FileManager.default.copyItem(at: url, to: uniqueURL(destination))
+            }
+            return ["saved": true, "path": folder.path]
+        }
+        return try await saveDataAwaiting(Data(content.text.utf8), name: "剪贴板文本.txt", types: [.plainText])
+    }
+
+    /// WebView 保存纯文本（如鼠标适配数据 Markdown）：等待用户选完保存位置。
+    static func saveTextAwaiting(_ text: String, name: String) async throws -> [String: Any] {
+        try await saveDataAwaiting(Data(text.utf8), name: name,
+                                   types: [UTType(filenameExtension: "md") ?? .plainText])
+    }
+
+    static func saveDataAwaiting(_ data: Data, name: String, types: [UTType]) async throws -> [String: Any] {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = types
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = name
+        NSApp.activate(ignoringOtherApps: true)
+        autoResolveSmokePanel(panel)
+        let url: URL? = await withCheckedContinuation { continuation in
+            panel.begin { response in
+                continuation.resume(returning: response == .OK ? panel.url : nil)
+            }
+        }
+        guard let url else { return ["saved": false] }
+        try await Task.detached { try data.write(to: url, options: .atomic) }.value
+        return ["saved": true, "path": url.path]
+    }
+
+    private static func chooseFolderAwaiting() async -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "保存"
+        panel.message = "选择保存位置"
+        NSApp.activate(ignoringOtherApps: true)
+        autoResolveSmokePanel(panel)
+        return await withCheckedContinuation { continuation in
+            panel.begin { response in
+                continuation.resume(returning: response == .OK ? panel.url : nil)
+            }
+        }
+    }
+
     private static func saveData(_ data: Data, name: String, types: [UTType]) async {
         let panel = NSSavePanel()
         panel.allowedContentTypes = types
@@ -159,6 +267,17 @@ enum ClipboardPreviewPolicy {
             try await Task.detached { try data.write(to: url, options: .atomic) }.value
         } catch {
             report(error.userFacingMessage)
+        }
+    }
+
+    /// 冒烟专用：设置 `DESKFUSE_UI_SMOKE_SAVE` 时自动取消保存面板，让
+    /// “保存结果回传（取消）”能在无人值守的冒烟里被真实走通。正常启动不生效。
+    /// （NSSavePanel 没有可用的程序化“确认”入口：`ok:` 未实现，确认路径只由
+    /// 用户点击完成。）
+    private static func autoResolveSmokePanel(_ panel: NSSavePanel) {
+        guard ProcessInfo.processInfo.environment["DESKFUSE_UI_SMOKE_SAVE"] != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            panel.cancel(nil)
         }
     }
 
@@ -215,13 +334,13 @@ enum ClipboardPreviewPolicy {
         }
     }
 
-    private static func presentEditor(_ item: HistoryItem, title: String?, at point: NSPoint?) async {
+    private static func presentEditor(id: UInt64, title: String?, hasImage: Bool, fileCount: Int, at point: NSPoint?) async {
         guard let client = AppStore.shared.client else { report("引擎尚未就绪"); return }
         do {
-            let content = try await loadContent(item.id, client: client)
-            if item.hasImage, item.fileCount == 0, !content.imagePng.isEmpty {
+            let content = try await loadContent(id, client: client)
+            if hasImage, fileCount == 0, !content.imagePng.isEmpty {
                 let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("deskfuse-edit-\(item.id).png")
+                    .appendingPathComponent("deskfuse-edit-\(id).png")
                 try content.imagePng.write(to: url, options: .atomic)
                 if let preview = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Preview") {
                     _ = try await NSWorkspace.shared.open([url], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration())
@@ -230,13 +349,13 @@ enum ClipboardPreviewPolicy {
                 }
                 return
             }
-            if item.fileCount > 0, !content.filePaths.isEmpty {
-                await openPreview(item.id)
+            if fileCount > 0, !content.filePaths.isEmpty {
+                await openPreview(id)
                 return
             }
             ClipboardContentEditorController.shared.present(
-                itemID: item.id,
-                title: (title?.isEmpty == false ? title! : nil) ?? item.clipboardTitle,
+                itemID: id,
+                title: title.flatMap { $0.isEmpty ? nil : $0 } ?? "",
                 text: content.text,
                 rtf: content.rtf,
                 at: point

@@ -8,6 +8,8 @@ import DeskFuseEngine
     private var visibleIDs: Set<String> = []
     init(store: AppStore) { self.store = store }
     func reconcile(_ requests: [Pairing]) {
+        // 配对窗口在 WebView 里实现时，原生面板不得再介入。
+        guard !MyGoUIHost.shared.isActive else { return }
         let ids = Set(requests.filter(\.incoming).map(\.id))
         guard !ids.isEmpty else { panel?.orderOut(nil); visibleIDs = []; return }
         if panel == nil {
@@ -30,6 +32,8 @@ import DeskFuseEngine
         for id in visibleIDs where !store.pairingDecisions.contains(id) { store.send(.reject(requestId: id), pairing: id) }
         sender.orderOut(nil); return false
     }
+    /// WebView 接管后收起仍可能可见的原生面板。
+    func concealForWebView() { panel?.orderOut(nil); visibleIDs = [] }
 }
 
 struct PairingWindowView: View {

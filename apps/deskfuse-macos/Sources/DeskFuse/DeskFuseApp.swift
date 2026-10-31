@@ -124,9 +124,14 @@ import DeskFuseEngine
             ClipboardPanelController.shared.install(store: store)
             return
         }
+        // Opt-in only: a no-op unless launched with --mygo-ui <executable>.
+        MyGoUIHost.shared.startIfRequested()
+        // 开发期基线截图：仅在 DESKFUSE_CAPTURE_UI 下运行，随后自行退出。
+        UICapture.runIfRequested(store: store)
         if store.onboarding.shouldPresent(), !store.previousInstallation.wasPresented {
             // 本机尚未完成当前引导：即使应用已经安装过，也运行一次。
             store.onboarding.present()
+            if MyGoUIHost.shared.isActive { MyGoUIHost.shared.present(page: "onboarding") }
         } else {
             // 权限按需申请：功能页或设置页会在确有需要时提示。
             store.permissions.refresh()
@@ -135,6 +140,7 @@ import DeskFuseEngine
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MyGoUIHost.shared.stop()
         // 引导弹窗中授权后，系统设置的「退出并重新打开」已经进入退出流程。
         // 再确认模态窗口不拦截终止，避免 AppKit 在委托返回后丢掉这次退出。
         for window in NSApp.windows {

@@ -65,6 +65,50 @@ enum DeviceProductIconResolver {
         return "laptopcomputer"
     }
 
+    /// WebView 无法读取 CoreTypes 资源，也没有 SF Symbols：把原生同一份产品图
+    /// （找不到时用同一个 SF Symbol 回退）栅格化成 PNG 交给页面，图标与原生一致。
+    static func png(for displayName: String, modelIdentifier: String? = nil, pixels: Int) -> Data? {
+        let side = max(16, min(512, pixels))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = NSSize(width: side, height: side)
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let drawn = draw(in: context, side: side, displayName: displayName, modelIdentifier: modelIdentifier)
+        guard drawn else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    private static func draw(in context: NSGraphicsContext, side: Int, displayName: String, modelIdentifier: String?) -> Bool {
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let canvas = NSRect(x: 0, y: 0, width: CGFloat(side), height: CGFloat(side))
+        if let artwork = image(for: displayName, modelIdentifier: modelIdentifier) {
+            let source = artwork.size
+            guard source.width > 0, source.height > 0 else { return false }
+            let scale = min(canvas.width / source.width, canvas.height / source.height)
+            artwork.draw(in: NSRect(
+                x: canvas.midX - source.width * scale / 2, y: canvas.midY - source.height * scale / 2,
+                width: source.width * scale, height: source.height * scale
+            ), from: .zero, operation: .sourceOver, fraction: 1)
+            return true
+        }
+        let configuration = NSImage.SymbolConfiguration(
+            pointSize: CGFloat(side) * 0.62, weight: .light
+        ).applying(NSImage.SymbolConfiguration(paletteColors: [.secondaryLabelColor]))
+        guard let symbol = NSImage(systemSymbolName: fallbackSymbol(for: displayName), accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return false }
+        let size = symbol.size
+        symbol.draw(in: NSRect(
+            x: canvas.midX - size.width / 2, y: canvas.midY - size.height / 2,
+            width: size.width, height: size.height
+        ))
+        return true
+    }
+
     static var localModelIdentifier: String? {
         var size = 0
         guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return nil }

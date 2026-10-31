@@ -97,6 +97,11 @@ import DeskFuseEngine
     var showMainWindow: (() -> Void)?
     var pairingWindow: PairingWindowController?
     private var transferWindow: TransferProgressWindowController?
+    /// WebView 接管浮动窗口后，收起原生配对与传输进度面板。
+    func concealNativeAuxiliaryWindows() {
+        pairingWindow?.concealForWebView()
+        transferWindow?.concealForWebView()
+    }
     private var eventsTask: Task<Void, Never>?
     private enum CommandOutcome { case applied, failed(String) }
     private var earlyResults: [UInt64: CommandOutcome] = [:]
@@ -375,13 +380,21 @@ import DeskFuseEngine
         }
     }
     func reclaim() { engine?.emergencyReclaim() }
+    /// 是否应该出现在 Dock 里：设置项，加上“远程应用窗口打开”这一覆盖。
+    var dockIconVisible: Bool {
+        if #available(macOS 14.2, *), RemoteApplicationDockController.shared.hasActiveApplication { return true }
+        return !hideDockIcon
+    }
     /// Applies the Dock visibility choice; call at launch and whenever it changes.
     func applyDockIconPolicy() {
-        if #available(macOS 14.2, *), RemoteApplicationDockController.shared.hasActiveApplication {
-            NSApp.setActivationPolicy(.regular)
+        // WebView 模式下产品窗口属于 UI 子进程，Dock 图标归它：宿主再注册一个
+        // regular 应用只会让同一个 bundle 出现两个图标。可见性经桥接推给子进程。
+        if MyGoUIHost.shared.isActive {
+            NSApp.setActivationPolicy(.accessory)
+            MyGoUIHost.shared.pushDockPolicy(visible: dockIconVisible)
             return
         }
-        NSApp.setActivationPolicy(hideDockIcon ? .accessory : .regular)
+        NSApp.setActivationPolicy(dockIconVisible ? .regular : .accessory)
     }
     func setHideDockIcon(_ hidden: Bool) {
         hideDockIcon = hidden
@@ -397,10 +410,19 @@ import DeskFuseEngine
         }
         settingsDestination = SettingsDestination(tab: tab, previous: settingsDestination)
         selectedPage = .settings
+        if MyGoUIHost.shared.isActive {
+            MyGoUIHost.shared.present(page: Page.settings.bridgeID,
+                                      settingsCategory: settingsDestination.category.rawValue)
+            return
+        }
         openMain()
     }
     func openMain() {
         NSApp.activate(ignoringOtherApps: true)
+        if MyGoUIHost.shared.isActive {
+            MyGoUIHost.shared.present(page: selectedPage.bridgeID)
+            return
+        }
         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
@@ -451,6 +473,19 @@ enum Page: String, CaseIterable, Identifiable {
     case remoteApplications = "远程应用", microphone = "麦克风共享", mouse = "鼠标自定义"
     case settings = "设置"
     var id: Self { self }
+    /// WebView 页面标识，与 `apps/deskfuse-go/frontend/src/App.vue` 的导航 id 一致。
+    var bridgeID: String {
+        switch self {
+        case .devices: "devices"
+        case .clipboard: "clipboard"
+        case .input: "input"
+        case .files: "files"
+        case .remoteApplications: "remote_applications"
+        case .microphone: "microphone"
+        case .mouse: "mouse"
+        case .settings: "settings"
+        }
+    }
     /// 侧栏功能分两组：日常协作的基础功能在上，进阶差异化功能（Beta）在下。
     static let primary: [Page] = [.clipboard, .input, .files]
     static let extended: [Page] = [.remoteApplications, .microphone, .mouse]

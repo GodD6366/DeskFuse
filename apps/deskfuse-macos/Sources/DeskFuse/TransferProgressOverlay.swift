@@ -17,6 +17,8 @@ import DeskFuseEngine
 
     func reconcile(_ transfers: [Transfer]) {
         guard !stopped else { return }
+        // 进度面板在 WebView 里实现时，原生面板不得再介入。
+        guard !MyGoUIHost.shared.isActive else { return }
         if !initialized {
             dismissed.formUnion(transfers.filter { [.failed, .cancelled, .completed].contains($0.phase) }.map(\.id))
             initialized = true
@@ -96,6 +98,9 @@ import DeskFuseEngine
         autoDismissTasks.removeAll()
         closePanel()
     }
+
+    /// WebView 接管后收起仍可能可见的原生面板；进行中的传输不受影响。
+    func concealForWebView() { closePanel() }
 }
 
 private final class TransferProgressPanel: NSPanel {
