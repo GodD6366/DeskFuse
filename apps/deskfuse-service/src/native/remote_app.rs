@@ -15,7 +15,8 @@
 
 use super::security;
 use crate::remote_rdp_protocol::{
-    CatalogApp, HostCheck, RdpHost, RemoteAppMessage, RemoteAppRequest, VERSION, parse_request,
+    CatalogApp, ConsoleSession, HostCheck, RdpHost, RemoteAppMessage, RemoteAppRequest, VERSION,
+    parse_request,
 };
 use deskfuse_transport::QuinnTransport;
 use deskfuse_transport::remote_application::RemoteSession;
@@ -106,7 +107,79 @@ pub fn host_status() -> RdpHost {
                 .into(),
             },
         ],
+        console_session: console_session(),
     }
+}
+
+/// 活动控制台会话。Windows Pro/Enterprise 同一账户只允许一个会话：远程接管
+/// 会让本机锁屏，换成另一个账户则会把当前用户挤下线。查询失败时不阻止连接，
+/// 只是主控端拿不到提前提示。
+fn console_session() -> Option<ConsoleSession> {
+    use windows_sys::Win32::System::RemoteDesktop::{
+        WTS_CURRENT_SERVER_HANDLE, WTSActive, WTSConnectState, WTSConnected, WTSFreeMemory,
+        WTSGetActiveConsoleSessionId, WTSQuerySessionInformationW, WTSUserName,
+    };
+
+    let session = unsafe { WTSGetActiveConsoleSessionId() };
+    if session == u32::MAX {
+        return None;
+    }
+
+    let mut buffer: *mut u16 = std::ptr::null_mut();
+    let mut bytes = 0_u32;
+    // SAFETY: the service queries its own session table; the buffer is freed below.
+    let queried = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            session,
+            WTSUserName,
+            &raw mut buffer,
+            &raw mut bytes,
+        )
+    };
+    if queried == 0 || buffer.is_null() || bytes < 2 {
+        if !buffer.is_null() {
+            unsafe { WTSFreeMemory(buffer.cast()) };
+        }
+        return None;
+    }
+    // SAFETY: `bytes` counts the UTF-16 buffer returned by WTS.
+    let units = unsafe { std::slice::from_raw_parts(buffer, (bytes / 2) as usize) };
+    let user = String::from_utf16_lossy(units)
+        .trim_end_matches('\0')
+        .trim()
+        .to_owned();
+    // SAFETY: buffer came from WTSQuerySessionInformationW.
+    unsafe { WTSFreeMemory(buffer.cast()) };
+    if user.is_empty() {
+        return None;
+    }
+
+    let mut state_buffer: *mut u16 = std::ptr::null_mut();
+    let mut state_bytes = 0_u32;
+    let mut connected = true;
+    // SAFETY: same query contract; the buffer is freed below.
+    let state_queried = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            session,
+            WTSConnectState,
+            &raw mut state_buffer,
+            &raw mut state_bytes,
+        )
+    };
+    if state_queried != 0 && !state_buffer.is_null() && state_bytes >= 4 {
+        // SAFETY: WTSConnectState returns one WTS_CONNECTSTATE_CLASS value;
+        // read_unaligned avoids assuming the WTS buffer is 4-byte aligned.
+        let state = unsafe { std::ptr::read_unaligned(state_buffer.cast::<u32>()) };
+        connected = state == WTSActive as u32 || state == WTSConnected as u32;
+    }
+    if !state_buffer.is_null() {
+        // SAFETY: buffer came from WTSQuerySessionInformationW.
+        unsafe { WTSFreeMemory(state_buffer.cast()) };
+    }
+
+    Some(ConsoleSession { user, connected })
 }
 
 // --- Desktop IPC reads the preflight on the service's single-threaded runtime
@@ -405,7 +478,8 @@ pub fn rdp_file(app: &RemoteAppEntry) -> io::Result<String> {
     }
     lines.push("disableremoteappcapscheck:i:1".into());
     lines.push("alternate shell:s:rdpinit.exe".into());
-    lines.push("audiomode:i:2".into());
+    lines.push("audiomode:i:0".into());
+    lines.push("redirectclipboard:i:1".into());
     let mut rdp = lines.join("\r\n");
     rdp.push_str("\r\n");
     Ok(rdp)
@@ -637,8 +711,183 @@ impl From<RemoteAppEntry> for CatalogApp {
             command_line: entry.command_line,
             icon_path: entry.icon_path,
             icon_index: entry.icon_index,
+            icon_png: None,
         }
     }
+}
+
+/// Best-effort 64×64 PNG icons for the catalog, cached by executable path and
+/// modification time. Extraction runs in one PowerShell batch (System.Drawing)
+/// so a 100-app catalog costs a single process spawn instead of one per app.
+fn catalog_apps() -> Vec<CatalogApp> {
+    const MAX_ICON_APPS: usize = 128;
+    let mut apps: Vec<CatalogApp> = launchable_apps()
+        .into_iter()
+        .map(CatalogApp::from)
+        .collect();
+    let paths: Vec<String> = apps
+        .iter()
+        .take(MAX_ICON_APPS)
+        .map(|app| app.path.clone())
+        .collect();
+    let icons = icons_for(&paths);
+    for app in &mut apps {
+        app.icon_png = icons.get(&app.path).cloned();
+    }
+    apps
+}
+
+type IconCache = std::collections::HashMap<String, (u64, Option<String>)>;
+static ICON_CACHE: Mutex<Option<IconCache>> = Mutex::new(None);
+
+fn file_stamp(path: &str) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn icons_for(paths: &[String]) -> std::collections::HashMap<String, String> {
+    let mut result = std::collections::HashMap::new();
+    if paths.is_empty() {
+        return result;
+    }
+    let mut missing: Vec<(String, u64)> = Vec::new();
+    {
+        let mut guard = ICON_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        let cache = guard.get_or_insert_with(std::collections::HashMap::new);
+        for path in paths {
+            let stamp = file_stamp(path);
+            match cache.get(path) {
+                Some((cached, icon)) if *cached == stamp => {
+                    if let Some(icon) = icon {
+                        result.insert(path.clone(), icon.clone());
+                    }
+                }
+                _ => missing.push((path.clone(), stamp)),
+            }
+        }
+    }
+    if missing.is_empty() {
+        return result;
+    }
+
+    let requested: Vec<String> = missing.iter().map(|(path, _)| path.clone()).collect();
+    let extracted = extract_icons(&requested);
+    let mut guard = ICON_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    let cache = guard.get_or_insert_with(std::collections::HashMap::new);
+    for (path, stamp) in missing {
+        let icon = extracted.get(&path).cloned();
+        if let Some(icon) = &icon {
+            result.insert(path.clone(), icon.clone());
+        }
+        cache.insert(path, (stamp, icon));
+    }
+    result
+}
+
+/// The script is constant; executable paths travel as JSON on stdin so no
+/// registry or filename value is ever interpolated into the command line.
+const ICON_SCRIPT: &str = r#"
+$ErrorActionPreference='Stop';
+[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;
+Add-Type -AssemblyName System.Drawing;
+$paths=[Console]::In.ReadToEnd() | ConvertFrom-Json;
+$out=@{};
+foreach($p in $paths){
+  try{
+    $icon=[System.Drawing.Icon]::ExtractAssociatedIcon([string]$p);
+    if($null -eq $icon){continue}
+    $src=$icon.ToBitmap();
+    $bmp=New-Object System.Drawing.Bitmap 64,64;
+    $g=[System.Drawing.Graphics]::FromImage($bmp);
+    $g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;
+    $g.DrawImage($src,0,0,64,64);
+    $ms=New-Object System.IO.MemoryStream;
+    $bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png);
+    $b64=[Convert]::ToBase64String($ms.ToArray());
+    if($b64.Length -le 24000){$out[[string]$p]=$b64}
+    $g.Dispose();$bmp.Dispose();$src.Dispose();$icon.Dispose();$ms.Dispose()
+  }catch{}
+}
+$out | ConvertTo-Json -Compress
+"#;
+
+fn extract_icons(paths: &[String]) -> std::collections::HashMap<String, String> {
+    use std::io::Write as _;
+    use std::os::windows::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut result = std::collections::HashMap::new();
+    if paths.is_empty() {
+        return result;
+    }
+    let Ok(payload) = serde_json::to_vec(paths) else {
+        return result;
+    };
+    let Some(executable) = std::env::var_os("SystemRoot").map(|root| {
+        std::path::PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+    }) else {
+        return result;
+    };
+    let Ok(mut child) = Command::new(executable)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            ICON_SCRIPT,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+    else {
+        return result;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&payload);
+        // Dropping stdin closes the pipe so ReadToEnd returns.
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return result;
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return result;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return result;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim_start_matches('\u{feff}').trim();
+    if text.is_empty() {
+        return result;
+    }
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(text) else {
+        return result;
+    };
+    for (path, value) in map {
+        if let Some(icon) = value.as_str() {
+            if !icon.is_empty() && icon.len() <= 24000 {
+                result.insert(path, icon.to_owned());
+            }
+        }
+    }
+    result
 }
 
 /// Serve one authenticated remote-app stream: advertise the catalog, then answer
@@ -671,10 +920,7 @@ pub fn serve(
             .or_else(|| (!host.available()).then(|| "请先按预检提示设置 Windows 远程桌面".into())),
         host,
         apps: if available {
-            launchable_apps()
-                .into_iter()
-                .map(CatalogApp::from)
-                .collect()
+            catalog_apps()
         } else {
             Vec::new()
         },

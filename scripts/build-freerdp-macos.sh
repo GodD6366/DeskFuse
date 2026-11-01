@@ -121,7 +121,7 @@ cmake -B "$BUILD" -S "$SRC" \
   -DWITH_GSM=OFF -DWITH_LAME=OFF -DWITH_OPENSLES=OFF -DWITH_OSS=OFF \
   -DWITH_PULSE=OFF -DWITH_ALSA=OFF -DWITH_CUPS=OFF -DWITH_PCSC=OFF \
   -DWITH_KRB5=OFF -DWITH_JPEG=OFF -DWITH_GSTREAMER_1_0=OFF \
-  -DCHANNEL_RDPSND=OFF -DCHANNEL_AUDIN=OFF -DCHANNEL_RDPDR=OFF \
+  -DCHANNEL_RDPSND=ON -DWITH_MACAUDIO=ON -DCHANNEL_AUDIN=OFF -DCHANNEL_RDPDR=ON \
   -DCHANNEL_URBDRC=OFF -DCHANNEL_SMARTCARD=OFF -DCHANNEL_PRINTER=OFF \
   -DCHANNEL_SERIAL=OFF -DCHANNEL_PARALLEL=OFF -DCHANNEL_TSMF=OFF \
   -DCHANNEL_VIDEO=OFF -DCHANNEL_ENCOMSP=OFF -DCHANNEL_REMDESK=OFF \
@@ -178,6 +178,7 @@ if [[ "${1:-}" == --test ]]; then
     -I"$SRC/channels/rail/client" -I"$SRC/channels/rail" \
     "$VENDOR/lib/libdeskfuse-rdp.a" -lz \
     -framework Foundation -framework CoreServices -framework Security -framework IOKit \
+    -framework AVFoundation -framework AudioToolbox -framework CoreAudio \
     -o "$BUILD/test-rdp-bridge"
   "$BUILD/test-rdp-bridge"
 fi

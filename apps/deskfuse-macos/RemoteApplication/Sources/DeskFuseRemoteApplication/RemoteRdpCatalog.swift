@@ -12,6 +12,9 @@ public struct RemoteRdpApp: Codable, Equatable, Sendable {
     public let commandLine: String
     public let iconPath: String
     public let iconIndex: UInt32
+    /// 64×64 PNG from the Windows service, base64. Missing for apps whose icon
+    /// cannot be extracted; the picker then falls back to a system symbol.
+    public let iconPng: String?
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -20,6 +23,7 @@ public struct RemoteRdpApp: Codable, Equatable, Sendable {
         case commandLine = "command_line"
         case iconPath = "icon_path"
         case iconIndex = "icon_index"
+        case iconPng = "icon_png"
     }
 }
 
@@ -37,23 +41,39 @@ public struct RemoteRdpHostCheck: Codable, Equatable, Sendable {
     }
 }
 
+/// 本机控制台正在使用的登录会话。远程接管会让本机锁屏，或挤掉另一个账户。
+public struct RemoteRdpConsoleSession: Codable, Equatable, Sendable {
+    public let user: String
+    public let connected: Bool
+
+    public init(user: String, connected: Bool) {
+        self.user = user
+        self.connected = connected
+    }
+}
+
 /// RDP listener facts supplied by the paired Windows service. The certificate
 /// SHA-256 is the only pin the native bridge accepts; there is no manual trust.
 public struct RemoteRdpHost: Codable, Equatable, Sendable {
     public let port: UInt16
     public let certificateSha256: String?
     public let checks: [RemoteRdpHostCheck]
+    /// 旧版 Windows 服务不发送该字段，缺失时按“无法判断”处理。
+    public let consoleSession: RemoteRdpConsoleSession?
 
     enum CodingKeys: String, CodingKey {
         case port
         case certificateSha256 = "certificate_sha256"
         case checks
+        case consoleSession = "console_session"
     }
 
-    public init(port: UInt16, certificateSha256: String?, checks: [RemoteRdpHostCheck]) {
+    public init(port: UInt16, certificateSha256: String?, checks: [RemoteRdpHostCheck],
+                consoleSession: RemoteRdpConsoleSession? = nil) {
         self.port = port
         self.certificateSha256 = certificateSha256
         self.checks = checks
+        self.consoleSession = consoleSession
     }
 
     public var available: Bool {

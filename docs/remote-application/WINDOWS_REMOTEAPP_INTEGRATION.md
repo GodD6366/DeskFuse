@@ -1,6 +1,6 @@
 # Windows 远程应用（Mac 主控 → Windows 被控）实施状态
 
-方向：**Mac 控制 Windows**，Mac 端内嵌 FreeRDP。当前完成 P0 和 P1 的代码与自动测试；P1 实机验收和 P2–P7 尚未完成，进度以 `RDP_COMPLETION_PLAN.md` 为准。
+方向：**Mac 控制 Windows**，Mac 端内嵌 FreeRDP。当前完成 P0、P1 的代码与自动测试，并接入剪贴板文本与本机会话占用提示；P1 实机验收、无缝窗口、声音和其余 P4–P7 尚未完成，进度以 `RDP_COMPLETION_PLAN.md` 为准。
 
 ## 架构
 
@@ -29,7 +29,12 @@ RDP 字节流经过 DeskFuse 的 QUIC 隧道，不再直连 `Windows:3389`，也
 ### Mac 侧（C + Swift）
 
 - `RdpBridge.c`：FreeRDP 3.14.1 无头客户端；通过 `freerdp_set_io_callbacks` 替换 `TCPConnect`/`ConnectLayer`，只使用 `socketpair`；证书只接受服务端下发的 SHA-256；关闭网关、代理、UDP multitransport、自动重连和重定向；提供 `rdp_bridge_take_tunnel_fd()` 与 `rdp_bridge_execute()`。
-- `RemoteRdpBridge.swift`：创建会话、交出隧道 fd、启动、帧拷贝、输入、RAIL 追加启动。
+- `RemoteRdpBridge.swift`：创建会话、交出隧道 fd、启动、帧拷贝、输入、RAIL 追加启动、剪贴板事件透传。
+- `RemoteRdpClipboard.swift`：文本（UTF-16LE）与图片（`CF_DIB` 24/32 位 BI_RGB）双向桥接；桥接层负责 cliprdr 握手、格式列表和延迟应答，本机只公布这两类格式。
+- 声音：FreeRDP 的 `rdpsnd` 通道加 macOS `mac` 子系统（AVAudioEngine）在本机播放；桥接层打开 `AudioPlayback`，`.rdp` 使用 `audiomode:i:0`。`rdpsnd` 依赖 `rdpdr`，构建同时启用该通道，但没有配置任何设备重定向。
+- 自动重连：`RemoteRdpHostConnection` 在隧道或会话失败后保持窗口，按 `RemoteRdpReconnectPolicy`（1/2/4/8 秒退避，60 秒预算）重建目录会话、隧道和 RDP 会话，再用 RAIL 重新打开之前的应用。凭据只存在内存，`stop()` 立即丢弃。
+- 应用图标：Windows 服务批量提取 64×64 PNG（System.Drawing），按路径与修改时间缓存；目录以 base64 传输 `icon_png`，Mac 选择器渲染真实图标，失败时回退系统符号。
+- 设置与诊断：选择器齿轮菜单可关闭声音或剪贴板（下次会话生效）；`RemoteRdpSessionMetrics` 记录连接/首帧/在线时长与帧率，写入 `rdp_session_started`、`rdp_connected`、`rdp_first_frame`、`rdp_session_closed` 诊断。
 - `RemoteRdpCatalog.swift`：协议 v2 类型（`RemoteRdpHost`/`RemoteRdpHostCheck`/`RemoteRdpMessage`/`RemoteRdpRequest`）。
 - `RemoteRdpSession.swift`：目录/预检浏览；`prepare` 返回一次性票据。
 - `RemoteRdpHostConnection.swift`：**每台 Windows 只保留一条 RDP 连接**；第一个应用用 `.rdp` 启动，后续应用用 RAIL `ClientExecute` 在同一会话启动。
@@ -50,10 +55,10 @@ RDP 字节流经过 DeskFuse 的 QUIC 隧道，不再直连 `Windows:3389`，也
 - P1 实机项：Windows 防火墙关闭 3389 仍可连接；记事本+画图共用一条连接；雷电/Wi-Fi 切换。
 - P2：RAIL 窗口表与一窗一 Mac 窗口、脏区/IOSurface、几何换算、窗口拖动/缩放/层级。
 - P3：完整扫描码/输入法/⌘ 映射、滚轮和光标。
-- P4：cliprdr、声音、RDPGFX/disp 画质。
-- P5：自动重连、睡眠唤醒、错误分类、凭据重新输入、本机会话占用提示。
-- P6：开始菜单/用户级/Store 发现、真实图标、注册表清理、Windows 一键开启。
-- P7：设置页、诊断事件、文档与发布验收。
+- P4：富文本/文件剪贴板、RDPGFX/disp 画质（文本与图片剪贴板、声音已接入）。
+- P5：完成（错误分类、本机会话占用提示、自动重连、睡眠唤醒与凭据重新输入）。
+- P6：开始菜单/用户级/Store 发现、注册表清理、Windows 一键开启（真实图标已接入）。
+- P7：发布验收（设置开关、会话级诊断与窗口诊断面板已接入）。
 
 ## 打包测试步骤
 
@@ -88,5 +93,5 @@ python3 scripts/test-remote-application.py
 - 需要完整 Xcode 27+、CMake、Git、Perl、Make；首次准备需访问上游 Git 仓库，不要求 Homebrew 的 OpenSSL、json-c 或 libusb。
 - FreeRDP 3.14.1、OpenSSL、json-c 固定上游提交；按 `DESKFUSE_MACOS_ARCH=arm64|x86_64`、SDK 和 macOS 14.0 部署目标构建。缓存默认在 `~/.cache/deskfuse-freerdp`。
 - 桥接源码变化只重编译 `RdpBridge.c`，不会让固定版本的 FreeRDP 编译缓存失效。
-- 未实现的 USB、音频、打印机等重定向通道不启用；RAIL、DISP、RDPGFX、CLIPRDR 已编进静态库，但 P3/P4 尚未接入。
+- RAIL、DISP、RDPGFX、CLIPRDR、RDPSND、RDPDR 已编进静态库；CLIPRDR 只接入文本（图片、富文本、文件列表未宣告），RDPSND 通过 macOS 后端播放，DISP/RDPGFX 尚未启用；USB、打印机、智能卡等设备重定向不配置。
 - 打包拒绝非系统 dylib 依赖，并携带第三方许可证。签名、公证、公开发布和双设备功能验收分别判定。

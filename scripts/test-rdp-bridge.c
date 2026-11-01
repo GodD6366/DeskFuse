@@ -9,8 +9,49 @@
 
 static unsigned information_calls, system_calls, execute_calls, error_calls;
 static unsigned certificate_rejections;
+static unsigned clipboard_requests, clipboard_format_lists, clipboard_list_responses;
+static uint32_t clipboard_requested_format;
+static uint8_t clipboard_response[64];
+static size_t clipboard_response_length;
+static uint16_t clipboard_response_flags;
 static char rejected_fingerprint[96];
 static int rejected_fingerprint_was_null;
+
+static void clipboard_event(int kind, uint32_t format, const uint8_t* data, size_t length,
+                            void* userdata)
+{
+    (void)data;
+    (void)length;
+    (void)userdata;
+    if (kind == RDP_CLIPBOARD_REQUEST)
+    {
+        clipboard_requests++;
+        clipboard_requested_format = format;
+    }
+    if (kind == RDP_CLIPBOARD_FORMATS)
+        clipboard_format_lists++;
+}
+
+static UINT clipboard_format_list_response(CliprdrClientContext* context,
+                                           const CLIPRDR_FORMAT_LIST_RESPONSE* response)
+{
+    (void)context;
+    assert(response->common.msgFlags == CB_RESPONSE_OK);
+    clipboard_list_responses++;
+    return CHANNEL_RC_OK;
+}
+
+static UINT clipboard_format_data_response(CliprdrClientContext* context,
+                                           const CLIPRDR_FORMAT_DATA_RESPONSE* response)
+{
+    (void)context;
+    clipboard_response_flags = response->common.msgFlags;
+    clipboard_response_length = response->common.dataLen;
+    assert(clipboard_response_length <= sizeof(clipboard_response));
+    if (response->requestedFormatData && clipboard_response_length)
+        memcpy(clipboard_response, response->requestedFormatData, clipboard_response_length);
+    return CHANNEL_RC_OK;
+}
 static UINT information(RailClientContext* rail, const RAIL_CLIENT_STATUS_ORDER* order)
 {
     assert(rail && order);
@@ -114,17 +155,95 @@ int main(void)
         "remoteapplicationprogram:s:||notepad\r\ndesktopwidth:i:800\r\ndesktopheight:i:600\r\n",
         "test", "not-a-real-password", NULL, event, NULL);
     assert(bridge);
-    /* rdpdr 未编入：这些默认开启的 RDP8 特性会强制加载 rdpdr，导致 PRE_CONNECT_FAILED。 */
+    /* 关闭 RDP8 自动探测与心跳：隧道内只有单条 TCP 流，不需要它们。 */
     assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_NetworkAutoDetect));
     assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_SupportHeartbeatPdu));
     assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_DeviceRedirection));
     assert(freerdp_client_load_addins(bridge->context->channels, bridge->context->settings));
-    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_DeviceRedirection));
+    /* rdpsnd 依赖 rdpdr：加载 addin 会强制打开设备重定向通道。没有配置任何
+     * 驱动器、打印机或智能卡，所以通道存在但不转发设备。 */
+    assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_DeviceRedirection));
     assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RemoteApplicationMode));
     assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_SupportMultitransport));
     assert(freerdp_settings_get_uint32(bridge->context->settings, FreeRDP_MultitransportFlags) == 0);
-    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RedirectClipboard));
+    assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_RedirectClipboard));
+    assert(freerdp_settings_get_uint32(bridge->context->settings, FreeRDP_ClipboardFeatureMask) ==
+           (CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL));
+    assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_AudioPlayback));
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_AudioCapture));
+    rdp_bridge_set_audio(bridge, 0);
+    assert(!freerdp_settings_get_bool(bridge->context->settings, FreeRDP_AudioPlayback));
+    rdp_bridge_set_audio(bridge, 1);
+    assert(freerdp_settings_get_bool(bridge->context->settings, FreeRDP_AudioPlayback));
     assert(!rdp_bridge_connected(bridge));
+
+    /* Clipboard: text-only announcement, immediate and delayed answers. */
+    rdp_bridge_set_clipboard_callback(bridge, clipboard_event, NULL);
+    const uint32_t offered[] = { 13 };
+    assert(rdp_bridge_clipboard_set_formats(bridge, offered, 1) == 0);
+    assert(bridge->clip_format_count == 1 && bridge->clip_formats[0] == 13);
+    bridge_drain_clipboard(bridge); /* announcer without a channel is dropped */
+    assert(bridge->clip_command_count == 0);
+
+    const uint8_t text[] = { 'h', 0, 'i', 0, 0, 0 };
+    assert(rdp_bridge_clipboard_set_data(bridge, 13, text, sizeof(text)) == 0);
+    assert(bridge->clip_data_count == 1);
+
+    CliprdrClientContext clip = { 0 };
+    clip.custom = bridge;
+    clip.ClientFormatListResponse = clipboard_format_list_response;
+    clip.ClientFormatDataResponse = clipboard_format_data_response;
+    bridge->cliprdr = &clip;
+    bridge->cliprdr_ready = 1;
+
+    CLIPRDR_FORMAT_DATA_REQUEST request = { 0 };
+    request.common.msgType = CB_FORMAT_DATA_REQUEST;
+    request.requestedFormatId = 13;
+    assert(bridge_clip_server_request(&clip, &request) == CHANNEL_RC_OK);
+    assert(clipboard_response_flags == CB_RESPONSE_OK);
+    assert(clipboard_response_length == sizeof(text));
+    assert(memcmp(clipboard_response, text, sizeof(text)) == 0);
+    assert(bridge->clip_pending_request == -1);
+
+    request.requestedFormatId = 8;
+    assert(bridge_clip_server_request(&clip, &request) == CHANNEL_RC_OK);
+    assert(clipboard_requests == 1 && clipboard_requested_format == 8);
+    assert(bridge->clip_pending_request == 8);
+
+    const uint8_t clipboard_pixels[] = { 1, 2, 3, 4 };
+    assert(rdp_bridge_clipboard_set_data(bridge, 8, clipboard_pixels, sizeof(clipboard_pixels)) == 0);
+    assert(bridge->clip_pending_request == -1);
+    assert(bridge->clip_command_count == 1);
+    assert(bridge->clip_commands[0].op == CLIP_CMD_RESPOND);
+    bridge_drain_clipboard(bridge);
+    assert(bridge->clip_command_count == 0);
+
+    assert(rdp_bridge_clipboard_request(bridge, 13) == 0);
+    assert(bridge->clip_command_count == 1);
+    assert(bridge->clip_commands[0].op == CLIP_CMD_REQUEST);
+    bridge_drain_clipboard(bridge);
+
+    CLIPRDR_FORMAT server_formats[] = {
+        { .formatId = 13, .formatName = NULL },
+        { .formatId = 8, .formatName = NULL },
+    };
+    CLIPRDR_FORMAT_LIST format_list = { 0 };
+    format_list.numFormats = 2;
+    format_list.formats = server_formats;
+    assert(bridge_clip_server_formats(&clip, &format_list) == CHANNEL_RC_OK);
+    assert(clipboard_list_responses == 1);
+    assert(clipboard_format_lists == 1);
+
+    assert(rdp_bridge_clipboard_set_formats(bridge, NULL, 0) == 0);
+    assert(bridge->clip_format_count == 0 && bridge->clip_data_count == 0);
+    bridge_drain_clipboard(bridge);
+    bridge->cliprdr = NULL;
+    bridge->cliprdr_ready = 0;
+    assert(bridge_auth_failure(FREERDP_ERROR_AUTHENTICATION_FAILED));
+    assert(bridge_auth_failure(FREERDP_ERROR_CONNECT_WRONG_PASSWORD));
+    assert(bridge_auth_failure(FREERDP_ERROR_CONNECT_PASSWORD_MUST_CHANGE));
+    assert(!bridge_auth_failure(FREERDP_ERROR_CONNECT_ACCOUNT_LOCKED_OUT));
+    assert(!bridge_auth_failure(FREERDP_ERROR_CONNECT_TRANSPORT_FAILED));
     assert(bridge_pre_connect(bridge->instance));
     assert(freerdp_settings_get_bool(bridge->context->settings,
                                      FreeRDP_ExternalCertificateManagement));
@@ -258,6 +377,6 @@ int main(void)
     close(transport);
 
     rdp_bridge_free(bridge);
-    puts("RDP bridge: certificate pinning, RAIL launch/error, tunnel fd, GDI frame bounds and cleanup passed");
+    puts("RDP bridge: certificate pinning, RAIL launch/error, clipboard text handshake, audio settings, auth classification, tunnel fd, GDI frame bounds and cleanup passed");
     return 0;
 }

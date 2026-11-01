@@ -22,7 +22,8 @@ enum
 	RDP_EVENT_DISCONNECTED = 2,
 	RDP_EVENT_AUTH_REQUIRED = 3, /* NLA or gateway asked for credentials */
 	RDP_EVENT_ERROR = 4,
-	RDP_EVENT_CERTIFICATE_REJECTED = 5 /* certificate was not explicitly trusted */
+	RDP_EVENT_CERTIFICATE_REJECTED = 5, /* certificate was not explicitly trusted */
+	RDP_EVENT_AUTH_FAILED = 6           /* credentials were rejected; prompt and retry */
 };
 
 /* `message` is a short, static UTF-8 description (never a password or body). */
@@ -62,6 +63,48 @@ int rdp_bridge_frame_size(rdp_bridge* bridge, uint32_t* width, uint32_t* height)
  * available or the destination is too small. */
 int rdp_bridge_copy_frame(rdp_bridge* bridge, void* dst, uint32_t dst_stride, size_t capacity,
                           uint32_t expected_width, uint32_t expected_height);
+
+/* Clipboard events. The bridge owns the cliprdr channel protocol; the caller
+ * owns the local pasteboard and the byte conversions.
+ *
+ * RDP_CLIPBOARD_READY:   channel handshake finished; local formats can be published.
+ * RDP_CLIPBOARD_FORMATS: `data` holds `length / 4` little-endian uint32 format ids
+ *                        offered by the Windows side.
+ * RDP_CLIPBOARD_DATA:    `format` holds the id requested earlier; `data` is the
+ *                        payload, or NULL when Windows refused the request.
+ * RDP_CLIPBOARD_REQUEST: Windows asked for local data in `format`; answer with
+ *                        rdp_bridge_clipboard_set_data() for that format.
+ */
+enum
+{
+	RDP_CLIPBOARD_READY = 1,
+	RDP_CLIPBOARD_FORMATS = 2,
+	RDP_CLIPBOARD_DATA = 3,
+	RDP_CLIPBOARD_REQUEST = 4
+};
+
+/* Runs on the FreeRDP event-loop thread; `data` is only valid for the call. */
+typedef void (*rdp_clipboard_callback)(int event, uint32_t format, const uint8_t* data,
+                                       size_t length, void* userdata);
+
+void rdp_bridge_set_clipboard_callback(rdp_bridge* bridge, rdp_clipboard_callback cb,
+                                       void* userdata);
+
+/* Replaces the formats advertised to Windows. Formats not listed are dropped,
+ * together with any data previously supplied for them. */
+int rdp_bridge_clipboard_set_formats(rdp_bridge* bridge, const uint32_t* formats, size_t count);
+
+/* Supplies the payload for one advertised format. When Windows already asked
+ * for that format, the response is queued immediately. */
+int rdp_bridge_clipboard_set_data(rdp_bridge* bridge, uint32_t format, const void* data,
+                                  size_t length);
+
+/* Requests the given format from the Windows clipboard. */
+int rdp_bridge_clipboard_request(rdp_bridge* bridge, uint32_t format);
+
+/* Enables or disables local audio playback. Call after create, before start:
+ * FreeRDP loads the rdpsnd channel from this setting. */
+void rdp_bridge_set_audio(rdp_bridge* bridge, int enabled);
 
 /* Input injection; flags use FreeRDP's PTR_FLAGS_* / KBD_FLAGS_* values. */
 /* Return 0 when the event was submitted, non-zero when the session is not

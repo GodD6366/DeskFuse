@@ -92,6 +92,7 @@ struct RemoteRdpPicker: View {
     @State private var appScope = AppScope.all
     @State private var favoriteAppIDs = Set<String>()
     @State private var systemAppsAreExpanded = false
+    @State private var preferences = RemoteRdpPreferences.load()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -213,6 +214,19 @@ struct RemoteRdpPicker: View {
             TextField("搜索应用", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 200)
+            Menu {
+                Toggle("播放 Windows 声音", isOn: $preferences.audioEnabled)
+                Toggle("同步剪贴板", isOn: $preferences.clipboardEnabled)
+                Divider()
+                Text("下次建立会话时生效")
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("远程应用设置")
+            .accessibilityLabel("远程应用设置")
+            .onChange(of: preferences) { _, current in current.save() }
         }
     }
 
@@ -310,9 +324,17 @@ struct RemoteRdpPicker: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: DFRadius.control)
                         .fill(DFPalette.accent.opacity(0.12))
-                    Image(systemName: "macwindow")
-                        .font(DFType.icon(.large, weight: .medium))
-                        .foregroundStyle(DFPalette.accent)
+                    if let data = app.iconPng.flatMap({ Data(base64Encoded: $0) }),
+                       let icon = NSImage(data: data) {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 30, height: 30)
+                    } else {
+                        Image(systemName: "macwindow")
+                            .font(DFType.icon(.large, weight: .medium))
+                            .foregroundStyle(DFPalette.accent)
+                    }
                 }
                 .frame(width: 42, height: 42)
                 .accessibilityHidden(true)
@@ -474,13 +496,40 @@ struct RemoteRdpPicker: View {
 @available(macOS 14.2, *)
 private struct RemoteRdpViewer: View {
     @Bindable var host: RemoteRdpHostConnection
+    @State private var showingDiagnostics = false
     var body: some View {
         ZStack {
             RemoteRdpCanvas(host: host)
-            if case .failed(let message) = host.phase { notice(message) }
+            if case .reconnecting(let attempt) = host.phase {
+                ProgressView(attempt > 0
+                    ? "连接中断，正在重连（第 \(attempt) 次）…"
+                    : "连接中断，正在重连…")
+                    .padding()
+                    .background(.regularMaterial)
+            }
+            else if case .failed(let message) = host.phase { notice(message) }
             else if case .failed(let message) = host.bridgeState { notice(message) }
             else if host.bridgeState == .disconnected { notice("RDP 已断开。关闭此窗口后从应用列表重新打开。") }
             else if host.bridgeState != .connected { ProgressView("正在连接 Windows RDP…").padding().background(.regularMaterial) }
+        }
+        .overlay(alignment: .topTrailing) {
+            Button { showingDiagnostics.toggle() } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(6)
+                    .background(.regularMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .help("连接诊断")
+            .accessibilityLabel("连接诊断")
+            .popover(isPresented: $showingDiagnostics, arrowEdge: .top) {
+                Text(host.diagnosticsText)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .frame(minWidth: 280, alignment: .leading)
+            }
         }
     }
     private func notice(_ text: String) -> some View {

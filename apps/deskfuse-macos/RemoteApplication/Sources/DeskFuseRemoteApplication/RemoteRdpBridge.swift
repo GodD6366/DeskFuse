@@ -17,10 +17,22 @@ public final class RemoteRdpBridge: @unchecked Sendable {
         case failed(String)
     }
 
+    /// Clipboard traffic carried by the session's cliprdr channel.
+    public enum ClipboardEvent: Sendable {
+        case ready
+        case formats([UInt32])
+        case data(format: UInt32, data: Data?)
+        case request(format: UInt32)
+    }
+
     private var handle: OpaquePointer?
     private let lock = NSLock()
     private var _state: State = .idle
     private let handleLock = NSRecursiveLock()
+    private let clipboardLock = NSLock()
+    private var clipboardHandler: (@Sendable (ClipboardEvent) -> Void)?
+    private let authLock = NSLock()
+    private var authenticationFailed = false
 
     public var state: State {
         lock.withLock { _state }
@@ -35,6 +47,7 @@ public final class RemoteRdpBridge: @unchecked Sendable {
                         expectedCertificateFingerprint: String) -> Bool {
         handleLock.lock(); defer { handleLock.unlock() }
         stop()
+        authLock.withLock { authenticationFailed = false }
         lock.withLock { _state = .connecting }
         let selfPointer = Unmanaged.passUnretained(self).toOpaque()
         handle = rdp_bridge_create(
@@ -44,11 +57,63 @@ public final class RemoteRdpBridge: @unchecked Sendable {
             expectedCertificateFingerprint,
             RemoteRdpBridge.callback,
             selfPointer)
-        guard handle != nil else {
+        guard let handle else {
             lock.withLock { _state = .failed("无法创建 RDP 会话") }
             return false
         }
+        rdp_bridge_set_clipboard_callback(handle, RemoteRdpBridge.clipboardCallback, selfPointer)
         return true
+    }
+
+    /// Installs the clipboard sink. `handler` runs on FreeRDP's event-loop
+    /// thread and receives copied payloads; hop to your own actor there.
+    public func setClipboardHandler(_ handler: (@Sendable (ClipboardEvent) -> Void)?) {
+        clipboardLock.withLock { clipboardHandler = handler }
+    }
+
+    @discardableResult
+    public func clipboardSetFormats(_ formats: [UInt32]) -> Bool {
+        handleLock.lock(); defer { handleLock.unlock() }
+        guard let handle else { return false }
+        let result = formats.withUnsafeBufferPointer { buffer in
+            rdp_bridge_clipboard_set_formats(handle, buffer.baseAddress, buffer.count)
+        }
+        return result == 0
+    }
+
+    @discardableResult
+    public func clipboardSetData(format: UInt32, data: Data) -> Bool {
+        handleLock.lock(); defer { handleLock.unlock() }
+        guard let handle else { return false }
+        let result: Int32 = data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return -1 }
+            return rdp_bridge_clipboard_set_data(handle, format, base, raw.count)
+        }
+        return result == 0
+    }
+
+    @discardableResult
+    public func clipboardRequest(format: UInt32) -> Bool {
+        handleLock.lock(); defer { handleLock.unlock() }
+        guard let handle else { return false }
+        return rdp_bridge_clipboard_request(handle, format) == 0
+    }
+
+    /// True once after a credential rejection; the caller can prompt and retry.
+    public func consumeAuthenticationFailure() -> Bool {
+        authLock.withLock {
+            let pending = authenticationFailed
+            authenticationFailed = false
+            return pending
+        }
+    }
+
+    /// Must be called after `prepare` and before `start`; FreeRDP decides whether
+    /// to load the rdpsnd channel while loading static addins.
+    public func setAudioEnabled(_ enabled: Bool) {
+        handleLock.lock(); defer { handleLock.unlock() }
+        guard let handle else { return }
+        rdp_bridge_set_audio(handle, enabled ? 1 : 0)
     }
 
     /// Transfers the pump end of the bridge's socketpair exactly once. The
@@ -148,6 +213,9 @@ public final class RemoteRdpBridge: @unchecked Sendable {
                 _state = .disconnected
             case RDP_EVENT_AUTH_REQUIRED:
                 _state = .connecting
+            case RDP_EVENT_AUTH_FAILED:
+                authLock.withLock { authenticationFailed = true }
+                _state = .failed(message ?? "Windows 登录失败，请重新输入密码")
             case RDP_EVENT_ERROR:
                 _state = .failed(message ?? "RDP 连接失败")
             case RDP_EVENT_CERTIFICATE_REJECTED:
@@ -160,6 +228,48 @@ public final class RemoteRdpBridge: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+
+    private func handleClipboard(event: Int, format: UInt32, payload: Data?) {
+        guard let handler = clipboardLock.withLock({ clipboardHandler }) else { return }
+        switch event {
+        case Int(RDP_CLIPBOARD_READY):
+            handler(.ready)
+        case Int(RDP_CLIPBOARD_FORMATS):
+            guard let payload, payload.count >= 4, payload.count % 4 == 0 else { return }
+            let bytes = [UInt8](payload)
+            var ids: [UInt32] = []
+            ids.reserveCapacity(bytes.count / 4)
+            var index = 0
+            while index + 3 < bytes.count {
+                ids.append(UInt32(bytes[index]) |
+                           (UInt32(bytes[index + 1]) << 8) |
+                           (UInt32(bytes[index + 2]) << 16) |
+                           (UInt32(bytes[index + 3]) << 24))
+                index += 4
+            }
+            handler(.formats(ids))
+        case Int(RDP_CLIPBOARD_DATA):
+            handler(.data(format: format, data: payload))
+        case Int(RDP_CLIPBOARD_REQUEST):
+            handler(.request(format: format))
+        default:
+            break
+        }
+    }
+
+    /// Non-capturing trampoline so Swift can hand a C function pointer to the
+    /// bridge; the Swift object is recovered through `userdata`.
+    private static let clipboardCallback: @convention(c) (
+        Int32, UInt32, UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?
+    ) -> Void = { event, format, data, length, userdata in
+        guard let userdata else { return }
+        let bridge = Unmanaged<RemoteRdpBridge>.fromOpaque(userdata).takeUnretainedValue()
+        var payload: Data?
+        if let data, length > 0 {
+            payload = Data(bytes: data, count: length)
+        }
+        bridge.handleClipboard(event: Int(event), format: format, payload: payload)
     }
 
     /// Non-capturing trampoline so Swift can hand a C function pointer to the

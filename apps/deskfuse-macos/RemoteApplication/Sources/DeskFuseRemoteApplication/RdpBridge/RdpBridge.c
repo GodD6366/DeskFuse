@@ -11,6 +11,7 @@
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/rail.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/gdi/gdi.h>
@@ -43,6 +44,28 @@ typedef struct
 	struct rdp_bridge* bridge;
 } bridgeContext;
 
+typedef struct
+{
+	uint32_t format;
+	uint8_t* data;
+	size_t length;
+} bridgeClipData;
+
+typedef struct
+{
+	int op;
+	uint32_t format;
+	uint8_t* data;
+	size_t length;
+} bridgeClipCommand;
+
+enum
+{
+	CLIP_CMD_ANNOUNCE = 1,
+	CLIP_CMD_RESPOND = 2,
+	CLIP_CMD_REQUEST = 3
+};
+
 struct rdp_bridge
 {
 	RDP_CLIENT_ENTRY_POINTS entry;
@@ -56,6 +79,23 @@ struct rdp_bridge
 	char pending_program[16][132];
     unsigned pending_count;
 	pthread_mutex_t command_lock;
+
+	/* Clipboard (cliprdr) state. Local formats/data are owned here; the caller
+	 * supplies bytes and receives remote bytes through clip_cb. */
+	CliprdrClientContext* cliprdr;
+	int cliprdr_ready;
+	rdp_clipboard_callback clip_cb;
+	void* clip_userdata;
+	pthread_mutex_t clip_lock;
+	uint32_t clip_formats[8];
+	unsigned clip_format_count;
+	bridgeClipData clip_data[8];
+	unsigned clip_data_count;
+	int clip_pending_request;  /* format Windows asked for, -1 when none */
+	int clip_requested_format; /* format we asked Windows for, -1 when none */
+	bridgeClipCommand clip_commands[16];
+	unsigned clip_command_count;
+	pthread_mutex_t clip_queue_lock;
 
 	char* rdp_file;
 	char* username;
@@ -89,6 +129,257 @@ static void notify_detail(rdp_bridge* bridge, int event, const char* message,
 static void notify(rdp_bridge* bridge, int event, const char* message)
 {
 	notify_detail(bridge, event, message, NULL);
+}
+
+/* --- clipboard (cliprdr) ------------------------------------------------ */
+
+static void bridge_clip_send_capabilities(rdp_bridge* bridge)
+{
+	CLIPRDR_CAPABILITIES capabilities = { 0 };
+	CLIPRDR_GENERAL_CAPABILITY_SET general = { 0 };
+
+	if (!bridge->cliprdr || !bridge->cliprdr->ClientCapabilities)
+		return;
+	general.capabilitySetType = CB_CAPSTYPE_GENERAL;
+	general.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+	general.version = CB_CAPS_VERSION_2;
+	general.generalFlags = 0;
+	capabilities.cCapabilitiesSets = 1;
+	capabilities.capabilitySets = (CLIPRDR_CAPABILITY_SET*)&general;
+	bridge->cliprdr->ClientCapabilities(bridge->cliprdr, &capabilities);
+}
+
+static void bridge_clip_send_formats(rdp_bridge* bridge)
+{
+	CLIPRDR_FORMAT formats[8] = { 0 };
+	CLIPRDR_FORMAT_LIST list = { 0 };
+	unsigned count = 0;
+
+	if (!bridge->cliprdr || !bridge->cliprdr_ready || !bridge->cliprdr->ClientFormatList)
+		return;
+
+	pthread_mutex_lock(&bridge->clip_lock);
+	count = bridge->clip_format_count;
+	for (unsigned index = 0; index < count; index++)
+		formats[index].formatId = bridge->clip_formats[index];
+	pthread_mutex_unlock(&bridge->clip_lock);
+
+	if (!count)
+		return;
+	list.common.msgType = CB_FORMAT_LIST;
+	list.common.msgFlags = 0;
+	list.numFormats = count;
+	list.formats = formats;
+	bridge->cliprdr->ClientFormatList(bridge->cliprdr, &list);
+}
+
+static void bridge_clip_send_data(rdp_bridge* bridge, const uint8_t* data, size_t length)
+{
+	CLIPRDR_FORMAT_DATA_RESPONSE response = { 0 };
+
+	if (!bridge->cliprdr || !bridge->cliprdr_ready || !bridge->cliprdr->ClientFormatDataResponse)
+		return;
+	response.common.msgType = CB_FORMAT_DATA_RESPONSE;
+	response.common.msgFlags = data ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
+	response.common.dataLen = data ? (UINT32)length : 0;
+	response.requestedFormatData = data;
+	bridge->cliprdr->ClientFormatDataResponse(bridge->cliprdr, &response);
+}
+
+static UINT bridge_clip_monitor_ready(CliprdrClientContext* context,
+                                      const CLIPRDR_MONITOR_READY* order)
+{
+	WINPR_UNUSED(order);
+	rdp_bridge* bridge = context->custom;
+
+	if (!bridge)
+		return CHANNEL_RC_BAD_INIT_HANDLE;
+	bridge->cliprdr_ready = 1;
+	bridge_clip_send_capabilities(bridge);
+	bridge_clip_send_formats(bridge);
+	if (bridge->clip_cb)
+		bridge->clip_cb(RDP_CLIPBOARD_READY, 0, NULL, 0, bridge->clip_userdata);
+	return CHANNEL_RC_OK;
+}
+
+static UINT bridge_clip_server_formats(CliprdrClientContext* context,
+                                       const CLIPRDR_FORMAT_LIST* list)
+{
+	rdp_bridge* bridge = context->custom;
+	CLIPRDR_FORMAT_LIST_RESPONSE response = { 0 };
+	uint32_t ids[32];
+	unsigned count = 0;
+
+	if (!bridge)
+		return CHANNEL_RC_BAD_INIT_HANDLE;
+	response.common.msgType = CB_FORMAT_LIST_RESPONSE;
+	response.common.msgFlags = CB_RESPONSE_OK;
+	if (context->ClientFormatListResponse)
+		context->ClientFormatListResponse(context, &response);
+	for (UINT32 index = 0; index < list->numFormats && count < 32; index++)
+		ids[count++] = list->formats[index].formatId;
+	if (bridge->clip_cb && count)
+		bridge->clip_cb(RDP_CLIPBOARD_FORMATS, 0, (const uint8_t*)ids,
+		                count * sizeof(uint32_t), bridge->clip_userdata);
+	return CHANNEL_RC_OK;
+}
+
+static UINT bridge_clip_server_request(CliprdrClientContext* context,
+                                       const CLIPRDR_FORMAT_DATA_REQUEST* request)
+{
+	rdp_bridge* bridge = context->custom;
+	uint32_t format = request->requestedFormatId;
+	uint8_t* copy = NULL;
+	size_t length = 0;
+
+	if (!bridge)
+		return CHANNEL_RC_BAD_INIT_HANDLE;
+
+	pthread_mutex_lock(&bridge->clip_lock);
+	for (unsigned index = 0; index < bridge->clip_data_count; index++)
+	{
+		if (bridge->clip_data[index].format == format && bridge->clip_data[index].length)
+		{
+			copy = (uint8_t*)malloc(bridge->clip_data[index].length);
+			if (copy)
+			{
+				memcpy(copy, bridge->clip_data[index].data, bridge->clip_data[index].length);
+				length = bridge->clip_data[index].length;
+			}
+			break;
+		}
+	}
+	bridge->clip_pending_request = copy ? -1 : (int)format;
+	pthread_mutex_unlock(&bridge->clip_lock);
+
+	if (copy)
+	{
+		bridge_clip_send_data(bridge, copy, length);
+		free(copy);
+		return CHANNEL_RC_OK;
+	}
+	if (bridge->clip_cb)
+		bridge->clip_cb(RDP_CLIPBOARD_REQUEST, format, NULL, 0, bridge->clip_userdata);
+	return CHANNEL_RC_OK;
+}
+
+static UINT bridge_clip_server_data(CliprdrClientContext* context,
+                                    const CLIPRDR_FORMAT_DATA_RESPONSE* response)
+{
+	rdp_bridge* bridge = context->custom;
+	BOOL ok = FALSE;
+	int requested = 0;
+
+	if (!bridge)
+		return CHANNEL_RC_BAD_INIT_HANDLE;
+	requested = bridge->clip_requested_format;
+	ok = (response->common.msgFlags & CB_RESPONSE_OK) != 0;
+	if (bridge->clip_cb)
+		bridge->clip_cb(RDP_CLIPBOARD_DATA, requested > 0 ? (uint32_t)requested : 0,
+		                ok ? response->requestedFormatData : NULL,
+		                ok ? response->common.dataLen : 0, bridge->clip_userdata);
+	return CHANNEL_RC_OK;
+}
+
+static int bridge_queue_clip(rdp_bridge* bridge, int op, uint32_t format, const void* data,
+                             size_t length)
+{
+	bridgeClipCommand command = { 0 };
+
+	command.op = op;
+	command.format = format;
+	if (data && length)
+	{
+		command.data = (uint8_t*)malloc(length);
+		if (!command.data)
+			return -1;
+		memcpy(command.data, data, length);
+		command.length = length;
+	}
+	pthread_mutex_lock(&bridge->clip_queue_lock);
+	if (bridge->clip_command_count >= 16)
+	{
+		pthread_mutex_unlock(&bridge->clip_queue_lock);
+		free(command.data);
+		return -1;
+	}
+	bridge->clip_commands[bridge->clip_command_count++] = command;
+	pthread_mutex_unlock(&bridge->clip_queue_lock);
+	return 0;
+}
+
+/* Runs on FreeRDP's event-loop thread, like every other channel write. */
+static void bridge_drain_clipboard(rdp_bridge* bridge)
+{
+	bridgeClipCommand command = { 0 };
+
+	for (;;)
+	{
+		pthread_mutex_lock(&bridge->clip_queue_lock);
+		if (!bridge->clip_command_count)
+		{
+			pthread_mutex_unlock(&bridge->clip_queue_lock);
+			break;
+		}
+		command = bridge->clip_commands[0];
+		bridge->clip_command_count--;
+		memmove(bridge->clip_commands, bridge->clip_commands + 1,
+		        bridge->clip_command_count * sizeof(bridge->clip_commands[0]));
+		pthread_mutex_unlock(&bridge->clip_queue_lock);
+
+		if (!bridge->cliprdr || !bridge->cliprdr_ready)
+		{
+			free(command.data);
+			continue;
+		}
+		switch (command.op)
+		{
+			case CLIP_CMD_ANNOUNCE:
+				bridge_clip_send_formats(bridge);
+				break;
+			case CLIP_CMD_RESPOND:
+			{
+				uint8_t* copy = NULL;
+				size_t length = 0;
+				pthread_mutex_lock(&bridge->clip_lock);
+				for (unsigned index = 0; index < bridge->clip_data_count; index++)
+				{
+					if (bridge->clip_data[index].format == command.format &&
+					    bridge->clip_data[index].length)
+					{
+						copy = (uint8_t*)malloc(bridge->clip_data[index].length);
+						if (copy)
+						{
+							memcpy(copy, bridge->clip_data[index].data,
+							       bridge->clip_data[index].length);
+							length = bridge->clip_data[index].length;
+						}
+						break;
+					}
+				}
+				pthread_mutex_unlock(&bridge->clip_lock);
+				if (copy)
+				{
+					bridge_clip_send_data(bridge, copy, length);
+					free(copy);
+				}
+				break;
+			}
+			case CLIP_CMD_REQUEST:
+				if (bridge->cliprdr->ClientFormatDataRequest)
+				{
+					CLIPRDR_FORMAT_DATA_REQUEST request = { 0 };
+					bridge->clip_requested_format = (int)command.format;
+					request.common.msgType = CB_FORMAT_DATA_REQUEST;
+					request.requestedFormatId = command.format;
+					bridge->cliprdr->ClientFormatDataRequest(bridge->cliprdr, &request);
+				}
+				break;
+			default:
+				break;
+		}
+		free(command.data);
+	}
 }
 
 static int valid_fingerprint(const char* fingerprint)
@@ -377,6 +668,17 @@ static void bridge_channel_connected(void* context, const ChannelConnectedEventA
 		rail->ServerHandshakeEx = bridge_rail_handshake_ex;
 		rail->ServerExecuteResult = bridge_rail_execute_result;
 	}
+	else if (strcmp(event->name, "cliprdr") == 0)
+	{
+		CliprdrClientContext* cliprdr = event->pInterface;
+		cliprdr->custom = client->bridge;
+		cliprdr->MonitorReady = bridge_clip_monitor_ready;
+		cliprdr->ServerFormatList = bridge_clip_server_formats;
+		cliprdr->ServerFormatDataRequest = bridge_clip_server_request;
+		cliprdr->ServerFormatDataResponse = bridge_clip_server_data;
+		client->bridge->cliprdr = cliprdr;
+		client->bridge->cliprdr_ready = 0;
+	}
 	else
 		freerdp_client_OnChannelConnectedEventHandler(context, event);
 }
@@ -392,6 +694,17 @@ static void bridge_channel_disconnected(void* context, const ChannelDisconnected
 		rail->ServerHandshake = NULL;
 		rail->ServerHandshakeEx = NULL;
 		rail->ServerExecuteResult = NULL;
+	}
+	else if (strcmp(event->name, "cliprdr") == 0)
+	{
+		CliprdrClientContext* cliprdr = event->pInterface;
+		cliprdr->custom = NULL;
+		cliprdr->MonitorReady = NULL;
+		cliprdr->ServerFormatList = NULL;
+		cliprdr->ServerFormatDataRequest = NULL;
+		cliprdr->ServerFormatDataResponse = NULL;
+		((bridgeContext*)context)->bridge->cliprdr = NULL;
+		((bridgeContext*)context)->bridge->cliprdr_ready = 0;
 	}
 	else
 		freerdp_client_OnChannelDisconnectedEventHandler(context, event);
@@ -532,6 +845,112 @@ int rdp_bridge_execute(rdp_bridge* bridge, const char* name)
     return result;
 }
 
+void rdp_bridge_set_clipboard_callback(rdp_bridge* bridge, rdp_clipboard_callback cb,
+                                       void* userdata)
+{
+	if (!bridge)
+		return;
+	bridge->clip_cb = cb;
+	bridge->clip_userdata = userdata;
+}
+
+int rdp_bridge_clipboard_set_formats(rdp_bridge* bridge, const uint32_t* formats, size_t count)
+{
+	if (!bridge || (!formats && count) || count > 8)
+		return -1;
+
+	pthread_mutex_lock(&bridge->clip_lock);
+	bridge->clip_format_count = (unsigned)count;
+	for (size_t index = 0; index < count; index++)
+		bridge->clip_formats[index] = formats[index];
+	/* Drop payloads for formats the local pasteboard no longer offers. */
+	{
+		unsigned index = 0;
+		while (index < bridge->clip_data_count)
+		{
+			int keep = 0;
+			for (size_t offer = 0; offer < count; offer++)
+			{
+				if (formats[offer] == bridge->clip_data[index].format)
+				{
+					keep = 1;
+					break;
+				}
+			}
+			if (keep)
+				index++;
+			else
+			{
+				free(bridge->clip_data[index].data);
+				bridge->clip_data[index] = bridge->clip_data[--bridge->clip_data_count];
+			}
+		}
+	}
+	pthread_mutex_unlock(&bridge->clip_lock);
+	return bridge_queue_clip(bridge, CLIP_CMD_ANNOUNCE, 0, NULL, 0);
+}
+
+int rdp_bridge_clipboard_set_data(rdp_bridge* bridge, uint32_t format, const void* data,
+                                  size_t length)
+{
+	uint8_t* copy = NULL;
+	int pending = 0;
+	int stored = 0;
+
+	if (!bridge || format == 0 || (!data && length) || length > (64u * 1024u * 1024u))
+		return -1;
+	if (length)
+	{
+		copy = (uint8_t*)malloc(length);
+		if (!copy)
+			return -1;
+		memcpy(copy, data, length);
+	}
+
+	pthread_mutex_lock(&bridge->clip_lock);
+	for (unsigned index = 0; index < bridge->clip_data_count; index++)
+	{
+		if (bridge->clip_data[index].format == format)
+		{
+			free(bridge->clip_data[index].data);
+			bridge->clip_data[index].data = copy;
+			bridge->clip_data[index].length = length;
+			copy = NULL;
+			stored = 1;
+			break;
+		}
+	}
+	if (!stored && bridge->clip_data_count < 8)
+	{
+		bridge->clip_data[bridge->clip_data_count].format = format;
+		bridge->clip_data[bridge->clip_data_count].data = copy;
+		bridge->clip_data[bridge->clip_data_count].length = length;
+		bridge->clip_data_count++;
+		copy = NULL;
+		stored = 1;
+	}
+	if (stored && bridge->clip_pending_request == (int)format)
+	{
+		bridge->clip_pending_request = -1;
+		pending = 1;
+	}
+	pthread_mutex_unlock(&bridge->clip_lock);
+	free(copy);
+
+	if (!stored)
+		return -1;
+	if (pending)
+		return bridge_queue_clip(bridge, CLIP_CMD_RESPOND, format, NULL, 0);
+	return 0;
+}
+
+int rdp_bridge_clipboard_request(rdp_bridge* bridge, uint32_t format)
+{
+	if (!bridge || format == 0)
+		return -1;
+	return bridge_queue_clip(bridge, CLIP_CMD_REQUEST, format, NULL, 0);
+}
+
 /* 把 FreeRDP 错误码翻译成可操作的中文原因，并附上错误名便于从日志定位。 */
 static const char* connect_failure_reason(UINT32 code)
 {
@@ -569,6 +988,26 @@ static const char* connect_failure_reason(UINT32 code)
 	}
 }
 
+/* Credential problems the user can fix by typing the password again. Locked or
+ * disabled accounts are excluded: retrying cannot succeed and the existing
+ * message already tells the user what to do. */
+static int bridge_auth_failure(UINT32 code)
+{
+	switch (code)
+	{
+		case FREERDP_ERROR_AUTHENTICATION_FAILED:
+		case FREERDP_ERROR_CONNECT_LOGON_FAILURE:
+		case FREERDP_ERROR_CONNECT_WRONG_PASSWORD:
+		case FREERDP_ERROR_CONNECT_NO_OR_MISSING_CREDENTIALS:
+		case FREERDP_ERROR_CONNECT_PASSWORD_EXPIRED:
+		case FREERDP_ERROR_CONNECT_PASSWORD_CERTAINLY_EXPIRED:
+		case FREERDP_ERROR_CONNECT_PASSWORD_MUST_CHANGE:
+			return 1;
+		default:
+			return 0;
+	}
+}
+
 /* --- connection thread ------------------------------------------------- */
 
 static DWORD bridge_thread(LPVOID arg)
@@ -588,7 +1027,8 @@ static DWORD bridge_thread(LPVOID arg)
 			const char* name = freerdp_get_last_error_name(status);
 			snprintf(message, sizeof(message), "%s（%s）", connect_failure_reason(status),
 			         name ? name : "UNKNOWN");
-			notify(bridge, RDP_EVENT_ERROR, message);
+			notify(bridge, bridge_auth_failure(status) ? RDP_EVENT_AUTH_FAILED : RDP_EVENT_ERROR,
+			       message);
 		}
 		return status;
 	}
@@ -599,6 +1039,7 @@ static DWORD bridge_thread(LPVOID arg)
 	while (!atomic_load(&bridge->stop_requested) && !freerdp_shall_disconnect_context(instance->context))
 	{
 		bridge_drain_execute(bridge);
+		bridge_drain_clipboard(bridge);
         HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
 		DWORD count = freerdp_get_event_handles(instance->context, handles, MAXIMUM_WAIT_OBJECTS);
 
@@ -657,8 +1098,12 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
 
 	bridge->tunnel_fd = -1;
     bridge->transport_fd = -1;
+	bridge->clip_pending_request = -1;
+	bridge->clip_requested_format = -1;
 	pthread_mutex_init(&bridge->lock, NULL);
     pthread_mutex_init(&bridge->command_lock, NULL);
+	pthread_mutex_init(&bridge->clip_lock, NULL);
+	pthread_mutex_init(&bridge->clip_queue_lock, NULL);
     int pair[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) goto fail;
     bridge->transport_fd = pair[0]; bridge->tunnel_fd = pair[1];
@@ -701,14 +1146,23 @@ rdp_bridge* rdp_bridge_create(const char* rdp_file, const char* username, const 
      * socketpair-backed TCP stream is reachable from this process. */
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_SupportMultitransport, FALSE);
     freerdp_settings_set_uint32(bridge->context->settings, FreeRDP_MultitransportFlags, 0);
-    /* FreeRDP 默认开启网络自动探测与心跳 PDU，并据此强制启用 rdpdr 设备重定向；
-     * 本构建未编入 rdpdr 插件，加载失败会让每次连接都以 PRE_CONNECT_FAILED 结束。
-     * 隧道内只有单条 TCP 流，两者都不需要，也不开放任何设备重定向。 */
+    /* FreeRDP 默认开启网络自动探测与心跳 PDU，并据此强制启用 rdpdr 设备重定向。
+     * 隧道内只有单条 TCP 流，两者都不需要，关闭可减少无谓的通道协商。 */
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_NetworkAutoDetect, FALSE);
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_SupportHeartbeatPdu, FALSE);
+    /* rdpsnd 在静态通道表里声明依赖 rdpdr，加载时会强制打开 DeviceRedirection。
+     * 本构建包含 rdpdr，但没有配置驱动器/打印机/智能卡，通道不会转发任何设备。 */
     freerdp_settings_set_bool(bridge->context->settings, FreeRDP_DeviceRedirection, FALSE);
-    /* Cliprdr is compiled in but only wired during P4; do not half-enable it. */
-    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_RedirectClipboard, FALSE);
+    /* Clipboard text and DIB images travel over cliprdr while the session is
+     * open; DeskFuse's own clipboard sync is paused by the remote-session
+     * blocker. File lists stay disabled until delayed file transfer exists. */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_RedirectClipboard, TRUE);
+    freerdp_settings_set_uint32(bridge->context->settings, FreeRDP_ClipboardFeatureMask,
+                                CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL);
+    /* RemoteApp audio plays through FreeRDP's AVAudioEngine backend; the
+     * channel is loaded from FreeRDP_AudioPlayback by the static addin table. */
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_AudioPlayback, TRUE);
+    freerdp_settings_set_bool(bridge->context->settings, FreeRDP_AudioCapture, FALSE);
 	return bridge;
 
 fail:
@@ -765,6 +1219,13 @@ void rdp_bridge_stop(rdp_bridge* bridge)
 	pthread_mutex_lock(&bridge->lock);
 	bridge->frame_dirty = 0;
 	pthread_mutex_unlock(&bridge->lock);
+}
+
+void rdp_bridge_set_audio(rdp_bridge* bridge, int enabled)
+{
+	if (!bridge || !bridge->context)
+		return;
+	freerdp_settings_set_bool(bridge->context->settings, FreeRDP_AudioPlayback, enabled != 0);
 }
 
 int rdp_bridge_connected(rdp_bridge* bridge)
@@ -876,6 +1337,12 @@ void rdp_bridge_free(rdp_bridge* bridge)
 	free(bridge->password);
 	free(bridge->certificate_fingerprint);
 	free(bridge->pixels);
+	for (unsigned index = 0; index < bridge->clip_data_count; index++)
+		free(bridge->clip_data[index].data);
+	for (unsigned index = 0; index < bridge->clip_command_count; index++)
+		free(bridge->clip_commands[index].data);
+	pthread_mutex_destroy(&bridge->clip_lock);
+	pthread_mutex_destroy(&bridge->clip_queue_lock);
 	pthread_mutex_destroy(&bridge->lock);
     pthread_mutex_destroy(&bridge->command_lock);
     if (bridge->tunnel_fd >= 0) close(bridge->tunnel_fd);
