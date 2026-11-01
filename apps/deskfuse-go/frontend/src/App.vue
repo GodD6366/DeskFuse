@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { Clipboard, Keyboard, ArrowUpDown, PanelsTopLeft, Mic, Mouse, Laptop, Settings, CircleHelp, RefreshCw, ChevronRight, X } from 'lucide-vue-next'
 import { backend, errorMessage } from './services/backend'
 
@@ -7,7 +7,7 @@ const modules = import.meta.glob('./pages/*Page.vue')
 const pageNames: Record<string,string> = { 'clipboard-panel':'ClipboardPanel','quick-look':'QuickLook', clipboard:'Clipboard',devices:'Devices',files:'Transfers',input:'Input',mouse:'Mouse',microphone:'Microphone',remote_applications:'RemoteApps',settings:'Settings',onboarding:'Onboarding',shelf:'Shelf',support:'Support',pairing:'Pairing','transfer-progress':'TransferProgress' }
 const pages = [
  {id:'clipboard',title:'剪贴板',icon:Clipboard,section:'基础'}, {id:'input',title:'键鼠共享',icon:Keyboard,section:'基础'}, {id:'files',title:'局域网传输',icon:ArrowUpDown,section:'基础'},
- {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级',beta:true}, {id:'mouse',title:'鼠标自定义',icon:Mouse,section:'高级',beta:true},
+ {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级',beta:true}, {id:'mouse',title:'鼠标按键',icon:Mouse,section:'高级',beta:true},
  {id:'devices',title:'设备',icon:Laptop,section:'配置'}, {id:'settings',title:'设置',icon:Settings,section:'设置'},
 ]
 const categories=[['general','通用'],['clipboard','剪贴板'],['workflows','工作流'],['shortcuts','快捷键'],['files','文件'],['permissions','权限'],['about','关于与更新'],['advanced','高级']]
@@ -15,6 +15,8 @@ const panelMode = new URLSearchParams(location.search).get('page') === 'clipboar
 const selected = ref(panelMode ? 'clipboard-panel' : (new URLSearchParams(location.search).get('page') || 'clipboard'))
 const category=ref('general'), snapshot=ref<Record<string,any>|null>(null), error=ref(''), loading=ref(true)
 const component=shallowRef<any>(null), pageError=ref(''), help=ref(false), health=ref(false)
+const helpButton=ref<HTMLElement|null>(null), helpPopover=ref<HTMLElement|null>(null)
+const healthButton=ref<HTMLElement|null>(null), healthPopover=ref<HTMLElement|null>(null)
 // 浮动窗口和引导页自己铺满窗口，不渲染侧栏与顶栏。
 const fullBleedPages=new Set(['onboarding','pairing','transfer-progress','quick-look'])
 const fullBleed=computed(()=>panelMode||fullBleedPages.has(selected.value))
@@ -46,24 +48,43 @@ async function resolveIssue(issue:HealthIssue){
  try{
   if(issue.action) await backend.invoke(issue.action,issue.params)
   if(issue.page){ if(issue.category) category.value=issue.category; await select(issue.page) }
-  health.value=false
+  closeHealth()
  }catch(e){error.value=errorMessage(e)}
 }
-async function copyEnvironment(){try{await backend.invoke('support.copy_environment')}catch(e){error.value=errorMessage(e)}}
-async function openURL(url:string){try{await backend.invoke('system.open_url',{url})}catch(e){error.value=errorMessage(e)}}
+async function copyEnvironment(){try{await backend.invoke('support.copy_environment');closeHelp()}catch(e){error.value=errorMessage(e)}}
+async function openURL(url:string){try{await backend.invoke('system.open_url',{url});closeHelp()}catch(e){error.value=errorMessage(e)}}
+let helpOrigin:HTMLElement|null=null
+function closeHelp(restore=true){if(!help.value)return;help.value=false;const origin=helpOrigin??helpButton.value;helpOrigin=null;if(restore)origin?.focus({preventScroll:true})}
+function closeHealth(restore=true){if(!health.value)return;health.value=false;if(restore)healthButton.value?.focus({preventScroll:true})}
+async function toggleHelp(origin?:EventTarget|null){
+ if(help.value){closeHelp();return}
+ health.value=false;helpOrigin=origin instanceof HTMLElement?origin:helpButton.value;help.value=true;await nextTick()
+ ;(helpPopover.value?.querySelector<HTMLElement>('button:not(.dismiss)')??helpPopover.value?.querySelector<HTMLElement>('button'))?.focus({preventScroll:true})
+}
+async function toggleHealth(){
+ if(health.value){closeHealth();return}
+ help.value=false;health.value=true;await nextTick()
+ ;(healthPopover.value?.querySelector<HTMLElement>('.issue button')??healthPopover.value?.querySelector<HTMLElement>('button'))?.focus({preventScroll:true})
+}
+function onPointerDown(event:PointerEvent){
+ const target=event.target as Node|null
+ if(!target)return
+ if(help.value&&!helpPopover.value?.contains(target)&&!helpButton.value?.contains(target))help.value=false
+ if(health.value&&!healthPopover.value?.contains(target)&&!healthButton.value?.contains(target))health.value=false
+}
 let timer:ReturnType<typeof setTimeout>|undefined, stopped=false, refreshing=false, generation=0
-async function select(id:string){if(id.startsWith('settings:')){category.value=id.split(':')[1];id='settings'}selected.value=id;pageError.value='';const g=++generation;const load=modules[`./pages/${pageNames[id]}Page.vue`];if(!load){component.value=null;pageError.value='此页面尚未完成迁移';return}try{const mod=await load() as any;if(g===generation)component.value=mod.default}catch(e){if(g===generation)pageError.value=errorMessage(e)}}
+async function select(id:string){help.value=false;health.value=false;if(id.startsWith('settings:')){category.value=id.split(':')[1];id='settings'}selected.value=id;pageError.value='';const g=++generation;const load=modules[`./pages/${pageNames[id]}Page.vue`];if(!load){component.value=null;pageError.value='此页面尚未完成迁移';return}try{const mod=await load() as any;if(g===generation)component.value=mod.default}catch(e){if(g===generation)pageError.value=errorMessage(e)}}
 async function refresh(){if(fullBleed.value){loading.value=false;return}if(refreshing)return;refreshing=true;try{const value=await backend.snapshot();if(!stopped){snapshot.value=value;error.value=''}}catch(e){if(!stopped)error.value=errorMessage(e)}finally{refreshing=false;loading.value=false;if(!stopped)timer=setTimeout(refresh,1500)}}
-async function report(){try{await backend.invoke('support.report',{error:error.value});help.value=false}catch(e){error.value=errorMessage(e)}}
+async function report(){try{await backend.invoke('support.report',{error:error.value});closeHelp()}catch(e){error.value=errorMessage(e)}}
 function retry(){if(timer)clearTimeout(timer);refresh()}
-function keydown(e:KeyboardEvent){if((e.metaKey||e.ctrlKey)&&e.key===','){e.preventDefault();select('settings')}if(e.key==='Escape'){help.value=false;health.value=false}}
+function keydown(e:KeyboardEvent){if((e.metaKey||e.ctrlKey)&&e.key===','){e.preventDefault();select('settings')}if(e.key==='Escape'){closeHelp();closeHealth()}}
 function navigateFromHost(page:string,categoryName?:string){if(categoryName)category.value=categoryName;void select(page)}
 onMounted(()=>{
  ;(window as any).__deskfuseNavigate=navigateFromHost
  ;(window as any).__deskfuseSnapshot=()=>snapshot.value
- select(selected.value);refresh();window.addEventListener('keydown',keydown)
+ select(selected.value);refresh();window.addEventListener('keydown',keydown);window.addEventListener('pointerdown',onPointerDown,true)
 })
-onUnmounted(()=>{stopped=true;if(timer)clearTimeout(timer);window.removeEventListener('keydown',keydown);delete (window as any).__deskfuseNavigate;delete (window as any).__deskfuseSnapshot})
+onUnmounted(()=>{stopped=true;if(timer)clearTimeout(timer);window.removeEventListener('keydown',keydown);window.removeEventListener('pointerdown',onPointerDown,true);delete (window as any).__deskfuseNavigate;delete (window as any).__deskfuseSnapshot})
 </script>
 
 <template>
@@ -82,19 +103,43 @@ onUnmounted(()=>{stopped=true;if(timer)clearTimeout(timer);window.removeEventLis
    <footer class="sidebar-footer">
     <button class="nav-row" :class="{selected:selected==='settings'}" @click="select('settings')"><Settings :size="16"/><span>设置</span></button>
     <div v-if="selected==='settings'" class="settings-nav"><button v-for="[id,title] in categories.filter(c=>c[0]!=='workflows'||snapshot?.app?.workflows_enabled!==false)" :key="id" :class="{active:category===id}" @click="category=id">{{title}}</button></div>
-    <div class="health-row"><button class="health-button" @click="health=!health" title="查看运行状态与需要处理的问题"><i :class="healthTone"/><span>{{healthText}}</span><ChevronRight v-if="healthIssues.length" :size="12"/></button><button class="help-button" aria-label="帮助与反馈" title="帮助与反馈" @click="help=!help"><CircleHelp :size="18"/></button></div>
+    <div class="health-row"><button ref="healthButton" class="health-button" :aria-expanded="health" aria-haspopup="dialog" @click="toggleHealth" title="查看运行状态与需要处理的问题"><i :class="healthTone"/><span>{{healthText}}</span><ChevronRight v-if="healthIssues.length" :size="12"/></button><button ref="helpButton" class="help-button" :aria-expanded="help" aria-haspopup="dialog" aria-label="帮助与反馈" title="帮助与反馈" @click="toggleHelp(helpButton)"><CircleHelp :size="18"/></button></div>
    </footer>
   </aside>
   <main class="workspace">
    <header class="topbar title-drag"><span>{{current?.section||'DeskFuse'}}</span><ChevronRight :size="12"/><strong>{{selected==='settings'?categories.find(c=>c[0]===category)?.[1]:current?.title||'DeskFuse'}}</strong><span v-if="current?.beta" class="badge beta">Beta</span></header>
-   <div v-if="error" class="service-notice notice" role="status"><span>{{error}}</span><button class="button" @click="retry"><RefreshCw :size="13"/>重试</button><button class="icon-button" aria-label="反馈问题" @click="help=true"><CircleHelp :size="15"/></button></div>
-   <div class="page-host"><component v-if="component" :is="component" :snapshot="snapshot" :category="category" @navigate="select" @refresh="retry"/><div v-else class="empty-state"><h2>{{pageError||'正在加载'}}</h2><button v-if="pageError" class="button" @click="select(selected)">重试</button></div></div>
+   <div v-if="error" class="service-notice notice" role="status"><span>{{error}}</span><button class="button" @click="retry"><RefreshCw :size="13"/>重试</button><button class="icon-button" aria-label="反馈问题" @click="toggleHelp($event.currentTarget)"><CircleHelp :size="15"/></button></div>
+   <div class="page-host"><Transition name="page" mode="out-in"><div v-if="component" :key="selected" class="page-frame"><component :is="component" :snapshot="snapshot" :category="category" @navigate="select" @refresh="retry"/></div><div v-else key="page-empty" class="empty-state page-frame"><h2>{{pageError||'正在加载'}}</h2><button v-if="pageError" class="button" @click="select(selected)">重试</button></div></Transition></div>
   </main>
-  <div v-if="help" class="help-popover card"><button class="menu-item" @click="report">反馈问题…</button><button class="menu-item" @click="copyEnvironment">复制版本与环境信息</button><div class="menu-divider"/><button class="menu-item" @click="openURL('https://github.com/GodD6366/DeskFuse/issues')">已报告的问题</button><button class="menu-item" @click="openURL('https://github.com/GodD6366/DeskFuse/releases')">发行说明</button><button class="icon-button dismiss" aria-label="关闭帮助" @click="help=false"><X :size="14"/></button></div>
-  <div v-if="health" class="health-popover card"><h2>运行状态</h2><p v-if="!healthIssues.length">{{'当前没有需要处理的问题。'}}</p><div v-for="issue in healthIssues" :key="issue.id" class="issue"><div class="issue-text"><strong>{{issue.title}}</strong><p v-if="issue.detail">{{issue.detail}}</p></div><button v-if="issue.action||issue.page" class="button" @click="resolveIssue(issue)">{{issue.action==='devices.refresh'?'刷新':issue.action==='support.report'?'反馈问题':issue.action==='permissions.open'?'前往授权':issue.page==='devices'?'添加电脑':'查看'}}</button></div><button class="icon-button dismiss" aria-label="关闭运行状态" @click="health=false"><X :size="14"/></button></div>
+  <div v-if="help" ref="helpPopover" class="help-popover card" role="dialog" aria-label="帮助与反馈"><button class="menu-item" @click="report">反馈问题…</button><button class="menu-item" @click="copyEnvironment">复制版本与环境信息</button><div class="menu-divider"/><button class="menu-item" @click="openURL('https://github.com/GodD6366/DeskFuse/issues')">已报告的问题</button><button class="menu-item" @click="openURL('https://github.com/GodD6366/DeskFuse/releases')">发行说明</button><button class="icon-button dismiss" aria-label="关闭帮助" @click="closeHelp()"><X :size="14"/></button></div>
+  <div v-if="health" ref="healthPopover" class="health-popover card" role="dialog" aria-label="运行状态"><h2>运行状态</h2><p v-if="!healthIssues.length">{{'当前没有需要处理的问题。'}}</p><div v-for="issue in healthIssues" :key="issue.id" class="issue"><div class="issue-text"><strong>{{issue.title}}</strong><p v-if="issue.detail">{{issue.detail}}</p></div><button v-if="issue.action||issue.page" class="button" @click="resolveIssue(issue)">{{issue.action==='devices.refresh'?'刷新':issue.action==='support.report'?'反馈问题':issue.action==='permissions.open'?'前往授权':issue.page==='devices'?'添加电脑':'查看'}}</button></div><button class="icon-button dismiss" aria-label="关闭运行状态" @click="closeHealth()"><X :size="14"/></button></div>
  </div>
 </template>
 
 <style scoped>
 .app-shell{height:100vh;min-height:560px;display:flex;overflow:hidden}.sidebar{width:var(--sidebar-width);flex:0 0 var(--sidebar-width);display:flex;flex-direction:column;border-right:.5px solid var(--line);background:var(--canvas)}.title-drag{--app-region:drag;-webkit-app-region:drag;user-select:none}.brand{height:52px;flex:0 0 52px;display:flex;align-items:center;gap:8px;padding-left:92px;font-size:15px;margin-bottom:4px}.brand-icon{width:22px;height:22px;flex-shrink:0;background:url(/deskfuse-icon-light.png) center/contain no-repeat;border-radius:5px}@media(prefers-color-scheme:dark){.brand-icon{background-image:url(/deskfuse-icon.png)}}.brand strong{font-weight:600}nav{overflow:auto;flex:1;padding:0 10px 4px}.nav-section{padding:12px 10px 4px;font-size:11px;color:var(--secondary)}.nav-row{width:100%;display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;border-radius:8px;text-align:left;position:relative;margin:2px 0}.nav-row:hover{background:var(--control)}.nav-row.selected{background:var(--surface);box-shadow:0 1px 2px #00000012;font-weight:500}.nav-row.selected:before{content:'';position:absolute;left:-6px;top:5px;bottom:5px;width:3px;background:var(--accent);border-radius:2px}.nav-row.selected>svg{color:var(--accent)}.nav-row .badge{margin-left:auto;padding:1px 5px;font-weight:400}.device-count{margin-left:auto;white-space:nowrap}.sidebar-footer{padding:8px 10px 0;border-top:.5px solid var(--line)}.settings-nav{border-left:1px solid var(--line);margin:0 0 4px 10px;padding-left:10px;display:flex;flex-direction:column}.settings-nav button{text-align:left;height:28px;border-radius:6px;padding:0 12px;color:var(--secondary)}.settings-nav button:hover,.settings-nav button.active{background:var(--control);color:var(--text)}.health-row{display:flex;align-items:center;padding:10px 4px 10px 12px;gap:4px}.health-button{display:flex;align-items:center;gap:8px;flex:1;font-size:12px;text-align:left;padding:0}.health-button i{width:7px;height:7px;border-radius:50%;background:var(--success)}.health-button i.warning{background:var(--warning)}.health-button i.accent{background:var(--accent)}.health-button i.danger{background:var(--danger)}.help-button{width:24px;height:24px;color:var(--secondary);padding:3px}.workspace{display:flex;flex-direction:column;flex:1;min-width:0;background:var(--canvas)}.topbar{height:52px;flex:0 0 52px;display:flex;align-items:center;gap:10px;padding:0 24px;color:var(--secondary);font-size:13px}.topbar strong{color:var(--text);font-weight:600}.page-host{flex:1;min-height:0;overflow:hidden;position:relative;display:flex;flex-direction:column}.service-notice{margin:0 24px 12px;flex-shrink:0;font-size:12px}.service-notice>span{flex:1}.help-popover,.health-popover{position:fixed;bottom:56px;left:16px;width:300px;z-index:50;box-shadow:0 8px 30px #0002;display:flex;flex-direction:column;gap:12px}.health-popover{bottom:56px;left:24px}.dismiss{position:absolute;right:8px;top:8px}.help-popover{gap:2px;padding:8px}.menu-item{display:flex;align-items:center;height:30px;padding:0 10px;border-radius:6px;text-align:left;font-size:13px}.menu-item:hover{background:var(--control)}.menu-divider{height:.5px;background:var(--line);margin:4px 2px}.health-popover{gap:6px;max-height:60vh;overflow:auto}.issue{display:flex;align-items:flex-start;gap:10px;padding:8px 0}.issue+.issue{border-top:.5px solid var(--line)}.issue-text{flex:1;min-width:0}.issue-text strong{font-size:13px;font-weight:600}.issue-text p{font-size:12px;color:var(--secondary);margin-top:2px}.issue .button{flex-shrink:0;min-height:26px;padding:0 10px;font-size:12px}
+/* 页面切换：短出长入，避免导航时闪白 */
+.page-frame{display:flex;flex-direction:column;flex:1;min-height:0;height:100%;min-width:0}
+.page-enter-active{transition:opacity var(--dur-base) var(--ease-out),transform var(--dur-base) var(--ease-out)}
+.page-leave-active{transition:opacity 90ms ease}
+.page-enter-from{opacity:0;transform:translateY(5px)}
+.page-leave-to{opacity:0}
+.sidebar,.workspace,.topbar{transition:background-color var(--dur-slow) var(--ease-out),border-color var(--dur-slow) var(--ease-out),color var(--dur-slow) var(--ease-out)}
+.brand strong{font-size:15px;letter-spacing:-.01em}
+.nav-section{padding:14px 10px 5px;letter-spacing:.02em;opacity:.9}
+.nav-row{gap:9px;border-radius:7px;margin:1px 0;transition:background-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out)}
+.nav-row:active{transform:scale(.985)}
+.nav-row>svg{opacity:.82;flex:none}
+.nav-row.selected>svg{opacity:1}
+.nav-row.selected:before{animation:navBarIn var(--dur-base) var(--ease-out)}
+@keyframes navBarIn{from{transform:scaleY(.35);opacity:.4}to{transform:scaleY(1);opacity:1}}
+.health-button{font-variant-numeric:tabular-nums}
+.help-button{border-radius:6px;transition:background-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+.help-button:hover{background:var(--control);color:var(--text)}
+.topbar{font-variant-numeric:tabular-nums}
+.topbar strong{letter-spacing:-.005em}
+.help-popover,.health-popover{animation:popIn var(--dur-base) var(--ease-out);transform-origin:bottom left}
+@keyframes popIn{from{opacity:0;transform:translateY(5px) scale(.99)}to{opacity:1;transform:none}}
+.menu-item{transition:background-color var(--dur-fast) var(--ease-out)}
+
 </style>

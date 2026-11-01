@@ -11,8 +11,24 @@ export interface ErrorInfo {
   raw: string
 }
 
+/**
+ * 引擎错误会带 Rust/Swift 的包装，例如
+ * `DeskFuseEngine.EngineError.Failed(message: "麦克风服务尚未就绪")`。
+ * 面向用户时只保留 message 里的正文；完整原文留给“技术详情”。
+ */
+export function unwrapErrorMessage(message: string): string {
+  const text = String(message ?? '').trim()
+  if (!text) return ''
+  const quoted = /message:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
+  if (quoted?.[1]) return quoted[1].replace(/\\(["\\])/g, '$1')
+  const single = /message:\s*'([^']*)'/.exec(text)
+  if (single?.[1]) return single[1]
+  return text
+}
+
 /** 与 HealthCenter.friendlyError 一致：英文内部错误换成通用说明，中文原文保留。 */
-export function friendlyError(message: string): string {
+export function friendlyError(raw: string): string {
+  const message = unwrapErrorMessage(raw)
   const lower = message.toLowerCase()
   const rules: Array<[string[], string]> = [
     [['timed out', 'timeout', '超时'], '连接超时，请确认两台电脑在同一网络后重试。'],
