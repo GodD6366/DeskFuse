@@ -112,7 +112,7 @@ impl MicrophoneSession {
                 if data.is_empty() || late > AUDIO_LATE_MS {
                     continue;
                 }
-                if !(1..=4).contains(&data[0]) {
+                if !(1..=6).contains(&data[0]) {
                     break;
                 }
                 // 消费端暂时落后时丢弃新包；只有消费端已经关闭才结束。
@@ -138,7 +138,7 @@ impl MicrophoneSession {
         if self.is_closed()
             || data.len() < 2
             || data.len() > MAX_PACKET
-            || !(1..=4).contains(&data[0])
+            || !(1..=6).contains(&data[0])
         {
             return Err("麦克风通道已关闭或音频包无效".into());
         }

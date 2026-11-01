@@ -40,6 +40,38 @@ enum MyGoSnapshot {
         return String(cString: buffer)
     }()
 
+    /// 麦克风快照与页面实时电平共用同一份投影。`live` 直接读 worker 的最新发布，
+    /// 用于可见页面的电平绘制；会话有效性仍由主线程快照的 phase/detail 判定。
+    @MainActor static func microphoneProjection(_ microphone: MicrophoneSharing, live: Bool) -> [String: Any] {
+        let state = live ? microphone.liveSnapshot() : microphone.snapshot
+        var out: [String: Any] = [
+            "loaded": state != nil, "enabled": microphone.isFeatureEnabled,
+            "phase": nullable(state?.phase), "detail": nullable(state?.detail),
+            "role": nullable(state?.role), "peer": nullable(state?.peer),
+            "error": nullable(microphone.error ?? microphone.connectionError),
+            "driver_installed": microphone.driverInstalled,
+            "legacy_driver_installed": microphone.legacyDriverInstalled,
+            "driver_message": nullable(microphone.driverMessage),
+            "preferred_role": UserDefaults.standard.string(forKey: "microphone.role") ?? "",
+            "managing_driver": microphone.managingDriver, "saving": microphone.saving,
+            "inputs": microphone.inputs.map { ["id": $0.id, "name": $0.name] },
+            "reader_apps": microphone.readerApps.map { ["id": String($0.id), "name": $0.name] },
+            "is_default_input": nullable(microphone.isDefaultInput),
+        ]
+        if let state {
+            let waveform = microphone.waveform.current()
+            out["settings"] = ["enabled": state.settings.enabled, "source": state.settings.source,
+                               "allowed": state.settings.allowed, "input_uid": state.settings.input_uid]
+            out["native"] = ["driver": state.native.driver, "readers": state.native.readers,
+                             "streaming": state.native.streaming, "locked": state.native.locked,
+                             "permission": state.native.permission, "level": state.native.level,
+                             "error": state.native.error, "waveform": waveform.values,
+                             "waveform_rate": waveform.rate, "waveform_active": waveform.active]
+            out["session_id"] = String(state.session_id)
+        }
+        return out
+    }
+
     @MainActor static func encode(_ store: AppStore) throws -> Data {
         let s = store.snapshot
         let selectedPage: String = switch store.selectedPage {
@@ -190,25 +222,7 @@ enum MyGoSnapshot {
             "g502_locations": Dictionary(uniqueKeysWithValues: G502ButtonPosition.allCases.map {
                 ($0.rawValue, g502Locations.button(at: $0))
             })]
-        let microphone = MicrophoneSharing.shared
-        out["microphone"] = ["loaded": microphone.snapshot != nil, "enabled": microphone.isFeatureEnabled,
-            "phase": nullable(microphone.snapshot?.phase), "detail": nullable(microphone.snapshot?.detail),
-            "role": nullable(microphone.snapshot?.role), "peer": nullable(microphone.snapshot?.peer),
-            "error": nullable(microphone.error ?? microphone.connectionError), "driver_installed": microphone.driverInstalled,
-            "legacy_driver_installed": microphone.legacyDriverInstalled, "driver_message": nullable(microphone.driverMessage),
-            "preferred_role": UserDefaults.standard.string(forKey: "microphone.role") ?? "",
-            "managing_driver": microphone.managingDriver, "saving": microphone.saving,
-            "inputs": microphone.inputs.map { ["id": $0.id, "name": $0.name] },
-            "reader_apps": microphone.readerApps.map { ["id": String($0.id), "name": $0.name] },
-            "is_default_input": nullable(microphone.isDefaultInput)]
-        if let state = microphone.snapshot, var projection = out["microphone"] as? [String: Any] {
-            projection["settings"] = ["enabled": state.settings.enabled, "source": state.settings.source,
-                "allowed": state.settings.allowed, "input_uid": state.settings.input_uid]
-            projection["native"] = ["driver": state.native.driver, "readers": state.native.readers,
-                "streaming": state.native.streaming, "permission": state.native.permission, "level": state.native.level,
-                "error": state.native.error]
-            out["microphone"] = projection
-        }
+        out["microphone"] = microphoneProjection(MicrophoneSharing.shared, live: false)
         out["workflows"] = ["enabled": store.workflowsEnabled]
         if let shelf = store.shelf { out["shelf"] = ["preparing": shelf.preparing,
             "files": shelf.files.map { ["path": $0.path, "name": $0.lastPathComponent] }] }
@@ -501,6 +515,8 @@ enum MyGoSnapshot {
                 shelf.append(content.filePaths.map { URL(fileURLWithPath: $0) })
             }
             return try result(true)
+        case "microphone.ensure": MicrophoneSharing.shared.ensureStarted(engine: store.engine); return Data(#"{"outcome":"dispatched"}"#.utf8)
+        case "microphone.status": return try result(MyGoSnapshot.microphoneProjection(MicrophoneSharing.shared, live: true))
         case "microphone.refreshInputs": MicrophoneSharing.shared.refreshInputs(); return Data(#"{"outcome":"dispatched"}"#.utf8)
         case "microphone.retry": MicrophoneSharing.shared.retryConnection(engine: store.engine); return Data(#"{"outcome":"dispatched"}"#.utf8)
         case "microphone.chooseRole":

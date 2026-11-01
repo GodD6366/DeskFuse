@@ -27,6 +27,9 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     static let shared = MicrophoneSharing()
     var snapshot: MicrophoneSharingSnapshot?
     var isFeatureEnabled: Bool { snapshot?.settings.enabled == true }
+    /// 实时投影：worker 每次循环都会发布最新电平，而主线程的 `snapshot` 只按
+    /// 250 ms 刷新。页面可见时用它绘制电平，不能据此判定会话是否仍然有效。
+    func liveSnapshot() -> MicrophoneSharingSnapshot? { worker?.status().snapshot ?? snapshot }
     func setFeatureEnabled(_ enabled: Bool) {
         guard var settings = snapshot?.settings else { return }
         settings.enabled = enabled
@@ -51,6 +54,9 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     private var polling: Task<Void, Never>?
     private var inputRefresh: Task<Void, Never>?
     private var usagePolling: Task<Void, Never>?
+    /// Shared with the audio worker so the page can draw real samples without
+    /// putting audio buffers into the periodic engine snapshot.
+    let waveform = MicrophoneWaveform()
     private var observers: [NSObjectProtocol] = []
     private var askedPermission = false
     private var connectionDeadline: ContinuousClock.Instant?
@@ -58,25 +64,38 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     func start(engine: Engine) {
         guard self.engine == nil else { return }
         self.engine = engine
+        // 引擎在独立线程里异步构建运行时，microphone::install 可能尚未执行。
+        // 启动期的一次「尚未就绪」不是永久故障：在服务就绪前短暂重试，
+        // 否则麦克风会一直停在错误态，页面只能把缺失的 native 状态误读为驱动失联。
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         initialization = Task { [weak self] in
-            do {
-                let state = try await Task.detached {
-                    try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
-                }.value
-                guard !Task.isCancelled, let self else { return }
-                self.snapshot = state
-                self.initialization = nil
-                if state.settings.enabled { self.startRuntime(engine: engine) }
-            } catch {
-                self?.connectionError = error.localizedDescription
-                self?.initialization = nil
-                self?.engine = nil
+            while !Task.isCancelled {
+                do {
+                    let state = try await Task.detached {
+                        try JSONDecoder().decode(MicrophoneSharingSnapshot.self, from: Data(engine.microphoneSnapshot().utf8))
+                    }.value
+                    guard !Task.isCancelled, let self else { return }
+                    self.snapshot = state
+                    self.connectionError = nil
+                    self.initialization = nil
+                    if state.settings.enabled { self.startRuntime(engine: engine) }
+                    return
+                } catch {
+                    guard let self, !Task.isCancelled else { return }
+                    guard ContinuousClock.now < deadline else {
+                        self.connectionError = error.localizedDescription
+                        self.initialization = nil
+                        self.engine = nil
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
             }
         }
     }
     private func startRuntime(engine: Engine) {
         guard worker == nil, isFeatureEnabled, !managingDriver else { return }
-        let worker = MicrophoneWorker(engine: engine)
+        let worker = MicrophoneWorker(engine: engine, waveform: waveform)
         self.worker = worker
         connectionError = nil
         connectionDeadline = .now.advanced(by: Self.connectionTimeout)
@@ -164,6 +183,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
         inputRefresh?.cancel(); inputRefresh = nil
         usagePolling?.cancel(); usagePolling = nil
         readerApps = []; isDefaultInput = nil
+        waveform.clear()
         worker?.stop()
         askedPermission = false
         for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); DistributedNotificationCenter.default().removeObserver(token) }
@@ -172,6 +192,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
     func stop() {
         initialization?.cancel(); initialization = nil
         engine = nil; snapshot = nil
+        waveform.clear()
         suspendRuntime()
     }
     func configure(_ settings: MicrophoneSettings) {
@@ -272,6 +293,7 @@ struct MicrophoneSharingSnapshot: Decodable, Sendable {
 
 private final class MicrophoneWorker: @unchecked Sendable {
     private let engine: Engine
+    private let waveform: MicrophoneWaveform
     private let lock = NSLock()
     private var locked = false
     private var sleeping = false
@@ -282,7 +304,10 @@ private final class MicrophoneWorker: @unchecked Sendable {
     private var initializationPending = true
     private var initializationError: String?
     private var driverRefreshRequested = false
-    init(engine: Engine) { self.engine = engine }
+    init(engine: Engine, waveform: MicrophoneWaveform) {
+        self.engine = engine
+        self.waveform = waveform
+    }
     func status() -> (snapshot: MicrophoneSharingSnapshot?, error: String?) {
         lock.withLock { (projection, initializationError) }
     }
@@ -372,6 +397,14 @@ private final class MicrophoneWorker: @unchecked Sendable {
         var captureStarted = Date.distantPast
         var nextPoll = Date.distantPast
         var nextDriverCheck = Date.distantPast
+        /// 真实波形协商：发送端先发 −1 哨兵，接收端据此请求扩展包；
+        /// 旧版接收端只看到电平 0，不会收到任何新格式包。
+        var waveformRequested = false
+        var lastWaveformBeacon = Date.distantPast
+        /// 哨兵只在会话开始的一小段窗口内发送。曾经要求“静音才发”，
+        /// 但用户一开口电平就不为零，握手永远完不成，接收端只能画直线。
+        var waveformProbeUntil = Date.distantPast
+        var lastWaveformRequest = Date.distantPast
         /// 虚拟麦克风每次启用后自动设为系统默认输入；设备出现前持续重试到截止时间。
         var autoDefaultDeadline: Date?
         func nativeError() -> String { String(cString: ud_mic_last_error()) }
@@ -381,6 +414,9 @@ private final class MicrophoneWorker: @unchecked Sendable {
             sender = nil; channel?.close(); channel = nil
             if loopback != nil { _ = ud_mic_driver_reset() }
             loopback = nil; currentID = 0; lastAudio = .distantPast; remoteLevel = 0
+            waveformRequested = false; lastWaveformBeacon = .distantPast
+            waveformProbeUntil = .distantPast; lastWaveformRequest = .distantPast
+            waveform.clear()
         }
         func restoreDefaultInput() {
             // Respect a newer choice made by the user or another audio app.
@@ -464,8 +500,31 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         default: permission = "undetermined"
                         }
                         if let capture, let channel {
-                            var bits = capture.level.bitPattern.bigEndian
-                            let meter = withUnsafeBytes(of: &bits) { Data([4]) + Data($0) }
+                            let now = Date()
+                            var level = capture.level
+                            // 会话开始后的固定窗口内无条件探测；窗口结束仍未收到请求
+                            // 说明对端是旧版本，此后只恢复普通电平包，不再打断真实读数。
+                            if !waveformRequested,
+                               level < 0.0005 || now < waveformProbeUntil,
+                               now.timeIntervalSince(lastWaveformBeacon) >= 0.5 {
+                                level = -1
+                                lastWaveformBeacon = now
+                            }
+                            var meter = Data([4])
+                            var bits = level.bitPattern.bigEndian
+                            withUnsafeBytes(of: &bits) { meter.append(contentsOf: $0) }
+                            if waveformRequested {
+                                let wave = waveform.current()
+                                let count = min(256, wave.values.count)
+                                if count > 0 {
+                                    meter.append(UInt8(count >> 8))
+                                    meter.append(UInt8(count & 0xff))
+                                    for value in wave.values.prefix(count) {
+                                        var sample = value.bitPattern.bigEndian
+                                        withUnsafeBytes(of: &sample) { meter.append(contentsOf: $0) }
+                                    }
+                                }
+                            }
                             try channel.send(bytes: meter)
                         }
                         try engine.reportMicrophoneNative(state: MicrophoneNativeState(
@@ -499,9 +558,12 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         if channel != nil && latest.role == "sender" && sender == nil && permission == "authorized" {
                             guard let opened = ud_mic_sender_create() else { throw MicrophoneAudioError.message(nativeError()) }
                             sender = opened
-                            let microphone = MicrophoneCapture()
+                            let microphone = MicrophoneCapture(waveform: waveform)
                             try microphone.start(uid: latest.settings.input_uid)
                             capture = microphone; captureStarted = Date()
+                            // 接收端要等本机驱动就绪才建立回环，慢启动可能跨过数秒；
+                            // 窗口太短会让这一整段会话都协商不到波形。
+                            waveformProbeUntil = Date().addingTimeInterval(6)
                         }
                         if channel != nil && latest.role == "receiver" && loopback == nil {
                             guard ud_mic_driver_reset() == 0 else { throw MicrophoneAudioError.message(nativeError()) }
@@ -529,15 +591,46 @@ private final class MicrophoneWorker: @unchecked Sendable {
                         for _ in 0..<24 {
                             guard let packet = try channel.receive() else { break }
                             if let sender {
+                                if packet.first == 6 {
+                                    waveformRequested = true
+                                    continue
+                                }
                                 guard packet.first == 3 else { throw MicrophoneAudioError.message("来源端收到无效反馈类型") }
                                 let result = packet.dropFirst().withUnsafeBytes { ud_mic_sender_feedback(sender, $0.bindMemory(to: UInt8.self).baseAddress, $0.count) }
                                 guard result == 0 else { throw MicrophoneAudioError.message(nativeError()) }
                             } else if let loopback {
                                 if packet.first == 4 {
-                                    guard packet.count == 5 else { throw MicrophoneAudioError.message("无效的麦克风电平") }
-                                    let bits = packet.dropFirst().reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                                    guard packet.count >= 5 else { throw MicrophoneAudioError.message("无效的麦克风电平") }
+                                    var bits: UInt32 = 0
+                                    for index in 1..<5 { bits = (bits << 8) | UInt32(packet[index]) }
                                     let value = Float(bitPattern: bits)
-                                    remoteLevel = value.isFinite ? min(1, max(0, value)) : 0
+                                    if value == -1 {
+                                        // 新发送端在会话开始阶段发出能力哨兵。请求按秒重试，
+                                        // 避免第一次请求丢包后整段会话都拿不到波形。
+                                        // 传输层拒绝少于 2 字节的包，请求带一个占位字节。
+                                        // −1 是协商信号而不是电平，保留上一帧读数，避免表头闪烁。
+                                        if Date().timeIntervalSince(lastWaveformRequest) >= 1 {
+                                            try channel.send(bytes: Data([6, 0]))
+                                            lastWaveformRequest = Date()
+                                        }
+                                    } else {
+                                        remoteLevel = value.isFinite ? min(1, max(0, value)) : 0
+                                    }
+                                    if packet.count >= 7 {
+                                        let count = (Int(packet[5]) << 8) | Int(packet[6])
+                                        if count > 0, count <= 256, packet.count == 7 + count * 4 {
+                                            var samples = [Float]()
+                                            samples.reserveCapacity(count)
+                                            for index in 0..<count {
+                                                let offset = 7 + index * 4
+                                                var sampleBits: UInt32 = 0
+                                                for byte in 0..<4 { sampleBits = (sampleBits << 8) | UInt32(packet[offset + byte]) }
+                                                let sample = Float(bitPattern: sampleBits)
+                                                samples.append(sample.isFinite ? sample : 0)
+                                            }
+                                            waveform.publish(samples)
+                                        }
+                                    }
                                 } else { try loopback.send(packet); if packet.first == 1 { lastAudio = Date() } }
                             }
                         }

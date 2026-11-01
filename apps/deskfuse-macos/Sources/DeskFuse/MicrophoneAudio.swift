@@ -100,11 +100,53 @@ enum MicrophoneAudioError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
 }
+/// A bounded, lock-protected window of real samples for the UI. It contains no
+/// identity and is never persisted; the bridge copies it only while the page polls.
+final class MicrophoneWaveform: @unchecked Sendable {
+    struct Reading { let values: [Float]; let rate: Double; let active: Bool }
+    private let lock = NSLock()
+    private var values = [Float](repeating: 0, count: 256)
+    private var rate: Double = 48_000
+    private var updatedAt = Date.distantPast
+    private var populated = false
+
+    func publish(_ samples: [Float], rate: Double = 48_000) {
+        guard !samples.isEmpty else { return }
+        let target = 256
+        var window = [Float](repeating: 0, count: target)
+        let stride = Double(samples.count) / Double(target)
+        for index in 0..<target {
+            let source = min(samples.count - 1, Int(Double(index) * stride))
+            window[index] = samples[source]
+        }
+        lock.lock()
+        values = window
+        self.rate = rate
+        updatedAt = Date()
+        populated = true
+        lock.unlock()
+    }
+    func current() -> Reading {
+        lock.lock()
+        let fresh = populated && Date().timeIntervalSince(updatedAt) < 0.9
+        let result = Reading(values: fresh ? values : [], rate: rate, active: fresh)
+        lock.unlock()
+        return result
+    }
+    func clear() {
+        lock.lock()
+        values = [Float](repeating: 0, count: 256)
+        updatedAt = .distantPast
+        populated = false
+        lock.unlock()
+    }
+}
 /// The tap only converts and deposits a bounded batch; encoding/network run on
 /// the audio worker. If the worker stalls, close the session rather than queue speech.
 final class MicrophoneCapture: @unchecked Sendable {
     private let audio = AVAudioEngine()
     private let lock = NSLock()
+    private let waveform: MicrophoneWaveform?
     private var frames: [(UInt64, [Float])] = []
     private var overflow = false
     private var captureError: String?
@@ -112,6 +154,8 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var peak: Float = 0
     private var tapped = false
     private var device: AudioDeviceID = 0
+    private var lastWaveformAt = Date.distantPast
+    init(waveform: MicrophoneWaveform? = nil) { self.waveform = waveform }
     func start(uid: String) throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw MicrophoneAudioError.message("等待麦克风授权") }
         let devices = MicrophoneAudioDevices.devices().filter { MicrophoneAudioDevices.isPhysical($0.0, uid: $0.1) }
@@ -152,6 +196,12 @@ final class MicrophoneCapture: @unchecked Sendable {
             if self.frames.count < 8 { self.frames.append((DispatchTime.now().uptimeNanoseconds, values)) } else { self.overflow = true }
             self.peak = values.reduce(Float(0)) { max($0, abs($1)) }
             self.lock.unlock()
+            // 20 Hz is enough for the visual waveform; doing this in the audio
+            // callback avoids a second reader competing with the virtual driver.
+            if let waveform = self.waveform, Date().timeIntervalSince(self.lastWaveformAt) >= 0.05 {
+                self.lastWaveformAt = Date()
+                waveform.publish(values, rate: 48_000)
+            }
         }
         tapped = true
         audio.prepare()
@@ -174,6 +224,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         audio.stop()
         if tapped { audio.inputNode.removeTap(onBus: 0); tapped = false }
         lock.lock(); frames.removeAll(); overflow = false; peak = 0; captureError = nil; inputFrames = 0; lock.unlock()
+        waveform?.clear()
     }
     deinit { stop() }
 }
