@@ -6,6 +6,9 @@
 # Local builds, screenshots, logs, source snapshots and device evidence.
 /dist/
 /artifacts/
+# UI design preview renders (screenshots plus selection metadata); regenerated
+# locally from the page markup, not part of the shipped app.
+/design-previews/
 *.dmg
 *.app/
 __pycache__/
