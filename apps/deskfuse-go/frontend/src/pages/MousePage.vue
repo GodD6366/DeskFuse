@@ -7,10 +7,9 @@ import Notice from './features/Notice.vue'
 import ConfirmDialog from './features/ConfirmDialog.vue'
 import FeatureGate from './features/FeatureGate.vue'
 import MousePhotoEditor from './mouse/MousePhotoEditor.vue'
+import MouseGenericEditor from './mouse/MouseGenericEditor.vue'
 import MouseContributionDialog from './mouse/MouseContributionDialog.vue'
-import {
-  CHOICES, MODELS, actionFor, actionLabel, buttonName, isG502Button, modelOf,
-} from './mouse/model'
+import { CHOICES, MODELS, actionFor, actionValue, isG502Button, modelOf } from './mouse/model'
 
 const props = defineProps<{ snapshot: Record<string, any> | null }>()
 const emit = defineEmits<{ refresh: [] }>()
@@ -113,8 +112,76 @@ const selectedDevices = computed<any[]>(() => {
 })
 const contributionDevice = computed<any>(() => selectedDevices.value[0] ?? null)
 
+// 识别到、但不在支持列表里的鼠标。它们只走标准五键，需要单独标注。
+const unsupportedDevices = computed<any[]>(() => devices.value.filter((device) => !String(device.model ?? '')))
+
+const selectedModelName = computed<string | null>(() => {
+  const id = selectedOption.value?.model
+  if (!id) return null
+  return MODELS.find((model) => model.id === id)?.name ?? String(selectedOption.value?.title ?? id)
+})
+
+const genericDeviceName = computed<string | null>(() => {
+  if (selectedOption.value?.model) return null
+  const device = selectedDevices.value.find((entry) => !String(entry.model ?? ''))
+  return device?.name ? String(device.name) : null
+})
+
+const activeModelView = computed<any | null>(() => {
+  if (!profile.value) return null
+  return modelViews.value.find((model) => model.id === profile.value) ?? null
+})
+
+const activeWheelModel = computed<any | null>(() => {
+  const model = activeModelView.value
+  if (!model || !model.wheel_available || model.wheel_freespin === null || model.wheel_freespin === undefined) {
+    return null
+  }
+  return model
+})
+
+const singleDeviceTitle = computed(() => {
+  if (selectedOption.value) return optionLabel(selectedOption.value)
+  return '标准五键'
+})
+
+const currentDeviceTone = computed<'on' | 'warn' | 'idle'>(() => {
+  if (activeModelView.value?.connected) return 'on'
+  if (genericDeviceName.value) return 'warn'
+  return 'idle'
+})
+
+const currentStatusPill = computed<{ text: string; tone: string } | null>(() => {
+  if (activeModelView.value) return connectionPill(activeModelView.value)
+  if (genericDeviceName.value) return { text: '未适配', tone: 'warn' }
+  return { text: '未连接', tone: 'neutral' }
+})
+
+const connectedModelCount = computed(() => modelViews.value.filter((model) => model.connected).length)
+const connectedSummary = computed(() => {
+  const adapted = connectedModelCount.value
+  const unadapted = unsupportedDevices.value.length
+  if (adapted > 0 && unadapted > 0) return `${adapted} 款已连接 · ${unadapted} 台未适配`
+  if (adapted > 0) return `${adapted} 款已连接`
+  if (unadapted > 0) return `${unadapted} 台未适配`
+  return `支持 ${modelViews.value.length} 款型号`
+})
+
+/** 示意图只画标准五键，其余能绑的键放进扩展条。 */
+const extraButtons = computed(() => buttonIDs.value.filter((button) => button > 4))
+
+/** 选择器里避免把未适配的设备笼统叫成“通用鼠标”。 */
+function optionLabel(option: any): string {
+  if (option.model) return String(option.title ?? '')
+  const names = (option.device_ids ?? []).map(
+    (id: any) => devices.value.find((device) => String(device.id) === String(id))?.name,
+  ).filter(Boolean)
+  if (names.length === 1) return `${names[0]}（未适配）`
+  if (names.length > 1) return `${names.length} 个未适配鼠标`
+  return '标准五键'
+}
+
 function baseButtons(model: string | null): number[] {
-  // G502 编辑器的 11 个实体位置对应 208…218；已绑定的其他实体键仍会列出。
   if (model === 'g502Lightspeed') return Array.from({ length: 11 }, (_, index) => 208 + index)
   if (model) return [0, 1, 2, 3, 4, 195, 196]
   return [0, 1, 2, 3, 4]
@@ -133,18 +200,6 @@ const buttonIDs = computed(() => {
   return [...set].filter((button) => Number.isFinite(button) && allowedButton(button, model)).sort((a, b) => a - b)
 })
 
-function binding(button: number): any {
-  return (
-    bindings.value.find(
-      (item) => Number(item.button) === button && Number(item.modifiers) === modifiers.value,
-    )?.action ?? null
-  )
-}
-function label(button: number): string {
-  return actionLabel(binding(button), modifiers.value)
-}
-const configured = (button: number) => binding(button) !== null
-
 function connectionPill(model: any): { text: string; tone: string } {
   if (!model.connected) return { text: '未连接', tone: 'neutral' }
   const percent = model.battery_percent
@@ -154,6 +209,7 @@ function connectionPill(model: any): { text: string; tone: string } {
   const tone = percent <= 15 ? 'danger' : percent <= 30 ? 'warn' : 'success'
   return { text, tone }
 }
+
 function wheelValue(model: any): boolean {
   const key = String(model.wheel_name ?? '')
   if (key && typeof wheelOverrides.value[key] === 'boolean') return wheelOverrides.value[key]
@@ -177,7 +233,6 @@ async function invoke(action: string, params: Record<string, unknown> = {}) {
   try {
     return await backend.invoke(action, params)
   } catch {
-    /* 采集/释放等后台动作失败不打断页面；需要提示的动作由 run 处理。 */
     return null
   }
 }
@@ -198,15 +253,30 @@ async function run(action: string, params: Record<string, unknown> = {}): Promis
   }
 }
 
+function effectiveModifiersFor(button: number): number {
+  return button >= 195 || isG502Button(button) ? 0 : modifiers.value
+}
+
+function currentMenuValue(button: number): string {
+  const mods = effectiveModifiersFor(button)
+  const found = bindings.value.find(
+    (entry) => Number(entry.button) === button && Number(entry.modifiers) === mods,
+  )?.action ?? null
+  return actionValue(found)
+}
+
 function openMenu(button: number, event: MouseEvent) {
   if (busy.value || !loaded.value || recording.value !== null) return
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  const width = 220
-  menu.value = {
-    button,
-    left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
-    top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 440)),
-  }
+  const target = event.currentTarget as HTMLElement | null
+  const rect = target?.getBoundingClientRect()
+  const width = 228
+  const left = rect
+    ? Math.max(10, Math.min(rect.left, window.innerWidth - width - 10))
+    : Math.max(10, (window.innerWidth - width) / 2)
+  const top = rect
+    ? Math.max(10, Math.min(rect.bottom + 6, window.innerHeight - 436))
+    : 120
+  menu.value = { button, left, top }
 }
 
 const menuChoices = computed(() => {
@@ -221,9 +291,16 @@ const menuChoices = computed(() => {
   })
 })
 
+const menuActiveValue = computed(() => (menu.value ? currentMenuValue(menu.value.button) : ''))
+const menuSupportsLayerKeep = computed(() => Boolean(menu.value && effectiveModifiersFor(menu.value.button) !== 0))
+
 async function applyAction(button: number, action: any) {
   menu.value = null
-  const result = await run('mouse.setMapping', { button, modifiers: modifiers.value, action })
+  const result = await run('mouse.setMapping', {
+    button,
+    modifiers: effectiveModifiersFor(button),
+    action,
+  })
   if (result.ok) emit('refresh')
 }
 
@@ -246,6 +323,11 @@ function menuKeepOriginal() {
 
 function closeMenu() {
   menu.value = null
+}
+
+function clearModifiers() {
+  void endRecording()
+  modifiers.value = 0
 }
 
 function toggleModifier(bit: number) {
@@ -365,6 +447,7 @@ onMounted(() => {
   void invoke('mouse.scan', { enabled: true })
   window.addEventListener('keydown', onEscape)
 })
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEscape)
   void endRecording()
@@ -380,9 +463,9 @@ onBeforeUnmount(() => {
     <h2>鼠标服务未连接</h2>
     <p>连接原生服务后读取设备和按键配置。</p>
   </div>
-  <FeatureGate v-else-if="!featureEnabled" page="mouse" title="鼠标自定义" />
+  <FeatureGate v-else-if="!featureEnabled" page="mouse" title="鼠标按键" />
   <div v-else class="mouse-page">
-    <section class="assignments">
+    <div class="mouse-inner">
       <Notice
         v-if="mouse?.enabled && tapReady === false"
         tone="warning"
@@ -397,18 +480,7 @@ onBeforeUnmount(() => {
         :raw="errorRaw || undefined"
       />
 
-      <select
-        v-if="options.length > 1"
-        v-model="selection"
-        class="df-select device-picker"
-        aria-label="鼠标类型"
-        title="只显示当前识别到的鼠标；未适配型号使用通用映射"
-      >
-        <option v-for="option in options" :key="option.id" :value="option.id">
-          {{ option.title }}
-        </option>
-      </select>
-
+      <!-- 主视觉：就地标注图纸画布 -->
       <MousePhotoEditor
         v-if="isPhotoModel"
         :model="profile ?? ''"
@@ -417,158 +489,305 @@ onBeforeUnmount(() => {
         :available-buttons="availableButtons"
         :modifiers="modifiers"
         :recording="recording"
+        :active-menu-button="menu?.button ?? null"
         :detecting="detecting"
         :capture-released="captureReleased"
         :last-button="lastButton"
         :save-status="String(mouse?.save_status ?? '')"
         :last-execution="String(mouse?.last_execution ?? '')"
         :hid-status="hidStatus"
-        @apply="applyAction"
+        :loaded="loaded"
         @record="beginRecording"
+        @cancel-record="endRecording"
         @menu="openMenu"
         @begin-capture="beginCapture"
         @cancel-capture="cancelCapture"
         @locate="locateG502"
         @detect-extension="detectExtension"
-      />
+      >
+        <template #device>
+          <div class="device-bar">
+            <span class="device-dot" :class="`is-${currentDeviceTone}`" aria-hidden="true" />
+            <select
+              v-if="options.length > 1"
+              v-model="selection"
+              class="df-select device-select"
+              aria-label="选择鼠标"
+              title="只显示当前识别到的鼠标；未适配型号按标准五键映射"
+            >
+              <option v-for="opt in options" :key="opt.id" :value="opt.id">
+                {{ optionLabel(opt) }}
+              </option>
+            </select>
+            <strong v-else class="device-title">{{ singleDeviceTitle }}</strong>
 
-      <template v-else>
-        <div class="mappings card">
-          <template v-for="(id, index) in buttonIDs" :key="id">
-            <div v-if="index > 0" class="mapping-divider" />
-            <div class="mapping">
-              <Icon
-                name="mouse"
-                :size="16"
-                class="mapping-icon"
-                :class="{ configured: configured(id) }"
-              />
-              <span class="mapping-name">{{ buttonName(id) }}</span>
-              <button
-                type="button"
-                class="mapping-choice"
-                :class="{ configured: configured(id) }"
-                :disabled="busy || !loaded || (recording !== null && recording !== id)"
-                :aria-label="`${buttonName(id)}的动作`"
-                @click="openMenu(id, $event)"
-              >
-                <span>{{ recording === id ? '请按快捷键…' : label(id) }}</span>
-                <Icon name="chevron-updown" :size="11" />
-              </button>
-            </div>
-          </template>
-        </div>
+            <span
+              v-if="currentStatusPill"
+              class="pill"
+              :class="{
+                on: currentStatusPill.tone === 'success',
+                warn: currentStatusPill.tone === 'warn',
+                danger: currentStatusPill.tone === 'danger',
+              }"
+            >{{ currentStatusPill.text }}</span>
 
-        <small class="map-hint"
-          >支持左键、右键、中键及前进、后退键。侧键需鼠标具备对应按键并发送标准鼠标事件。</small
-        >
-
-        <details class="combo">
-          <summary>
-            <span>组合键设置</span>
-            <Icon name="chevron-right" :size="12" class="chev" />
-          </summary>
-          <div class="combo-body">
-            <div class="modifier-row">
-              <span>按住这些键时使用独立映射</span>
-              <button
-                v-for="[name, bit] in modifierChoices"
-                :key="bit"
-                type="button"
-                class="keycap"
-                :class="{ active: (modifiers & bit) !== 0 }"
-                :aria-pressed="(modifiers & bit) !== 0"
-                @click="toggleModifier(bit)"
-              >
-                {{ name }}
-              </button>
-            </div>
-            <small>未设置的组合沿用默认映射。</small>
-          </div>
-        </details>
-      </template>
-    </section>
-
-    <aside>
-      <section class="side-section">
-        <div class="section-label"><Icon name="check-circle" :size="13" />已支持鼠标</div>
-        <div class="card supported">
-          <template v-for="(model, index) in modelViews" :key="model.id">
-            <div v-if="index > 0" class="row-divider" />
-            <div class="supported-row">
-              <Icon name="mouse" :size="16" class="supported-icon" />
-              <div class="supported-text">
-                <strong>{{ model.name }}</strong>
-                <small>{{ model.summary }}</small>
+            <div v-if="activeWheelModel" class="inline-wheel">
+              <span class="inline-wheel-label">滚轮</span>
+              <div class="segmented" role="group" aria-label="滚轮模式">
+                <button
+                  type="button"
+                  :class="{ active: wheelValue(activeWheelModel) }"
+                  @click="setWheel(activeWheelModel, true)"
+                >自由滚动</button>
+                <button
+                  type="button"
+                  :class="{ active: !wheelValue(activeWheelModel) }"
+                  @click="setWheel(activeWheelModel, false)"
+                >棘轮</button>
               </div>
-              <span
-                class="pill"
-                :class="{
-                  on: connectionPill(model).tone === 'success',
-                  warn: connectionPill(model).tone === 'warn',
-                  danger: connectionPill(model).tone === 'danger',
-                }"
-              >{{ connectionPill(model).text }}</span>
             </div>
-            <div v-if="model.wheel_available" class="wheel-row">
-              <Icon name="scroll" :size="14" class="wheel-icon" />
-              <span class="wheel-label">滚轮模式</span>
-              <template v-if="model.wheel_freespin !== null && model.wheel_freespin !== undefined">
-                <div class="segmented wheel-seg" role="group" aria-label="滚轮模式">
-                  <button type="button" :class="{ active: wheelValue(model) }" @click="setWheel(model, true)">自由滚动</button>
-                  <button type="button" :class="{ active: !wheelValue(model) }" @click="setWheel(model, false)">棘轮</button>
+          </div>
+        </template>
+
+        <template #modifiers>
+          <div class="modifier-bar" role="group" aria-label="修饰键组合层">
+            <span class="modifier-label">组合键层</span>
+            <button
+              type="button"
+              class="layer-pill"
+              :class="{ active: modifiers === 0 }"
+              :aria-pressed="modifiers === 0"
+              @click="clearModifiers"
+            >默认</button>
+            <button
+              v-for="[name, bit] in modifierChoices"
+              :key="bit"
+              type="button"
+              class="keycap"
+              :class="{ active: (modifiers & bit) !== 0 }"
+              :aria-pressed="(modifiers & bit) !== 0"
+              :title="`按住 ${name} 时使用独立映射`"
+              @click="toggleModifier(bit)"
+            >{{ name }}</button>
+            <span v-if="modifiers !== 0" class="modifier-hint">未单独设置的按键沿用默认映射</span>
+          </div>
+        </template>
+
+        <template #foot-actions>
+          <span class="save-note"><Icon name="check-circle" :size="12" />更改自动保存</span>
+          <button type="button" class="df-link danger" :disabled="busy" @click="reset = true">恢复默认…</button>
+        </template>
+      </MousePhotoEditor>
+
+      <MouseGenericEditor
+        v-else
+        :bindings="bindings"
+        :modifiers="modifiers"
+        :recording="recording"
+        :active-menu-button="menu?.button ?? null"
+        :save-status="String(mouse?.save_status ?? '')"
+        :last-execution="String(mouse?.last_execution ?? '')"
+        :hid-status="hidStatus"
+        :model-name="selectedModelName"
+        :device-name="genericDeviceName"
+        :extras="extraButtons"
+        :loaded="loaded"
+        @menu="openMenu"
+        @record="beginRecording"
+        @cancel-record="endRecording"
+      >
+        <template #device>
+          <div class="device-bar">
+            <span class="device-dot" :class="`is-${currentDeviceTone}`" aria-hidden="true" />
+            <select
+              v-if="options.length > 1"
+              v-model="selection"
+              class="df-select device-select"
+              aria-label="选择鼠标"
+              title="只显示当前识别到的鼠标；未适配型号按标准五键映射"
+            >
+              <option v-for="opt in options" :key="opt.id" :value="opt.id">
+                {{ optionLabel(opt) }}
+              </option>
+            </select>
+            <strong v-else class="device-title">{{ singleDeviceTitle }}</strong>
+
+            <span
+              v-if="currentStatusPill"
+              class="pill"
+              :class="{
+                on: currentStatusPill.tone === 'success',
+                warn: currentStatusPill.tone === 'warn',
+                danger: currentStatusPill.tone === 'danger',
+              }"
+            >{{ currentStatusPill.text }}</span>
+
+            <div v-if="activeWheelModel" class="inline-wheel">
+              <span class="inline-wheel-label">滚轮</span>
+              <div class="segmented" role="group" aria-label="滚轮模式">
+                <button
+                  type="button"
+                  :class="{ active: wheelValue(activeWheelModel) }"
+                  @click="setWheel(activeWheelModel, true)"
+                >自由滚动</button>
+                <button
+                  type="button"
+                  :class="{ active: !wheelValue(activeWheelModel) }"
+                  @click="setWheel(activeWheelModel, false)"
+                >棘轮</button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template #modifiers>
+          <div class="modifier-bar" role="group" aria-label="修饰键组合层">
+            <span class="modifier-label">组合键层</span>
+            <button
+              type="button"
+              class="layer-pill"
+              :class="{ active: modifiers === 0 }"
+              :aria-pressed="modifiers === 0"
+              @click="clearModifiers"
+            >默认</button>
+            <button
+              v-for="[name, bit] in modifierChoices"
+              :key="bit"
+              type="button"
+              class="keycap"
+              :class="{ active: (modifiers & bit) !== 0 }"
+              :aria-pressed="(modifiers & bit) !== 0"
+              :title="`按住 ${name} 时使用独立映射`"
+              @click="toggleModifier(bit)"
+            >{{ name }}</button>
+          </div>
+        </template>
+
+        <template #foot-actions>
+          <span class="save-note"><Icon name="check-circle" :size="12" />更改自动保存</span>
+          <button type="button" class="df-link danger" :disabled="busy" @click="reset = true">恢复默认…</button>
+        </template>
+      </MouseGenericEditor>
+
+      <!-- 次级双栏底座：左栏支持目录与适配提交，右栏状态、权限与跨 Mac 同步 -->
+      <section class="secondary-grid">
+        <div class="card supported-card">
+          <div class="deck-head">
+            <h2>已支持鼠标</h2>
+            <span class="pill" :class="{ on: connectedModelCount > 0 }">{{ connectedSummary }}</span>
+          </div>
+
+          <div class="supported-list">
+            <template v-for="(model, index) in modelViews" :key="model.id">
+              <div v-if="index > 0" class="row-divider" />
+              <div class="supported-row">
+                <Icon name="mouse" :size="15" class="supported-icon" />
+                <div class="supported-text">
+                  <strong>{{ model.name }}</strong>
+                  <small>{{ model.summary }}</small>
                 </div>
-              </template>
-              <span v-else class="unsupported">不支持</span>
+                <span
+                  class="pill"
+                  :class="{
+                    on: connectionPill(model).tone === 'success',
+                    warn: connectionPill(model).tone === 'warn',
+                    danger: connectionPill(model).tone === 'danger',
+                  }"
+                >{{ connectionPill(model).text }}</span>
+              </div>
+              <div
+                v-if="model.wheel_available && model.id !== activeWheelModel?.id"
+                class="wheel-row"
+              >
+                <Icon name="scroll" :size="13" class="wheel-icon" />
+                <span class="wheel-label">滚轮模式</span>
+                <template v-if="model.wheel_freespin !== null && model.wheel_freespin !== undefined">
+                  <div class="segmented" role="group" aria-label="滚轮模式">
+                    <button type="button" :class="{ active: wheelValue(model) }" @click="setWheel(model, true)">自由滚动</button>
+                    <button type="button" :class="{ active: !wheelValue(model) }" @click="setWheel(model, false)">棘轮</button>
+                  </div>
+                </template>
+                <span v-else class="unsupported">不支持</span>
+              </div>
+            </template>
+
+            <template v-for="device in unsupportedDevices" :key="`unsupported-${device.id}`">
+              <div class="row-divider" />
+              <div class="supported-row">
+                <Icon name="mouse" :size="15" class="supported-icon" />
+                <div class="supported-text">
+                  <strong>{{ device.name }}</strong>
+                  <small>未适配型号 · 按标准五键工作</small>
+                </div>
+                <span class="pill warn">未适配</span>
+              </div>
+            </template>
+          </div>
+
+          <div class="contribute-bar">
+            <div class="contribute-copy">
+              <strong>{{ unsupportedDevices.length ? '把它加入支持列表' : '没有找到你的鼠标？' }}</strong>
+              <p>
+                {{ unsupportedDevices.length
+                  ? '采集这台鼠标的型号与按键编号生成 Markdown，便于后续补齐实物图。'
+                  : '采集型号与按键编号生成 Markdown 数据，可直接附在适配 Issue 中。' }}
+              </p>
             </div>
-          </template>
-          <div class="contribute">
-            <h3>没有找到你的鼠标？</h3>
-            <p>记录型号和按键编号，生成 Markdown 数据；后续可直接用于适配 Issue。</p>
-            <button class="button primary" :disabled="busy" @click="contribute">
-              我要提供鼠标数据…
+            <button
+              type="button"
+              class="button"
+              :class="{ primary: unsupportedDevices.length > 0 }"
+              :disabled="busy"
+              @click="contribute"
+            >
+              提供鼠标数据…
             </button>
           </div>
         </div>
-      </section>
 
-      <section class="card notes">
-        <details class="note-disclosure">
-          <summary>
-            <span>设备状态与使用说明</span>
-            <Icon name="chevron-right" :size="12" class="chev" />
-          </summary>
-          <div class="note-body">
-            <p>{{ hidStatus }}</p>
-            <p>列表只展示当前识别到的鼠标；未适配型号自动使用通用映射。如已连接但未显示，请检查输入监控权限。</p>
-            <p>G502 的原有 DPI、配置切换或 G HUB 动作会继续执行。实体键编号按实际识别为准；不要同时绑定同一按键的通用事件和实体事件。机械滚轮解锁键无法识别。</p>
-            <p>切换桌面需要对应方向存在桌面，且系统键盘快捷键已启用。MX 与 G502 原生按键暂不支持修饰键分层。</p>
+        <div class="card info-card">
+          <div class="deck-head">
+            <h2>设备状态与同步</h2>
+          </div>
+
+          <div class="info-row">
+            <div class="info-copy">
+              <strong>输入监控与 HID 状态</strong>
+              <p>{{ hidStatus }}</p>
+            </div>
             <button
               type="button"
               class="button"
               @click="run('permissions.open', { permission: 'input_monitoring', mode: 'settings' })"
             >
-              打开输入监控设置
+              输入监控设置
             </button>
           </div>
-        </details>
-        <div class="row-divider" />
-        <details class="note-disclosure">
-          <summary>
-            <span>Mac 间自动同步</span>
-            <Icon name="chevron-right" :size="12" class="chev" />
-          </summary>
-          <div class="note-body">
-            <p>配置自动同步到已配对、已连接且支持此功能的 Mac。离线修改在重连后按逻辑版本同步整套配置，不逐个合并按键；权限需在每台 Mac 单独授予。Windows 不参与。</p>
-          </div>
-        </details>
-      </section>
 
-      <div class="footer">
-        <span class="save-note"><Icon name="check-circle" :size="12" />更改自动保存</span>
-        <button type="button" class="df-link danger" @click="reset = true">恢复默认…</button>
-      </div>
-    </aside>
+          <div class="row-divider" />
+
+          <div class="info-row">
+            <div class="info-copy">
+              <strong>Mac 间自动同步</strong>
+              <p>配置自动同步到已配对且在线的 Mac；离线修改在重连后按版本整套同步，权限需在每台 Mac 单独授予。</p>
+            </div>
+          </div>
+
+          <div class="row-divider" />
+
+          <details class="note-disclosure">
+            <summary>
+              <span>按键边界与桌面切换说明</span>
+              <Icon name="chevron-right" :size="12" class="chev" />
+            </summary>
+            <div class="note-body">
+              <p>未适配型号按标准五键映射；若鼠标已连接但未列出，请确认系统「输入监控」权限已开启。</p>
+              <p>切换桌面需系统已存在对应方向的桌面，且系统键盘快捷键保持启用。MX 扩展键与 G502 原生实体键仅按单层生效，G502 机械滚轮解锁键不产生系统事件。</p>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
 
     <template v-if="menu">
       <div class="menu-backdrop" @click="closeMenu" @contextmenu.prevent="closeMenu" />
@@ -581,24 +800,27 @@ onBeforeUnmount(() => {
           v-for="[id, name] in menuChoices"
           :key="id"
           type="button"
-          role="menuitem"
+          role="menuitemradio"
+          :aria-checked="menuActiveValue === id"
           class="menu-item"
+          :class="{ 'is-current': menuActiveValue === id }"
           @click="menuApply(id)"
         >
-          {{ name }}
+          <span>{{ name }}</span>
+          <span v-if="menuActiveValue === id" class="menu-check" aria-hidden="true">✓</span>
         </button>
         <div class="menu-divider" />
         <button type="button" role="menuitem" class="menu-item" @click="menuRecord">
-          录制快捷键…
+          <span>录制快捷键…</span>
         </button>
         <button
-          v-if="modifiers !== 0"
+          v-if="menuSupportsLayerKeep"
           type="button"
           role="menuitem"
           class="menu-item"
           @click="menuKeepOriginal"
         >
-          此组合保持原始按钮
+          <span>此组合保持原始按钮</span>
         </button>
       </div>
     </template>
@@ -624,189 +846,164 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .mouse-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 24px;
-  align-items: start;
-  padding: 12px 24px 24px;
   overflow: auto;
   height: 100%;
+  overscroll-behavior: contain;
+  padding: 8px 24px 28px;
 }
 
-.assignments {
+.mouse-inner {
+  container-type: inline-size;
+  max-width: 1120px;
+  margin: 0 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-width: 0;
+  gap: 16px;
 }
 
-.device-picker {
-  align-self: flex-end;
-  width: 200px;
-  max-width: 240px;
-}
-
-.mappings {
-  padding: 16px;
-}
-
-.mapping {
+.device-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 42px;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
-.mapping-divider {
-  height: 0;
-  border-top: 0.5px solid var(--line);
-  margin: 8px 0;
-}
-
-.mapping-icon {
-  width: 24px;
-  color: var(--secondary);
+.device-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--secondary);
+  opacity: 0.45;
   flex: none;
 }
 
-.mapping-icon.configured {
-  color: var(--accent);
+.device-dot.is-on {
+  background: var(--success, #28a745);
+  opacity: 1;
 }
 
-.mapping-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  line-height: 1.3;
+.device-dot.is-warn {
+  background: var(--warning, #ed8b23);
+  opacity: 1;
 }
 
-.mapping-choice {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 150px;
-  padding: 8px 0;
-  color: var(--secondary);
-  font-size: 13px;
-  text-align: right;
-}
-
-.mapping-choice.configured {
-  color: var(--accent);
-}
-
-.mapping-choice > span {
+.device-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.map-hint {
-  font-size: 11px;
-  color: var(--secondary);
-  line-height: 1.5;
-}
-
-.combo {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-}
-
-.combo summary,
-.note-disclosure summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  font-size: 13px;
+.device-select {
+  min-width: 0;
+  max-width: min(300px, 100%);
   font-weight: 500;
-  cursor: pointer;
-  list-style: none;
 }
 
-.combo summary::-webkit-details-marker,
-.note-disclosure summary::-webkit-details-marker {
-  display: none;
-}
-
-.combo summary > span,
-.note-disclosure summary > span {
-  flex: 1;
-}
-
-.chev {
-  color: var(--secondary);
-  transition: transform 0.15s ease;
-}
-
-details[open] > summary .chev {
-  transform: rotate(90deg);
-}
-
-.combo-body {
-  display: grid;
-  gap: 8px;
-  padding: 0 0 14px;
-}
-
-.modifier-row {
-  display: flex;
+.inline-wheel {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  margin-left: 4px;
 }
 
-.modifier-row > span {
-  flex: 1;
+.inline-wheel-label {
+  font-size: 11.5px;
   color: var(--secondary);
 }
 
+.modifier-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.modifier-label {
+  font-size: 11.5px;
+  color: var(--secondary);
+  margin-right: 2px;
+}
+
+.layer-pill {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--secondary);
+  transition: background-color var(--dur-fast, 120ms) var(--ease-out, ease), border-color var(--dur-fast, 120ms) var(--ease-out, ease), color var(--dur-fast, 120ms) var(--ease-out, ease);
+}
+
+.layer-pill.active,
 .keycap.active {
   background: var(--accent);
   border-color: transparent;
   color: #fff;
 }
 
-.side-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.modifier-hint {
+  font-size: 11px;
+  color: var(--secondary);
+  margin-left: 2px;
 }
 
-.section-label {
-  display: flex;
+.save-note {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding-left: 4px;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 5px;
+  font-size: 11.5px;
   color: var(--secondary);
 }
 
-aside {
-  display: flex;
-  flex-direction: column;
+/* 次级双栏底座 */
+.secondary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.14fr) minmax(0, 0.86fr);
   gap: 16px;
-  min-width: 0;
+  align-items: start;
 }
 
-.supported {
-  padding: 0 16px;
+.supported-card,
+.info-card {
+  padding: 15px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.deck-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 0.5px solid var(--line);
+}
+
+.deck-head h2 {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.supported-list {
+  display: flex;
+  flex-direction: column;
 }
 
 .supported-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 38px;
-  padding: 10px 0;
-}
-
-.supported-row:first-child {
-  padding-top: 14px;
+  gap: 10px;
+  min-height: 36px;
+  padding: 8px 0;
 }
 
 .row-divider {
@@ -816,7 +1013,7 @@ aside {
 }
 
 .supported-icon {
-  width: 20px;
+  width: 18px;
   color: var(--secondary);
   flex: none;
 }
@@ -825,17 +1022,18 @@ aside {
   flex: 1;
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .supported-text strong {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
 .supported-text small {
   font-size: 11px;
   line-height: 1.35;
+  color: var(--secondary);
 }
 
 .pill {
@@ -846,6 +1044,7 @@ aside {
   color: var(--secondary);
   font-size: 11px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .pill.on {
@@ -867,13 +1066,13 @@ aside {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 0 10px;
+  padding: 0 0 9px;
   font-size: 11px;
   color: var(--secondary);
 }
 
 .wheel-icon {
-  width: 20px;
+  width: 18px;
   flex: none;
 }
 
@@ -889,78 +1088,115 @@ aside {
 }
 
 .segmented button {
-  padding: 4px 9px;
+  padding: 3px 9px;
   border-radius: 5px;
   font-size: 11px;
+  font-weight: 500;
   color: var(--secondary);
+  transition: background-color var(--dur-fast, 120ms) var(--ease-out, ease), color var(--dur-fast, 120ms) var(--ease-out, ease);
 }
 
 .segmented button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .unsupported {
   color: var(--secondary);
 }
 
-.contribute {
-  border-top: 0.5px solid var(--line);
-  margin-top: 4px;
-  padding: 16px 0;
-  display: grid;
-  gap: 8px;
-  justify-items: start;
-}
-
-.contribute h3 {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.contribute p {
-  font-size: 11px;
-  color: var(--secondary);
-  line-height: 1.5;
-}
-
-.notes {
-  padding: 0 16px;
-}
-
-.note-disclosure + .row-divider {
-  margin: 0;
-}
-
-.note-body {
-  display: grid;
-  gap: 10px;
-  padding: 0 0 16px;
-  font-size: 11px;
-  color: var(--secondary);
-  line-height: 1.5;
-}
-
-.note-body .button {
-  justify-self: start;
-  font-size: 12px;
-}
-
-.footer {
+.contribute-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 4px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--line);
+  flex-wrap: wrap;
 }
 
-.save-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.contribute-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.contribute-copy strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.contribute-copy p {
   font-size: 11px;
+  line-height: 1.45;
   color: var(--secondary);
+}
+
+.info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+
+.info-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.info-copy strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.info-copy p {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--secondary);
+}
+
+.note-disclosure summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.note-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.note-disclosure summary > span {
+  flex: 1;
+}
+
+.chev {
+  color: var(--secondary);
+  transition: transform var(--dur-fast, 120ms) var(--ease-out, ease);
+}
+
+details[open] > summary .chev {
+  transform: rotate(90deg);
+}
+
+.note-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--secondary);
+  line-height: 1.55;
 }
 
 .menu-backdrop {
@@ -972,29 +1208,45 @@ aside {
 .action-menu {
   position: fixed;
   z-index: 71;
-  width: 220px;
-  max-height: min(440px, calc(100vh - 16px));
+  width: 228px;
+  max-height: min(432px, calc(100vh - 20px));
   overflow: auto;
-  padding: 4px;
+  overscroll-behavior: contain;
+  padding: 5px;
   background: var(--surface);
-  border: 0.5px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--line), 0 12px 36px rgba(0, 0, 0, 0.2);
 }
 
 .menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  padding: 4px 10px;
-  min-height: 26px;
-  border-radius: 5px;
+  padding: 5px 10px;
+  min-height: 28px;
+  border-radius: 6px;
   text-align: left;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
-.menu-item:hover {
-  background: var(--accent);
-  color: #fff;
+.menu-item.is-current {
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .menu-item:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+}
+
+.menu-check {
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .menu-divider {
@@ -1003,17 +1255,26 @@ aside {
   margin: 4px 6px;
 }
 
-@media (max-width: 1100px) {
-  .mouse-page {
+@container (max-width: 660px) {
+  .secondary-grid {
     grid-template-columns: 1fr;
   }
-  aside {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    align-items: start;
+}
+
+@media (max-width: 600px) {
+  .mouse-page {
+    padding: 8px 14px 24px;
   }
-  .footer {
-    grid-column: 1 / -1;
+  .inline-wheel {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layer-pill,
+  .segmented button,
+  .chev {
+    transition: none;
   }
 }
 </style>
