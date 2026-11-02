@@ -88,6 +88,9 @@ final class MouseDeviceInventory {
         let locationID = number(device, kIOHIDLocationIDKey)
         let serial = string(device, kIOHIDSerialNumberKey)
         let product = string(device, kIOHIDProductKey)
+        // Mac 自带键盘与触控板同样暴露鼠标集合；它们不是可以改键的外接鼠标。
+        let builtIn = (IOHIDDeviceGetProperty(device, "Built-In" as CFString) as? NSNumber)?.boolValue == true
+        guard !Self.isBuiltInPointer(name: product, builtIn: builtIn) else { return }
         let name = product.isEmpty ? "未命名鼠标" : product
         let identity = serial.isEmpty
             ? "\(vendorID):\(productID):\(locationID):\(name)"
@@ -117,6 +120,14 @@ final class MouseDeviceInventory {
         guard next != devices else { return }
         devices = next
         onChange?(next)
+    }
+
+    /// 内建指针设备（MacBook 的键盘/触控板、带内建标记的 HID 集合）不参与鼠标改键。
+    /// 这类设备没有可改键的实体按键，列出来只会显示成一台永远未适配的鼠标。
+    nonisolated static func isBuiltInPointer(name: String, builtIn: Bool) -> Bool {
+        if builtIn { return true }
+        let value = name.lowercased()
+        return value.contains("internal keyboard") || value.contains("internal trackpad")
     }
 
     private func number(_ device: IOHIDDevice, _ key: String) -> Int {

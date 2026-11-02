@@ -123,12 +123,13 @@ export async function refreshCounts(force = false): Promise<void> {
   try {
     const response = await backend.queryLibrary({ op: 'counts', requests })
     if (library.countsRevision !== expected) return
-    const counts: Record<string, number> = {}
+    // 后端只回它算得出来的列表：合并而不是替换，超时或竞态的列表项沿用上一次的数值。
+    const counts: Record<string, number> = { ...library.counts }
     for (const [id, value] of Object.entries((response ?? {}) as Record<string, unknown>)) counts[id] = Number(value)
     library.counts = counts
     countsKey = key
-  } catch (error) {
-    library.error = errorMessage(error)
+  } catch {
+    // 计数只是侧栏装饰，失败不该变成一条用户无从处理的提示；下一轮状态轮询会重试。
   }
 }
 
