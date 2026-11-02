@@ -6,41 +6,18 @@ import DeskFuseEngine
 @MainActor struct DeskFuseApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store = AppStore.shared
+    /// 产品窗口由 WebView 客户端提供，宿主不创建任何窗口场景。
+    /// 这里保留 commands，让菜单栏（⌘,、共享、帮助）仍然属于主程序。
     var body: some SwiftUI.Scene {
-        Window("", id: "main") {
-            RootView(store: store)
-                .frame(minWidth: 960, maxWidth: .infinity, minHeight: 568, maxHeight: .infinity)
-                .background(WindowIdentity())
+        Settings {
+            EmptyView()
         }
-        .defaultSize(width: 1200, height: 780)
-        // hiddenTitleBar 与 WindowChromeMarker 的手动配置等价（透明标题栏、
-        // 隐藏标题、无分隔线），但由 SwiftUI 自己持有：场景因 store 发布而重建时
-        // 它会重新应用该配置，不会把 titlebarAppearsTransparent 覆盖回 NO。
-        // 用 .titleBar 时重建会把标题栏材质恢复，窗口 resign key 的瞬间
-        // 标题栏背景以灰色横条盖在伸入标题栏区的内容上（键鼠共享页最明显）。
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
-            ClipboardCommands()
             CommandGroup(replacing: .appSettings) {
                 Button("设置…") { store.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
-            #if DEBUG
-            CommandGroup(after: .windowSize) {
-                Button("标准设计窗口（1200 × 780）") { resizeForDesign(width: 1200, height: 780) }
-                Button("紧凑设计窗口（960 × 620）") { resizeForDesign(width: 960, height: 620) }
-                Divider()
-                Button("设计外观：浅色") { NSApp.appearance = NSAppearance(named: .aqua) }
-                Button("设计外观：深色") { NSApp.appearance = NSAppearance(named: .darkAqua) }
-                Button("设计外观：跟随系统") { NSApp.appearance = nil }
-                Divider()
-                Button("检查剪贴板面板") {
-                    NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" })?.orderOut(nil)
-                    ClipboardPanelController.shared.toggle()
-                }
-            }
-            #endif
             CommandMenu("共享") {
                 Button("文件暂存区") { store.shelf?.show() }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("立即收回键鼠") { store.reclaim() }.keyboardShortcut(.escape, modifiers: [.control, .option, .command])
@@ -61,22 +38,7 @@ import DeskFuseEngine
                 Button("安全问题反馈") { SupportCenter.open(SupportCenter.securityURL) }
             }
         }
-
-
     }
-
-    #if DEBUG
-    /// Reproducible point-sized visual checks, using the real window and engine.
-    /// These menu items are not compiled into distributable Release builds.
-    private func resizeForDesign(width: CGFloat, height: CGFloat) {
-        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) else { return }
-        var frame = window.frame
-        frame.origin.y += frame.height - height
-        frame.size = NSSize(width: width, height: height)
-        window.setFrame(frame, display: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-    #endif
 
 }
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -126,8 +88,6 @@ import DeskFuseEngine
         }
         // Opt-in only: a no-op unless launched with --mygo-ui <executable>.
         MyGoUIHost.shared.startIfRequested()
-        // 开发期基线截图：仅在 DESKFUSE_CAPTURE_UI 下运行，随后自行退出。
-        UICapture.runIfRequested(store: store)
         if store.onboarding.shouldPresent(), !store.previousInstallation.wasPresented {
             // 本机尚未完成当前引导：即使应用已经安装过，也运行一次。
             store.onboarding.present()
@@ -191,76 +151,4 @@ import DeskFuseEngine
         return true
     }
 
-}
-/// Assigns window identity and presentation without removing the native
-/// titlebar, its traffic lights, or its drag region.
-@MainActor
-final class WindowChromeMarker: NSView {
-    var windowIdentifier: NSUserInterfaceItemIdentifier?
-    var minimumSize: NSSize?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard let window else { return }
-
-        if let windowIdentifier { window.identifier = windowIdentifier }
-        if let minimumSize { window.minSize = minimumSize; window.isReleasedWhenClosed = false }
-        window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
-        window.backgroundColor = .windowBackgroundColor
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
-        observeTitlebarLayout(window)
-        layoutTrafficLights()
-    }
-
-    override func layout() {
-        super.layout()
-        layoutTrafficLights()
-    }
-
-    /// 只对主窗口生效：把标题栏容器加高到 `DFMetrics.titlebarHeight`，红绿灯在这一行内垂直居中，
-    /// 品牌位与页面面包屑按同一高度对齐。不用 NSToolbar：macOS 26 会把内容托管进玻璃工具栏并加滚动边缘效果。
-    private func layoutTrafficLights() {
-        guard windowIdentifier != nil, let window, !window.styleMask.contains(.fullScreen),
-              let close = window.standardWindowButton(.closeButton),
-              let miniaturize = window.standardWindowButton(.miniaturizeButton),
-              let zoom = window.standardWindowButton(.zoomButton),
-              let container = close.superview?.superview else { return }
-        let height = DFMetrics.titlebarHeight
-        let containerFrame = NSRect(x: 0, y: window.frame.height - height, width: window.frame.width, height: height)
-        if container.frame != containerFrame { container.frame = containerFrame }
-        let inset = (height - close.frame.height) / 2
-        // 沿用系统按钮间距，只平移整组。
-        let spacing = miniaturize.frame.minX - close.frame.minX
-        for (index, button) in [close, miniaturize, zoom].enumerated() {
-            let origin = NSPoint(x: inset + CGFloat(index) * spacing, y: inset)
-            if button.frame.origin != origin { button.setFrameOrigin(origin) }
-        }
-    }
-
-    private var titlebarObservers: [NSObjectProtocol] = []
-
-    /// AppKit 会在缩放、切换 key 状态、退出全屏时重排标题栏，需要重新定位红绿灯。
-    private func observeTitlebarLayout(_ window: NSWindow) {
-        titlebarObservers.forEach(NotificationCenter.default.removeObserver)
-        let names: [Notification.Name] = [NSWindow.didResizeNotification, NSWindow.didBecomeKeyNotification,
-                                          NSWindow.didResignKeyNotification, NSWindow.didExitFullScreenNotification,
-                                          NSWindow.didChangeScreenNotification]
-        titlebarObservers = names.map { name in
-            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.layoutTrafficLights() }
-            }
-        }
-    }
-}
-
-struct WindowIdentity: NSViewRepresentable {
-    func makeNSView(context: Context) -> WindowChromeMarker {
-        let marker = WindowChromeMarker()
-        marker.windowIdentifier = NSUserInterfaceItemIdentifier("deskfuse-main")
-        marker.minimumSize = NSSize(width: 960, height: 620)
-        return marker
-    }
-    func updateNSView(_ view: WindowChromeMarker, context: Context) { }
 }

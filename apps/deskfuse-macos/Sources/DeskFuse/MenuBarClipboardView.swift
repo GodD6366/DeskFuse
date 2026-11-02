@@ -740,8 +740,7 @@ struct MenuBarClipboardView: View {
         closePanel(); openMainWindow()
     }
     private func openMainWindow() {
-        if NSApp.windows.contains(where: { $0.identifier?.rawValue == "deskfuse-main" }) { store.openMain() }
-        else { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        store.openMain()
     }
     private func handleKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])

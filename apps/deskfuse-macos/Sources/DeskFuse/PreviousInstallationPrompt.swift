@@ -26,6 +26,7 @@ final class PreviousInstallationController {
     private var source: URL?
     private var sourceCache: URL?
     private var completion: (() -> Void)?
+    private var panel: NSPanel?
     private var destination: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/DeskFuse")
     }
@@ -69,15 +70,35 @@ final class PreviousInstallationController {
         self.completion = completion
         wasPresented = true
         isPresented = true
-        // WebView 模式下原生主窗口默认收起；迁移 sheet 挂在它上面，先放回前台。
-        MyGoUIHost.revealNativeMainWindow()
+        presentWindow()
+    }
+
+    /// 迁移提示是独立窗口：产品窗口归 WebView，窗口本身不再挂在原生主窗口上。
+    private func presentWindow() {
+        let panel = panel ?? NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
+            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.title = "从\(name)迁移"
+        panel.isReleasedWhenClosed = false
+        panel.titlebarAppearsTransparent = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.contentView = NSHostingView(rootView: PreviousInstallationPrompt(controller: self).dfFloating())
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.panel = panel
+    }
+
+    private func closeWindow() {
+        panel?.orderOut(nil)
     }
 
     func finish() {
         guard !busy else { return }
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         isPresented = false
-        MyGoUIHost.suppressNativeMainWindowIfActive()
+        closeWindow()
         let completion = completion
         self.completion = nil
         // Allow the import sheet to close before presenting permission guidance.

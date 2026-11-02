@@ -173,7 +173,7 @@ const uploads = computed(() => [...(lan.value?.tasks ?? [])].reverse())
       </div>
     </div>
 
-    <FeatureGate v-else-if="enabled === false" page="files" title="局域网传输" @open-settings="(tab) => emit('openSettings', tab)" />
+    <FeatureGate v-else-if="enabled === false" page="files" title="局域网传输" />
 
     <template v-else>
       <div class="left df-scroll">

@@ -32,10 +32,16 @@ type Backend struct {
 	// DismissTransfer 由页面调用，隐藏一条已失败或已取消的传输提示。提示是否
 	// 显示属于界面状态，因此不写回引擎；实现由浮动窗口管理器注入。
 	OnDismissTransfer func(string)
+	// hostSlots 限制同时发往原生宿主的请求数。宿主对超过 max_in_flight 的请求
+	// 直接回 busy；页面一次铺满缩略图就会撞上，因此在这里排队而不是让页面报错。
+	hostSlots chan struct{}
 }
 
+// maxHostInFlight 留出余量：宿主的硬上限是 16，同一界面的多个窗口共享这份配额。
+const maxHostInFlight = 10
+
 func New(client Caller) *Backend {
-	backend := &Backend{client: client}
+	backend := &Backend{client: client, hostSlots: make(chan struct{}, maxHostInFlight)}
 	backend.mouse = mouse.New(backend.platformCall)
 	backend.devices = devices.New(backend.platformCall)
 	return backend
@@ -45,7 +51,7 @@ func New(client Caller) *Backend {
 // It is a constructor rather than a method because mygo.Bind exports every
 // exported method as page IPC, and a func parameter cannot cross that boundary.
 func NewWithDebug(client Caller, report func(op string, params any, err error)) *Backend {
-	backend := &Backend{client: client, debug: report}
+	backend := &Backend{client: client, debug: report, hostSlots: make(chan struct{}, maxHostInFlight)}
 	backend.mouse = mouse.New(backend.platformCall)
 	backend.devices = devices.New(backend.platformCall)
 	return backend
@@ -77,6 +83,13 @@ func (b *Backend) requestWithin(op string, params any, timeout time.Duration) (O
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	// 超时包含排队时间：排不上队就按同一次超时失败，避免无限等待。
+	select {
+	case b.hostSlots <- struct{}{}:
+		defer func() { <-b.hostSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	var raw json.RawMessage
 	err := b.client.Call(ctx, op, params, &raw)
 	if b.debug != nil {

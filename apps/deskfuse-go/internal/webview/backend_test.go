@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeCaller struct {
@@ -178,5 +180,65 @@ func TestDeviceIconBlobServesCachedArtwork(t *testing.T) {
 	}
 	if iconCalls != 1 {
 		t.Fatalf("devices.icon called %d times", iconCalls)
+	}
+}
+
+// blockingCaller counts concurrent host round trips and can be held open.
+type blockingCaller struct {
+	mu      sync.Mutex
+	active  int
+	peak    int
+	release chan struct{}
+}
+
+func (c *blockingCaller) Call(_ context.Context, _ string, _ any, result any) error {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.peak {
+		c.peak = c.active
+	}
+	c.mu.Unlock()
+	<-c.release
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+	*(result.(*json.RawMessage)) = json.RawMessage(`{}`)
+	return nil
+}
+
+// 页面一次铺满缩略图会同时发出几十个请求，宿主对超过 max_in_flight 的请求直接
+// 回 busy。中间层必须自己排队，否则用户会看到“并发请求过多”。
+func TestHostRequestsStayWithinTheBridgeLimit(t *testing.T) {
+	caller := &blockingCaller{release: make(chan struct{})}
+	backend := New(caller)
+	var wg sync.WaitGroup
+	total := maxHostInFlight * 3
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = backend.request("app.snapshot", nil)
+		}()
+	}
+	// 等闸门排满（说明确有并发压力）再放开，峰值才有意义。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		caller.mu.Lock()
+		full := caller.active >= maxHostInFlight
+		caller.mu.Unlock()
+		if full {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(caller.release)
+	wg.Wait()
+	caller.mu.Lock()
+	defer caller.mu.Unlock()
+	if caller.peak > maxHostInFlight {
+		t.Fatalf("host saw %d concurrent requests, limit is %d", caller.peak, maxHostInFlight)
+	}
+	if caller.peak == 0 {
+		t.Fatal("no request reached the host")
 	}
 }

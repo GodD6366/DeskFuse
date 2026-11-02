@@ -12,12 +12,14 @@ const props = defineProps<{ snapshot: Record<string, any> | null }>()
 
 const input = computed<Record<string, any>>(() => camelize(props.snapshot?.input ?? {}))
 const canOperate = computed(() => input.value.canOperateRemoteApplications !== false)
-// Windows 远程应用总开关在原生「设置 › 高级」；关闭时给出同款引导。
+// Windows 目标是远程应用的子选项，开关在「设置 › 通用 › 功能」；这里只给引导。
 const windowsEnabled = computed(() => props.snapshot?.remote_applications?.windows_enabled === true)
-const error = ref('')
-async function enableWindows() {
-  try { await backend.invoke('feature.setEnabled', { feature: 'windows_remote_applications', enabled: true }) }
-  catch (e) { error.value = errorMessage(e) }
+const navigateError = ref('')
+/** 开关只在「设置 › 通用 › 功能」；这里只做跳转，避免同一个能力出现第二个开关。 */
+async function openFeatureSettings() {
+  navigateError.value = ''
+  try { await backend.invoke('native.openPage', { page: 'settings', settings_category: 'general' }) }
+  catch (e) { navigateError.value = errorMessage(e) }
 }
 const restriction = computed(() =>
   String(
@@ -59,8 +61,9 @@ const restriction = computed(() =>
         <Icon name="display" :size="40" />
         <h2>Windows 远程应用未开启</h2>
         <p>开启后即可在这台 Windows 设备上浏览并打开远程应用。</p>
-        <p v-if="error" class="remote-error">{{ error }}</p>
-        <button type="button" class="button primary" @click="enableWindows">开启</button>
+        <p>在「设置 › 通用 › 功能 › 远程应用」中打开“Windows 电脑上的应用”。</p>
+        <p v-if="navigateError" class="remote-error">{{ navigateError }}</p>
+        <button type="button" class="button primary" @click="openFeatureSettings">打开设置</button>
       </div>
       <RemoteCatalogPane v-else :key="device.id" :device="device" />
     </template>

@@ -52,6 +52,12 @@ import DeskFuseEngine
         }
     }
     static let workflowsEnabledDefaultsKey = "deskfuse.workflowsEnabled"
+    /// 轻量模式：界面收起 10 分钟后结束 WebView 进程，只留宿主持有的核心。
+    /// 默认开启；关闭后界面进程常驻，内存占用更高但重新打开无延迟。
+    var lightweightMode = UserDefaults.standard.object(forKey: AppStore.lightweightModeDefaultsKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(lightweightMode, forKey: AppStore.lightweightModeDefaultsKey) }
+    }
+    static let lightweightModeDefaultsKey = "deskfuse.lightweightMode"
     private let caffeineController = CaffeineController()
     @ObservationIgnored private let displayWallpaperPublisher = DisplayWallpaperPublisher()
     @ObservationIgnored private var wallpaperPublicationTask: Task<Void, Never>?
@@ -94,14 +100,7 @@ import DeskFuseEngine
     var permissionPrompt: PermissionCenter { permissions }
     let onboarding = OnboardingController()
     let previousInstallation = PreviousInstallationController()
-    var showMainWindow: (() -> Void)?
-    var pairingWindow: PairingWindowController?
-    private var transferWindow: TransferProgressWindowController?
     /// WebView 接管浮动窗口后，收起原生配对与传输进度面板。
-    func concealNativeAuxiliaryWindows() {
-        pairingWindow?.concealForWebView()
-        transferWindow?.concealForWebView()
-    }
     private var eventsTask: Task<Void, Never>?
     private enum CommandOutcome { case applied, failed(String) }
     private var earlyResults: [UInt64: CommandOutcome] = [:]
@@ -168,11 +167,7 @@ import DeskFuseEngine
                 recordStartup("listener_ready")
                 // 先取一次局域网共享状态，第一次打开文件页也能直接用已知结果渲染。
                 LanWebSharing.shared.warmUp(client)
-                transferWindow = TransferProgressWindowController(store: self)
-                transferWindow?.reconcile(snapshot?.transfers ?? [])
                 shelf = ShelfController(store: self)
-                pairingWindow = PairingWindowController(store: self)
-                pairingWindow?.reconcile(snapshot?.pairing ?? [])
                 starting = false
                 recordStartup("workspace_ready")
                 MicrophoneSharing.shared.start(engine: engine)
@@ -300,8 +295,6 @@ import DeskFuseEngine
                 pairingDecisions.formIntersection(Set(value.pairing.map(\.id)))
                 autoJoinInputParticipants(value)
                 shelf?.reconcileTransfers(value.transfers)
-                transferWindow?.reconcile(value.transfers)
-                pairingWindow?.reconcile(value.pairing)
             }
         case .clipboardLibraryChanged(let revision):
             ClipboardLibraryStore.shared.libraryChanged(revision)
@@ -401,6 +394,7 @@ import DeskFuseEngine
         UserDefaults.standard.set(hidden, forKey: AppStore.hideDockIconDefaultsKey)
         applyDockIconPolicy()
     }
+    /// 设置只存在于 WebView 客户端；原生不再维护第二套设置页。
     func openSettings(tab: String? = nil) {
         // Preserve older settings links for features now in the main sidebar.
         if tab == "input" || tab == "microphone" {
@@ -409,25 +403,13 @@ import DeskFuseEngine
             return
         }
         settingsDestination = SettingsDestination(tab: tab, previous: settingsDestination)
-        selectedPage = .settings
-        if MyGoUIHost.shared.isActive {
-            MyGoUIHost.shared.present(page: Page.settings.bridgeID,
-                                      settingsCategory: settingsDestination.category.rawValue)
-            return
-        }
-        openMain()
+        MyGoUIHost.shared.present(page: Page.settings.bridgeID,
+                                  settingsCategory: settingsDestination.category.rawValue)
     }
+    /// 产品窗口只有 WebView 客户端一个；原生不再持有备用窗口。
     func openMain() {
         NSApp.activate(ignoringOtherApps: true)
-        if MyGoUIHost.shared.isActive {
-            MyGoUIHost.shared.present(page: selectedPage.bridgeID)
-            return
-        }
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) {
-            if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
-        }
-        else { showMainWindow?() }
+        MyGoUIHost.shared.present(page: selectedPage.bridgeID)
     }
     func showLocalDevice() {
         selectedPage = .devices
@@ -452,7 +434,7 @@ import DeskFuseEngine
         if #available(macOS 14.2, *) { RemoteApplicationManager.shared.stop() }
         caffeineController.disable()
         if quitting || client == nil { return .terminateNow }
-        quitting = true; shelf?.stop(); transferWindow?.stop()
+        quitting = true; shelf?.stop()
         wallpaperPublicationTask?.cancel()
         // 退出时不能走紧急收回：它会把本机作为被控方的启用意图持久化为
         // "用户已收回"，重启后主控的自动激活只会收到 PausedByUser，必须手动
@@ -489,7 +471,8 @@ enum Page: String, CaseIterable, Identifiable {
     /// 侧栏功能分两组：日常协作的基础功能在上，进阶差异化功能（Beta）在下。
     static let primary: [Page] = [.clipboard, .input, .files]
     static let extended: [Page] = [.remoteApplications, .microphone, .mouse]
-    var isBeta: Bool { Page.extended.contains(self) }
+    /// Beta 只标实现仍在完善的型号能力；麦克风共享已验证稳定，不再标注。
+    var isBeta: Bool { self == .remoteApplications || self == .mouse }
     /// 侧栏分组名，同时作为页面顶栏面包屑的第一级。
     var section: String {
         switch self {
