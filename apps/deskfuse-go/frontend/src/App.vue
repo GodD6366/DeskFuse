@@ -7,13 +7,15 @@ const modules = import.meta.glob('./pages/*Page.vue')
 const pageNames: Record<string,string> = { 'clipboard-panel':'ClipboardPanel','quick-look':'QuickLook', clipboard:'Clipboard',devices:'Devices',files:'Transfers',input:'Input',mouse:'Mouse',microphone:'Microphone',remote_applications:'RemoteApps',settings:'Settings',onboarding:'Onboarding',shelf:'Shelf',support:'Support',pairing:'Pairing','transfer-progress':'TransferProgress' }
 const pages = [
  {id:'clipboard',title:'剪贴板',icon:Clipboard,section:'基础'}, {id:'input',title:'键鼠共享',icon:Keyboard,section:'基础'}, {id:'files',title:'局域网传输',icon:ArrowUpDown,section:'基础'},
- {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级',beta:true}, {id:'mouse',title:'鼠标按键',icon:Mouse,section:'高级',beta:true},
+ {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级'}, {id:'mouse',title:'鼠标按键',icon:Mouse,section:'高级',beta:true},
  {id:'devices',title:'设备',icon:Laptop,section:'配置'}, {id:'settings',title:'设置',icon:Settings,section:'设置'},
 ]
 const categories=[['general','通用'],['clipboard','剪贴板'],['workflows','工作流'],['shortcuts','快捷键'],['files','文件'],['permissions','权限'],['about','关于与更新'],['advanced','高级']]
 const panelMode = new URLSearchParams(location.search).get('page') === 'clipboard-panel'
 const selected = ref(panelMode ? 'clipboard-panel' : (new URLSearchParams(location.search).get('page') || 'clipboard'))
-const category=ref('general'), snapshot=ref<Record<string,any>|null>(null), error=ref(''), loading=ref(true)
+// 初始路由：宿主拉起界面时用 ?page=&category= 指定落点（轻量模式恢复）。
+const initialCategory = new URLSearchParams(location.search).get('category') || 'general'
+const category=ref(initialCategory), snapshot=ref<Record<string,any>|null>(null), error=ref(''), loading=ref(true)
 const component=shallowRef<any>(null), pageError=ref(''), help=ref(false), health=ref(false)
 const helpButton=ref<HTMLElement|null>(null), helpPopover=ref<HTMLElement|null>(null)
 const healthButton=ref<HTMLElement|null>(null), healthPopover=ref<HTMLElement|null>(null)

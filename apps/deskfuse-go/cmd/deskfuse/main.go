@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/url"
@@ -74,7 +76,20 @@ func main() {
 		startURL := "/"
 		if dev := os.Getenv("DESKFUSE_UI_DEV_URL"); dev != "" {
 			startURL = dev
+		} else if route := os.Getenv("DESKFUSE_INITIAL_ROUTE"); route != "" {
+			// 轻量模式下宿主回收了界面进程，重新拉起时直接把落点写进 URL：
+			// `page` 或 `page:category`（设置分类）。
+			page, category, _ := strings.Cut(route, ":")
+			values := url.Values{}
+			values.Set("page", page)
+			if category != "" {
+				values.Set("category", category)
+			}
+			startURL = "/?" + values.Encode()
 		}
+		// 轻量模式恢复：宿主回收了界面进程，重新拉起时直接落到请求的界面。
+		// 目标是剪贴板面板时主窗口保持隐蔽，只弹面板。
+		panelOnly := os.Getenv("DESKFUSE_PANEL_FRAME") != ""
 		// Windows 高缩放比下 1120×720 DIP 可能大于整个桌面；按主屏工作区的
 		// DIP 尺寸收敛默认窗口，Min 尺寸也不能超过屏幕。
 		width, height := fitWindow(1120, 720)
@@ -83,7 +98,7 @@ func main() {
 			Title: "DeskFuse", URL: startURL, Width: width, Height: height,
 			MinWidth: minWidth, MinHeight: minHeight,
 			TitleBarStyle: mygo.TitleBarHidden, TrafficLightPosition: &mygo.Point{X: 18, Y: 18},
-			BackgroundColor: "light-dark(#f4f4f6, #1a1a1e)",
+			BackgroundColor: "light-dark(#f4f4f6, #1a1a1e)", Hidden: panelOnly,
 		})
 		if service != nil {
 			centerWindow(window, width, height)
@@ -103,6 +118,14 @@ func main() {
 			}
 		})
 		panel := newPanelWindow()
+		// 面板位置由宿主按状态栏图标算出；随启动参数带过来，省掉一次事件往返。
+		if frame := os.Getenv("DESKFUSE_PANEL_FRAME"); frame != "" {
+			var x, y, width, height int
+			if _, err := fmt.Sscanf(frame, "%d,%d,%d,%d", &x, &y, &width, &height); err == nil {
+				payload, _ := json.Marshal(map[string]int{"x": x, "y": y, "width": width, "height": height})
+				panel.present(payload)
+			}
+		}
 		panel.preview = preview
 		preview.attach(panel.window)
 		preview.watchBlur(func() { panel.guardBlur(1500 * time.Millisecond) })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { backend } from '../../services/backend'
+import ConfirmDialog from './ConfirmDialog.vue'
 import SaveFooter from './SaveFooter.vue'
 import SettingsRow from './SettingsRow.vue'
 import SettingsSection from './SettingsSection.vue'
@@ -108,6 +109,26 @@ async function clearIndex() {
   }
 }
 
+const historyPending = ref(false)
+const historyError = ref('')
+const historyStatus = ref('')
+const confirmHistory = ref(false)
+
+async function clearHistory() {
+  confirmHistory.value = false
+  historyPending.value = true
+  historyError.value = ''
+  historyStatus.value = ''
+  try {
+    await backend.mutateLibrary({ op: 'clear_history', confirm: true })
+    historyStatus.value = '已清空'
+  } catch (e) {
+    historyError.value = errorText(e)
+  } finally {
+    historyPending.value = false
+  }
+}
+
 watch(draft, () => { status.value = null; failure.value = null }, { deep: true })
 onMounted(load)
 </script>
@@ -119,6 +140,13 @@ onMounted(load)
         <SettingsSection title="普通历史">
           <SettingsRow title="保留天数" detail="默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。">
             <input v-model.number="draft.retention_days" class="field days" type="number" min="1" aria-label="保留天数" />
+          </SettingsRow>
+          <SettingsRow title="清空剪贴板历史" detail="删除本机保存的全部剪贴板历史，包括手动列表中的归档；内容不会重新同步回来。">
+            <button type="button" class="button destructive" :disabled="historyPending" @click="confirmHistory = true">清空…</button>
+            <template #extra>
+              <p v-if="historyError" class="err" role="alert">{{ historyError }}</p>
+              <p v-else-if="historyStatus" class="note">{{ historyStatus }}</p>
+            </template>
           </SettingsRow>
         </SettingsSection>
 
@@ -151,7 +179,7 @@ onMounted(load)
           </SettingsRow>
         </SettingsSection>
 
-        <p class="caption">本页修改统一在点击底部“保存”后生效。</p>
+        <p class="caption">本页修改统一在点击底部“保存”后生效；“清空历史”立即生效。</p>
       </div>
     </div>
 
@@ -165,6 +193,9 @@ onMounted(load)
 
     <SaveFooter :dirty="dirty" :saving="saving" :can-save="!!original && (dirty || !!failure)" :can-revert="dirty"
       :status="status" :error="failure" @revert="revert" @save="save" />
+
+    <ConfirmDialog :open="confirmHistory" title="清空所有剪贴板历史？" message="手动列表成员也会被清空。剪贴板内容不会重新同步回来。"
+      confirm-text="清空历史" destructive @confirm="clearHistory" @cancel="confirmHistory = false" />
   </div>
 </template>
 

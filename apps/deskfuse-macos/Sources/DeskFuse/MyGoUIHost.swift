@@ -34,11 +34,42 @@ enum MyGoUIOptions {
         } else if let override = ProcessInfo.processInfo.environment[environmentKey], !override.isEmpty {
             value = override
         }
-        guard let path = value else { return bundledExecutable.flatMap { isExecutable($0.path) } }
+        guard let path = value else {
+            if let bundled = bundledExecutable.flatMap({ isExecutable($0.path) }) { return bundled }
+            return developmentExecutable()
+        }
         guard !path.isEmpty else { throw Failure.missingPath }
         guard path.hasPrefix("/") else { throw Failure.notAbsolute(path) }
         guard let url = isExecutable(path) else { throw Failure.notExecutable(path) }
         return url
+    }
+
+    /// 只有 DEBUG 构建会去仓库产物里找界面进程：`swift build` 出来的 app 不在
+    /// 打包目录里，同级没有随包的 deskfuse-mygo。发布包永远只认随包二进制。
+    private static func developmentExecutable() -> URL? {
+        #if DEBUG
+        guard let directory = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
+        return devExecutable(startingAt: directory)
+        #else
+        return nil
+        #endif
+    }
+
+    /// 从给定目录逐层向上找仓库根（含 apps/deskfuse-go/go.mod），再返回可用的界面进程。
+    static func devExecutable(startingAt directory: URL) -> URL? {
+        var current: URL? = directory
+        for _ in 0..<10 {
+            guard let directory = current else { break }
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent("apps/deskfuse-go/go.mod").path) {
+                let candidates = [
+                    directory.appendingPathComponent("target/mygo-webview/deskfuse-mygo"),
+                    directory.appendingPathComponent("apps/deskfuse-go/deskfuse"),
+                ]
+                return candidates.lazy.compactMap { isExecutable($0.path) }.first
+            }
+            current = directory.deletingLastPathComponent()
+        }
+        return nil
     }
 
     private static func isExecutable(_ path: String) -> URL? {
@@ -97,7 +128,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
         }
     }
 
-    private func fail() {
+    private func fail(expected: String? = nil) {
         let first = lock.withLock { () -> Bool in
             defer { failed = true }
             return !failed
@@ -120,20 +151,108 @@ final class MyGoPipeWriter: @unchecked Sendable {
     private var lastAuxiliary = ""
     var isActive: Bool { process?.isRunning == true }
 
+    /// 轻量模式：界面进程已被回收，核心（引擎、剪贴板同步、键鼠共享）仍在宿主里运行。
+    private(set) var suspended = false
+    private var idleMonitor: Task<Void, Never>?
+    /// 最近一次界面上有窗口的时刻；界面收起后从此计时。
+    private var lastScreenActivity = Date()
+    /// 无窗口多久后回收界面进程。
+    static let lightweightIdleSeconds: TimeInterval = 600
+    static let idlePollSeconds: UInt64 = 30
+
+    /// 界面进程空闲回收：窗口收起、应用不在前台持续 10 分钟后结束界面进程，
+    /// 只留宿主持有的核心。任何界面请求都会重新拉起它。
+    func startIdleMonitoring() {
+        guard idleMonitor == nil else { return }
+        lastScreenActivity = Date()
+        idleMonitor = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.idlePollSeconds))
+                guard let self, !Task.isCancelled else { return }
+                guard self.isActive, !self.stopping else { continue }
+                if !AppStore.shared.lightweightMode {
+                    // 关闭轻量模式后界面常驻：重置计时，重新开启时从头算。
+                    self.lastScreenActivity = Date()
+                    continue
+                }
+                if self.uiWindowsOnScreen() || NSApp.isActive {
+                    self.lastScreenActivity = Date()
+                    continue
+                }
+                if Date().timeIntervalSince(self.lastScreenActivity) >= Self.lightweightIdleSeconds {
+                    self.suspendForLightweightMode()
+                }
+            }
+        }
+    }
+
+    /// 界面进程里是否还有窗口留在屏幕上（含面板与浮窗）。
+    private func uiWindowsOnScreen() -> Bool {
+        guard let pid = childPID,
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        return list.contains { info in
+            guard (info[kCGWindowOwnerPID as String] as? Int) == Int(pid),
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any] else { return false }
+            let width = (bounds["Width"] as? Double) ?? 0
+            let height = (bounds["Height"] as? Double) ?? 0
+            return width > 8 && height > 8
+        }
+    }
+
+    private func suspendForLightweightMode() {
+        guard isActive, !stopping else { return }
+        NSLog("DeskFuse UI suspended after %d s without a window", Int(Self.lightweightIdleSeconds))
+        suspended = true
+        stop()
+        // 界面进程退场后 Dock 图标回到宿主持有，用户点它就能重新拉起界面。
+        AppStore.shared.applyDockIconPolicy()
+    }
+
+    /// 需要界面时重新拉起界面进程；`route` 是启动页，避免拉起后还要再发一次请求。
+    private func resumeForUI(route: String?, panelFrame: String? = nil) {
+        guard suspended || !isActive else { return }
+        suspended = false
+        lastScreenActivity = Date()
+        startIfRequested(initialRoute: route, panelFrame: panelFrame)
+    }
+
     /// Show the compact clipboard panel at a top-left origin in screen points.
     /// `y` is passed with the origin at the bottom (AppKit screen coordinates)
     /// so the WebView window can place itself without querying the display.
     func showPanel(x: Double, y: Double, width: Int, height: Int) {
+        guard isActive else { return resumeWithPanel(x: x, y: y, width: width, height: height) }
         send(event: "panel.show", payload: ["x": Int(x), "y": Int(y), "width": width, "height": height])
     }
 
     /// Toggle keeps its state in the UI process, which also hides the panel when
     /// it loses focus.
     func togglePanel(x: Double, y: Double, width: Int, height: Int) {
+        guard isActive else { return resumeWithPanel(x: x, y: y, width: width, height: height) }
         send(event: "panel.toggle", payload: ["x": Int(x), "y": Int(y), "width": width, "height": height])
     }
 
     func hidePanel() { send(event: "panel.hide") }
+
+    /// 轻量模式下打开剪贴板面板：界面进程要重新启动，面板位置随启动参数带过去，
+    /// 避免"先拉起主窗口再发 panel.show"闪一下。
+    private func resumeWithPanel(x: Double, y: Double, width: Int, height: Int) {
+        resumeForUI(route: "clipboard-panel",
+                    panelFrame: "\(Int(x)),\(Int(y)),\(width),\(height)")
+    }
+
+    /// 界面进程可按需回收：任何界面请求先确保它在运行。
+    private func ensureUI(route: String?) {
+        guard !isActive else { return }
+        resumeForUI(route: route)
+    }
+
+    /// 启动路由：`page` 或 `page:category`，由 Go 侧转成窗口 URL 的查询参数。
+    static func route(page: String, category: String? = nil) -> String {
+        guard let category, !category.isEmpty else { return page }
+        return "\(page):\(category)"
+    }
 
     private func send(event: String, payload: [String: Any] = [:]) {
         guard isActive, let writer else { return }
@@ -144,6 +263,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
     }
 
     func present(page: String, settingsCategory: String? = nil) {
+        ensureUI(route: Self.route(page: page, category: settingsCategory))
         guard isActive, let writer else { return }
         var result: [String: Any] = ["page": page]
         if let settingsCategory { result["settings_category"] = settingsCategory }
@@ -160,33 +280,57 @@ final class MyGoPipeWriter: @unchecked Sendable {
         send(event: "ui.dock", payload: ["visible": visible])
     }
 
-    func startIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+    /// 界面进程是硬依赖：发布包里它总是与主程序并列存在，缺失或不可执行即为
+    /// 安装损坏。这里不再退回到任何原生界面，直接报错退出，避免出现两套 UI。
+    func startIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments, initialRoute: String? = nil, panelFrame: String? = nil) {
         let executable: URL?
         do { executable = try MyGoUIOptions.executableURL(arguments: arguments) } catch {
-            // Diagnostics go to stderr via NSLog; stdout stays free of anything but frames.
             NSLog("DeskFuse MyGo UI not started: %@", String(describing: error))
+            fail()
             return
         }
-        guard let executable else { return }
-        start(executable: executable, engine: { await MainActor.run { AppStore.shared.client } }, snapshot: { try await MainActor.run { try MyGoSnapshot.encode(AppStore.shared) } }, invoke: { action, params in try await MyGoInvocation.run(action: action, params: params, store: AppStore.shared) })
-        // The WebView owns the product window; the native scene must not also open one.
-        if isActive {
-            MyGoUIHost.suppressNativeMainWindow()
-            AppStore.shared.concealNativeAuxiliaryWindows()
-            AppStore.shared.applyDockIconPolicy()
-            startAuxiliaryUpdates()
+        guard let executable else {
+            let expected = MyGoUIOptions.bundledExecutable?.path ?? "deskfuse-mygo"
+            NSLog("DeskFuse MyGo UI missing: expected %@ (build the client with scripts/build-mygo-ui.sh)", expected)
+            fail(expected: expected)
+            return
         }
+        start(executable: executable, initialRoute: initialRoute, panelFrame: panelFrame, engine: { await MainActor.run { AppStore.shared.client } }, snapshot: { try await MainActor.run { try MyGoSnapshot.encode(AppStore.shared) } }, invoke: { action, params in try await MyGoInvocation.run(action: action, params: params, store: AppStore.shared) })
+        guard isActive else { return }
+        AppStore.shared.applyDockIconPolicy()
+        startAuxiliaryUpdates()
+        startIdleMonitoring()
     }
 
-    func start(executable: URL, engine: @escaping MyGoEngineProvider, snapshot: MyGoSnapshotProvider? = nil, invoke: MyGoInvokeHandler? = nil) {
+    /// 没有界面进程就没有产品窗口：宿主自己也没有窗口可以显示错误，
+    /// 因此用系统弹窗说明安装已损坏，然后退出。
+    private func fail(expected: String? = nil) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "DeskFuse 无法启动"
+        var message = "界面组件缺失或不可执行，安装可能不完整。请从官网重新下载并安装 DeskFuse。"
+        if let expected { message += "\n\n期望位置：\(expected)" }
+        alert.informativeText = message
+        alert.addButton(withTitle: "退出")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
+    func start(executable: URL, initialRoute: String? = nil, panelFrame: String? = nil, engine: @escaping MyGoEngineProvider, snapshot: MyGoSnapshotProvider? = nil, invoke: MyGoInvokeHandler? = nil) {
         guard process == nil else { return }
+        // 轻量模式回收后再启动：清掉上一次 stop() 留下的退出标记。
+        stopping = false
         let toChild = Pipe()
         let fromChild = Pipe()
         let process = Process()
         process.executableURL = executable
         process.arguments = []
-        process.environment = ProcessInfo.processInfo.environment.merging(
+        var environment = ProcessInfo.processInfo.environment.merging(
             [MyGoBridge.environmentKey: MyGoBridge.environmentValue]) { _, new in new }
+        if let initialRoute { environment["DESKFUSE_INITIAL_ROUTE"] = initialRoute }
+        if let panelFrame { environment["DESKFUSE_PANEL_FRAME"] = panelFrame }
+        process.environment = environment
         process.standardInput = toChild
         process.standardOutput = fromChild
         process.standardError = FileHandle.standardError
@@ -239,18 +383,10 @@ final class MyGoPipeWriter: @unchecked Sendable {
                 host.childPID = nil
                 host.auxiliaryTask?.cancel()
                 host.auxiliaryTask = nil
-                if finished.terminationReason == .exit, finished.terminationStatus == 0 {
-                    // 用户在 UI 里正常退出：宿主不再空跑。
-                    NSApp.terminate(nil)
-                    return
-                }
-                // 界面异常退出：恢复宿主自己的 Dock 身份并回落到原生窗口，
-                // 用户仍能打开设置或退出，而不是面对一个没有窗口的应用；
-                // 录制快捷键时被暂停的全局热键也要恢复。
-                ClipboardPanelController.shared.suspendShortcut(false)
-                AppStore.shared.applyDockIconPolicy()
-                NSApp.windows.first { $0.identifier?.rawValue == "deskfuse-main" }?.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
+                // 界面进程就是产品窗口：它退出后宿主没有可显示的界面，
+                // 不再重启也不再回落到原生窗口，直接结束，由系统记录退出原因。
+                NSLog("DeskFuse MyGo UI exited with status %d", finished.terminationStatus)
+                NSApp.terminate(nil)
             }
         }
         do { try process.run() } catch {
@@ -292,33 +428,6 @@ final class MyGoPipeWriter: @unchecked Sendable {
               let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         lastAuxiliary = text
         send(event: "ui.aux", payload: payload)
-    }
-
-    /// Close the SwiftUI main window once, after the scene has created it. The
-    /// WebView is the product window whenever the client is running.
-    static func suppressNativeMainWindow() {
-        let close = {
-            NSApp.windows.first { $0.identifier?.rawValue == "deskfuse-main" }?.orderOut(nil)
-        }
-        close()
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            close()
-        }
-    }
-
-    /// 旧安装迁移提示仍挂在原生主窗口的 sheet 上；WebView 模式下主窗口被收起，
-    /// 若直接呈现 sheet 用户看不到也无法完成导入，引擎会一直停在等待状态。
-    /// 因此需要原生 sheet 时临时把主窗口放回前台，结束后再收起。
-    static func revealNativeMainWindow() {
-        guard MyGoUIHost.shared.isActive,
-              let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "deskfuse-main" }) else { return }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    static func suppressNativeMainWindowIfActive() {
-        if MyGoUIHost.shared.isActive { suppressNativeMainWindow() }
     }
 
     /// App is quitting: stop serving, close the pipes and terminate the child.

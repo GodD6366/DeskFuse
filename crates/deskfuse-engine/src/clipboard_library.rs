@@ -1615,14 +1615,13 @@ END;").map_err(err)?;
         self.query_items(q)
     }
     fn query_counts_db(&self, db: &Connection, q: &Value) -> Result<String> {
-        let lists = lists_db(db)?;
         let requests = q["requests"].as_array().ok_or("计数请求无效")?;
-        if requests.len() != lists.len() + 1 {
-            return Err("列表已变化，请刷新".into());
-        }
-        // 计数只是界面装饰：任何一项算不出来（被更早的请求取消、超出预算）
-        // 都只丢这一项，让客户端沿用上一次的数值，而不是让整批计数失败并
-        // 把「超时」当成用户可见的错误报出来。
+        // 计数只是界面装饰：请求按 list_id 逐条解析，客户端读状态与发请求之间
+        // 新建或删除列表（另一台设备、另一个窗口、智能列表重建）只影响自己
+        // 那一项，不能把这种竞态报成用户可见的错误。
+        //
+        // 任何一项算不出来（列表已被删除、被更早的请求取消、超出预算）都只丢
+        // 这一项，让客户端沿用上一次的数值。
         let mut counts = std::collections::BTreeMap::new();
         for request in requests {
             let key = request["list_id"].as_str().unwrap_or("all").to_string();

@@ -60,7 +60,6 @@ const pendingInput = ref<string | null>(null)
 const busy = ref(false)
 const error = ref('')
 const errorRaw = ref('')
-const pendingEnabled = ref<boolean | null>(null)
 const showSourcePicker = ref(false)
 const driverAction = ref<DriverAction | null>(null)
 const restartAudio = ref(true)
@@ -137,7 +136,6 @@ function startPendingWindow() {
   pendingTimer = setTimeout(() => {
     pendingSource.value = null
     pendingInput.value = null
-    pendingEnabled.value = null
   }, 5000)
 }
 
@@ -161,12 +159,6 @@ watch(
   },
   { immediate: true },
 )
-watch(
-  () => mic.value?.settings?.enabled,
-  (value) => {
-    if (pendingEnabled.value !== null && value === pendingEnabled.value) pendingEnabled.value = null
-  },
-)
 
 const resolvedRole = computed<Role>(() => {
   if (localRole.value) return localRole.value
@@ -183,7 +175,8 @@ const configured = computed(() => Boolean(role.value))
 
 const permission = computed(() => String(nativeState.value.permission ?? ''))
 const phase = computed(() => String(liveView.value.phase ?? ''))
-const enabled = computed(() => pendingEnabled.value ?? Boolean(settings.value.enabled))
+// 功能开关只在「设置 › 通用 › 功能」；这里只读取状态用于展示。
+const enabled = computed(() => Boolean(settings.value.enabled))
 const driverInstalled = computed(() => Boolean(liveView.value.driver_installed))
 const legacyDriverInstalled = computed(() => Boolean(liveView.value.legacy_driver_installed))
 const nativeDriver = computed(() => Boolean(nativeState.value.driver))
@@ -642,14 +635,6 @@ function toggleSourcePicker() {
   showSourcePicker.value = !showSourcePicker.value
 }
 
-function setEnabled(value: boolean) {
-  pendingEnabled.value = value
-  startPendingWindow()
-  void run('feature.setEnabled', { feature: 'microphone', enabled: value }).then((ok) => {
-    if (!ok) pendingEnabled.value = null
-  })
-}
-
 function requestDriver(action: DriverAction) {
   driverAction.value = action
   restartAudio.value = action === 'install'
@@ -1018,18 +1003,6 @@ onBeforeUnmount(() => {
             <div class="header-actions">
               <button type="button" class="identity-switch" :disabled="busy" @click="openPicker">
                 <Icon name="swap" :size="13" /><span>切换身份</span>
-              </button>
-              <button
-                type="button"
-                class="share-switch"
-                role="switch"
-                :aria-checked="enabled"
-                :aria-label="role === 'provider' ? '麦克风分享' : '麦克风接收'"
-                :disabled="busy"
-                @click="setEnabled(!enabled)"
-              >
-                <span class="switch-track" aria-hidden="true"><i /></span>
-                <span>{{ enabled ? (role === 'provider' ? '共享已开启' : '接收已开启') : '已暂停' }}</span>
               </button>
             </div>
           </header>
@@ -1425,8 +1398,7 @@ button:disabled { opacity: .45; }
   text-wrap: pretty;
 }
 .header-actions { display: flex; align-items: center; gap: 10px; flex: none; }
-.identity-switch,
-.share-switch {
+.identity-switch {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1440,31 +1412,7 @@ button:disabled { opacity: .45; }
   white-space: nowrap;
   transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.identity-switch:hover,
-.share-switch:hover { border-color: var(--line-strong); color: var(--text); }
-.share-switch { color: var(--text); }
-.switch-track {
-  width: 30px;
-  height: 18px;
-  flex: none;
-  border-radius: 9px;
-  position: relative;
-  background: var(--accent);
-  transition: background-color var(--dur-base) var(--ease-out);
-}
-.switch-track i {
-  position: absolute;
-  left: 2px;
-  top: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
-  transition: transform var(--dur-base) var(--ease-out);
-}
-.share-switch[aria-checked="true"] .switch-track i { transform: translateX(12px); }
-.share-switch[aria-checked="false"] .switch-track { background: color-mix(in srgb, var(--secondary) 26%, var(--control)); }
+.identity-switch:hover { border-color: var(--line-strong); color: var(--text); }
 
 /* ---------- 身份选择 ---------- */
 .picker-view { padding-top: 8px; }
@@ -1951,7 +1899,6 @@ button.setting:hover .row-copy b { color: var(--accent); }
   .subtitle { font-size: 11.5px; }
   .header-actions { width: 100%; justify-content: space-between; gap: 8px; }
   .identity-switch { flex: 1; justify-content: center; }
-  .share-switch { flex: none; }
   .picker-view { padding-top: 2px; }
   .picker-head h1 { font-size: 22px; }
   .picker-head p { font-size: 11.5px; }

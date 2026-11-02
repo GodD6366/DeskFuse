@@ -84,6 +84,7 @@ enum MyGoSnapshot {
                     "loading": store.isEngineLoading, "error": nullable(store.error), "selected_page": selectedPage,
                     "settings_category": store.settingsDestination.category.rawValue, "keep_awake": store.keepAwake,
                     "hide_dock_icon": store.hideDockIcon, "workflows_enabled": store.workflowsEnabled,
+                    "lightweight_mode": store.lightweightMode,
                     "channel": UpdateInstallationChannel.current.rawValue]
         ]
         guard let s else { return try JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]) }
@@ -722,6 +723,7 @@ enum MyGoSnapshot {
             case "keep_awake": store.keepAwake = value
             case "hide_dock_icon": store.hideDockIcon = value; UserDefaults.standard.set(value, forKey: AppStore.hideDockIconDefaultsKey); store.applyDockIconPolicy()
             case "workflows_enabled": store.workflowsEnabled = value
+            case "lightweight_mode": store.lightweightMode = value
             case "automatic_ocr": UserDefaults.standard.set(value, forKey: ClipboardOCRIndexer.automaticIndexingKey)
             default: throw MyGoBridgeError(code: "unsupported_action", message: "不支持此设置")
             }

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { backend, errorMessage } from '../services/backend'
 import { friendlyError, invokeAction, milliseconds } from './features/core'
-import Toggle from './features/Toggle.vue'
 import Notice from './features/Notice.vue'
 import DisplayLayout from './features/DisplayLayout.vue'
 import ConfirmDialog from './features/ConfirmDialog.vue'
@@ -370,10 +369,11 @@ async function invoke(action: string, params: Record<string, unknown> = {}) {
   }
 }
 
-function setSharing(value: boolean) {
-  pendingSharing.value = { enabled: value, controller: value }
+/** 结束主控：只关闭本机的参与状态，不改功能开关。 */
+function stopAsController() {
+  pendingSharing.value = { enabled: false, controller: false }
   startPendingWindow()
-  void invoke('input.setSettings', { settings: { enabled: value, controller: value } }).then((ok) => {
+  void invoke('input.setSettings', { settings: { enabled: false, controller: false } }).then((ok) => {
     if (!ok) pendingSharing.value = null
   })
 }
@@ -506,14 +506,13 @@ function closeOnEscape(event: KeyboardEvent) {
         <div class="page-header">
           <h1 class="df-title">当前屏幕排布</h1>
           <div class="header-actions">
-            <label class="master"
-              ><span>此 Mac 作为主控</span
-              ><Toggle
-                :model-value="controller && enabled"
-                label="此 Mac 作为主控"
-                :disabled="busy || managed"
-                @update:model-value="setSharing"
-            /></label>
+            <!-- 能力开关只在「设置 › 通用 › 功能」；这里只保留“作为主控”这一个显式动作。 -->
+            <button v-if="controller && enabled" type="button" class="button" :disabled="busy || managed" @click="stopAsController">
+              结束主控
+            </button>
+            <button v-else type="button" class="button" :disabled="busy || managed" @click="enableAsController">
+              作为主控
+            </button>
             <button
               type="button"
               class="wifi-pill"
@@ -909,14 +908,7 @@ function closeOnEscape(event: KeyboardEvent) {
   justify-content: flex-end;
 }
 
-.master {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
+
 
 .wifi-pill {
   display: inline-flex;

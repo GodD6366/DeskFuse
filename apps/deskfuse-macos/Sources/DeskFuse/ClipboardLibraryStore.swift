@@ -401,7 +401,9 @@ struct ClipboardLibraryState: Codable {
     }
     func applyCounts(_ updated: [String: Int], revision: UInt64) {
         guard revision >= storedCountsRevision else { return }
-        if storedCounts != updated { storedCounts = updated }
+        // 计数只是侧栏装饰：后端只回它算得出来的列表，缺失的项沿用上一次的数值。
+        let merged = storedCounts.merging(updated) { _, new in new }
+        if storedCounts != merged { storedCounts = merged }
         storedCountsRevision = revision
         rebuildCounts()
     }
@@ -427,8 +429,7 @@ struct ClipboardLibraryState: Codable {
                 try await refreshCounts()
             } catch is CancellationError { }
             catch {
-                guard !Task.isCancelled else { return }
-                self.error = error.userFacingMessage
+                // 计数只是侧栏装饰，失败不打扰用户：保留上次数值，下一次库变更或轮询会重试。
             }
         }
     }

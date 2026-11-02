@@ -3,17 +3,16 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './Icon.vue'
 import Notice from './Notice.vue'
 import { backend } from '../../services/backend'
-import { invokeAction, useAction } from './core'
+import { useAction } from './core'
 import type { PageKey } from './core'
 
 // 对应 FeatureOnboardingView + FeatureGateView：功能总开关关闭时唯一的引导页。
 // 演示动画（FeatureDemos）未迁移，用图标徽标代替。
 const props = defineProps<{ page: Exclude<PageKey, 'devices' | 'settings'>; title: string }>()
-const emit = defineEmits<{ (e: 'enabled'): void; (e: 'openSettings', tab?: string): void }>()
 
 type Permission = 'accessibility' | 'screenRecording' | 'inputMonitoring'
 
-const content: Record<string, { icon: string; message: string; bullets: string[]; permission: Permission | null; permissionTitle?: string; opensSettings?: boolean }> = {
+const content: Record<string, { icon: string; message: string; bullets: string[]; permission: Permission | null; permissionTitle?: string }> = {
   input: {
     icon: 'keyboard',
     message: '用一套键鼠控制多台电脑：把鼠标移出屏幕边缘，就进入相邻的设备。',
@@ -36,10 +35,9 @@ const content: Record<string, { icon: string; message: string; bullets: string[]
   remoteApplications: {
     icon: 'window',
     message: '在这台 Mac 上打开另一台电脑的应用窗口。',
-    bullets: ['应用窗口像本地窗口一样显示与操作', 'Windows 远端仍在完善中，可在“设置 › 高级”中开启'],
+    bullets: ['应用窗口像本地窗口一样显示与操作', 'Windows 远端在开启后，于“设置 › 通用 › 功能”里单独打开'],
     permission: 'screenRecording',
     permissionTitle: '屏幕录制',
-    opensSettings: true,
   },
   microphone: {
     icon: 'mic',
@@ -56,18 +54,9 @@ const content: Record<string, { icon: string; message: string; bullets: string[]
   },
 }
 
-const featureKey: Record<string, string> = {
-  input: 'input',
-  clipboard: 'clipboard',
-  files: 'files',
-  mouse: 'mouse',
-  microphone: 'microphone',
-  remoteApplications: 'remote_applications',
-}
 const info = computed(() => content[props.page])
 const { error, busy, run, retry, dismiss } = useAction()
 const granted = ref(false)
-const confirming = ref(false)
 
 async function refreshPermission() {
   const permission = info.value.permission
@@ -78,17 +67,16 @@ async function refreshPermission() {
   catch { granted.value = false }
 }
 
+/** 跳转到「设置 › 通用 › 功能」：能力开关的唯一入口。 */
+async function openSettings() {
+  await run('native.openPage', { page: 'settings', settings_category: 'general' }, { key: 'open' })
+}
+
 async function authorize() {
   const permission = info.value.permission
   if (permission) await run('permissions.open', { permission: permission.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`), mode: 'authorize' }, { key: 'authorize' })
 }
 
-async function enable() {
-  confirming.value = true
-  const result = await run('feature.setEnabled', { feature: featureKey[props.page] ?? props.page, enabled: true })
-  if (result.ok) emit('enabled')
-  else confirming.value = false
-}
 
 onMounted(() => {
   void refreshPermission()
@@ -114,11 +102,9 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshPermission))
         </button>
       </div>
       <Notice v-if="error" tone="danger" title="操作未完成" :message="error.message" :raw="error.raw" action-title="重试" dismissible @action="retry" @dismiss="dismiss" />
-      <button type="button" class="button primary" :disabled="confirming" @click="enable">
-        <template v-if="confirming"><Icon name="check" :size="12" /> 已启用</template>
-        <template v-else>启用{{ title }}</template>
+      <button type="button" class="button primary" :disabled="busy.open" @click="openSettings">
+        打开设置开启{{ title }}
       </button>
-      <button v-if="info.opensSettings" type="button" class="df-link" @click="emit('openSettings', 'general')">打开设置</button>
     </div>
   </div>
 </template>

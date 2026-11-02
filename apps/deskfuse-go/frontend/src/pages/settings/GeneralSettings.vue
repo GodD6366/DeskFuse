@@ -19,7 +19,8 @@ interface Feature {
   params: (next: boolean) => Record<string, unknown>
 }
 
-// 与 Page.primary + Page.extended 的顺序、图标和 Beta 标识一致。
+// 能力开关的唯一入口：页面内不再提供同名开关，避免同一件事有多个开关。
+// 顺序与 Page.primary + Page.extended、引导页一致；Beta 只标实现尚在完善的型号能力。
 const features = computed<Feature[]>(() => {
   const values = get<Record<string, boolean>>(props.snapshot, 'features') ?? {}
   return [
@@ -27,7 +28,7 @@ const features = computed<Feature[]>(() => {
     { id: 'input', title: '键鼠共享', icon: Keyboard },
     { id: 'files', title: '局域网传输', icon: ArrowUpDown },
     { id: 'remote_applications', title: '远程应用', beta: true, icon: PanelsTopLeft },
-    { id: 'microphone', title: '麦克风共享', beta: true, icon: Mic },
+    { id: 'microphone', title: '麦克风共享', icon: Mic },
     { id: 'mouse', title: '鼠标自定义', beta: true, icon: Mouse },
   ]
     .filter((feature) => values[feature.id] !== undefined)
@@ -38,6 +39,11 @@ const features = computed<Feature[]>(() => {
       params: (enabled: boolean) => ({ feature: feature.id, enabled }),
     }))
 })
+
+const remoteEnabled = computed(() => get<boolean>(get(props.snapshot, 'features'), 'remote_applications') === true)
+// Windows 目标是远程应用的子选项：只有父功能存在且已启用时才出现。
+const windowsAvailable = computed(() => get<boolean>(get(props.snapshot, 'remote_applications'), 'windows_enabled') !== undefined)
+const windowsEnabled = computed(() => get<boolean>(get(props.snapshot, 'remote_applications'), 'windows_enabled') === true)
 
 const ready = computed(() => props.snapshot !== null)
 const isWindows = computed(() => props.snapshot?.platform === 'windows')
@@ -82,9 +88,17 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogin))
 
 <template>
   <div class="page">
-    <SettingsSection title="功能" footer="关闭后停止相关后台任务；在功能页可随时重新启用。">
+    <SettingsSection title="功能" footer="这些开关只在这里；关闭后停止相关后台任务，对应页面会说明如何重新开启。">
       <SettingsRow v-for="f in features" :key="f.id" :title="f.title" :badge="f.beta ? 'Beta' : undefined" :icon="f.icon">
         <AsyncToggle :value="f.enabled === true" :action="f.action" :params="f.params" :label="f.title" :disabled="!ready || f.enabled === undefined" />
+      </SettingsRow>
+      <SettingsRow v-if="windowsAvailable && remoteEnabled" title="Windows 电脑上的应用" detail="在远程应用中打开已配对 Windows 电脑上的应用；关闭会断开已打开的 Windows 窗口。">
+        <AsyncToggle :value="windowsEnabled" action="feature.setEnabled"
+          :params="(enabled) => ({ feature: 'windows_remote_applications', enabled })" label="Windows 电脑上的应用" />
+      </SettingsRow>
+      <SettingsRow title="工作流" detail="在剪贴板里串联多个动作并绑定全局快捷键；关闭后入口与已注册的快捷键一起停用。">
+        <AsyncToggle :value="preference(snapshot, 'workflows_enabled') === true" action="settings.set"
+          :params="(value) => ({ key: 'workflows_enabled', value })" label="工作流" :disabled="!snapshot" />
       </SettingsRow>
     </SettingsSection>
 
@@ -110,6 +124,10 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogin))
       <SettingsRow title="保持唤醒（避免作为被控端时休眠离线）" detail="阻止系统和显示器自动休眠，退出 DeskFuse 后自动恢复。">
         <AsyncToggle :value="preference(snapshot, 'keep_awake') === true" action="settings.set"
           :params="(value) => ({ key: 'keep_awake', value })" label="保持唤醒" />
+      </SettingsRow>
+      <SettingsRow title="轻量模式" detail="窗口收起 10 分钟后结束界面进程，只保留同步、键鼠与传输；再次打开会重新载入界面。">
+        <AsyncToggle :value="preference(snapshot, 'lightweight_mode') !== false" action="settings.set"
+          :params="(value) => ({ key: 'lightweight_mode', value })" label="轻量模式" />
       </SettingsRow>
     </SettingsSection>
   </div>

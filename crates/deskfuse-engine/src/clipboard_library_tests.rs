@@ -337,6 +337,41 @@ fn member_frontier_keeps_concurrent_removal_and_causal_readd_for_all_orders() {
 }
 
 #[test]
+fn counts_tolerate_a_list_set_that_changed_after_the_client_read_it() {
+    let library = Library::open().unwrap();
+    library.set_local_device("test".into()).unwrap();
+    text(&library, "计数");
+    finish_metadata(&library);
+    library
+        .mutate(r#"{"op":"save_list","list":{"id":"group","name":"group","kind":"manual"},"compact":true}"#)
+        .unwrap();
+    // 客户端读状态之后新建或删除了列表：请求里可能多一个已删除的列表，
+    // 也可能少一个刚建的。计数只是装饰，不能因此整批失败。
+    let raw = library
+        .query(
+            &json!({"op":"counts","requests":[
+                {"list_id":null},
+                {"list_id":"group"},
+                {"list_id":"deleted-elsewhere"},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+    let counts: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(counts["all"], 1);
+    assert_eq!(counts["group"], 0);
+    assert!(counts.get("deleted-elsewhere").is_none());
+
+    // 反向：列表已存在但客户端请求里还没带上它。
+    let raw = library
+        .query(&json!({"op":"counts","requests":[{"list_id":null}]}).to_string())
+        .unwrap();
+    let counts: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(counts["all"], 1);
+    assert!(counts.get("group").is_none());
+}
+
+#[test]
 fn canceled_counts_stop_sql_and_do_not_block_an_interactive_page() {
     let library = Arc::new(Library::open().unwrap());
     let id = text(&library, "visible");

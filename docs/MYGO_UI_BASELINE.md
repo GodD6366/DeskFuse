@@ -18,10 +18,10 @@
 
 | 界面/窗口 | 入口 | 源文件 | 形态与关键行为 |
 | --- | --- | --- | --- |
-| 主窗口 | 启动、Dock、菜单栏图标、`applicationShouldHandleReopen` | `DeskFuseApp.swift:10-21`、`:156-160`、`:192-260` | SwiftUI `Window("", id: "main")`，默认 1200×780，最小 960×568；`hiddenTitleBar` + `WindowChromeMarker` 手动定位红绿灯，窗口标识 `deskfuse-main` |
-| 侧栏与工作区 | 主窗口左侧导航 | `RootView.swift:11-35`、`MainSidebar.swift:24-75`、`MainContentView.swift:42-87`、`AppStore.swift:449-479` | 页面枚举：设备、剪贴板、键鼠共享、局域网传输、远程应用、麦克风共享、鼠标自定义、设置；远程应用/麦克风/鼠标标记 Beta |
-| 设置 | 侧栏“设置”、⌘,、健康中心/关于入口 | `AppStore.swift:391-401`、`SettingsView.swift:31-88`、`SettingsCategoryBar.swift:4-46`、`SettingsPageContainer.swift:8-53` | 设置与工作区共用主窗口；分类：通用、剪贴板、工作流、快捷键、文件、权限、关于与更新、高级；`NSTabViewController` 保留各页视图状态 |
-| 初次设置 | 首次启动、设置 › 高级 › 重走初次设置 | `DeskFuseApp.swift:127-133`、`RootView.swift:11-13`、`OnboardingFlow.swift:187-293` | 主窗口内替换工作区，步骤为系统权限、功能开关；不是独立窗口 |
+| 主窗口 | 启动、Dock、菜单栏图标、`applicationShouldHandleReopen` | `DeskFuseApp.swift` | 宿主不再创建任何窗口场景：产品窗口只由 WebView 客户端（`deskfuse-mygo`）提供；宿主保留 `Settings { EmptyView() }` 仅用于挂载菜单命令 |
+| 侧栏与工作区 | WebView 侧栏与页面 | `apps/deskfuse-go/frontend/src/App.vue` | 原生侧栏与工作区已删除；页面枚举仍在 `AppStore.Page`（用于桥接页面 id 与功能开关映射），远程应用/鼠标标记 Beta |
+| 设置 | 侧栏“设置”、⌘,、健康中心/关于入口 | `AppStore.swift:openSettings`、`SettingsCategoryBar.swift:4-46`、`apps/deskfuse-go/frontend/src/pages/settings/*` | 设置页只由 WebView 客户端提供，原生不再维护第二套设置界面；分类：通用、剪贴板、工作流、快捷键、文件、权限、关于与更新、高级 |
+| 初次设置 | 首次启动、设置 › 高级 › 重走初次设置 | `DeskFuseApp.swift`、`OnboardingController.swift`、`OnboardingPage.vue` | 完成标记与呈现时机由 `OnboardingController` 决定，界面是 WebView 的 `onboarding` 页 |
 | 菜单栏剪贴板面板 | 状态栏图标左键、全局快捷键（默认 ⌥⌘V） | `ClipboardPanelController.swift:36-88`、`:209-308` | `NSStatusItem` + `NSPopover` + 独立非激活 `ClipboardPointerPanel`；面板高度 780，跟随屏幕定位 |
 | 菜单栏快捷预览 | 面板内空格 | `ClipboardQuickLookController.swift:56-100` | `NSPopover`，定位到选中行，箭头键切记录，Esc 关闭 |
 | 文件暂存区 | ⇧⌘D；拖动文件时快速左右摇动鼠标 | `ShelfController.swift:52-75`、`:108-124`、`DeskFuseApp.swift:45` | 非激活 `NSPanel`，240×240，展开 480×420；支持拖出为文件 |
