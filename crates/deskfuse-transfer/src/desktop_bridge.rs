@@ -997,6 +997,75 @@ impl FileBridge {
             used_bytes: state.used_bytes,
         }
     }
+
+    /// Removes completed transfers' cached data. Receiving destinations live
+    /// under the cache root as `<transfer id>` directories; those belonging to
+    /// in-flight transfers are left untouched.
+    pub fn clear_cache(&self) -> Result<crate::CacheCleanup, String> {
+        let mut state = self.inner.state.lock().expect("file bridge state");
+        let active: std::collections::HashSet<String> =
+            state.receiving.keys().map(|id| id.to_hex()).collect();
+        let mut removed_bytes = 0u64;
+        let mut removed_paths = Vec::new();
+        let mut failed = 0usize;
+        let entries = std::fs::read_dir(&self.inner.cache_root).map_err(|error| {
+            format!("无法读取缓存目录 {}: {error}", self.inner.cache_root.display())
+        })?;
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if active.contains(&entry.file_name().to_string_lossy().into_owned()) {
+                continue;
+            }
+            let bytes = directory_bytes(&path, 4096);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    removed_bytes += bytes;
+                    removed_paths.push(path);
+                }
+                Err(_) => failed += 1,
+            }
+        }
+        state.used_bytes = directory_bytes(&self.inner.cache_root, 4096);
+        state.last_cache_scan = Some(Instant::now());
+        Ok(crate::CacheCleanup {
+            removed_bytes,
+            removed_paths,
+            failed_transfers: failed,
+        })
+    }
+
+    /// Re-announces one unfinished outgoing transfer with a fresh transfer id.
+    /// The offer keeps its inspected source until it completes, so a failed or
+    /// cancelled send can be offered to the same peer again.
+    pub fn retry_outgoing(
+        &self,
+        transfer_id: &str,
+    ) -> Result<(DeviceId, TransferId, ClipboardFileFrame), String> {
+        let id = parse_transfer(transfer_id)?;
+        let mut state = self.inner.state.lock().expect("file bridge state");
+        let Some(offer) = state.outgoing.remove(&id) else {
+            return Err("该传输已结束或不支持重试".into());
+        };
+        let new_id = TransferId::new();
+        let frame = ClipboardFileFrame::Deferred {
+            transfer_id: new_id,
+            names: offer.source.names.clone(),
+            total_bytes: offer.source.total_bytes,
+            entries: offer.source.deferred_entries().to_vec(),
+        };
+        state.outgoing.insert(
+            new_id,
+            OutgoingOffer {
+                peer: offer.peer,
+                roots: offer.roots,
+                source: offer.source,
+                cancel: Arc::new(AtomicBool::new(false)),
+                created: Instant::now(),
+            },
+        );
+        Ok((offer.peer, new_id, frame))
+    }
 }
 
 impl FileBridge {

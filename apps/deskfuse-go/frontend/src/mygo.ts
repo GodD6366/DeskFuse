@@ -35,6 +35,13 @@ export const Backend = {
   queryLibrary(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     return call("Backend.QueryLibrary", params);
   },
+  /**
+   * ShelfDrag lets the user drag staged files out of the shelf into Explorer or
+   * another app. The page passes the file paths on pointer-down.
+   */
+  shelfDrag(params: Record<string, unknown>): Promise<void> {
+    return call("Backend.ShelfDrag", params);
+  },
   snapshot(): Promise<Record<string, unknown>> {
     return call("Backend.Snapshot");
   },

@@ -14,6 +14,8 @@ export const backend = {
     return Object.prototype.hasOwnProperty.call(result, 'value') ? result.value : result
   },
   async content(id: string): Promise<any> { available(); return Backend.content(id) },
+  /** 从暂存区把文件原生拖出到资源管理器等目标。 */
+  async shelfDrag(paths: string[]): Promise<void> { available(); await Backend.shelfDrag({ paths }) },
   /** 鼠标适配数据的 Markdown 与文件名由 Go 中间层生成，页面只负责表单。 */
   async mouseContribution(params: Record<string, unknown>): Promise<any> { available(); return Backend.mouseContribution(params) },
   async dismissTransfer(id: string): Promise<void> { available(); await Backend.dismissTransfer(id) },

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/GodD6366/DeskFuse/apps/deskfuse-go/internal/native"
 )
 
 // fakePipe answers one request per connection, as the Windows service does,
@@ -458,12 +460,8 @@ func TestUnsupportedOperationsFailBeforeDialing(t *testing.T) {
 	}{
 		{"clipboard.paste", "unsupported_platform"},
 		{"clipboard.save", "unsupported_platform"},
-		{"updates.check", "unsupported_platform"},
 		{"download_and_install_update", "unsupported_platform"},
-		{"workflow.run", "capability_missing"},
-		{"workflow.system_shortcuts", "unsupported_platform"},
-		{"input.chooseController", "unsupported_platform"},
-		{"input.previewDisplayMove", "unsupported_platform"},
+		{"workflow.run", "unsupported_platform"},
 	}
 	for _, test := range cases {
 		err := service.Call(context.Background(), "app.invoke", map[string]any{
@@ -962,3 +960,109 @@ func TestUpdateRichTextPlainTextUsesLibraryMutate(t *testing.T) {
 }
 
 func contains(value, part string) bool { return strings.Contains(value, part) }
+
+// fakeNative records the host primitives so clipboard actions can be asserted
+// without touching the real system clipboard.
+type fakeNative struct {
+	formats  []native.Format
+	files    []string
+	pastes   int
+	failWith error
+}
+
+func (f *fakeNative) WriteClipboard(formats []native.Format, files []string) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.formats, f.files = formats, files
+	return nil
+}
+func (f *fakeNative) PasteClipboard() error { f.pastes++; return f.failWith }
+func (f *fakeNative) SaveFile(string, []native.Filter, []byte) (string, bool, error) {
+	return "", false, nil
+}
+func (f *fakeNative) ChooseFolder(string) (string, bool, error) { return "", false, nil }
+func (f *fakeNative) Reveal([]string) error                     { return nil }
+func (f *fakeNative) OpenPath(string) error                     { return nil }
+func (f *fakeNative) OpenURL(string) error                      { return nil }
+func (f *fakeNative) OpenSystemSettings(string) error           { return nil }
+func (f *fakeNative) CopyText(string) error                     { return nil }
+func (f *fakeNative) PickExe(string) (string, bool, error)      { return "", false, nil }
+func (f *fakeNative) PickFiles(string) ([]string, bool, error)   { return nil, false, nil }
+func (f *fakeNative) AppIcon(string, int) (string, error)       { return "", nil }
+func (f *fakeNative) LocalWallpaper(string) (string, error)     { return "", nil }
+func (f *fakeNative) SaveFileBytes(string, []byte) (string, bool, error) {
+	return "", false, nil
+}
+func (f *fakeNative) Notify(string, string) error { return nil }
+
+type fakeHost struct{ quit, shown, panelHidden, shelfShown, shelfHidden int }
+
+func (h *fakeHost) Quit()                           { h.quit++ }
+func (h *fakeHost) ShowMain(string, string)         { h.shown++ }
+func (h *fakeHost) HidePanel()                      { h.panelHidden++ }
+func (h *fakeHost) ShowShelf()                      { h.shelfShown++ }
+func (h *fakeHost) HideShelf()                      { h.shelfHidden++ }
+func (h *fakeHost) SetPanelShortcut(string) error   { return nil }
+func (h *fakeHost) SuspendPanelShortcut(bool) error { return nil }
+
+func TestClipboardCopyAppliesServiceFormats(t *testing.T) {
+	pipe, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		if _, ok := command["LibraryContent"]; ok {
+			return map[string]any{"LibraryContent": map[string]any{
+				"formats": []any{
+					map[string]any{"mime": "text/plain", "data_base64": "aGVsbG8="},
+					map[string]any{"mime": "image/png", "data_base64": "cG5n"},
+				},
+				"files": []any{},
+			}}
+		}
+		return queuedReply(command)
+	})
+	service := NewService(dial)
+	nativeActions := &fakeNative{}
+	host := &fakeHost{}
+	service.SetNative(nativeActions)
+	service.SetHost(host)
+
+	value := mustInvoke(t, service, "clipboard.copy", map[string]any{"id": "42"})
+	if value["action"] != "clipboard.copy" {
+		t.Fatalf("复制结果错误: %v", value)
+	}
+	if len(nativeActions.formats) != 2 || string(nativeActions.formats[0].Data) != "hello" ||
+		nativeActions.formats[1].MIME != "image/png" {
+		t.Fatalf("写入格式错误: %+v", nativeActions.formats)
+	}
+	if nativeActions.pastes != 0 || host.panelHidden != 0 {
+		t.Fatal("复制不得触发粘贴或隐藏面板")
+	}
+
+	nextCommand(t, pipe) // LibraryContent for the first copy
+	mustInvoke(t, service, "clipboard.paste", map[string]any{"id": "42"})
+	if nativeActions.pastes != 1 || host.panelHidden != 1 {
+		t.Fatalf("粘贴必须先隐藏面板再注入按键: paste=%d hidden=%d", nativeActions.pastes, host.panelHidden)
+	}
+}
+
+func TestClipboardPlainTextCopyKeepsOnlyText(t *testing.T) {
+	_, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		if _, ok := command["LibraryContent"]; ok {
+			return map[string]any{"LibraryContent": map[string]any{
+				"formats": []any{
+					map[string]any{"mime": "text/plain", "data_base64": "aGVsbG8="},
+					map[string]any{"mime": "text/rtf", "data_base64": "cnRm"},
+				},
+				"files": []any{},
+			}}
+		}
+		return queuedReply(command)
+	})
+	service := NewService(dial)
+	nativeActions := &fakeNative{}
+	service.SetNative(nativeActions)
+
+	mustInvoke(t, service, "clipboard.copy", map[string]any{"id": "42", "plain_text": true})
+	if len(nativeActions.formats) != 1 || nativeActions.formats[0].MIME != "text/plain" {
+		t.Fatalf("纯文本复制只应写入 text/plain: %+v", nativeActions.formats)
+	}
+}

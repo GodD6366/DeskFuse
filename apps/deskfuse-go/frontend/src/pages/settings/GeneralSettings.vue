@@ -40,15 +40,17 @@ const features = computed<Feature[]>(() => {
 })
 
 const ready = computed(() => props.snapshot !== null)
+const isWindows = computed(() => props.snapshot?.platform === 'windows')
+const loginSystem = computed(() => (isWindows.value ? 'Windows' : 'Mac'))
 
 // ---- 开机自启：以系统登录项为准，不另存偏好 ----
 const loginStatus = ref<string | null>(null)
 const loginError = ref<string | null>(null)
 const loginDetail = computed(() => {
   switch (loginStatus.value) {
-    case 'enabled': return '已开启，登录 Mac 后自动启动 DeskFuse。'
+    case 'enabled': return `已开启，登录 ${loginSystem.value} 后自动启动 DeskFuse。`
     case 'requires_approval': return '等待系统批准，请在系统设置的登录项中允许 DeskFuse。'
-    case 'not_registered': return '登录 Mac 后自动启动 DeskFuse；更改立即生效。'
+    case 'not_registered': return `登录 ${loginSystem.value} 后自动启动 DeskFuse；更改立即生效。`
     case 'not_found': return '系统未找到登录项，请将 DeskFuse 安装到“应用程序”后重试。'
     case null: return loginError.value ? '无法读取开机自启状态。' : '正在读取开机自启状态…'
     default: return '无法确认登录项状态，请在系统设置中检查。'
@@ -98,7 +100,7 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogin))
           <p v-if="loginOpenError" class="err">{{ loginOpenError }}</p>
         </template>
       </SettingsRow>
-      <SettingsRow title="隐藏 Dock 图标" detail="隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。">
+      <SettingsRow v-if="!isWindows" title="隐藏 Dock 图标" detail="隐藏后只保留菜单栏图标；仍可从菜单栏打开主窗口和设置。">
         <AsyncToggle :value="preference(snapshot, 'hide_dock_icon') === true" action="settings.set"
           :params="(value) => ({ key: 'hide_dock_icon', value })" label="隐藏 Dock 图标" />
       </SettingsRow>

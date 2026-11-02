@@ -188,8 +188,10 @@ pub(super) fn open_transfer_cache(path: &std::path::Path) -> io::Result<()> {
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
         };
+        use windows_sys::core::BOOL;
         use windows_sys::Win32::Security::{
-            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
+            ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
+            PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
         };
         use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
         let Some(path_text) = path.to_str() else {
@@ -233,9 +235,26 @@ pub(super) fn open_transfer_cache(path: &std::path::Path) -> io::Result<()> {
                 return Err(io::Error::from_raw_os_error(code as i32));
             }
         }
+        // Extract the DACL from the converted self-relative descriptor. The
+        // converter output is a SECURITY_DESCRIPTOR, not an ACL: passing it
+        // where SetNamedSecurityInfoW expects a PACL used to install a
+        // protected *empty* DACL, which denied the service its own cache.
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut present: BOOL = 0;
+        let mut defaulted: BOOL = 0;
+        // SAFETY: descriptor is a live self-relative security descriptor.
+        if unsafe {
+            GetSecurityDescriptorDacl(descriptor.cast(), &mut present, &mut dacl, &mut defaulted)
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 || dacl.is_null() {
+            return Err(io::Error::other("transfer cache descriptor has no DACL"));
+        }
         // Re-apply the protected DACL so the ACE set always matches this
         // build, even after user-session changes or a service upgrade.
-        // SAFETY: NUL-terminated path and live self-relative descriptor.
+        // SAFETY: NUL-terminated path and live DACL from the descriptor.
         if unsafe {
             SetNamedSecurityInfoW(
                 wide.as_mut_ptr(),
@@ -243,12 +262,12 @@ pub(super) fn open_transfer_cache(path: &std::path::Path) -> io::Result<()> {
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                descriptor.cast(),
+                dacl.cast(),
                 std::ptr::null(),
             )
         } != 0
         {
-            return Err(io::Error::other("transfer cache DACL update failed"));
+            return Err(io::Error::last_os_error());
         }
         drop(owned);
     }

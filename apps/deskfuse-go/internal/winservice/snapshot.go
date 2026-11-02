@@ -548,3 +548,32 @@ func deref(value *string) string {
 	}
 	return *value
 }
+
+// sharedSnapshot renders the service snapshot and overlays the desktop
+// client's own preferences. The service remains authoritative for every field
+// it reports; the two host choices only narrow what the UI offers.
+func (s *Service) sharedSnapshot(value snapshotWire) map[string]any {
+	shared := value.Shared()
+	app, ok := shared["app"].(map[string]any)
+	if !ok {
+		app = map[string]any{}
+		shared["app"] = app
+	}
+	app["keep_awake"] = s.prefs != nil && s.prefs.Bool("keep_awake")
+	if s.shelf != nil {
+		shared["shelf"] = s.shelf.view()
+	}
+	if s.updates != nil {
+		// The caller already decoded this snapshot; use its version directly
+		// instead of latestSnapshot, which would re-lock s.mu and deadlock.
+		shared["update"] = s.updates.view(value.PackageVersion)
+	}
+	if s.prefs != nil {
+		if enabled, ok := s.prefs.Get("workflows_enabled"); ok {
+			if choice, ok := enabled.(bool); ok && !choice && app["workflows_enabled"] == true {
+				app["workflows_enabled"] = false
+			}
+		}
+	}
+	return shared
+}

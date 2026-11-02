@@ -18,7 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 // MaxFrame bounds every request and response frame the service accepts.
@@ -49,6 +52,10 @@ func (e *RemoteError) Error() string {
 type Client struct {
 	dial Dialer
 	next atomic.Uint64
+	// The service serves one pipe instance at a time. The snapshot poll,
+	// library queries and commands run on different goroutines, so exchanges
+	// are serialized here; a concurrent dial would get ERROR_PIPE_BUSY.
+	mu sync.Mutex
 }
 
 // New returns a client that opens a connection per command.
@@ -84,7 +91,9 @@ func (c *Client) Call(ctx context.Context, command any) (map[string]json.RawMess
 		return nil, errors.New("请求超过服务帧大小限制")
 	}
 
-	conn, err := c.dial(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	conn, err := c.connect(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("无法连接 DeskFuse 服务: %w", err)
 	}
@@ -130,6 +139,35 @@ func (c *Client) Call(ctx context.Context, command any) (map[string]json.RawMess
 		return nil, &RemoteError{Code: "unsupported_version", Message: "DeskFuse 服务版本不兼容，请更新后再试。"}
 	}
 	return envelope, nil
+}
+
+// errorPipeBusy is Windows ERROR_PIPE_BUSY, which syscall does not export.
+const errorPipeBusy syscall.Errno = 231
+
+// connect dials the service and retries while its single pipe instance is
+// busy, which happens between one client acknowledging and the service
+// creating the next instance.
+func (c *Client) connect(ctx context.Context) (io.ReadWriteCloser, error) {
+	backoff := 10 * time.Millisecond
+	for {
+		conn, err := c.dial(ctx)
+		if err == nil {
+			return conn, nil
+		}
+		if !errors.Is(err, errorPipeBusy) {
+			return nil, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, err
+		case <-timer.C:
+		}
+		if backoff < 200*time.Millisecond {
+			backoff *= 2
+		}
+	}
 }
 
 func rejectionError(raw json.RawMessage) error {

@@ -311,6 +311,53 @@ pub enum Command {
     RemoteAppConnection {
         name: String,
     },
+    /// Canvas-only drag preview: compute the snapped offset for one device
+    /// move without committing it. Mirrors the engine's `preview_display_move`.
+    PreviewControlDeviceMove {
+        displays: Vec<PreviewDisplay>,
+        device_id: String,
+        delta_x: f64,
+        delta_y: f64,
+        snap_distance: f64,
+        attach: bool,
+    },
+    /// Persist the full file-transfer settings (master switch, prefetch,
+    /// thresholds, cache cap and receive directory).
+    SetFileSettings {
+        settings: deskfuse_core::FileTransferSettings,
+    },
+    /// Remove cached bytes of completed transfers; in-flight staging is kept.
+    ClearFileCache,
+    /// User cancellation of one queued, sending or receiving transfer.
+    CancelTransfer {
+        transfer_id: String,
+    },
+    /// Re-announce one failed or cancelled outgoing transfer.
+    RetryTransfer {
+        transfer_id: String,
+    },
+    /// System shortcut catalog for the workflow step editor. Windows has no
+    /// App-Intents-style source; the reply carries whatever the platform
+    /// provides, normally an empty list.
+    GetSystemShortcuts,
+}
+/// One display rectangle for [`Command::PreviewControlDeviceMove`].
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewDisplay {
+    pub id: String,
+    pub device_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+/// One system shortcut entry for the workflow step editor.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemShortcut {
+    pub id: String,
+    pub name: String,
 }
 // Intentionally no Debug: user clipboard body is not diagnostic data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -409,6 +456,19 @@ pub enum Reply {
     },
     Queued {
         message: String,
+    },
+    /// Snapped drag offset for [`Command::PreviewControlDeviceMove`].
+    LayoutOffset {
+        x: f64,
+        y: f64,
+    },
+    /// Result of [`Command::ClearFileCache`].
+    CacheCleared {
+        removed_bytes: u64,
+    },
+    /// System shortcut catalog for the workflow step editor.
+    SystemShortcuts {
+        shortcuts: Vec<SystemShortcut>,
     },
     Platform {
         event: PlatformEvent,

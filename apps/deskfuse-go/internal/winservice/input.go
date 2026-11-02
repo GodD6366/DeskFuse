@@ -324,14 +324,6 @@ func (s *Service) invokeInput(ctx context.Context, action string, args map[strin
 		return true, s.moveInputDevice(ctx, args, result)
 	case "input.reconnect":
 		return true, s.reconnectInput(ctx, args, result)
-	case "input.chooseController":
-		return true, unsupported("Windows 服务没有按设备选择主控的命令；主控方向由控制端的 EnableInputControl 建立。")
-	case "input.previewDisplayMove":
-		return true, unsupported("Windows 桌面 IPC 没有拖动预览或吸附计算命令；吸附由服务在 MoveControlDevice 时执行。")
-	case "input.wallpaper":
-		return true, unsupported("Windows 桌面 IPC 没有屏幕预览命令。")
-	case "input.set_recording":
-		return true, unsupported("Windows 桌面 IPC 没有鼠标按键录制命令。")
 	case "feature.setEnabled":
 		feature, _ := stringValue(args, "feature")
 		if feature != "input" {

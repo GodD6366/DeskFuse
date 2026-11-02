@@ -1046,6 +1046,104 @@ impl State {
                 }
                 ipc::Reply::queued()
             }
+            ipc::Command::SetFileSettings { settings } => {
+                if let Err(message) = settings.validate() {
+                    return ipc::Reply::rejected("invalid_settings", &message);
+                }
+                if let Err(error) = network.store.set_file_transfer_settings(&settings) {
+                    return ipc::Reply::rejected("store_unavailable", &error.to_string());
+                }
+                let disabling = self.file_settings.enabled && !settings.enabled;
+                self.apply_file_settings(settings);
+                if disabling && let Err(error) = network.lan_web.set_files_enabled(false) {
+                    self.last_error = Some(error);
+                }
+                ipc::Reply::queued()
+            }
+            ipc::Command::ClearFileCache => {
+                let Some(bridge) = self.file_bridge.as_ref() else {
+                    return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
+                };
+                match bridge.clear_cache() {
+                    Ok(cleanup) => ipc::Reply::CacheCleared {
+                        removed_bytes: cleanup.removed_bytes,
+                    },
+                    Err(message) => ipc::Reply::rejected("cache_unavailable", &message),
+                }
+            }
+            ipc::Command::CancelTransfer { transfer_id } => {
+                let Some(bridge) = self.file_bridge.as_ref() else {
+                    return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
+                };
+                bridge.cancel_transfer(&transfer_id, "Windows desktop cancelled file transfer");
+                ipc::Reply::queued()
+            }
+            ipc::Command::RetryTransfer { transfer_id } => {
+                let Some(bridge) = self.file_bridge.as_ref() else {
+                    return ipc::Reply::rejected("files_unavailable", "文件通道尚未就绪");
+                };
+                match bridge.retry_outgoing(&transfer_id) {
+                    Ok((peer, _new_id, frame)) => {
+                        if let Ok(data) = frame.encode() {
+                            self.sync.announce_file_offer(&network.runtime, peer, data);
+                        }
+                        ipc::Reply::queued()
+                    }
+                    Err(message) => ipc::Reply::rejected("retry_unavailable", &message),
+                }
+            }
+            ipc::Command::PreviewControlDeviceMove {
+                displays,
+                device_id,
+                delta_x,
+                delta_y,
+                snap_distance,
+                attach,
+            } => {
+                let device = match device_id.parse::<deskfuse_core::DeviceId>() {
+                    Ok(id) => id,
+                    Err(_) => return ipc::Reply::rejected("invalid_input", "无效的设备 ID"),
+                };
+                let rects = displays
+                    .iter()
+                    .map(|d| {
+                        Ok(deskfuse_input::layout::LayoutRect {
+                            key: deskfuse_core::DisplayKey {
+                                device_id: d
+                                    .device_id
+                                    .parse()
+                                    .map_err(|_| "无效的设备 ID".to_string())?,
+                                display_id: deskfuse_core::DisplayId::new(d.id.clone()),
+                            },
+                            x: d.x,
+                            y: d.y,
+                            width: d.width,
+                            height: d.height,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>();
+                let rects = match rects {
+                    Ok(rects) => rects,
+                    Err(message) => return ipc::Reply::rejected("invalid_input", &message),
+                };
+                match deskfuse_input::layout::snap_device_move(
+                    &rects,
+                    device,
+                    delta_x,
+                    delta_y,
+                    if attach { None } else { Some(snap_distance) },
+                ) {
+                    Ok((x, y)) => ipc::Reply::LayoutOffset { x, y },
+                    Err(message) => ipc::Reply::rejected("invalid_layout", &message),
+                }
+            }
+            ipc::Command::GetSystemShortcuts => {
+                // Windows has no App-Intents-style shortcut source; report an
+                // empty catalog so the step editor shows "no shortcuts".
+                ipc::Reply::SystemShortcuts {
+                    shortcuts: Vec::new(),
+                }
+            }
             ipc::Command::ConfigureLanWeb { enabled } => {
                 if enabled && !self.file_settings.enabled {
                     return ipc::Reply::rejected("files_disabled", "文件传输已关闭");
@@ -2035,6 +2133,10 @@ fn requires_full_presence(command: &ipc::Command) -> bool {
             | ipc::Command::MoveControlDevice { .. }
             | ipc::Command::SetInputSharingSettings { .. }
             | ipc::Command::SetFileTransferEnabled { .. }
+            | ipc::Command::SetFileSettings { .. }
+            | ipc::Command::ClearFileCache
+            | ipc::Command::CancelTransfer { .. }
+            | ipc::Command::RetryTransfer { .. }
             | ipc::Command::ConfigureLanWeb { .. }
             | ipc::Command::ReclaimInput
             | ipc::Command::RegisterRemoteApp { .. }

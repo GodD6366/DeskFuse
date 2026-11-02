@@ -32,6 +32,10 @@ type Backend struct {
 	// DismissTransfer 由页面调用，隐藏一条已失败或已取消的传输提示。提示是否
 	// 显示属于界面状态，因此不写回引擎；实现由浮动窗口管理器注入。
 	OnDismissTransfer func(string)
+	// OnShelfDrag starts a native drag carrying the staged file paths out of the
+	// shelf window. Injected by the window owner; the page calls ShelfDrag on
+	// pointer-down so Explorer and other apps can receive the files.
+	OnShelfDrag func(paths []string) error
 }
 
 func New(client Caller) *Backend {
@@ -176,6 +180,25 @@ func (b *Backend) Invoke(action string, params Object) (Object, error) {
 // native probe only reports raw button samples.
 func (b *Backend) MouseContribution(params Object) (Object, error) {
 	return b.mouse.Contribution(params)
+}
+
+// ShelfDrag lets the user drag staged files out of the shelf into Explorer or
+// another app. The page passes the file paths on pointer-down.
+func (b *Backend) ShelfDrag(params Object) error {
+	raw, _ := params["paths"].([]any)
+	paths := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if path, ok := value.(string); ok && path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return errors.New("暂存区没有可拖出的文件")
+	}
+	if b.OnShelfDrag == nil {
+		return errors.New("此宿主不支持文件拖出")
+	}
+	return b.OnShelfDrag(paths)
 }
 
 // DismissTransfer hides a failed or cancelled transfer pill. A method rather

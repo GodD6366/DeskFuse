@@ -6,7 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/GodD6366/DeskFuse/apps/deskfuse-go/internal/native"
 )
+
+// HostActions are the UI-host operations the pages issue (quit, show the main
+// window). They belong to the desktop process, not the service, so the window
+// owner injects them.
+type HostActions interface {
+	Quit()
+	// ShowMain shows and focuses the main window, optionally navigating to a
+	// page and settings category.
+	ShowMain(page, category string)
+	HidePanel()
+	ShowShelf()
+	HideShelf()
+	// SetPanelShortcut registers the global hotkey that opens the clipboard
+	// panel; an empty accelerator disables it.
+	SetPanelShortcut(accelerator string) error
+	// SuspendPanelShortcut unregisters/reregisters the panel hotkey while the
+	// page records a shortcut, so the recorded keys are not swallowed.
+	SuspendPanelShortcut(suspend bool) error
+}
 
 // Service adapts the Windows desktop service to the operations the shared UI
 // calls. It keeps no business state: every page reads the service snapshot and
@@ -24,10 +45,63 @@ type Service struct {
 	// latest is the last decoded snapshot. Commands that need read-modify-write
 	// settings or the trusted peer list work from it instead of inventing state.
 	latest *snapshotWire
+
+	// native owns the host-side clipboard, dialogs and shell. A nil value keeps
+	// those actions unavailable instead of simulating them.
+	native native.Actions
+	host   HostActions
+	// prefs holds the desktop client's own preferences; the service remains
+	// authoritative for everything it reports.
+	prefs *preferences
+	// shelf is the desktop staging area; the service owns the transfers.
+	shelf *shelfState
+	// updates is the desktop client's own update status (GitHub Releases).
+	updates *updateState
+	// publishSeq numbers clipboard/file publishes within this session; the
+	// service rejects stale sequences.
+	publishSeq uint64
+	// OnSnapshot runs after each successful snapshot decode with the shared
+	// projection. The host uses it for notifications; it must be non-blocking
+	// and must not call back into the Service synchronously.
+	OnSnapshot func(map[string]any)
+	// fetchRelease is the GitHub Releases probe; tests stub it to stay offline.
+	fetchRelease func(ctx context.Context) (version, url string, err error)
 }
 
 // NewService returns an adapter over the given pipe dialer.
-func NewService(dial Dialer) *Service { return &Service{client: New(dial)} }
+func NewService(dial Dialer) *Service {
+	return &Service{
+		client:  New(dial),
+		prefs:   newPreferences(),
+		shelf:   newShelfState(),
+		updates: newUpdateState(),
+	}
+}
+
+// currentVersion returns the service package version from the latest snapshot.
+func (s *Service) currentVersion() string {
+	latest, ok := s.latestSnapshot()
+	if !ok {
+		return ""
+	}
+	return latest.PackageVersion
+}
+
+// SetNative installs the host-side platform primitives. The window owner calls
+// it once before the UI starts loading pages.
+func (s *Service) SetNative(actions native.Actions) { s.native = actions }
+
+// NativeActions returns the installed host primitives for host-side watchers.
+func (s *Service) NativeActions() native.Actions { return s.native }
+
+// BackgroundInvoke runs one app action outside a page request, for host-driven
+// tasks such as the startup update check. It uses a detached context.
+func (s *Service) BackgroundInvoke(action string, params map[string]any) error {
+	return s.invoke(context.Background(), map[string]any{"action": action, "params": params}, nil)
+}
+
+// SetHost installs the window callbacks used by app and panel actions.
+func (s *Service) SetHost(host HostActions) { s.host = host }
 
 // Call implements the same contract as the macOS stdio bridge.
 //
@@ -112,7 +186,11 @@ func (s *Service) openSessionLocked(ctx context.Context, result any) error {
 	s.sequence = 0
 	s.polling = true
 	s.latest = &value.raw
-	return assign(result, value.raw.Shared())
+	shared := s.sharedSnapshot(value.raw)
+	if s.OnSnapshot != nil {
+		s.OnSnapshot(shared)
+	}
+	return assign(result, shared)
 }
 
 type pollCommand struct {
@@ -147,7 +225,11 @@ func (s *Service) applyPollLocked(envelope map[string]json.RawMessage, result an
 	s.sessionEpoch = value.raw.SessionEpoch
 	s.sequence = poll.ClipboardSequence
 	s.latest = &value.raw
-	return assign(result, value.raw.Shared())
+	shared := s.sharedSnapshot(value.raw)
+	if s.OnSnapshot != nil {
+		s.OnSnapshot(shared)
+	}
+	return assign(result, shared)
 }
 
 func (s *Service) hello(ctx context.Context, result any) error {
@@ -213,20 +295,111 @@ func (s *Service) invoke(ctx context.Context, params any, result any) error {
 	case "workflow.cancel":
 		return s.workflowCancel(ctx, args, result)
 	case "workflow.run":
-		// RunWorkflow exists, but its contract requires the desktop to apply the
-		// returned formats to the native clipboard and only then report success.
-		// The Go UI has no Windows pasteboard adapter, so reporting success here
-		// would be false. See docs/MYGO_WINDOWS_ADAPTER.md.
-		return &RemoteError{
-			Code:    "capability_missing",
-			Message: "Windows 服务可执行工作流，但结果必须由原生桌面进程写入剪贴板；当前 Go UI 尚未接入 Windows 粘贴板写入，因此未执行工作流。",
-		}
+		return s.workflowRun(ctx, args, result)
 	case "workflow.system_shortcuts":
-		return unsupported("Windows 桌面 IPC 没有系统快捷指令目录命令。")
-	case "updates.check", "download_and_install_update":
-		return unsupported("Windows 桌面 IPC 没有更新命令，服务能力中的 updater 始终为 false。")
-	case "uninstall.plan", "uninstall.perform":
-		return unsupported("Windows 桌面 IPC 没有卸载命令。")
+		return s.workflowSystemShortcuts(ctx, result)
+	// Host-side clipboard actions: the service is the content authority, the
+	// desktop process owns the system clipboard and its native UI.
+	case "clipboard.copy":
+		return s.clipboardCopy(ctx, args, result, false)
+	case "clipboard.paste":
+		return s.clipboardCopy(ctx, args, result, true)
+	case "clipboard.save":
+		return s.clipboardSave(ctx, args, result)
+	case "clipboard.reveal":
+		return s.clipboardReveal(ctx, args, result)
+	case "clipboard.openInPreview":
+		return s.clipboardOpen(ctx, args, result, action)
+	case "clipboard.edit":
+		return s.clipboardOpen(ctx, args, result, action)
+	// Window and host actions belong to the process that owns the windows.
+	case "app.quit", "app.showMain", "native.openPage", "panel.hide",
+		"clipboard.showInMain", "clipboard.showPanel", "clipboard.togglePanel":
+		return s.hostAction(action, args, result)
+	case "system.open_url":
+		return s.openURL(args, result)
+	case "support.report", "support.reportProblem":
+		return s.reportProblem(args, result)
+	case "support.copy_environment":
+		return s.copyEnvironment(result)
+	case "login_item.status":
+		status, err := loginItemStatus()
+		if err != nil {
+			return nativeError(err)
+		}
+		return assign(result, map[string]any{"outcome": "applied", "value": status})
+	case "login_item.set":
+		enabled, _ := boolValue(args, "enabled")
+		if err := setLoginItem(enabled); err != nil {
+			return nativeError(err)
+		}
+		return assign(result, map[string]any{"outcome": "applied", "value": enabled})
+	case "login_item.open_settings":
+		if s.native == nil {
+			return unsupported("此窗口没有接入 Windows 系统设置。")
+		}
+		if err := s.native.OpenSystemSettings("startupapps"); err != nil {
+			return nativeError(err)
+		}
+		return assign(result, map[string]any{"outcome": "dispatched", "action": action})
+	case "settings.set":
+		return s.setPreference(args, result)
+	// Staging area (shelf): host-side references, service-side transfers.
+	case "shelf.add":
+		return s.shelfAdd(args, result)
+	case "shelf.remove":
+		return s.shelfRemove(args, result)
+	case "shelf.clear":
+		return s.shelfClear(result)
+	case "shelf.send":
+		return s.shelfSend(ctx, args, result)
+	case "shelf.show":
+		return s.shelfShow(result)
+	case "clipboard.stage":
+		return s.shelfStage(ctx, args, result)
+	// Updates: host-side check against GitHub Releases (no auto-installer).
+	case "updates.check":
+		return s.updatesCheck(ctx, result)
+	case "download_and_install_update":
+		return unsupported("Windows 版尚未提供自动安装；请在发布页下载新版安装包。")
+	// Uninstall and diagnostics.
+	case "uninstall.plan":
+		return s.uninstallPlan(result)
+	case "uninstall.perform":
+		return s.uninstallPerform(args, result)
+	case "support.export_diagnostics":
+		return s.supportExportDiagnostics(result)
+	// App picking and icons for the excluded-apps setting.
+	case "clipboard.choose_app", "clipboard.chooseApp":
+		return s.clipboardChooseApp(result)
+	case "clipboard.appInfo", "clipboard.appinfo":
+		return s.clipboardAppInfo(args, result)
+	// Global shortcut recording and input takeover.
+	case "clipboard.configure_shortcut":
+		return s.clipboardConfigureShortcut(args, result)
+	case "input.set_recording":
+		return s.inputSetRecording(ctx, args, result)
+	case "input.chooseController":
+		return s.inputChooseController(ctx, args, result)
+	case "input.wallpaper":
+		return s.inputWallpaper(args, result)
+	case "input.previewDisplayMove":
+		return s.inputPreviewDisplayMove(ctx, args, result)
+	// File transfer settings and transfer control.
+	case "set_files":
+		return s.setFiles(ctx, args, result)
+	case "clear_cache":
+		return s.clearCache(ctx, result)
+	case "transfers.cancel":
+		return s.transfersCancel(ctx, args, result)
+	case "transfers.retry":
+		return s.transfersRetry(ctx, args, result)
+	case "transfers.send":
+		return s.transfersSend(ctx, args, result)
+	case "transfers.chooseFiles":
+		return s.transfersChooseFiles(result)
+	case "transfers.inspectPaths":
+		return s.transfersInspectPaths(args, result)
 	}
 
 	if handled, err := s.invokeInput(ctx, action, args, result); handled {
@@ -355,18 +528,20 @@ func commandFor(action string, args map[string]any) (any, error) {
 	case "lanWeb.configure":
 		enabled, _ := args["enabled"].(bool)
 		return tagged("ConfigureLanWeb", map[string]any{"enabled": enabled}), nil
-	case "set_files":
-		return nil, unsupported("Windows 桌面 IPC 只提供文件传输总开关（feature.setEnabled files），没有阈值、缓存或下载目录设置命令。")
-	case "clear_cache", "transfers.cancel", "transfers.retry", "transfers.send":
-		return nil, unsupported(fmt.Sprintf("Windows 适配层尚未接入 %s 对应的文件传输命令。", action))
+	case "set_files", "clear_cache", "transfers.cancel", "transfers.retry", "transfers.send",
+		"transfers.chooseFiles", "transfers.inspectPaths":
+		// 由 invoke 在宿主层或服务层处理，不会到达这里；防御性保留。
+		return nil, unsupported(fmt.Sprintf("%s 不是服务命令。", action))
 	case "devices.setInputPath":
 		return nil, unsupported("Windows 桌面 IPC 没有设置设备输入线路的命令。")
-	case "clipboard.copy", "clipboard.paste":
-		return nil, unsupported("Windows 服务没有本地剪贴板写入或粘贴命令；原生粘贴板仍由 Windows 桌面客户端持有。")
-	case "clipboard.save", "clipboard.edit", "clipboard.reveal", "clipboard.openInPreview", "clipboard.stage", "clipboard.cancelPreparation":
-		return nil, unsupported(fmt.Sprintf("Windows 桌面 IPC 没有 %s 对应的原生文件或窗口命令。", action))
-	case "clipboard.choose_app", "clipboard.chooseApp", "clipboard.indexOCR", "clipboard.configure_shortcut", "clipboard.appInfo", "clipboard.showInMain", "clipboard.showPanel", "clipboard.togglePanel":
-		return nil, unsupported(fmt.Sprintf("Windows 桌面 IPC 没有 %s 对应的原生命令。", action))
+	case "clipboard.indexOCR":
+		return nil, unsupported("Windows 客户端没有 OCR 索引能力。")
+	case "updates.check", "download_and_install_update", "uninstall.plan", "uninstall.perform",
+		"support.export_diagnostics", "shelf.show", "shelf.add", "shelf.remove", "shelf.clear", "shelf.send",
+		"clipboard.choose_app", "clipboard.chooseApp", "clipboard.appInfo", "clipboard.configure_shortcut",
+		"input.set_recording", "input.chooseController", "input.wallpaper":
+		// 由宿主侧在 invoke 中处理，不会到达这里；防御性保留。
+		return nil, unsupported(fmt.Sprintf("%s 不是服务命令。", action))
 	default:
 		return nil, unsupported(fmt.Sprintf("Windows 端尚未实现操作 %s", action))
 	}

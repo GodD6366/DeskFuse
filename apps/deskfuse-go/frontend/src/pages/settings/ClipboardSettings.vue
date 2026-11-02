@@ -9,6 +9,8 @@ import { errorText, preference, type Snapshot } from './util'
 
 const props = defineProps<{ snapshot: Snapshot }>()
 const library = useClipboardSettings()
+// Windows 客户端没有接入 OCR 索引；隐藏该设置而不是显示一个必然失败的开关。
+const isWindows = computed(() => props.snapshot?.platform === 'windows')
 
 interface Draft { retention_days: number; excluded_apps: LibraryApp[]; automatic_ocr: boolean }
 
@@ -131,7 +133,7 @@ onMounted(load)
           </SettingsRow>
         </SettingsSection>
 
-        <SettingsSection title="图片文字识别">
+        <SettingsSection v-if="!isWindows" title="图片文字识别">
           <SettingsRow title="自动识别图片文字" detail="默认开启，识别在可自动退出的独立进程中运行。关闭后保留已有识别结果；图片预览和复制始终可用。">
             <input v-model="draft.automatic_ocr" class="toggle" type="checkbox" role="switch" aria-label="自动识别图片文字" />
           </SettingsRow>
