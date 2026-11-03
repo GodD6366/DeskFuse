@@ -4,6 +4,7 @@
 !/Cargo.lock
 
 # Local builds, screenshots, logs, source snapshots and device evidence.
+/.build/
 /dist/
 /artifacts/
 # UI design preview renders (screenshots plus selection metadata); regenerated
