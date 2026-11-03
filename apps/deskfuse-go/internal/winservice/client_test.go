@@ -2,12 +2,14 @@ package winservice
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +336,13 @@ func TestSnapshotTranslatesWindowsServiceState(t *testing.T) {
 	if features["clipboard"] != true || features["updates"] != false || features["microphone"] != false {
 		t.Fatalf("功能标记不能从主机推断: %v", features)
 	}
+	capabilities := value["capabilities"].(map[string]any)
+	if capabilities["microphone"] != false || capabilities["microphone_reason"] == "" {
+		t.Fatalf("Windows 麦克风能力必须显式标记不可用及原因: %v", capabilities)
+	}
+	if value["clipboard"].(map[string]any)["automatic_ocr"] != false {
+		t.Fatalf("Windows Go bridge 未接入 OCR 时必须关闭自动 OCR: %v", value["clipboard"])
+	}
 	if value["files"].(map[string]any)["download_directory"] != `C:\Users\me\Downloads` {
 		t.Fatalf("文件设置映射错误: %v", value["files"])
 	}
@@ -416,6 +425,148 @@ func TestInvokeTranslatesPairingActions(t *testing.T) {
 	}
 }
 
+func TestWindowsRemoteAppHostActionsUseNativeServiceCommands(t *testing.T) {
+	pipe, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		switch {
+		case command["ListRemoteApps"] != nil:
+			return map[string]any{"RemoteApps": map[string]any{
+				"available": true,
+				"reason":    nil,
+				"apps":      []any{map[string]any{"name": "demo", "path": `C:\\demo.exe`}},
+				"host":      map[string]any{"ready": true},
+			}}
+		case command["ListInstalledApps"] != nil:
+			return map[string]any{"InstalledApps": map[string]any{
+				"apps": []any{map[string]any{"name": "Notepad", "path": `C:\\Windows\\notepad.exe`}},
+			}}
+		case command["RemoteAppConnection"] != nil:
+			return map[string]any{"RemoteAppConnection": map[string]any{"rdp": "full-rdp"}}
+		default:
+			return queuedReply(command)
+		}
+	})
+	service := NewService(dial)
+	openSession(t, service, pipe)
+
+	catalog := mustInvoke(t, service, "remoteApps.hostCatalog", nil)
+	if catalog["available"] != true || len(catalog["applications"].([]any)) != 1 {
+		t.Fatalf("本机 RemoteApp 目录映射错误: %v", catalog)
+	}
+	if command := nextCommand(t, pipe); command["ListRemoteApps"] == nil {
+		t.Fatalf("目录请求命令错误: %v", command)
+	}
+
+	installed := mustInvoke(t, service, "remoteApps.hostInstalled", nil)
+	if len(installed["applications"].([]any)) != 1 {
+		t.Fatalf("已安装应用映射错误: %v", installed)
+	}
+	if command := nextCommand(t, pipe); command["ListInstalledApps"] == nil {
+		t.Fatalf("已安装应用请求命令错误: %v", command)
+	}
+
+	registered := mustInvoke(t, service, "remoteApps.hostRegister", map[string]any{
+		"name": "demo", "path": `C:\\demo.exe`, "display_name": "Demo",
+	})
+	if registered["outcome"] != "queued" {
+		t.Fatalf("注册结果错误: %v", registered)
+	}
+	registerCommand := nextCommand(t, pipe)
+	if fields := registerCommand["RegisterRemoteApp"].(map[string]any); fields["name"] != "demo" || fields["display_name"] != "Demo" {
+		t.Fatalf("注册参数错误: %v", registerCommand)
+	}
+
+	connection := mustInvoke(t, service, "remoteApps.hostConnection", map[string]any{"name": "demo"})
+	if connection["rdp"] != "full-rdp" {
+		t.Fatalf("RDP 配置映射错误: %v", connection)
+	}
+	if fields := nextCommand(t, pipe)["RemoteAppConnection"].(map[string]any); fields["name"] != "demo" {
+		t.Fatalf("RDP 请求参数错误: %v", fields)
+	}
+
+	unregistered := mustInvoke(t, service, "remoteApps.hostUnregister", map[string]any{"name": "demo"})
+	if unregistered["outcome"] != "queued" {
+		t.Fatalf("移除结果错误: %v", unregistered)
+	}
+	if fields := nextCommand(t, pipe)["UnregisterRemoteApp"].(map[string]any); fields["name"] != "demo" {
+		t.Fatalf("移除参数错误: %v", fields)
+	}
+}
+
+func TestWindowsRemoteAppPeerBridgeUsesRustDesktopProtocol(t *testing.T) {
+	pipe, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		switch {
+		case command["RemoteApplicationCatalog"] != nil:
+			return map[string]any{"RemoteApplicationCatalog": map[string]any{"json": `{"type":"catalog","version":2,"available":true,"apps":[{"name":"notepad","display_name":"记事本","path":"C:\\Windows\\notepad.exe","command_line":"","icon_path":"","icon_index":0}],"host":{"port":3389,"checks":[]}}`}}
+		case command["RemoteApplicationPrepare"] != nil:
+			return map[string]any{"RemoteApplicationReady": map[string]any{"json": `{"type":"ready","version":2,"name":"notepad","ticket":[1,2,3],"rdp":"full-rdp","host":{"port":3389,"checks":[]}}`}}
+		case command["RemoteApplicationTunnel"] != nil:
+			return map[string]any{"RemoteApplicationTunnel": map[string]any{"port": 43123}}
+		default:
+			return queuedReply(command)
+		}
+	})
+	service := NewService(dial)
+	openSession(t, service, pipe)
+
+	catalog := mustInvoke(t, service, "remoteApps.peerCatalog", map[string]any{"peer_id": "win-peer"})
+	if catalog["type"] != "catalog" || len(catalog["apps"].([]any)) != 1 {
+		t.Fatalf("远端目录解包错误: %v", catalog)
+	}
+	if fields := nextCommand(t, pipe)["RemoteApplicationCatalog"].(map[string]any); fields["peer_id"] != "win-peer" {
+		t.Fatalf("目录请求参数错误: %v", fields)
+	}
+
+	ready := mustInvoke(t, service, "remoteApps.peerPrepare", map[string]any{"peer_id": "win-peer", "name": "notepad"})
+	if ready["type"] != "ready" || ready["rdp"] != "full-rdp" {
+		t.Fatalf("远端启动响应解包错误: %v", ready)
+	}
+	if fields := nextCommand(t, pipe)["RemoteApplicationPrepare"].(map[string]any); fields["peer_id"] != "win-peer" || fields["name"] != "notepad" {
+		t.Fatalf("启动请求参数错误: %v", fields)
+	}
+
+	tunnel := mustInvoke(t, service, "remoteApps.peerTunnel", map[string]any{
+		"peer_id": "win-peer", "ticket": []any{float64(1), float64(2), float64(3), float64(4), float64(5), float64(6), float64(7), float64(8), float64(9), float64(10), float64(11), float64(12), float64(13), float64(14), float64(15), float64(16), float64(17), float64(18), float64(19), float64(20), float64(21), float64(22), float64(23), float64(24), float64(25), float64(26), float64(27), float64(28), float64(29), float64(30), float64(31), float64(32)},
+	})
+	if tunnel["port"] != float64(43123) {
+		t.Fatalf("隧道端口映射错误: %v", tunnel)
+	}
+	fields := nextCommand(t, pipe)["RemoteApplicationTunnel"].(map[string]any)
+	if fields["peer_id"] != "win-peer" || fields["ticket"] == "" {
+		t.Fatalf("隧道请求参数错误: %v", fields)
+	}
+}
+
+func TestWindowsRemoteAppPeerOpenDispatchesLoopbackRDPDocument(t *testing.T) {
+	pipe, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		switch {
+		case command["RemoteApplicationPrepare"] != nil:
+			return map[string]any{"RemoteApplicationReady": map[string]any{"json": `{"type":"ready","version":2,"name":"notepad","ticket":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32],"rdp":"full address:s:deskfuse-rdp.invalid\r\nremoteapplicationprogram:s:||notepad\r\n","host":{"port":3389,"checks":[]}}`}}
+		case command["RemoteApplicationTunnel"] != nil:
+			return map[string]any{"RemoteApplicationTunnel": map[string]any{"port": 43123}}
+		default:
+			return queuedReply(command)
+		}
+	})
+	service := NewService(dial)
+	nativeHost := &fakeNative{}
+	service.SetNative(nativeHost)
+	openSession(t, service, pipe)
+	outcome := mustInvoke(t, service, "remoteApps.peerOpen", map[string]any{
+		"peer_id": "win-peer", "name": "notepad",
+	})
+	if outcome["opened"] != true || len(nativeHost.opened) != 1 {
+		t.Fatalf("RDP 文档没有交给 native shell: %v opened=%v", outcome, nativeHost.opened)
+	}
+	data, err := os.ReadFile(nativeHost.opened[0])
+	if err != nil {
+		t.Fatalf("临时 RDP 文档不可读: %v", err)
+	}
+	if !strings.Contains(string(data), "full address:s:127.0.0.1:43123") {
+		t.Fatalf("RDP 地址没有替换为 loopback: %s", data)
+	}
+	_ = os.Remove(nativeHost.opened[0])
+}
+
 func TestBlockRequiresConfirmation(t *testing.T) {
 	_, dial := newFakePipe(t, queuedReply)
 	service := NewService(dial)
@@ -460,7 +611,8 @@ func TestUnsupportedOperationsFailBeforeDialing(t *testing.T) {
 	}{
 		{"clipboard.paste", "unsupported_platform"},
 		{"clipboard.save", "unsupported_platform"},
-		{"download_and_install_update", "unsupported_platform"},
+		{"download_and_install_update", "invalid_params"},
+		{"remoteApps.catalog", "unsupported_platform"},
 		{"workflow.run", "unsupported_platform"},
 	}
 	for _, test := range cases {
@@ -474,6 +626,24 @@ func TestUnsupportedOperationsFailBeforeDialing(t *testing.T) {
 	}
 	if dialed {
 		t.Fatal("不支持的操作不应打开服务连接")
+	}
+}
+
+func TestWindowsMicrophoneContractReportsNativeBackendBoundary(t *testing.T) {
+	service := NewService(func(context.Context) (io.ReadWriteCloser, error) {
+		return nil, errors.New("microphone status must not open the desktop pipe")
+	})
+	status := map[string]any{}
+	if err := service.microphoneStatus(context.Background(), &status); err != nil {
+		t.Fatalf("麦克风状态查询失败: %v", err)
+	}
+	if status["supported"] != false || status["driver_ready"] != false || status["reason"] == "" {
+		t.Fatalf("麦克风能力边界错误: %v", status)
+	}
+	err := service.microphoneManageDriver(context.Background(), map[string]any{"action": "install"}, nil)
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Code != "unsupported_platform" {
+		t.Fatalf("未接入原生驱动时必须返回结构化 unsupported_platform: %v", err)
 	}
 }
 
@@ -910,25 +1080,43 @@ func TestInputActionsMapToServiceCommands(t *testing.T) {
 	if body["feature_enabled"] != false {
 		t.Fatalf("功能开关映射错误: %v", body)
 	}
+
+	mustInvoke(t, service, "devices.setInputPath", map[string]any{"device_id": "mac-1", "path": "wifi"})
+	pathCommand := nextCommand(t, pipe)["SetInputSharingSettings"].(map[string]any)
+	settings := pathCommand["settings"].(map[string]any)
+	paths := settings["input_paths"].([]any)
+	if len(paths) != 1 {
+		t.Fatalf("键鼠线路没有写入: %v", settings["input_paths"])
+	}
+	pathSetting := paths[0].(map[string]any)
+	if pathSetting["device_id"] != "mac-1" {
+		t.Fatalf("线路设备错误: %v", pathSetting)
+	}
+	policy := pathSetting["policy"].(map[string]any)
+	if policy["Only"] != "WiFi" {
+		t.Fatalf("线路策略错误: %v", policy)
+	}
+
+	mustInvoke(t, service, "feature.setEnabled", map[string]any{"feature": "clipboard", "enabled": false})
+	clipboard := nextCommand(t, pipe)["SetClipboardSync"].(map[string]any)
+	if clipboard["enabled"] != false {
+		t.Fatalf("剪贴板开关映射错误: %v", clipboard)
+	}
 }
 
-func TestUpdateRichTextRejectsStyledRuns(t *testing.T) {
-	dialed := false
-	service := NewService(func(ctx context.Context) (io.ReadWriteCloser, error) {
-		dialed = true
-		return nil, errors.New("不应连接")
-	})
-	err := service.Call(context.Background(), "app.invoke", map[string]any{
-		"action": "clipboard.updateRichText",
-		"params": map[string]any{"op": "set_item_text", "id": "1", "text": "x",
-			"runs": []any{map[string]any{"text": "x", "bold": true}}},
-	}, nil)
-	var remote *RemoteError
-	if !errors.As(err, &remote) || remote.Code != "unsupported_platform" {
-		t.Fatalf("带样式的富文本编辑必须返回真实错误: %v", err)
+func TestInputPathProjectionAndAutoReset(t *testing.T) {
+	settings := inputSettingsWire{
+		InputPaths: []json.RawMessage{
+			json.RawMessage(`{"device_id":"mac-1","policy":{"Only":"WiFi"}}`),
+			json.RawMessage(`{"device_id":"mac-2","policy":{"Only":"Ethernet"}}`),
+		},
 	}
-	if dialed {
-		t.Fatal("不支持的富文本编辑不应打开连接")
+	current, seen := settings.inputPathFor("mac-1")
+	if current != "wifi" || !containsString(seen, "ethernet") {
+		t.Fatalf("线路投影错误: current=%q seen=%v", current, seen)
+	}
+	if current, _ := settings.inputPathFor("mac-3"); current != "auto" {
+		t.Fatalf("未知设备应为 auto，实际 %q", current)
 	}
 }
 
@@ -959,6 +1147,41 @@ func TestUpdateRichTextPlainTextUsesLibraryMutate(t *testing.T) {
 	}
 }
 
+func TestUpdateRichTextStyledRunsUsesPortableRTF(t *testing.T) {
+	pipe, dial := newDesktopPipe(t, sampleSnapshot, func(command map[string]any) map[string]any {
+		if _, ok := command["LibraryMutate"]; ok {
+			return map[string]any{"LibraryResult": map[string]any{"json": `{"revision":6}`}}
+		}
+		return queuedReply(command)
+	})
+	service := NewService(dial)
+	openSession(t, service, pipe)
+	mustInvoke(t, service, "clipboard.updateRichText", map[string]any{
+		"op": "set_item_text", "id": "42", "text": "粗体和普通",
+		"runs": []any{
+			map[string]any{"text": "粗体", "bold": true},
+			map[string]any{"text": "和普通"},
+		},
+	})
+	command := nextCommand(t, pipe)
+	mutate := command["LibraryMutate"].(map[string]any)
+	var request map[string]any
+	if err := json.Unmarshal([]byte(mutate["request"].(string)), &request); err != nil {
+		t.Fatal(err)
+	}
+	rtfText, ok := request["rtf"].(string)
+	if !ok || rtfText == "" {
+		t.Fatalf("缺少 RTF 字节: %v", request)
+	}
+	encoded, err := base64.StdEncoding.DecodeString(rtfText)
+	if err != nil {
+		t.Fatalf("RTF base64 无效: %v", err)
+	}
+	if got := string(encoded); !strings.Contains(got, `\rtf1`) || !strings.Contains(got, `\b `) || !strings.Contains(got, `\u`) {
+		t.Fatalf("RTF 内容不完整: %q", got)
+	}
+}
+
 func contains(value, part string) bool { return strings.Contains(value, part) }
 
 // fakeNative records the host primitives so clipboard actions can be asserted
@@ -967,6 +1190,7 @@ type fakeNative struct {
 	formats  []native.Format
 	files    []string
 	pastes   int
+	opened   []string
 	failWith error
 }
 
@@ -983,12 +1207,12 @@ func (f *fakeNative) SaveFile(string, []native.Filter, []byte) (string, bool, er
 }
 func (f *fakeNative) ChooseFolder(string) (string, bool, error) { return "", false, nil }
 func (f *fakeNative) Reveal([]string) error                     { return nil }
-func (f *fakeNative) OpenPath(string) error                     { return nil }
+func (f *fakeNative) OpenPath(path string) error                { f.opened = append(f.opened, path); return nil }
 func (f *fakeNative) OpenURL(string) error                      { return nil }
 func (f *fakeNative) OpenSystemSettings(string) error           { return nil }
 func (f *fakeNative) CopyText(string) error                     { return nil }
 func (f *fakeNative) PickExe(string) (string, bool, error)      { return "", false, nil }
-func (f *fakeNative) PickFiles(string) ([]string, bool, error)   { return nil, false, nil }
+func (f *fakeNative) PickFiles(string) ([]string, bool, error)  { return nil, false, nil }
 func (f *fakeNative) AppIcon(string, int) (string, error)       { return "", nil }
 func (f *fakeNative) LocalWallpaper(string) (string, error)     { return "", nil }
 func (f *fakeNative) SaveFileBytes(string, []byte) (string, bool, error) {

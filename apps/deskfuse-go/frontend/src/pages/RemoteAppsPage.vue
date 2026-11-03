@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import DevicesPage from './DevicesPage.vue'
 import RemoteCatalogPane from './features/RemoteCatalogPane.vue'
+import WindowsRemoteAppHost from './features/WindowsRemoteAppHost.vue'
 import Icon from './features/Icon.vue'
 import { camelize } from './features/core'
 import { backend, errorMessage } from '../services/backend'
@@ -30,7 +31,8 @@ const restriction = computed(() =>
 </script>
 
 <template>
-  <DevicesPage :snapshot="snapshot" :shows-applications="true">
+  <WindowsRemoteAppHost v-if="snapshot?.platform === 'windows'" :snapshot="snapshot" />
+  <DevicesPage v-else :snapshot="snapshot" :shows-applications="true">
     <template #detail="{ device }">
       <div v-if="!canOperate" class="empty-state remote-empty">
         <Icon name="keyboard" :size="40" />

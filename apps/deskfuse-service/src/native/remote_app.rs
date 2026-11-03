@@ -18,6 +18,7 @@ use crate::remote_rdp_protocol::{
     CatalogApp, ConsoleSession, HostCheck, RdpHost, RemoteAppMessage, RemoteAppRequest, VERSION,
     parse_request,
 };
+use deskfuse_core::DeviceId;
 use deskfuse_transport::QuinnTransport;
 use deskfuse_transport::remote_application::RemoteSession;
 use std::{
@@ -1078,6 +1079,76 @@ pub fn serve(
         }
     }
     session.close();
+}
+
+/// Open one authenticated remote-app stream as a controller and request the
+/// current Windows catalog. The desktop IPC returns the versioned JSON
+/// envelope unchanged so Go/WebView does not duplicate the QUIC protocol.
+pub fn request_catalog(peer_id: &str) -> Result<String, String> {
+    let peer: DeviceId = peer_id.parse().map_err(|_| "设备 ID 无效".to_string())?;
+    let service = deskfuse_engine::remote_application::service()?;
+    service.enable(true);
+    let session = service.open(peer)?;
+    let request = RemoteAppRequest::Catalog { version: VERSION };
+    let data = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+    session.send_blocking(data)?;
+    let response = receive_message(&session)?;
+    session.close();
+    match response {
+        RemoteAppMessage::Catalog { .. } | RemoteAppMessage::Error { .. } => {
+            serde_json::to_string(&response).map_err(|error| error.to_string())
+        }
+        _ => Err("远程应用服务返回了无效目录响应".into()),
+    }
+}
+
+/// Open a controller stream, request one application preparation and return
+/// the `Ready` envelope. The ticket remains one-use and is consumed only by
+/// the later RDP tunnel command.
+pub fn prepare_remote_app(peer_id: &str, name: &str) -> Result<String, String> {
+    if name.is_empty() || name.len() > 256 || !crate::remote_app_catalog::valid_name(name) {
+        return Err("远程应用名称无效".into());
+    }
+    let peer: DeviceId = peer_id.parse().map_err(|_| "设备 ID 无效".to_string())?;
+    let service = deskfuse_engine::remote_application::service()?;
+    service.enable(true);
+    let session = service.open(peer)?;
+    let request = RemoteAppRequest::Prepare {
+        version: VERSION,
+        name: name.to_string(),
+    };
+    let data = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+    session.send_blocking(data)?;
+    let response = receive_message(&session)?;
+    session.close();
+    match response {
+        RemoteAppMessage::Ready { .. } | RemoteAppMessage::Error { .. } => {
+            serde_json::to_string(&response).map_err(|error| error.to_string())
+        }
+        _ => Err("远程应用服务返回了无效启动响应".into()),
+    }
+}
+
+/// Bind one loopback TCP port for the Windows controller's system RDP client.
+/// The first accepted connection consumes the one-use ticket and is forwarded
+/// through the authenticated QUIC RDP tunnel.
+#[cfg(windows)]
+pub fn open_rdp_listener(peer_id: &str, ticket: Vec<u8>) -> Result<u16, String> {
+    let peer: DeviceId = peer_id.parse().map_err(|_| "设备 ID 无效".to_string())?;
+    deskfuse_engine::remote_application::service()?.open_rdp_listener(peer, ticket)
+}
+
+fn receive_message(session: &RemoteSession) -> Result<RemoteAppMessage, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err("读取远程应用响应超时".into());
+        }
+        if let Some(data) = session.receive(250)? {
+            return serde_json::from_slice(&data)
+                .map_err(|error| format!("远程应用响应无效：{error}"));
+        }
+    }
 }
 
 fn send(session: &RemoteSession, message: &RemoteAppMessage) -> Result<(), String> {

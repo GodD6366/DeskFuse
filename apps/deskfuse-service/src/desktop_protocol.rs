@@ -311,6 +311,23 @@ pub enum Command {
     RemoteAppConnection {
         name: String,
     },
+    /// Request a remote Windows application catalog through the authenticated
+    /// QUIC RemoteApplication stream. The JSON payload is the versioned
+    /// `remote_rdp_protocol::RemoteAppMessage` envelope.
+    RemoteApplicationCatalog {
+        peer_id: String,
+    },
+    /// Prepare one remote Windows application and return its one-use ticket
+    /// and RDP document in the same protocol envelope.
+    RemoteApplicationPrepare {
+        peer_id: String,
+        name: String,
+    },
+    /// Bind a one-shot loopback TCP port for Windows `mstsc.exe`.
+    RemoteApplicationTunnel {
+        peer_id: String,
+        ticket: Vec<u8>,
+    },
     /// Canvas-only drag preview: compute the snapped offset for one device
     /// move without committing it. Mirrors the engine's `preview_display_move`.
     PreviewControlDeviceMove {
@@ -453,6 +470,15 @@ pub enum Reply {
     },
     RemoteAppConnection {
         rdp: String,
+    },
+    RemoteApplicationCatalog {
+        json: String,
+    },
+    RemoteApplicationReady {
+        json: String,
+    },
+    RemoteApplicationTunnel {
+        port: u16,
     },
     Queued {
         message: String,
@@ -806,6 +832,9 @@ pub struct Peer {
     pub discovered_only: bool,
     pub selected_route: Option<String>,
     pub routes: Vec<serde_json::Value>,
+    /// The selected/advertised route supports Windows RemoteApp over RDP.
+    #[serde(default)]
+    pub remote_app_rdp: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pending {

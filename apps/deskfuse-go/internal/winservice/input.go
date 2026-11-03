@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // The Windows service stores deskfuse_core::InputSharingSettings: named
@@ -72,6 +73,62 @@ func (s inputSettingsWire) clone() inputSettingsWire {
 		cloned.InputPaths = []json.RawMessage{}
 	}
 	return cloned
+}
+
+// inputPathFor projects the persisted service policy into the shared UI names.
+// The Rust enum is externally tagged (for example {"Only":"WiFi"}); keep
+// unknown values as auto so an older/newer service cannot break the page.
+func (s inputSettingsWire) inputPathFor(deviceID string) (string, []string) {
+	seen := []string{"auto"}
+	current := "auto"
+	for _, raw := range s.InputPaths {
+		var row struct {
+			DeviceID string          `json:"device_id"`
+			Policy   json.RawMessage `json:"policy"`
+		}
+		if json.Unmarshal(raw, &row) != nil || row.DeviceID == "" {
+			continue
+		}
+		name := inputPathName(row.Policy)
+		if name != "auto" && !containsString(seen, name) {
+			seen = append(seen, name)
+		}
+		if row.DeviceID == deviceID {
+			current = name
+		}
+	}
+	return current, seen
+}
+
+func inputPathName(raw json.RawMessage) string {
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil {
+		return "auto"
+	}
+	for key, candidate := range value {
+		if !strings.EqualFold(key, "Only") && !strings.EqualFold(key, "only") {
+			continue
+		}
+		name, _ := candidate.(string)
+		switch strings.ToLower(name) {
+		case "wifi":
+			return "wifi"
+		case "ethernet":
+			return "ethernet"
+		case "thunderbolt":
+			return "thunderbolt"
+		}
+	}
+	return "auto"
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // view is the macOS bridge's InputSettings shape.
@@ -316,6 +373,8 @@ func (s *Service) invokeInput(ctx context.Context, action string, args map[strin
 	switch action {
 	case "input.setSettings", "set_input":
 		return true, s.setInputSettings(ctx, args, result)
+	case "devices.setInputPath":
+		return true, s.setInputPath(ctx, args, result)
 	case "input.setParticipant":
 		return true, s.setInputParticipant(ctx, args, result)
 	case "input.reclaim":
@@ -332,6 +391,59 @@ func (s *Service) invokeInput(ctx context.Context, action string, args map[strin
 		return true, s.setInputFeature(ctx, args, result)
 	default:
 		return false, nil
+	}
+}
+
+func (s *Service) setInputPath(ctx context.Context, args map[string]any, result any) error {
+	device, err := requiredString(args, []string{"device_id", "deviceId"}, "需要设备 ID")
+	if err != nil {
+		return err
+	}
+	path, err := requiredString(args, []string{"path"}, "需要键鼠线路")
+	if err != nil {
+		return err
+	}
+	policy, ok := inputPathPolicy(path)
+	if !ok {
+		return invalidParams("设备或线路无效")
+	}
+	settings, err := s.cachedInputSettings(ctx)
+	if err != nil {
+		return err
+	}
+	filtered := make([]json.RawMessage, 0, len(settings.InputPaths)+1)
+	for _, raw := range settings.InputPaths {
+		var row struct {
+			DeviceID string `json:"device_id"`
+		}
+		if json.Unmarshal(raw, &row) == nil && row.DeviceID == device {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	if path != "auto" {
+		filteredPolicy, _ := json.Marshal(map[string]any{
+			"device_id": device,
+			"policy":    policy,
+		})
+		filtered = append(filtered, filteredPolicy)
+	}
+	settings.InputPaths = filtered
+	return s.callCommand(ctx, tagged("SetInputSharingSettings", map[string]any{"settings": settings}), "devices.setInputPath", result)
+}
+
+func inputPathPolicy(path string) (map[string]string, bool) {
+	switch path {
+	case "auto":
+		return nil, true
+	case "wifi":
+		return map[string]string{"Only": "WiFi"}, true
+	case "ethernet":
+		return map[string]string{"Only": "Ethernet"}, true
+	case "thunderbolt":
+		return map[string]string{"Only": "Thunderbolt"}, true
+	default:
+		return nil, false
 	}
 }
 

@@ -3,8 +3,8 @@ package winservice
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -33,10 +33,21 @@ func (s *shelfState) add(paths []string) {
 		s.files = append(s.files, shelfFile{
 			ID:   strconv.Itoa(s.nextID),
 			Path: path,
-			Name: filepath.Base(path),
+			Name: shelfBaseName(path),
 		})
 		s.nextID++
 	}
+}
+
+// shelfBaseName accepts both Windows and POSIX separators. Tests and
+// cross-platform callers may construct Windows paths while running on another
+// host, where filepath.Base would treat the backslash as an ordinary byte.
+func shelfBaseName(value string) string {
+	value = strings.TrimRight(value, `/\\`)
+	if index := strings.LastIndexAny(value, `/\\`); index >= 0 {
+		return value[index+1:]
+	}
+	return value
 }
 
 func (s *shelfState) remove(id, path string) {
@@ -178,10 +189,10 @@ func (s *Service) shelfSend(ctx context.Context, args map[string]any, result any
 	s.publishSeq = sequence
 	s.mu.Unlock()
 	_, err = s.client.Call(ctx, tagged("PublishFileClipboard", map[string]any{
-		"session_epoch":   s.sessionEpoch,
-		"sequence":        sequence,
-		"paths":           paths,
-		"target_peer_id":  peer,
+		"session_epoch":  s.sessionEpoch,
+		"sequence":       sequence,
+		"paths":          paths,
+		"target_peer_id": peer,
 	}))
 	if err != nil {
 		return err

@@ -196,12 +196,13 @@ impl Service {
 }
 
 /// Cancellation is tied to the owner, not to a worker holding the owner alive.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct RdpTunnelConnection {
     cancel: tokio::sync::watch::Sender<bool>,
     failure: Arc<Mutex<Option<String>>>,
+    closed: Arc<AtomicBool>,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RdpTunnelConnection {
     pub fn close(&self) {
         let _ = self.cancel.send(true);
@@ -213,42 +214,41 @@ impl RdpTunnelConnection {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for RdpTunnelConnection {
     fn drop(&mut self) {
         self.close();
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Service {
-    pub fn open_rdp_tunnel(
+    fn open_rdp_stream<S>(
         self: &Arc<Self>,
         peer: DeviceId,
         ticket: Vec<u8>,
-        socket: std::os::unix::net::UnixStream,
-    ) -> Result<Arc<RdpTunnelConnection>, String> {
+        mut socket: S,
+    ) -> Result<Arc<RdpTunnelConnection>, String>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         self.require_viewer_allowed()?;
         if !self.authorized(peer) {
             return Err("RDP 设备信任已撤销".into());
         }
-        socket.set_nonblocking(true).map_err(|e| e.to_string())?;
         let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
         let failure = Arc::new(Mutex::new(None));
+        let closed = Arc::new(AtomicBool::new(false));
         let result = Arc::new(RdpTunnelConnection {
             cancel,
             failure: failure.clone(),
+            closed: closed.clone(),
         });
         let service = self.clone();
         self.executor.spawn(async move {
-            // 套接字活到失败原因写入之后：FreeRDP 读到 EOF 时，界面已能取到隧道的真实原因。
-            let mut socket = match tokio::net::UnixStream::from_std(socket) {
-                Ok(socket) => socket,
-                Err(error) => {
-                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
-                    return;
-                }
-            };
             let reason = {
                 let future = async {
                     let tunnel = service.transport.open_remote_rdp_tunnel(peer, ticket).await?;
@@ -258,7 +258,6 @@ impl Service {
                 let mut check = tokio::time::interval(std::time::Duration::from_millis(100));
                 loop {
                     tokio::select! {
-                        // 本地关闭与对端正常结束都不是隧道故障。
                         _ = cancelled.changed() => break None,
                         result = &mut future => break result.err(),
                         _ = check.tick() => if !service.authorized(peer) || service.require_viewer_allowed().is_err() { break Some("RDP 访问授权已撤销".into()); },
@@ -266,8 +265,53 @@ impl Service {
                 }
             };
             *failure.lock().unwrap_or_else(|e| e.into_inner()) = reason;
+            closed.store(true, Ordering::Release);
             drop(socket);
         });
         Ok(result)
+    }
+
+    #[cfg(unix)]
+    pub fn open_rdp_tunnel(
+        self: &Arc<Self>,
+        peer: DeviceId,
+        ticket: Vec<u8>,
+        socket: std::os::unix::net::UnixStream,
+    ) -> Result<Arc<RdpTunnelConnection>, String> {
+        socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let socket = tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())?;
+        self.open_rdp_stream(peer, ticket, socket)
+    }
+
+    #[cfg(windows)]
+    pub fn open_rdp_listener(
+        self: &Arc<Self>,
+        peer: DeviceId,
+        ticket: Vec<u8>,
+    ) -> Result<u16, String> {
+        self.require_viewer_allowed()?;
+        if !self.authorized(peer) {
+            return Err("RDP 设备信任已撤销".into());
+        }
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|e| format!("无法创建本地 RDP 端口：{e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("无法配置本地 RDP 端口：{e}"))?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| e.to_string())?;
+        let service = self.clone();
+        self.executor.spawn(async move {
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept()).await;
+            if let Ok(Ok((socket, _))) = accepted {
+                if let Ok(connection) = service.open_rdp_stream(peer, ticket, socket) {
+                    while !connection.is_closed() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        });
+        Ok(port)
     }
 }

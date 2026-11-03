@@ -7,6 +7,9 @@ pub(super) mod file_transfer;
 pub(crate) mod input_helper;
 mod input_security;
 pub(super) mod lan_web;
+pub(crate) mod microphone;
+#[cfg(all(windows, feature = "windows-roc"))]
+pub(crate) mod microphone_transport;
 mod network;
 mod remote_app;
 mod security;

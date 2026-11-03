@@ -792,6 +792,7 @@ onBeforeUnmount(() => {
       v-if="snapshot && !featureEnabled"
       page="microphone"
       title="麦克风共享"
+      :blocked-reason="snapshot?.capabilities?.microphone_reason"
     />
 
     <div v-else-if="!snapshot" class="mic-scroll state-scroll">

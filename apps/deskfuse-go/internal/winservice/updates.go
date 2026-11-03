@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,10 +24,9 @@ const (
 	checkTimeout   = 15 * time.Second
 )
 
-// updateState is the desktop client's own update status. Windows has no
-// published auto-installer yet, so the channel is always "manual": the UI
-// shows the new version and a link to the release page instead of an
-// install button.
+// updateState is the desktop client's own update status. Windows installs the
+// signed NSIS release asset through the native shell; the installer owns
+// elevation and process replacement.
 type updateState struct {
 	mu          sync.Mutex
 	Version     string `json:"version"`
@@ -37,7 +40,7 @@ type updateState struct {
 }
 
 func newUpdateState() *updateState {
-	return &updateState{Channel: "manual", Message: "已是最新版本。"}
+	return &updateState{Channel: "github", Message: "已是最新版本。"}
 }
 
 func (u *updateState) view(currentVersion string) map[string]any {
@@ -69,6 +72,75 @@ func (s *Service) updatesCheck(ctx context.Context, result any) error {
 	}
 	go s.runUpdateCheck(ctx, current)
 	return assign(result, map[string]any{"outcome": "dispatched", "action": "updates.check"})
+}
+
+// updatesInstall downloads the signed Windows NSIS asset from the same
+// canonical GitHub Release used by updatesCheck, then hands it to the native
+// shell. The installer owns elevation, service replacement and restart; the Go
+// UI never overwrites its own running executable.
+func (s *Service) updatesInstall(ctx context.Context, result any) error {
+	s.updates.mu.Lock()
+	target := s.updates.Target
+	s.updates.mu.Unlock()
+	if target == "" {
+		return invalidParams("当前没有可安装的 Windows 更新")
+	}
+	assetURL, filename, err := fetchWindowsInstaller(ctx, target)
+	if err != nil {
+		return fmt.Errorf("无法获取 Windows 安装包: %w", err)
+	}
+	parsed, err := url.Parse(assetURL)
+	if err != nil || !allowedReleaseHost(parsed.Hostname()) {
+		return fmt.Errorf("Windows 安装包下载地址不受信任")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/octet-stream")
+	request.Header.Set("User-Agent", "DeskFuse-Windows-Client")
+	response, err := (&http.Client{Timeout: 10 * time.Minute}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("安装包下载返回 %s", response.Status)
+	}
+	temporary, err := os.CreateTemp("", "DeskFuse-update-*.exe")
+	if err != nil {
+		return err
+	}
+	path := filepath.Clean(temporary.Name())
+	limit := int64(512 * 1024 * 1024)
+	written, copyErr := io.Copy(temporary, io.LimitReader(response.Body, limit+1))
+	closeErr := temporary.Close()
+	if copyErr != nil || closeErr != nil || written == 0 || written > limit {
+		_ = os.Remove(path)
+		if written > limit {
+			return fmt.Errorf("Windows 安装包超过 512 MB 限制")
+		}
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	if err := s.requireNative(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := s.native.OpenPath(path); err != nil {
+		_ = os.Remove(path)
+		return nativeError(err)
+	}
+	go func() {
+		time.Sleep(30 * time.Minute)
+		_ = os.Remove(path)
+	}()
+	return assign(result, map[string]any{
+		"outcome": "dispatched", "action": "download_and_install_update",
+		"filename": filename,
+	})
 }
 
 func (s *Service) runUpdateCheck(ctx context.Context, current string) {
@@ -114,6 +186,50 @@ func (s *Service) runUpdateCheck(ctx context.Context, current string) {
 type releaseReply struct {
 	TagName string `json:"tag_name"`
 	HTMLURL string `json:"html_url"`
+	Assets  []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+func fetchWindowsInstaller(ctx context.Context, target string) (string, string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesAPIURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "DeskFuse-Windows-Client")
+	response, err := (&http.Client{Timeout: checkTimeout}).Do(request)
+	if err != nil {
+		return "", "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("GitHub 返回 %s", response.Status)
+	}
+	var reply releaseReply
+	if err := json.NewDecoder(response.Body).Decode(&reply); err != nil {
+		return "", "", err
+	}
+	version := strings.TrimPrefix(strings.TrimSpace(reply.TagName), "v")
+	if target != "" && version != target {
+		return "", "", fmt.Errorf("发布版本已变化，请重新检查更新")
+	}
+	for _, asset := range reply.Assets {
+		if strings.HasSuffix(strings.ToLower(asset.Name), "-windows-x64-setup.exe") && asset.URL != "" {
+			return asset.URL, asset.Name, nil
+		}
+	}
+	return "", "", fmt.Errorf("发布中没有 Windows x64 安装包")
+}
+
+func allowedReleaseHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com":
+		return true
+	default:
+		return false
+	}
 }
 
 func fetchLatestRelease(ctx context.Context) (version, url string, err error) {

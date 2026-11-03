@@ -121,6 +121,13 @@ import DeskFuseEngine
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if #available(macOS 14.2, *), RemoteApplicationManager.shared.focusViewer() { return true }
+        // A lightweight-mode UI child may have been reclaimed while the host
+        // stayed alive. Reopen must recreate the child before presenting the
+        // main route instead of leaving the Dock click with no window.
+        if MyGoUIHost.shared.suspended {
+            MyGoUIHost.shared.present(page: "devices")
+            return true
+        }
         AppStore.shared.openMain()
         return true
     }

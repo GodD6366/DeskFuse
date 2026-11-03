@@ -56,6 +56,7 @@ type peerWire struct {
 	DiscoveredOnly bool              `json:"discovered_only"`
 	SelectedRoute  *string           `json:"selected_route"`
 	Routes         []json.RawMessage `json:"routes"`
+	RemoteAppRDP   bool              `json:"remote_app_rdp"`
 }
 
 type pendingWire struct {
@@ -187,7 +188,13 @@ func (s snapshotWire) Shared() map[string]any {
 	caps := s.Capabilities
 	devices := make([]map[string]any, 0, len(s.Peers))
 	for _, peer := range s.Peers {
-		devices = append(devices, peer.view())
+		device := peer.view()
+		if s.Input.Settings != nil {
+			path, seen := s.Input.Settings.inputPathFor(peer.PeerID)
+			device["input_path"] = path
+			device["input_paths_seen"] = seen
+		}
+		devices = append(devices, device)
 	}
 	pairing := make([]map[string]any, 0, len(s.Pending))
 	for _, request := range s.Pending {
@@ -223,13 +230,18 @@ func (s snapshotWire) Shared() map[string]any {
 	return map[string]any{
 		"platform":     "windows",
 		"engine_ready": true,
-		"revision":     s.SessionEpoch,
-		"local":        local,
-		"local_id":     s.LocalDeviceID,
-		"local_name":   s.LocalName,
-		"devices":      devices,
-		"pairing":      pairing,
-		"transfers":    transfers,
+		// The legacy WinUI host has a Windows.Media.Ocr implementation, but the
+		// Go/WebView host has no OCR bridge yet. Explicitly disable the shared
+		// page's automatic probe instead of letting it call a known unsupported
+		// action for every image row.
+		"clipboard":  map[string]any{"automatic_ocr": false},
+		"revision":   s.SessionEpoch,
+		"local":      local,
+		"local_id":   s.LocalDeviceID,
+		"local_name": s.LocalName,
+		"devices":    devices,
+		"pairing":    pairing,
+		"transfers":  transfers,
 		"files": map[string]any{
 			"enabled":            s.FileSettings.Enabled,
 			"prefetch":           s.FileSettings.Prefetch,
@@ -260,6 +272,8 @@ func (s snapshotWire) Shared() map[string]any {
 			"updater":              caps.Updater,
 			"workflow_execution":   caps.WorkflowExecution,
 			"workflow_sync":        caps.WorkflowSync,
+			"microphone":           false,
+			"microphone_reason":    windowsMicrophoneUnavailable,
 		},
 		"input":       s.Input.view(s.Peers),
 		"lan_web":     map[string]any{"enabled": s.LanWeb.Enabled, "running": s.LanWeb.Running, "port": s.LanWeb.Port, "url": s.LanWeb.URL},
@@ -419,6 +433,7 @@ func (p peerWire) view() map[string]any {
 		"detail":             peerDetail(p.Trust, p.Connection),
 		"link_status":        linkStatus(p.Connection),
 		"routes":             p.Routes,
+		"remote_app_rdp":     p.RemoteAppRDP,
 	}
 	if p.SelectedRoute != nil {
 		view["endpoint"] = *p.SelectedRoute

@@ -361,7 +361,11 @@ func (s *Service) invoke(ctx context.Context, params any, result any) error {
 	case "updates.check":
 		return s.updatesCheck(ctx, result)
 	case "download_and_install_update":
-		return unsupported("Windows 版尚未提供自动安装；请在发布页下载新版安装包。")
+		return s.updatesInstall(ctx, result)
+	case "microphone.status":
+		return s.microphoneStatus(ctx, result)
+	case "microphone.manageDriver":
+		return s.microphoneManageDriver(ctx, args, result)
 	// Uninstall and diagnostics.
 	case "uninstall.plan":
 		return s.uninstallPlan(result)
@@ -377,6 +381,27 @@ func (s *Service) invoke(ctx context.Context, params any, result any) error {
 	// Global shortcut recording and input takeover.
 	case "clipboard.configure_shortcut":
 		return s.clipboardConfigureShortcut(args, result)
+	// Windows host-side RemoteApp administration. These commands enumerate and
+	// maintain this machine's RDP allow-list; controller-side catalog/open
+	// actions remain separate because they need a native RDP viewer and tunnel.
+	case "remoteApps.hostCatalog":
+		return s.remoteAppsHostList(ctx, result)
+	case "remoteApps.hostInstalled":
+		return s.remoteAppsHostInstalled(ctx, result)
+	case "remoteApps.hostRegister":
+		return s.remoteAppsHostRegister(ctx, action, args, result)
+	case "remoteApps.hostUnregister":
+		return s.remoteAppsHostUnregister(ctx, action, args, result)
+	case "remoteApps.hostConnection":
+		return s.remoteAppsHostConnection(ctx, args, result)
+	case "remoteApps.peerCatalog":
+		return s.remoteAppsPeerCatalog(ctx, args, result)
+	case "remoteApps.peerPrepare":
+		return s.remoteAppsPeerPrepare(ctx, args, result)
+	case "remoteApps.peerTunnel":
+		return s.remoteAppsPeerTunnel(ctx, args, result)
+	case "remoteApps.peerOpen":
+		return s.remoteAppsPeerOpen(ctx, args, result)
 	case "input.set_recording":
 		return s.inputSetRecording(ctx, args, result)
 	case "input.chooseController":
@@ -385,6 +410,10 @@ func (s *Service) invoke(ctx context.Context, params any, result any) error {
 		return s.inputWallpaper(args, result)
 	case "input.previewDisplayMove":
 		return s.inputPreviewDisplayMove(ctx, args, result)
+	case "remoteApps.openPicker", "remoteApps.catalog", "remoteApps.closeCatalog",
+		"remoteApps.open", "remoteApps.setVirtualDisplay", "remoteApps.setFavorite",
+		"remoteApps.saveAccount", "remoteApps.removeAccount":
+		return unsupported("Windows 控制端尚未接入远程应用目录与 RDP viewer；Windows 主机端 RemoteApp 可由其他已支持的控制端连接。")
 	// File transfer settings and transfer control.
 	case "set_files":
 		return s.setFiles(ctx, args, result)
@@ -521,7 +550,7 @@ func commandFor(action string, args map[string]any) (any, error) {
 		case "files":
 			return tagged("SetFileTransferEnabled", map[string]any{"enabled": enabled}), nil
 		case "clipboard":
-			return nil, unsupported("Windows 桌面 IPC 没有剪贴板总开关命令；剪贴板同步可用性由服务能力决定。")
+			return tagged("SetClipboardSync", map[string]any{"enabled": enabled}), nil
 		default:
 			return nil, unsupported(fmt.Sprintf("Windows 端尚未提供功能 %s", feature))
 		}
@@ -532,8 +561,6 @@ func commandFor(action string, args map[string]any) (any, error) {
 		"transfers.chooseFiles", "transfers.inspectPaths":
 		// 由 invoke 在宿主层或服务层处理，不会到达这里；防御性保留。
 		return nil, unsupported(fmt.Sprintf("%s 不是服务命令。", action))
-	case "devices.setInputPath":
-		return nil, unsupported("Windows 桌面 IPC 没有设置设备输入线路的命令。")
 	case "clipboard.indexOCR":
 		return nil, unsupported("Windows 客户端没有 OCR 索引能力。")
 	case "updates.check", "download_and_install_update", "uninstall.plan", "uninstall.perform",

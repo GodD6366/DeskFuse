@@ -8,7 +8,7 @@ import type { PageKey } from './core'
 
 // 对应 FeatureOnboardingView + FeatureGateView：功能总开关关闭时唯一的引导页。
 // 演示动画（FeatureDemos）未迁移，用图标徽标代替。
-const props = defineProps<{ page: Exclude<PageKey, 'devices' | 'settings'>; title: string }>()
+const props = defineProps<{ page: Exclude<PageKey, 'devices' | 'settings'>; title: string; blockedReason?: string }>()
 
 type Permission = 'accessibility' | 'screenRecording' | 'inputMonitoring'
 
@@ -91,6 +91,7 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshPermission))
       <div class="badge" aria-hidden="true"><Icon :name="info.icon" :size="22" /></div>
       <h2 class="df-title">{{ title }}</h2>
       <p class="message df-detail df-secondary">{{ info.message }}</p>
+      <p v-if="props.blockedReason" class="message df-detail df-secondary">{{ props.blockedReason }}</p>
       <ul class="bullets df-detail df-secondary">
         <li v-for="bullet in info.bullets" :key="bullet"><Icon name="check" :size="12" />{{ bullet }}</li>
       </ul>
@@ -102,7 +103,7 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshPermission))
         </button>
       </div>
       <Notice v-if="error" tone="danger" title="操作未完成" :message="error.message" :raw="error.raw" action-title="重试" dismissible @action="retry" @dismiss="dismiss" />
-      <button type="button" class="button primary" :disabled="busy.open" @click="openSettings">
+      <button v-if="!props.blockedReason" type="button" class="button primary" :disabled="busy.open" @click="openSettings">
         打开设置开启{{ title }}
       </button>
     </div>

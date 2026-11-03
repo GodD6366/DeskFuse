@@ -29,7 +29,11 @@ func (s *Service) hostAction(action string, args map[string]any, result any) err
 	case "clipboard.showInMain":
 		s.host.ShowMain("clipboard", "")
 	case "clipboard.showPanel", "clipboard.togglePanel":
-		return unsupported("Windows 版还没有剪贴板悬浮面板的入口；请从主窗口使用剪贴板。")
+		panelHost, ok := s.host.(interface{ ShowPanel() })
+		if !ok {
+			return unsupported("Windows 版当前宿主没有接入剪贴板悬浮面板。")
+		}
+		panelHost.ShowPanel()
 	}
 	return assign(result, map[string]any{"outcome": "applied", "action": action})
 }

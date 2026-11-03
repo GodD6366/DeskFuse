@@ -111,8 +111,8 @@ func TestUpdateCheckProjectsAvailability(t *testing.T) {
 	if update["available"] != true || update["target_version"] != "9.9.9" {
 		t.Fatalf("update projection wrong: %v", update)
 	}
-	if update["channel"] != "manual" {
-		t.Fatalf("channel = %v, want manual", update["channel"])
+	if update["channel"] != "github" {
+		t.Fatalf("channel = %v, want github", update["channel"])
 	}
 
 	service.fetchRelease = func(ctx context.Context) (string, string, error) {

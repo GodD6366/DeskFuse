@@ -157,7 +157,15 @@ final class MyGoPipeWriter: @unchecked Sendable {
     /// 最近一次界面上有窗口的时刻；界面收起后从此计时。
     private var lastScreenActivity = Date()
     /// 无窗口多久后回收界面进程。
-    static let lightweightIdleSeconds: TimeInterval = 600
+    // Release the WebView shell promptly after the UI is dismissed while
+    // keeping the Rust engine and input service resident.
+    static var lightweightIdleSeconds: TimeInterval {
+        if let raw = ProcessInfo.processInfo.environment["DESKFUSE_UI_IDLE_SECONDS"],
+           let value = TimeInterval(raw), value >= 1 {
+            return value
+        }
+        return 120
+    }
     static let idlePollSeconds: UInt64 = 30
 
     /// 界面进程空闲回收：窗口收起、应用不在前台持续 10 分钟后结束界面进程，
@@ -383,10 +391,13 @@ final class MyGoPipeWriter: @unchecked Sendable {
                 host.childPID = nil
                 host.auxiliaryTask?.cancel()
                 host.auxiliaryTask = nil
-                // 界面进程就是产品窗口：它退出后宿主没有可显示的界面，
-                // 不再重启也不再回落到原生窗口，直接结束，由系统记录退出原因。
-                NSLog("DeskFuse MyGo UI exited with status %d", finished.terminationStatus)
-                NSApp.terminate(nil)
+                // The engine and native clipboard panel remain usable after the
+                // WebView shell exits. Mark it suspended so the next main-window
+                // or page request recreates only the UI child.
+                host.suspended = true
+                host.lastScreenActivity = Date()
+                AppStore.shared.applyDockIconPolicy()
+                NSLog("DeskFuse MyGo UI exited with status %d; host remains alive", finished.terminationStatus)
             }
         }
         do { try process.run() } catch {
@@ -434,6 +445,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
     func stop() {
         guard let process else { return }
         stopping = true
+            let pid = process.processIdentifier
         auxiliaryTask?.cancel()
         auxiliaryTask = nil
         self.writer = nil
@@ -441,6 +453,19 @@ final class MyGoPipeWriter: @unchecked Sendable {
         self.process = nil
         self.server = nil
 
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            // WebKit can keep the UI child alive briefly while its XPC
+            // connections drain. Do not leave a hidden renderer around when
+            // lightweight mode is reclaiming the UI; force the shell down
+            // after a short grace period.
+            Task.detached(priority: .utility) {
+                try? await Task.sleep(for: .milliseconds(750))
+                // Check the original Process object as well as the PID so a
+                // rapidly reused PID can never receive the forced signal.
+                guard process.isRunning, process.processIdentifier == pid else { return }
+                _ = kill(pid, SIGKILL)
+            }
+        }
     }
 }

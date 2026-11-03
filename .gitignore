@@ -99,3 +99,4 @@ identity.key
 # Website dependencies and Pages build output (web/ → /site).
 /web/node_modules/
 /site/
+.alma-snapshots

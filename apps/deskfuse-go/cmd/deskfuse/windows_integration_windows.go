@@ -75,6 +75,8 @@ func installWindowsIntegration(window *mygo.Window, panel *panelWindow, shelf *s
 	}
 }
 
+func (h hostActions) ShowPanel() { showPanelAtCursor(h.panel) }
+
 // showPanelAtCursor opens the compact clipboard panel just below the pointer,
 // clamped to the display work area so it never runs off-screen.
 func showPanelAtCursor(panel *panelWindow) {

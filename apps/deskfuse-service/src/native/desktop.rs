@@ -557,6 +557,11 @@ impl State {
                 connection: enum_string(&peer.connection),
                 discovered_only: false,
                 selected_route: peer.selected_route.map(|id| id.to_string()),
+                remote_app_rdp: peer.routes.iter().any(|route| {
+                    route
+                        .capabilities()
+                        .contains(deskfuse_core::Capabilities::REMOTE_APPLICATION_RDP)
+                }),
                 routes: peer
                     .routes
                     .iter()
@@ -575,6 +580,11 @@ impl State {
                 connection: "disconnected".into(),
                 discovered_only: true,
                 selected_route: None,
+                remote_app_rdp: hint.routes.iter().any(|route| {
+                    route
+                        .capabilities()
+                        .contains(deskfuse_core::Capabilities::REMOTE_APPLICATION_RDP)
+                }),
                 routes: hint
                     .routes
                     .iter()
@@ -1985,6 +1995,37 @@ impl State {
                         BoundaryErrorCode::InvalidRequest,
                         "该 RemoteApp 注册信息无效，请重新注册",
                     ),
+                }
+            }
+            ipc::Command::RemoteApplicationCatalog { peer_id } => {
+                match remote_app::request_catalog(&peer_id) {
+                    Ok(json) => ipc::Reply::RemoteApplicationCatalog { json },
+                    Err(message) => ipc::Reply::rejected_typed(BoundaryErrorCode::Native, message),
+                }
+            }
+            ipc::Command::RemoteApplicationPrepare { peer_id, name } => {
+                match remote_app::prepare_remote_app(&peer_id, &name) {
+                    Ok(json) => ipc::Reply::RemoteApplicationReady { json },
+                    Err(message) => ipc::Reply::rejected_typed(BoundaryErrorCode::Native, message),
+                }
+            }
+            ipc::Command::RemoteApplicationTunnel { peer_id, ticket } => {
+                #[cfg(windows)]
+                {
+                    match remote_app::open_rdp_listener(&peer_id, ticket) {
+                        Ok(port) => ipc::Reply::RemoteApplicationTunnel { port },
+                        Err(message) => {
+                            ipc::Reply::rejected_typed(BoundaryErrorCode::Native, message)
+                        }
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (peer_id, ticket);
+                    ipc::Reply::rejected_typed(
+                        BoundaryErrorCode::Unsupported,
+                        "系统 RDP 隧道只在 Windows 控制端提供",
+                    )
                 }
             }
             other => match runtime_command(other) {

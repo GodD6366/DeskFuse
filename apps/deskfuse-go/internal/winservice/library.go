@@ -1,6 +1,7 @@
 package winservice
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -401,17 +403,14 @@ func (s *Service) shareWithWorkflow(ctx context.Context, id uint64, peer, workfl
 	})
 }
 
-// updateRichText applies a plain-text library edit through LibraryMutate. Styled
-// runs require RTF generation, which is a native text-system capability this
-// adapter does not have; rejecting them is better than silently editing text
-// without its formatting.
+// updateRichText applies a library edit through LibraryMutate. The shared
+// editor deliberately exposes only four inline styles, so the Windows adapter
+// can generate a bounded, self-contained RTF document without importing HTML
+// or invoking a platform text system.
 func (s *Service) updateRichText(ctx context.Context, args map[string]any, result any) error {
 	op, _ := stringValue(args, "op")
 	if op != "set_item_text" {
 		return unsupported(fmt.Sprintf("Windows 适配层只支持 set_item_text，收到 %s。", op))
-	}
-	if runs, ok := sliceValues(args["runs"]); ok && len(runs) > 0 {
-		return unsupported("富文本样式编辑需要 RTF 转换，Windows 适配层尚未实现；纯文本编辑可用。")
 	}
 	id, err := uintArg(args, "id", "内容 ID 无效")
 	if err != nil {
@@ -424,7 +423,21 @@ func (s *Service) updateRichText(ctx context.Context, args map[string]any, resul
 	if utf8.RuneCountInString(text) > 1_000_000 {
 		return invalidParams("文本内容超过 1,000,000 字符上限")
 	}
-	request, err := json.Marshal(map[string]any{"op": "set_item_text", "id": id, "text": text})
+	requestValue := map[string]any{"op": "set_item_text", "id": id, "text": text}
+	if runs, ok := sliceValues(args["runs"]); ok && len(runs) > 0 {
+		if len(runs) > 10_000 {
+			return invalidParams("样式段落超过 10,000 段上限")
+		}
+		rtf, err := richRunsRTF(runs, text)
+		if err != nil {
+			return err
+		}
+		if len(rtf) > 8*1024*1024 {
+			return invalidParams("富文本内容超过 8 MB 上限")
+		}
+		requestValue["rtf"] = []byte(rtf)
+	}
+	request, err := json.Marshal(requestValue)
 	if err != nil {
 		return err
 	}
@@ -432,4 +445,87 @@ func (s *Service) updateRichText(ctx context.Context, args map[string]any, resul
 		return err
 	}
 	return assign(result, map[string]any{"outcome": "applied", "action": "clipboard.updateRichText"})
+}
+
+// richRunsRTF converts the editor's safe run representation to RTF 1.9. It
+// escapes control characters and emits non-ASCII code points as signed
+// Unicode escapes so the payload is portable across Windows and the engine.
+func richRunsRTF(values []any, expected string) ([]byte, error) {
+	var body bytes.Buffer
+	var joined strings.Builder
+	styled := false
+	for _, value := range values {
+		run, ok := value.(map[string]any)
+		if !ok {
+			return nil, invalidParams("样式段格式无效")
+		}
+		text, _ := run["text"].(string)
+		joined.WriteString(text)
+		bold, _ := run["bold"].(bool)
+		italic, _ := run["italic"].(bool)
+		underline, _ := run["underline"].(bool)
+		strike, _ := run["strike"].(bool)
+		styled = styled || bold || italic || underline || strike
+		if bold {
+			body.WriteString(`\b `)
+		}
+		if italic {
+			body.WriteString(`\i `)
+		}
+		if underline {
+			body.WriteString(`\ul `)
+		}
+		if strike {
+			body.WriteString(`\strike `)
+		}
+		writeRTFEscaped(&body, text)
+		if bold {
+			body.WriteString(`\b0 `)
+		}
+		if italic {
+			body.WriteString(`\i0 `)
+		}
+		if underline {
+			body.WriteString(`\ul0 `)
+		}
+		if strike {
+			body.WriteString(`\strike0 `)
+		}
+	}
+	if joined.String() != expected {
+		return nil, invalidParams("文本与样式内容不一致")
+	}
+	if !styled {
+		return nil, nil
+	}
+	var out bytes.Buffer
+	out.WriteString(`{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}\viewkind4\uc1 `)
+	out.Write(body.Bytes())
+	out.WriteByte('}')
+	return out.Bytes(), nil
+}
+
+func writeRTFEscaped(out *bytes.Buffer, text string) {
+	for _, r := range text {
+		switch r {
+		case '\\':
+			out.WriteString(`\\`)
+		case '{':
+			out.WriteString(`\{`)
+		case '}':
+			out.WriteString(`\}`)
+		case '\n':
+			out.WriteString(`\line `)
+		case '\r':
+			// CRLF is represented by the LF branch; avoid a duplicate break.
+		default:
+			if r >= 0x20 && r <= 0x7e {
+				out.WriteRune(r)
+			} else {
+				for _, unit := range utf16.Encode([]rune{r}) {
+					out.WriteString(fmt.Sprintf(`\u%d?`, int16(unit)))
+				}
+			}
+		}
+	}
 }

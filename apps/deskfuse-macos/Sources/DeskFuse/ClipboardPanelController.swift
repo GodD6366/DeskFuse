@@ -245,7 +245,8 @@ import DeskFuseEngine
 
     private func present(atPointer: Bool) {
         guard featureEnabled, !suspended else { return }
-        if presentInWebView(atPointer: atPointer) { return }
+        // Keep the high-frequency clipboard popup native while the MyGo UI is
+        // running. Data and paste operations still use the existing bridge.
         // A status-item popover otherwise inherits the menu bar anchor's
         // appearance rather than an app-wide appearance override.
         popover.appearance = NSApp.appearance

@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "driver_inf": "DeskFuseMicrophone.inf",
+  "sha256": "REPLACE_WITH_SIGNED_INF_SHA256",
+  "publisher": "DeskFuse",
+  "minimum_windows_build": 19041
+}

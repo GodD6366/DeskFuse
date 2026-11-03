@@ -32,8 +32,12 @@ enum MemoryDiagnostics {
         return await Task.detached(priority: .utility) {
             let rows = processRows()
             let app = rows.first(where: { $0.pid == appPID }).map(sample)
+            // WebKit's XPC services are reparented to launchd, so a strict
+            // parent-PID filter silently drops the largest UI processes.
+            // Keep the field name for compatibility, but include known
+            // DeskFuse UI processes and WebKit helpers in the process group.
             let children = rows
-                .filter { $0.parentPID == appPID && !isDiagnosticCommand($0.command) }
+                .filter { ($0.parentPID == appPID || isUIProcess($0.command)) && !isDiagnosticCommand($0.command) }
                 .map(sample)
             let report = MemoryDiagnosticsReport(
                 timestampSeconds: Date().timeIntervalSince1970,
@@ -44,7 +48,7 @@ enum MemoryDiagnostics {
                 ocr: ocr,
                 selectedPage: selectedPage,
                 visibleWindowCount: visibleWindowCount,
-                note: "RSS/VSZ come from ps; physical footprint and peak come from footprint when task inspection is permitted. footprintSummary is intentionally bounded to the first 40 lines."
+                note: "RSS/VSZ come from ps; physical footprint and peak come from footprint when task inspection is permitted. WebKit XPC helpers are included by executable name because launchd reparents them. footprintSummary is intentionally bounded to the first 40 lines."
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
@@ -141,6 +145,15 @@ enum MemoryDiagnostics {
     private static func isDiagnosticCommand(_ command: String) -> Bool {
         let executable = command.split(separator: " ", maxSplits: 1).first.map(String.init) ?? command
         return executable == "/bin/ps" || executable == "/usr/bin/footprint" || executable == "/usr/bin/otool"
+    }
+
+    private static func isUIProcess(_ command: String) -> Bool {
+        let executable = command.split(separator: " ", maxSplits: 1).first.map(String.init) ?? command
+        return executable.hasSuffix("/deskfuse-mygo")
+            || executable.hasSuffix("/deskfuse-input-service")
+            || executable.contains("/WebKit.WebContent.xpc/")
+            || executable.contains("/WebKit.GPU.xpc/")
+            || executable.contains("/WebKit.Networking.xpc/")
     }
 
     private static func run(_ executable: String, arguments: [String]) -> String? {
