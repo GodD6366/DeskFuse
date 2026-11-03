@@ -29,7 +29,7 @@ unsafe extern "C" {
         capacity: usize,
     ) -> i32;
     fn deskfuse_roc_sender_feedback(sender: *mut RocSender, bytes: *const u8, length: usize)
-        -> i32;
+    -> i32;
     fn deskfuse_roc_sender_destroy(sender: *mut RocSender);
     fn deskfuse_roc_sender_last_error() -> *const std::ffi::c_char;
     fn deskfuse_roc_receiver_create() -> *mut RocReceiver;

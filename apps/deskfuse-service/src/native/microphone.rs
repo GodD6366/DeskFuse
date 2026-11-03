@@ -4,13 +4,13 @@
 //! the UI; the service/engine layer can consume frames and encode them for the
 //! authenticated microphone transport.
 
-use cpal::{traits::*, Device, FromSample, Sample, SampleFormat, Stream, StreamConfig};
+use cpal::{Device, FromSample, Sample, SampleFormat, Stream, StreamConfig, traits::*};
 use std::{
     collections::VecDeque,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
-        Arc, Mutex,
     },
     time::Duration,
 };

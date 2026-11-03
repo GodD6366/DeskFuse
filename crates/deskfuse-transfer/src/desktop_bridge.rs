@@ -1009,7 +1009,10 @@ impl FileBridge {
         let mut removed_paths = Vec::new();
         let mut failed = 0usize;
         let entries = std::fs::read_dir(&self.inner.cache_root).map_err(|error| {
-            format!("无法读取缓存目录 {}: {error}", self.inner.cache_root.display())
+            format!(
+                "无法读取缓存目录 {}: {error}",
+                self.inner.cache_root.display()
+            )
         })?;
         for entry in entries {
             let Ok(entry) = entry else { continue };

@@ -335,11 +335,13 @@ fn snap_device_move_with_attachment(
     let alignment = distance.unwrap_or(48.0);
     let preferred_horizontal = moving
         .iter()
-        .flat_map(|a| stationary.iter().map(move |b| {
-            let overlap_x = (a.x + dx + a.width).min(b.x + b.width) - (a.x + dx).max(b.x);
-            let overlap_y = (a.y + dy + a.height).min(b.y + b.height) - (a.y + dy).max(b.y);
-            (overlap_x, overlap_y, overlap_x * overlap_y)
-        }))
+        .flat_map(|a| {
+            stationary.iter().map(move |b| {
+                let overlap_x = (a.x + dx + a.width).min(b.x + b.width) - (a.x + dx).max(b.x);
+                let overlap_y = (a.y + dy + a.height).min(b.y + b.height) - (a.y + dy).max(b.y);
+                (overlap_x, overlap_y, overlap_x * overlap_y)
+            })
+        })
         .filter(|(_, _, area)| *area > 0.0)
         .max_by(|a, b| a.2.total_cmp(&b.2))
         .map(|(overlap_x, overlap_y, _)| overlap_x <= overlap_y)

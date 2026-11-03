@@ -188,12 +188,12 @@ pub(super) fn open_transfer_cache(path: &std::path::Path) -> io::Result<()> {
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
         };
-        use windows_sys::core::BOOL;
         use windows_sys::Win32::Security::{
             ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
             PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
         };
         use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+        use windows_sys::core::BOOL;
         let Some(path_text) = path.to_str() else {
             return Err(io::Error::other("transfer cache path is not UTF-16-safe"));
         };

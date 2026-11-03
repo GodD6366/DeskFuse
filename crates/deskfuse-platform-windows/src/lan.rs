@@ -2,9 +2,7 @@
 #![allow(unsafe_code)]
 
 use deskfuse_core::{ConnectionContext, InterfaceKind, LinkScope, TransportSessionId};
-use deskfuse_platform::{
-    LanInterface, LanWebPort, PlatformError, PlatformResult,
-};
+use deskfuse_platform::{LanInterface, LanWebPort, PlatformError, PlatformResult};
 use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
@@ -12,10 +10,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::NO_ERROR,
-    NetworkManagement::IpHelper::{
-        FreeMibTable, GetBestInterfaceEx, GetIfTable2, MIB_IF_TABLE2,
-    },
-    Networking::WinSock::{SOCKADDR_IN, AF_INET},
+    NetworkManagement::IpHelper::{FreeMibTable, GetBestInterfaceEx, GetIfTable2, MIB_IF_TABLE2},
+    Networking::WinSock::{AF_INET, SOCKADDR_IN},
 };
 
 struct InterfaceTable(*mut MIB_IF_TABLE2);
@@ -177,7 +173,9 @@ fn on_link(network: Ipv4Addr, prefix_len: u8, remote: Ipv4Addr) -> bool {
     if prefix_len == 0 || prefix_len > 32 {
         return false;
     }
-    let mask = u32::MAX.checked_shl(32 - u32::from(prefix_len)).unwrap_or(0);
+    let mask = u32::MAX
+        .checked_shl(32 - u32::from(prefix_len))
+        .unwrap_or(0);
     (u32::from(network) & mask) == (u32::from(remote) & mask)
 }
 
@@ -204,7 +202,10 @@ pub fn transport_context(
         return Ok(context);
     };
     let index = best_interface_index(remote)?;
-    let Some(adapter) = adapters()?.into_iter().find(|adapter| adapter.index == index) else {
+    let Some(adapter) = adapters()?
+        .into_iter()
+        .find(|adapter| adapter.index == index)
+    else {
         return Ok(context);
     };
     if !adapter.physical {
