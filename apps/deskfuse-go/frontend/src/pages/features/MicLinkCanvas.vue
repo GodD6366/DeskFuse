@@ -3,33 +3,58 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
   samples?: number[]
+  /** 宿主窗口时长（毫秒）：samples 覆盖的音频时间长度。 */
+  spanMs?: number
+  /** 数据末端距投影读取时刻的时延（毫秒），用于把远端窗口对齐到本机时钟。 */
+  ageMs?: number
   active?: boolean
   paused?: boolean
   vertical?: boolean
 }>(), {
   samples: () => [],
+  spanMs: 0,
+  ageMs: 0,
   active: false,
   paused: false,
   vertical: false,
 })
 
+// 画布显示一段固定的音频时间，波形以 1× 实时速度从来源插口流向去向插口。
+// 显示光标 = 页面时钟 − 平滑后的数据时延 − 300ms：光标永远不会越过已知数据，
+// 每次换帧只是同一段历史滚过去一点，不再整体换形、也不会因时延抖动而横向跳动。
+const VIEW_SPAN = 1.4
+const TRAIL = 0.3
+
 const canvas = ref<HTMLCanvasElement | null>(null)
 let context: CanvasRenderingContext2D | null = null
-let display = new Float32Array(256)
-// 显示用缓冲：对真实样本做 3 点平滑，抹掉采样点之间的毛刺，
-// 让波形读成一条连续的线；峰值仍按原始样本计算，不虚报电平。
-let smooth = new Float32Array(256)
-let peak = 0
-let smoothPeak = 0.02
+// 宿主窗口：最旧 → 最新。
+let values = new Float32Array(0)
+let windowSpan = 0
+// 最新样本对应的页面时钟（秒）。所有绘制时间都换算到这个时钟上。
+let newestAt = 0
+// 显示光标：画布最左（来源侧）对应的音频时刻，按真实时间推进。
+let cursor = Number.NaN
+// 数据时延的平滑值：向上跳变快速跟随（数据迟到时不冻结），回落缓慢（不改变滚动速度）。
+let ageSmooth = Number.NaN
+let lastFrame = 0
+let peak = 0.02
 let width = 1
 let height = 1
 let dpr = 1
 let raf = 0
 let observer: ResizeObserver | null = null
-let reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
 let accent = '#3276f3'
 let line = 'rgba(0,0,0,.09)'
 let surface = '#fff'
+// 来源侧淡、去向侧实的线性渐变，保留「声音沿链路流向目的地」的方向暗示。
+let flowGradient: CanvasGradient | null = null
+// 每帧复用的缓冲，避免 rAF 里反复分配。
+let columns = new Float32Array(0)
+
+function nowSeconds(): number {
+  return performance.now() / 1000
+}
 
 function cssVar(name: string, fallback: string): string {
   const element = canvas.value
@@ -56,85 +81,90 @@ function refreshPalette() {
   accent = cssVar('--accent', '#3276f3')
   line = cssVar('--line', 'rgba(0,0,0,.09)')
   surface = cssVar('--surface', '#fff')
+  refreshGradient()
+}
+
+function refreshGradient() {
+  if (!context) { flowGradient = null; return }
+  const start = props.vertical ? 16 : 18
+  const end = (props.vertical ? height : width) - (props.vertical ? 16 : 18)
+  const gradient = props.vertical
+    ? context.createLinearGradient(0, start, 0, end)
+    : context.createLinearGradient(start, 0, end, 0)
+  gradient.addColorStop(0, rgba(accent, 0.55))
+  gradient.addColorStop(0.4, accent)
+  gradient.addColorStop(1, accent)
+  flowGradient = gradient
 }
 
 function flowing(): boolean {
-  return props.active === true && props.paused !== true && display.length > 0
+  return props.active === true && props.paused !== true
+    && values.length > 8 && windowSpan > 0 && Number.isFinite(cursor)
 }
 
-function updateSamples() {
-  const input = (props.samples ?? []).map(Number).filter(Number.isFinite)
-  if (!input.length) {
-    display.fill(0)
-    smooth.fill(0)
-    peak = 0
-    smoothPeak = 0.02
-    if (reduced.matches) drawFrame(0)
+/** 在窗口 [0,1] 内线性插值取一个样本。 */
+function valueAt(progress: number): number {
+  const length = values.length
+  if (!length) return 0
+  const clamped = Math.max(0, Math.min(1, progress))
+  const position = clamped * (length - 1)
+  const index = Math.floor(position)
+  if (index >= length - 1) return values[length - 1]
+  const fraction = position - index
+  return values[index] * (1 - fraction) + values[index + 1] * fraction
+}
+
+function sampleAt(audioTime: number): number {
+  return valueAt((audioTime - (newestAt - windowSpan)) / windowSpan)
+}
+
+function applySamples() {
+  const input = props.samples ?? []
+  const next = new Float32Array(input.length)
+  for (let index = 0; index < input.length; index += 1) {
+    const value = Number(input[index])
+    next[index] = Number.isFinite(value) ? value : 0
+  }
+  values = next
+  windowSpan = Math.max(0, Number(props.spanMs) || 0) / 1000
+  const age = Math.max(0, Number(props.ageMs) || 0) / 1000
+  if (windowSpan <= 0 || values.length <= 8) {
+    cursor = Number.NaN
+    ageSmooth = Number.NaN
+    peak = 0.02
     return
   }
-  const length = display.length
-  let start = Math.max(0, input.length - length)
-  // 把最近的上升过零点放到窗口前面，避免每次刷新时波形横向跳动。
-  if (peak > 0.01) {
-    const limit = Math.min(input.length - 1, start + Math.max(16, Math.floor(length / 3)))
-    for (let index = Math.max(1, start); index < limit; index += 1) {
-      if (input[index - 1] <= 0 && input[index] > 0) {
-        start = index
-        break
-      }
-    }
+  // 幅度按窗口峰值缓慢跟随，避免每换一帧整条波形忽大忽小。
+  let target = 0
+  for (let index = 0; index < values.length; index += 1) target = Math.max(target, Math.abs(values[index]))
+  peak += (target - peak) * (target > peak ? 0.5 : 0.08)
+  // 时延平滑：向上跳变快速跟随（数据迟到时不冻结），回落缓慢（不改变滚动速度）。
+  if (!Number.isFinite(ageSmooth) || Math.abs(age - ageSmooth) > 0.25) {
+    // 首次到达或长时间断流后重新对齐：此时数据本身已经换了，可以直接吸收落差。
+    ageSmooth = age
+  } else {
+    ageSmooth += (age - ageSmooth) * (age > ageSmooth ? 0.5 : 0.08)
   }
-  display.fill(0)
-  const count = Math.min(length, input.length - start)
-  for (let index = 0; index < count; index += 1) display[index] = input[start + index]
-  smooth.fill(0)
-  for (let index = 0; index < count; index += 1) {
-    const prev = index > 0 ? display[index - 1] : display[index]
-    const next = index < count - 1 ? display[index + 1] : display[index]
-    smooth[index] = display[index] * 0.5 + (prev + next) * 0.25
-  }
-  peak = 0
-  for (let index = 0; index < count; index += 1) peak = Math.max(peak, Math.abs(display[index]))
-  const target = Math.max(peak, 0.002)
-  smoothPeak += (target - smoothPeak) * (target > smoothPeak ? 0.35 : 0.08)
-  if (reduced.matches) drawFrame(0)
+  // 窗口末端也用同一份平滑时延定位：每次换帧不重排采样相位，波形不会横向抖一下。
+  newestAt = nowSeconds() - ageSmooth
+  if (!Number.isFinite(cursor)) cursor = newestAt - TRAIL
 }
 
 function waveGain(): number {
-  // 真实语音大多在 −40 dBFS 附近，上限 3× 会把整段说话压成近乎直线。
-  // 以峰值归一化到链路高度的 15%（峰到峰约三成），波形是一条可读的带子，
-  // 而不是铺满整个舞台的面积块；0.004 的噪声地板限制静音时被过度放大。
-  return Math.min(40, 0.15 / Math.max(smoothPeak, 0.004))
+  // 峰值归一化到链路高度的 15%（峰到峰约三成）；0.004 的噪声地板限制静音放大。
+  return Math.min(40, 0.15 / Math.max(peak, 0.004))
 }
 
-function sampleAt(progress: number): number {
-  if (!flowing() || smooth.length === 0) return 0
-  const index = Math.max(0, Math.min(smooth.length - 1, Math.floor(progress * smooth.length)))
-  return smooth[index]
+/** 画布某一列的 y 值（横向布局）：最左是最新样本，向右变旧。 */
+function columnY(progress: number, cy: number, amplitude: number): number {
+  const value = sampleAt(cursor - progress * VIEW_SPAN) * amplitude
+  return Math.max(5, Math.min(height - 5, cy + value))
 }
 
-function traceHorizontal(x0: number, x1: number, cy: number, amplitude: number) {
-  if (!context) return
-  const span = Math.max(1, x1 - x0)
-  context.beginPath()
-  for (let x = x0; x <= x1; x += 1) {
-    const t = (x - x0) / span
-    const y = Math.max(5, Math.min(height - 5, cy + sampleAt(t) * amplitude))
-    if (x === x0) context.moveTo(x, y)
-    else context.lineTo(x, y)
-  }
-}
-
-function traceVertical(y0: number, y1: number, cx: number, amplitude: number) {
-  if (!context) return
-  const span = Math.max(1, y1 - y0)
-  context.beginPath()
-  for (let y = y0; y <= y1; y += 1) {
-    const t = (y - y0) / span
-    const x = Math.max(6, Math.min(width - 6, cx + sampleAt(t) * amplitude))
-    if (y === y0) context.moveTo(x, y)
-    else context.lineTo(x, y)
-  }
+/** 画布某一行的 x 值（纵向布局）：最上是最新样本，向下变旧。 */
+function rowX(progress: number, cx: number, amplitude: number): number {
+  const value = sampleAt(cursor - progress * VIEW_SPAN) * amplitude
+  return Math.max(6, Math.min(width - 6, cx + value))
 }
 
 function port(x: number, y: number, time: number, offset: number) {
@@ -161,21 +191,36 @@ function port(x: number, y: number, time: number, offset: number) {
   }
 }
 
-function drawPacketsHorizontal(time: number, x0: number, x1: number, cy: number, amplitude: number) {
+function strokeCurve(path: Path2D) {
+  if (!context) return
+  context.strokeStyle = rgba(accent, 0.12)
+  context.lineWidth = 8
+  context.lineJoin = 'round'
+  context.lineCap = 'round'
+  context.stroke(path)
+  context.strokeStyle = flowGradient ?? accent
+  context.lineWidth = 3
+  context.lineJoin = 'round'
+  context.lineCap = 'round'
+  context.stroke(path)
+}
+
+function drawPacketsHorizontal(time: number, x0: number, x1: number) {
   if (!context) return
   const packets = 6
   const span = Math.max(1, x1 - x0)
   for (let index = 0; index < packets; index += 1) {
+    // 数据包从来源插口走向去向插口；位置直接取渲染曲线，包始终贴着波形走。
     const progress = (time * 0.085 + index / packets) % 1
     const x = x0 + progress * span
-    const y = Math.max(5, Math.min(height - 5, cy + sampleAt(progress) * amplitude))
+    const y = columns[Math.max(0, Math.min(columns.length - 1, Math.round(x - x0)))]
     context.beginPath()
     for (let step = 0; step <= 9; step += 1) {
-      const t = Math.max(0, progress - step * 0.006)
-      const tx = x0 + t * span
-      const ty = Math.max(5, Math.min(height - 5, cy + sampleAt(t) * amplitude))
-      if (step === 0) context.moveTo(tx, ty)
-      else context.lineTo(tx, ty)
+      const trail = Math.max(0, progress - step * 0.006)
+      const trailX = x0 + trail * span
+      const trailY = columns[Math.max(0, Math.min(columns.length - 1, Math.round(trailX - x0)))]
+      if (step === 0) context.moveTo(trailX, trailY)
+      else context.lineTo(trailX, trailY)
     }
     context.strokeStyle = rgba(accent, 0.26)
     context.lineWidth = 1.4
@@ -192,21 +237,21 @@ function drawPacketsHorizontal(time: number, x0: number, x1: number, cy: number,
   }
 }
 
-function drawPacketsVertical(time: number, y0: number, y1: number, cx: number, amplitude: number) {
+function drawPacketsVertical(time: number, y0: number, y1: number) {
   if (!context) return
   const packets = 4
   const span = Math.max(1, y1 - y0)
   for (let index = 0; index < packets; index += 1) {
     const progress = (time * 0.105 + index / packets) % 1
     const y = y0 + progress * span
-    const x = Math.max(6, Math.min(width - 6, cx + sampleAt(progress) * amplitude))
+    const x = columns[Math.max(0, Math.min(columns.length - 1, Math.round(y - y0)))]
     context.beginPath()
     for (let step = 0; step <= 8; step += 1) {
-      const t = Math.max(0, progress - step * 0.008)
-      const ty = y0 + t * span
-      const tx = Math.max(6, Math.min(width - 6, cx + sampleAt(t) * amplitude))
-      if (step === 0) context.moveTo(tx, ty)
-      else context.lineTo(tx, ty)
+      const trail = Math.max(0, progress - step * 0.008)
+      const trailY = y0 + trail * span
+      const trailX = columns[Math.max(0, Math.min(columns.length - 1, Math.round(trailY - y0)))]
+      if (step === 0) context.moveTo(trailX, trailY)
+      else context.lineTo(trailX, trailY)
     }
     context.strokeStyle = rgba(accent, 0.26)
     context.lineWidth = 1.4
@@ -240,12 +285,15 @@ function drawIdleLine(horizontal: boolean, axisStart: number, axisEnd: number, c
   context.setLineDash([])
 }
 
+function ensureColumns(size: number) {
+  if (columns.length < size) columns = new Float32Array(size)
+}
+
 function drawHorizontal(time: number) {
   if (!context) return
   const x0 = 18
   const x1 = width - 18
   const cy = height / 2
-  const amplitude = height * waveGain()
   context.clearRect(0, 0, width, height)
 
   if (!flowing()) {
@@ -255,28 +303,20 @@ function drawHorizontal(time: number) {
     return
   }
 
+  const amplitude = height * waveGain()
+  const count = Math.max(2, Math.min(2048, Math.round(x1 - x0) + 1))
+  ensureColumns(count)
+  const path = new Path2D()
+  for (let index = 0; index < count; index += 1) {
+    const x = x0 + (x1 - x0) * (index / (count - 1))
+    const y = columnY(index / (count - 1), cy, amplitude)
+    columns[index] = y
+    if (index === 0) path.moveTo(x, y)
+    else path.lineTo(x, y)
+  }
   // 传输中只画一条线：真实样本平滑后的连续曲线，从来源插口一直走到去向插口。
-  // 不再叠加面积填充，波形不会盖过两侧设备卡。
-  traceHorizontal(x0, x1, cy, amplitude)
-  context.strokeStyle = rgba(accent, 0.12)
-  context.lineWidth = 8
-  context.lineJoin = 'round'
-  context.lineCap = 'round'
-  context.stroke()
-
-  const flowGradient = context.createLinearGradient(x0, 0, x1, 0)
-  flowGradient.addColorStop(0, rgba(accent, 0.55))
-  flowGradient.addColorStop(0.4, accent)
-  flowGradient.addColorStop(1, accent)
-
-  traceHorizontal(x0, x1, cy, amplitude)
-  context.strokeStyle = flowGradient
-  context.lineWidth = 3
-  context.lineJoin = 'round'
-  context.lineCap = 'round'
-  context.stroke()
-
-  if (!reduced.matches) drawPacketsHorizontal(time, x0, x1, cy, amplitude)
+  strokeCurve(path)
+  if (!reduced.matches) drawPacketsHorizontal(time, x0, x1)
   port(x0, cy, time, 0)
   port(x1, cy, time, 1.1)
 }
@@ -296,27 +336,18 @@ function drawVertical(time: number) {
     return
   }
 
-  // 纵向布局同样只画一条线：来源在上、去向在下。
-  traceVertical(y0, y1, cx, amplitude)
-  context.strokeStyle = rgba(accent, 0.12)
-  context.lineWidth = 8
-  context.lineJoin = 'round'
-  context.lineCap = 'round'
-  context.stroke()
-
-  const flowGradient = context.createLinearGradient(0, y0, 0, y1)
-  flowGradient.addColorStop(0, rgba(accent, 0.55))
-  flowGradient.addColorStop(0.4, accent)
-  flowGradient.addColorStop(1, accent)
-
-  traceVertical(y0, y1, cx, amplitude)
-  context.strokeStyle = flowGradient
-  context.lineWidth = 3
-  context.lineJoin = 'round'
-  context.lineCap = 'round'
-  context.stroke()
-
-  if (!reduced.matches) drawPacketsVertical(time, y0, y1, cx, amplitude)
+  const count = Math.max(2, Math.min(2048, Math.round(y1 - y0) + 1))
+  ensureColumns(count)
+  const path = new Path2D()
+  for (let index = 0; index < count; index += 1) {
+    const y = y0 + (y1 - y0) * (index / (count - 1))
+    const x = rowX(index / (count - 1), cx, amplitude)
+    columns[index] = x
+    if (index === 0) path.moveTo(x, y)
+    else path.lineTo(x, y)
+  }
+  strokeCurve(path)
+  if (!reduced.matches) drawPacketsVertical(time, y0, y1)
   port(cx, y0, time, 0.25)
   port(cx, y1, time, 1.35)
 }
@@ -327,22 +358,46 @@ function drawFrame(time: number) {
   else drawHorizontal(time)
 }
 
-function frame(now: number) {
-  drawFrame(now / 1000)
-  raf = requestAnimationFrame(frame)
-}
-
-function start() {
-  cancelAnimationFrame(raf)
-  raf = 0
-  if (reduced.matches) {
-    drawFrame(0)
+function frame(timestamp: number) {
+  const time = timestamp / 1000
+  lastFrame = time
+  if (!flowing()) {
+    stopAnimation()
+    drawFrame(time)
     return
   }
+  // 光标由页面时钟直接给出：速度恒为 1×，只有平滑时延的缓慢漂移参与修正；
+  // 数据迟到时最多贴住最新样本，不越过它。
+  cursor = Math.min(time - ageSmooth - TRAIL, newestAt - 0.004)
+  drawFrame(time)
   raf = requestAnimationFrame(frame)
 }
 
-function resize() {
+function stopAnimation() {
+  if (!raf) return
+  cancelAnimationFrame(raf)
+  raf = 0
+}
+
+/** 静态帧：减弱动态效果、无样本、暂停态都停在这一帧。 */
+function drawStill() {
+  stopAnimation()
+  lastFrame = 0
+  if (windowSpan > 0 && values.length > 8) cursor = newestAt - TRAIL
+  drawFrame(nowSeconds())
+}
+
+function ensureRunning() {
+  if (!flowing() || reduced.matches) {
+    drawStill()
+    return
+  }
+  if (raf) return
+  lastFrame = 0
+  raf = requestAnimationFrame(frame)
+}
+
+function sizeCanvas() {
   const element = canvas.value
   if (!element) return
   context = element.getContext('2d')
@@ -350,36 +405,49 @@ function resize() {
   dpr = Math.min(2, window.devicePixelRatio || 1)
   width = Math.max(1, rect.width)
   height = Math.max(1, rect.height)
-  element.width = Math.round(width * dpr)
-  element.height = Math.round(height * dpr)
+  const nextWidth = Math.round(width * dpr)
+  const nextHeight = Math.round(height * dpr)
+  if (element.width !== nextWidth) element.width = nextWidth
+  if (element.height !== nextHeight) element.height = nextHeight
   context?.setTransform(dpr, 0, 0, dpr, 0, 0)
   refreshPalette()
-  if (reduced.matches) drawFrame(0)
+}
+
+function resize() {
+  const running = Boolean(raf)
+  sizeCanvas()
+  // 尺寸变化后若动画在跑，下一帧自然重绘；否则补一张静态帧。
+  if (!running) drawStill()
 }
 
 function onReducedChange() {
-  start()
+  stopAnimation()
+  sizeCanvas()
+  ensureRunning()
 }
 
 watch(() => props.samples, () => {
-  updateSamples()
-  if (!reduced.matches) start()
+  applySamples()
+  ensureRunning()
 }, { deep: false })
-watch(() => [props.active, props.paused], () => {
-  if (reduced.matches) drawFrame(0)
+
+watch(() => [props.active, props.paused, props.vertical], () => {
+  stopAnimation()
+  sizeCanvas()
+  ensureRunning()
 })
 
 onMounted(() => {
-  updateSamples()
-  resize()
+  applySamples()
+  sizeCanvas()
   observer = new ResizeObserver(resize)
   if (canvas.value) observer.observe(canvas.value)
   reduced.addEventListener('change', onReducedChange)
-  start()
+  ensureRunning()
 })
 
 onBeforeUnmount(() => {
-  cancelAnimationFrame(raf)
+  stopAnimation()
   observer?.disconnect()
   observer = null
   reduced.removeEventListener('change', onReducedChange)

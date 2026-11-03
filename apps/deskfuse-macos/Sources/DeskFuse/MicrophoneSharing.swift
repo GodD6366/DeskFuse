@@ -515,7 +515,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                             withUnsafeBytes(of: &bits) { meter.append(contentsOf: $0) }
                             if waveformRequested {
                                 let wave = waveform.current()
-                                let count = min(256, wave.values.count)
+                                let count = min(MicrophoneWaveform.pointCount, wave.values.count)
                                 if count > 0 {
                                     meter.append(UInt8(count >> 8))
                                     meter.append(UInt8(count & 0xff))
@@ -618,7 +618,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                     }
                                     if packet.count >= 7 {
                                         let count = (Int(packet[5]) << 8) | Int(packet[6])
-                                        if count > 0, count <= 256, packet.count == 7 + count * 4 {
+                                        if count > 0, count <= MicrophoneWaveform.pointCount, packet.count == 7 + count * 4 {
                                             var samples = [Float]()
                                             samples.reserveCapacity(count)
                                             for index in 0..<count {
@@ -628,7 +628,7 @@ private final class MicrophoneWorker: @unchecked Sendable {
                                                 let sample = Float(bitPattern: sampleBits)
                                                 samples.append(sample.isFinite ? sample : 0)
                                             }
-                                            waveform.publish(samples)
+                                            waveform.accept(samples, span: MicrophoneWaveform.span)
                                         }
                                     }
                                 } else { try loopback.send(packet); if packet.first == 1 { lastAudio = Date() } }

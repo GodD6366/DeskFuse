@@ -31,7 +31,7 @@ cp "$ROC_OUTPUT/libroc-microphone.dylib" "$CONTENTS_DIR/Frameworks/"
 codesign --force --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
 ditto "$ROC_OUTPUT/${MICROPHONE_BUNDLE_NAME}.driver" "$RESOURCES_DIR/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
 codesign --force --deep --strict --timestamp=none --sign "$CODESIGN_IDENTITY" "$RESOURCES_DIR/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
-cp "$ROOT_DIR/resources/microphone/"* "$RESOURCES_DIR/Microphone/"
+cp -R "$ROOT_DIR/resources/microphone/"* "$RESOURCES_DIR/Microphone/"
 cp "$ROOT_DIR/config/previous-installation.json" "$RESOURCES_DIR/Microphone/previous-installation.json"
 cp "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$RESOURCES_DIR/Microphone/"
 # The product window is the MyGo WebView client beside the app executable;

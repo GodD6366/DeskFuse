@@ -29,17 +29,51 @@ fi
 # Downloads are pinned both by git commit and by SHA256 of the upstream source
 # archive. Retain the verified archives in build cache, outside tracked sources.
 "$PYTHON" - "$ROOT" <<'PY'
-import concurrent.futures,hashlib,json,pathlib,sys,urllib.request
-root=pathlib.Path(sys.argv[1]); lock=json.loads((root/'vendor/roc-vad/sources.lock.json').read_text())
-cache=root/'target/roc-microphone/source-archives'; cache.mkdir(parents=True,exist_ok=True)
+import concurrent.futures, hashlib, http.client, json, os, pathlib, sys, time, threading, urllib.error, urllib.request
+root = pathlib.Path(sys.argv[1])
+lock = json.loads((root / 'vendor/roc-vad/sources.lock.json').read_text())
+cache = root / 'target/roc-microphone/source-archives'
+cache.mkdir(parents=True, exist_ok=True)
+def sha256_file(p):
+    h = hashlib.sha256()
+    with open(p, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
 def verify(source):
- p=cache/(source['commit']+'.tar.gz')
- if not p.exists():
-  request=urllib.request.Request(source['archive'],headers={'User-Agent':'DeskFuse-build'})
-  with urllib.request.urlopen(request,timeout=120) as response:p.write_bytes(response.read())
- digest=hashlib.sha256(p.read_bytes()).hexdigest()
- if digest!=source['sha256']: raise SystemExit('Source SHA256 mismatch: '+source['repository'])
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(verify,[lock['upstream']]+lock['dependencies']))
+    dest = cache / (source['commit'] + '.tar.gz')
+    expected = source['sha256']
+    repo = source['repository']
+    if dest.exists():
+        if sha256_file(dest) == expected:
+            return
+        dest.unlink()
+    tmp = dest.with_name(dest.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
+    last_err = None
+    for attempt in range(4):
+        if attempt:
+            time.sleep(2 ** (attempt - 1))
+        try:
+            if tmp.exists():
+                tmp.unlink()
+            req = urllib.request.Request(source['archive'], headers={'User-Agent': 'DeskFuse-build'})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                tmp.write_bytes(resp.read())
+            if sha256_file(tmp) != expected:
+                last_err = 'SHA256 mismatch after download'
+                tmp.unlink()
+                continue
+            os.replace(tmp, dest)
+            return
+        except (urllib.error.URLError, http.client.IncompleteRead, TimeoutError, OSError) as e:
+            last_err = str(e)
+            try:
+                if tmp.exists(): tmp.unlink()
+            except OSError:
+                pass
+    raise SystemExit(f'Download failed for {repo}: {last_err}')
+with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    list(pool.map(verify, [lock['upstream']] + lock['dependencies']))
 PY
 cmake -S "$ROOT/vendor/roc-vad" -B "$BUILD" \
   -DBOOTSTRAP=ON -DCMAKE_BUILD_TYPE=Release \

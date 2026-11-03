@@ -189,9 +189,18 @@ const level = computed(() => Math.max(0, Math.min(1, Number(nativeState.value.le
 const waveform = computed<number[]>(() => {
   const raw = nativeState.value.waveform
   if (!Array.isArray(raw)) return []
-  return raw.map(Number).filter((value: number) => Number.isFinite(value)).slice(-256)
+  return raw.map(Number).filter((value: number) => Number.isFinite(value)).slice(-512)
 })
 const waveformActive = computed(() => nativeState.value.waveform_active === true && waveform.value.length > 0)
+// 宿主给出窗口时长与末端时延：画布按真实时间连续滚动，这两个值决定时间轴。
+const waveformSpan = computed(() => {
+  const span = Number(nativeState.value.waveform_span_ms ?? 0)
+  return Number.isFinite(span) && span > 0 ? span : 0
+})
+const waveformAge = computed(() => {
+  const age = Number(nativeState.value.waveform_age_ms ?? 0)
+  return Number.isFinite(age) && age > 0 ? age : 0
+})
 const waveformRate = computed(() => {
   const rate = Number(nativeState.value.waveform_rate ?? 0)
   return Number.isFinite(rate) && rate > 0 ? rate : 48_000
@@ -385,7 +394,9 @@ const stageMetaRate = computed(() => {
   const value = rate / 1000
   return `${Number.isInteger(value) ? value : value.toFixed(1)} kHz`
 })
-const stageMetaWindow = computed(() => waveform.value.length ? `${waveform.value.length} 采样` : '实时采样')
+const stageMetaWindow = computed(() => (waveform.value.length && waveformSpan.value
+  ? `${(waveformSpan.value / 1000).toFixed(1)} s 窗口`
+  : '实时采样'))
 const stageMetaSource = computed(() => (role.value === 'provider' ? '本机输入' : '远端输入'))
 const litBars = computed(() => Math.max(0, Math.min(12, Math.round(level.value * 12))))
 const stageNotice = computed<null | { title: string; detail: string; action: string; label: string }>(() => {
@@ -746,7 +757,8 @@ async function pollLive() {
 function startLivePolling() {
   if (liveTimer || !liveAvailable) return
   void pollLive()
-  liveTimer = setInterval(() => { void pollLive() }, 200)
+  // 160ms 轮询：数据末端离当前更近，画布只需滞后 300ms 就能连续滚动；投影本身是轻量字段。
+  liveTimer = setInterval(() => { void pollLive() }, 160)
 }
 function stopLivePolling() {
   if (!liveTimer) return
@@ -1054,7 +1066,7 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div class="link-canvas">
-                  <MicLinkCanvas :samples="waveform" :active="phase === 'streaming' && waveformActive" :paused="!enabled" :vertical="narrowLayout" />
+                  <MicLinkCanvas :samples="waveform" :span-ms="waveformSpan" :age-ms="waveformAge" :active="phase === 'streaming' && waveformActive" :paused="!enabled" :vertical="narrowLayout" />
                 </div>
               </div>
 

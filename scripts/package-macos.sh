@@ -419,7 +419,7 @@ cp "$ROC_OUTPUT/libroc-microphone.dylib" "$CONTENTS_DIR/Frameworks/"
 deskfuse_codesign "$CONTENTS_DIR/Frameworks/libroc-microphone.dylib"
 ditto "$ROC_OUTPUT/${MICROPHONE_BUNDLE_NAME}.driver" "$CONTENTS_DIR/Resources/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
 deskfuse_codesign --deep "$CONTENTS_DIR/Resources/Microphone/${MICROPHONE_BUNDLE_NAME}.driver"
-cp "$ROOT_DIR/resources/microphone/"* "$CONTENTS_DIR/Resources/Microphone/"
+cp -R "$ROOT_DIR/resources/microphone/"* "$CONTENTS_DIR/Resources/Microphone/"
 cp "$ROOT_DIR/config/previous-installation.json" "$CONTENTS_DIR/Resources/Microphone/previous-installation.json"
 cp "$ROC_OUTPUT/THIRD_PARTY_MICROPHONE.txt" "$ROC_OUTPUT/source-archive.json" "$CONTENTS_DIR/Resources/Microphone/"
 # Preserve exact corresponding sources per build without adding them to the

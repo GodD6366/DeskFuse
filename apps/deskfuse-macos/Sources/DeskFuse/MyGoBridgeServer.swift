@@ -60,12 +60,17 @@ enum MyGoSnapshot {
         ]
         if let state {
             let waveform = microphone.waveform.current()
+            // The renderer scrolls by real elapsed time, so it needs the window
+            // span and how old its newest point is at this read.
+            let ageMs = max(0, MicrophoneWaveform.uptimeMs() - waveform.endMs)
             out["settings"] = ["enabled": state.settings.enabled, "source": state.settings.source,
                                "allowed": state.settings.allowed, "input_uid": state.settings.input_uid]
             out["native"] = ["driver": state.native.driver, "readers": state.native.readers,
                              "streaming": state.native.streaming, "locked": state.native.locked,
                              "permission": state.native.permission, "level": state.native.level,
                              "error": state.native.error, "waveform": waveform.values,
+                             "waveform_span_ms": Int((waveform.span * 1000).rounded()),
+                             "waveform_age_ms": Int(ageMs.rounded()),
                              "waveform_rate": waveform.rate, "waveform_active": waveform.active]
             out["session_id"] = String(state.session_id)
         }

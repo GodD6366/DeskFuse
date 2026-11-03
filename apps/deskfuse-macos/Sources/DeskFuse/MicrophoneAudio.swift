@@ -102,43 +102,129 @@ enum MicrophoneAudioError: LocalizedError {
 }
 /// A bounded, lock-protected window of real samples for the UI. It contains no
 /// identity and is never persisted; the bridge copies it only while the page polls.
+///
+/// The window always describes the most recent 2.0 s of audio as 512 equally
+/// spaced points (3.90625 ms each, oldest first). A sender feeds raw 48 kHz
+/// samples to `append`, which accumulates one point per 187.5 samples
+/// incrementally on the audio thread; a receiver stores the sender's window with
+/// `accept`. Neither path ever rescans the 2 s history from the tap callback.
 final class MicrophoneWaveform: @unchecked Sendable {
-    struct Reading { let values: [Float]; let rate: Double; let active: Bool }
+    struct Reading {
+        /// Exactly `MicrophoneWaveform.pointCount` points, oldest first.
+        let values: [Float]
+        /// Wall-clock duration covered by the window, in seconds.
+        let span: TimeInterval
+        /// `DispatchTime` uptime of the newest sample, in milliseconds.
+        let endMs: Double
+        let rate: Double
+        /// True while the newest sample is less than 0.9 s old.
+        let active: Bool
+    }
+
+    /// 48 kHz over 2 s: every point owns 187.5 input samples.
+    static let pointCount = 512
+    static let span: TimeInterval = 2.0
+    static let samplesPerPoint = 187.5
+    static let activeWindowMs = 900.0
+
     private let lock = NSLock()
-    private var values = [Float](repeating: 0, count: 256)
+    /// Ring buffer of the newest points; after a full pass `ring[nextIndex]` is
+    /// the oldest point.
+    private var ring = [Float](repeating: 0, count: MicrophoneWaveform.pointCount)
+    private var nextIndex = 0
+    private var filled = 0
+    /// Signed sample with the largest magnitude in the bucket being accumulated.
+    private var bucketPeak: Float = 0
+    private var bucketRemaining = MicrophoneWaveform.samplesPerPoint
+    private var seconds = MicrophoneWaveform.span
     private var rate: Double = 48_000
-    private var updatedAt = Date.distantPast
+    private var endMs = 0.0
     private var populated = false
 
-    func publish(_ samples: [Float], rate: Double = 48_000) {
+    /// Feeds one audio tap buffer. Each sample costs a comparison and a counter,
+    /// so this stays cheap on the realtime thread while keeping bucket boundaries
+    /// continuous across buffers of any size.
+    func append(_ samples: [Float], rate: Double = 48_000) {
         guard !samples.isEmpty else { return }
-        let target = 256
-        var window = [Float](repeating: 0, count: target)
-        let stride = Double(samples.count) / Double(target)
-        for index in 0..<target {
-            let source = min(samples.count - 1, Int(Double(index) * stride))
-            window[index] = samples[source]
-        }
         lock.lock()
-        values = window
+        defer { lock.unlock() }
+        for sample in samples {
+            let value = sample.isFinite ? sample : 0
+            if abs(value) > abs(bucketPeak) { bucketPeak = value }
+            bucketRemaining -= 1
+            if bucketRemaining <= 0 {
+                write(bucketPeak)
+                bucketPeak = 0
+                bucketRemaining += MicrophoneWaveform.samplesPerPoint
+            }
+        }
         self.rate = rate
-        updatedAt = Date()
+        seconds = MicrophoneWaveform.span
+        endMs = MicrophoneWaveform.uptimeMs()
         populated = true
-        lock.unlock()
     }
+
+    /// Stores a sender's window as received. Padding/truncation keeps the newest
+    /// samples: the last input value is always the newest point.
+    func accept(_ values: [Float], span: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        let kept = min(values.count, MicrophoneWaveform.pointCount)
+        let first = values.count - kept
+        for index in ring.indices { ring[index] = 0 }
+        for index in 0..<kept {
+            let value = values[first + index]
+            ring[index] = value.isFinite ? value : 0
+        }
+        nextIndex = kept % MicrophoneWaveform.pointCount
+        filled = kept
+        bucketPeak = 0
+        bucketRemaining = MicrophoneWaveform.samplesPerPoint
+        seconds = span > 0 ? span : MicrophoneWaveform.span
+        endMs = MicrophoneWaveform.uptimeMs()
+        populated = true
+    }
+
+    /// Copies the finished 512-point window (~2 kB) and its timestamp.
     func current() -> Reading {
         lock.lock()
-        let fresh = populated && Date().timeIntervalSince(updatedAt) < 0.9
-        let result = Reading(values: fresh ? values : [], rate: rate, active: fresh)
-        lock.unlock()
-        return result
+        defer { lock.unlock() }
+        let now = MicrophoneWaveform.uptimeMs()
+        var values = [Float](repeating: 0, count: MicrophoneWaveform.pointCount)
+        if filled > 0 {
+            let start = (nextIndex - filled + MicrophoneWaveform.pointCount) % MicrophoneWaveform.pointCount
+            let offset = MicrophoneWaveform.pointCount - filled
+            for index in 0..<filled {
+                values[offset + index] = ring[(start + index) % MicrophoneWaveform.pointCount]
+            }
+        }
+        return Reading(values: values, span: seconds, endMs: endMs, rate: rate,
+                       active: populated && now - endMs < MicrophoneWaveform.activeWindowMs)
     }
+
     func clear() {
         lock.lock()
-        values = [Float](repeating: 0, count: 256)
-        updatedAt = .distantPast
+        defer { lock.unlock() }
+        for index in ring.indices { ring[index] = 0 }
+        nextIndex = 0
+        filled = 0
+        bucketPeak = 0
+        bucketRemaining = MicrophoneWaveform.samplesPerPoint
+        seconds = MicrophoneWaveform.span
+        endMs = 0
         populated = false
-        lock.unlock()
+    }
+
+    /// Lock is held by the caller.
+    private func write(_ value: Float) {
+        ring[nextIndex] = value
+        nextIndex = (nextIndex + 1) % MicrophoneWaveform.pointCount
+        if filled < MicrophoneWaveform.pointCount { filled += 1 }
+    }
+
+    /// Shared monotonic clock for window timestamps and the bridge's age.
+    static func uptimeMs() -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000
     }
 }
 /// The tap only converts and deposits a bounded batch; encoding/network run on
@@ -154,7 +240,6 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var peak: Float = 0
     private var tapped = false
     private var device: AudioDeviceID = 0
-    private var lastWaveformAt = Date.distantPast
     init(waveform: MicrophoneWaveform? = nil) { self.waveform = waveform }
     func start(uid: String) throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw MicrophoneAudioError.message("等待麦克风授权") }
@@ -196,12 +281,10 @@ final class MicrophoneCapture: @unchecked Sendable {
             if self.frames.count < 8 { self.frames.append((DispatchTime.now().uptimeNanoseconds, values)) } else { self.overflow = true }
             self.peak = values.reduce(Float(0)) { max($0, abs($1)) }
             self.lock.unlock()
-            // 20 Hz is enough for the visual waveform; doing this in the audio
-            // callback avoids a second reader competing with the virtual driver.
-            if let waveform = self.waveform, Date().timeIntervalSince(self.lastWaveformAt) >= 0.05 {
-                self.lastWaveformAt = Date()
-                waveform.publish(values, rate: 48_000)
-            }
+            // Incremental bucket accumulation only: never downsample the 2 s
+            // history here. Doing this in the audio callback also avoids a second
+            // reader competing with the virtual driver.
+            self.waveform?.append(values)
         }
         tapped = true
         audio.prepare()
