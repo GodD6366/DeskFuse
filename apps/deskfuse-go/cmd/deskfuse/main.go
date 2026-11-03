@@ -90,10 +90,12 @@ func main() {
 		// 轻量模式恢复：宿主回收了界面进程，重新拉起时直接落到请求的界面。
 		// 目标是剪贴板面板时主窗口保持隐蔽，只弹面板。
 		panelOnly := os.Getenv("DESKFUSE_PANEL_FRAME") != ""
-		// Windows 高缩放比下 1120×720 DIP 可能大于整个桌面；按主屏工作区的
-		// DIP 尺寸收敛默认窗口，Min 尺寸也不能超过屏幕。
-		width, height := fitWindow(1120, 720)
-		minWidth, minHeight := fitWindow(960, 620)
+		// 主窗口默认给足空间：剪贴板页是「全局导航 + 分组/列表 + 历史记录 + 预览」
+		// 四栏，1120×720 下右边预览和底部新建列表会挤在一起。Windows 高缩放比下
+		// 1360×860 DIP 可能大于整个桌面，因此按主屏工作区 DIP 尺寸收敛，Min 尺寸
+		// 也不能超过屏幕。
+		width, height := fitWindow(1360, 860)
+		minWidth, minHeight := fitWindow(1120, 720)
 		window := mygo.NewWindow(mygo.WindowOptions{
 			Title: "DeskFuse", URL: startURL, Width: width, Height: height,
 			MinWidth: minWidth, MinHeight: minHeight,

@@ -46,6 +46,12 @@ struct MenuBarClipboardView: View {
     @AppStorage(wrappedValue: ClipboardOCRIndexer.defaultAutomaticIndexing,
                  ClipboardOCRIndexer.automaticIndexingKey)
     private var automaticOCR: Bool
+    /// 底部面板从窗口底边升起的展开状态。窗口位置固定，只移动内容（同 Clipbara）。
+    @State private var dockRevealed = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// 横/竖布局由面板控制器持有：右上角按钮就地切换后，这里立即跟着换版式。
+    private var dockMode: Bool { ClipboardPanelController.shared.dockPresentation }
 
     private var history: [HistoryItem] { store.snapshot?.history ?? [] }
     /// 设备 ID → 展示名，本机统一为「这台 Mac」，与历史来源和预览头部一致。
@@ -113,18 +119,21 @@ struct MenuBarClipboardView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            historyList
-            Divider()
-            footer
-        }
-        .scrollIndicators(.never)
-        .frame(width: 440, height: ClipboardPanelController.shared.panelHeight)
-        .dfFloating(opaque: true)
-        .modifier(ClipboardPopupSurface())
-        .background(MenuBarPanelBridge(handle: panel, opened: beginSession, closed: endSession, modifiersChanged: { commandHeld = $0.contains(.command) }, keyDown: handleKey))
+        currentLayout
+            .scrollIndicators(.never)
+            .modifier(ClipboardPanelSizing(dock: dockMode))
+            .modifier(ClipboardPanelChrome(dock: dockMode))
+            .offset(y: dockMode && !dockRevealed ? ClipboardPanelController.shared.panelHeight : 0)
+            .overlay(alignment: .top) { dockStatusToast }
+            .onChange(of: ClipboardPanelController.shared.dockPresentation) { _, isDock in
+                guard isDock else { dockRevealed = true; return }
+                guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { dockRevealed = true; return }
+                dockRevealed = false
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.25)) { dockRevealed = true }
+                }
+            }
+            .background(MenuBarPanelBridge(handle: panel, opened: beginSession, closed: endSession, modifiersChanged: { commandHeld = $0.contains(.command) }, keyDown: handleKey))
         .task(id: searchKey) { if panelActive { await searchHistory() } }
         .task(id: panelActive) {
             guard panelActive else { return }
@@ -162,6 +171,190 @@ struct MenuBarClipboardView: View {
             pageItems = cached?.items ?? []; pageRevision = cached?.revision
         }
         .onDisappear { endSession() }
+    }
+
+    @ViewBuilder private var currentLayout: some View {
+        if dockMode { dockLayout } else { columnLayout }
+    }
+
+    private var columnLayout: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            historyList
+            Divider()
+            footer
+        }
+    }
+
+    // MARK: - 底部横向面板（结构参考 Clipbara）
+
+    private var dockLayout: some View {
+        VStack(spacing: 0) {
+            dockNavigation
+            dockRail
+        }
+    }
+
+    /// 44pt 单行导航：搜索、列表标签、来源设备与三个操作按钮，宽度与 Clipbara 一致。
+    private var dockNavigation: some View {
+        HStack(spacing: 10) {
+            dockSearchField
+            Rectangle()
+                .fill(DFPalette.line(colorScheme))
+                .frame(width: 1, height: 20)
+            ClipboardLibraryTabs(selectedListID: $listID, inlineAddButton: true)
+            Spacer(minLength: 8)
+            sourceMenu
+            dockTrayButton
+            moreMenu
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+    }
+
+    private var dockSearchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(DFType.caption)
+                .foregroundStyle(DFPalette.secondaryText(colorScheme))
+            TextField("搜索最近内容", text: $query)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .font(DFType.body)
+            if query.isEmpty {
+                if commandHeld {
+                    Text("⌘ F").font(DFType.caption).foregroundStyle(.tertiary)
+                }
+            } else {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(DFType.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DFPalette.secondaryText(colorScheme))
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 236, height: 28)
+        .background(DFPalette.control(colorScheme), in: RoundedRectangle(cornerRadius: DFRadius.control, style: .continuous))
+    }
+
+    private var dockTrayButton: some View {
+        Button { closePanel(); store.shelf?.show() } label: {
+            Image(systemName: "tray")
+                .font(DFType.icon(.regular, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(ClipboardHeaderButtonStyle())
+        .help("打开文件暂存区")
+        .accessibilityLabel("文件暂存区")
+    }
+
+    /// 单行卡片带：264×228pt 卡片、8pt 间距，铺满整个屏幕宽度。
+    private var dockRail: some View {
+        let rows = Dictionary(library.project(pageItems, revision: pageRevision, listID: listID).map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let positions = Dictionary(items.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ScrollViewReader { proxy in
+            Group {
+                if items.isEmpty {
+                    ScrollView { emptyState.frame(maxWidth: .infinity).padding(.vertical, 24) }
+                } else {
+                    ScrollView(.horizontal) {
+                        LazyHStack(alignment: .top, spacing: 8) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                ClipboardDockCard(
+                                    item: item,
+                                    title: titles[item.id],
+                                    appID: item.sourceAppId,
+                                    meta: rows[item.id].map { row in
+                                        let originDevice = row.source_device_id.flatMap { deviceNames[$0] }
+                                        return ClipboardItemMeta(
+                                            remote: row.remote ?? false,
+                                            available: row.available ?? true,
+                                            originDevice: originDevice,
+                                            ocrText: row.ocr_text
+                                        )
+                                    },
+                                    memberships: rows[item.id]?.memberships ?? [],
+                                    selected: item.id == selectedID,
+                                    index: positions[item.id] ?? 99,
+                                    showShortcut: commandHeld,
+                                    remoteUnavailable: isRemoteUnavailable(rows[item.id]),
+                                    ocrHit: isOCRHit(rows[item.id], needle: needle),
+                                    client: store.client,
+                                    presentation: session,
+                                    active: panelActive,
+                                    availability: { fileAvailability[item.id] = $0 },
+                                    onSelect: { selectedID = item.id; searchFocused = false; copyError = nil; requestPayloadIfNeeded(item.id) },
+                                    onPaste: { copySelected(paste: true, id: item.id) },
+                                    onCopy: { copySelected(paste: false, id: item.id) },
+                                    onPreview: { previewFromMenu(item) },
+                                    showsPreview: ClipboardPreviewPolicy.shouldPreview(item, displayMode: .grid),
+                                    onRename: { library.rename(item.id, title: $0) },
+                                    onDelete: { deleteItem(item.id) }
+                                )
+                                .frame(width: 264, height: 228)
+                                .background {
+                                    if item.id == selectedID { ClipboardQuickLookAnchorView(anchor: previewAnchor, itemID: item.id) }
+                                }
+                                .id(item.id)
+                            }
+                            if nextOffset != nil {
+                                ClipboardPaginationTrigger(itemCount: nextOffset ?? 0, searching: searching) {
+                                    Task { await searchHistory(append: true) }
+                                }
+                                .id(paginationGeneration)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                    }
+                    .scrollIndicators(.never)
+                    // 面板窗口只是隐藏，滚动位置会留在上次会话；用会话 ID 重建滚动视图，
+                    // 每次打开都从最近一条开始并保留左右 16pt 留白。
+                    .id(session)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: keyboardScrollID) { _, id in
+                guard let id, dockMode else { return }
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+            }
+        }
+    }
+
+    /// 底部面板没有页脚：错误与复制进度用导航下方的浮动胶囊提示。
+    @ViewBuilder private var dockStatusToast: some View {
+        if dockMode, let message = dockStatus {
+            HStack(spacing: 6) {
+                if showCopyProgress {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(DFType.caption)
+                        .foregroundStyle(DFPalette.warning)
+                }
+                Text(message)
+                    .font(DFType.caption)
+                    .lineLimit(1)
+                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.9) : Color.primary.opacity(0.86))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(.regularMaterial, in: Capsule())
+            .overlay { Capsule().strokeBorder(DFPalette.border, lineWidth: DFMetrics.hairline) }
+            .padding(.top, 50)
+            .transition(.opacity)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var dockStatus: String? {
+        (copyError ?? library.error ?? ClipboardPanelController.shared.error).map(friendlyError)
+            ?? (showCopyProgress ? "正在准备剪贴板内容…" : nil)
     }
 
     private var header: some View {
@@ -225,6 +418,14 @@ struct MenuBarClipboardView: View {
 
     private var moreMenu: some View {
         Menu {
+            Button(dockMode ? "切换为竖版面板" : "切换为横版面板") {
+                ClipboardPanelController.shared.togglePanelLayout()
+            }
+            Divider()
+            if dockMode {
+                Button("查看全部") { showAll() }
+                Divider()
+            }
             Button("打开 DeskFuse") { closePanel(); openMainWindow() }
             Button("文件暂存区") { closePanel(); store.shelf?.show() }
             Divider()
@@ -234,7 +435,8 @@ struct MenuBarClipboardView: View {
             Button("退出 DeskFuse") { NSApp.terminate(nil) }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(DFType.icon(.circled, weight: .medium))
+                // 圆框符号在同排 14pt 非圆框图标旁偏小，提高一档让三者视觉等大。
+                .font(DFType.icon(.medium, weight: .medium))
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
@@ -476,9 +678,21 @@ struct MenuBarClipboardView: View {
         commandHeld = NSEvent.modifierFlags.contains(.command)
         session = UUID(); panelActive = true; copying = false; copyError = nil; searchFocused = true
         selectedID = items.first?.id
+        // 布局由控制器在弹出时决定（偏好或面板内切换的结果）；竖面保留列表/网格模式。
+        guard dockMode else { dockRevealed = true; return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            dockRevealed = true
+            return
+        }
+        dockRevealed = false
+        // 先让窗口完成显示的下一帧再开始位移，避免曲线在窗口真正出现前就走完。
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.25)) { dockRevealed = true }
+        }
     }
     private func endSession() {
         dismissPreview()
+        dockRevealed = false
         commandHeld = false
         panelActive = false; session = UUID(); copying = false
         pageRequest = UUID(); searching = false
@@ -790,7 +1004,15 @@ struct MenuBarClipboardView: View {
         switch event.keyCode {
         case 53:
             // Esc leaves the preview before it reaches the panel itself.
-            if previewing { dismissPreview() } else { closePanel() }
+            if previewing {
+                dismissPreview()
+            } else if dockMode, !query.isEmpty {
+                query = ""
+            } else if dockMode, listID != nil {
+                listID = nil
+            } else {
+                closePanel()
+            }
             return true
         case 36, 76: copySelected(paste: true); return true
         case 51, 117:
@@ -820,7 +1042,13 @@ struct MenuBarClipboardView: View {
     private func moveSelection(_ direction: ClipboardMasonryNavigation.Direction) {
         guard !items.isEmpty else { return }
         let base = followID ?? previewID ?? selectedID
-        if displayMode == .grid {
+        if dockMode {
+            // 底部横向面板只有一排卡片，左右移动；上下键不改变选择。
+            guard direction == .left || direction == .right else { return }
+            let old = items.firstIndex { $0.id == base } ?? 0
+            let next = min(items.count - 1, max(0, old + (direction == .right ? 1 : -1)))
+            selectedID = items[next].id
+        } else if displayMode == .grid {
             if let id = ClipboardMasonryNavigation.target(items: items, selected: base, columnCount: 2, direction: direction) {
                 selectedID = id
             }
@@ -834,5 +1062,42 @@ struct MenuBarClipboardView: View {
         // The selection may already be the target (a grid jump landing on the
         // selected row), so `onChange(of: selectedID)` alone would miss it.
         if previewing, let id = selectedID { followSelection(id) }
+    }
+}
+
+/// 面板外壳：底部横向面板用系统毛玻璃材质（对应 Clipbara 的 NSVisualEffectView），
+/// 纵向面板沿用原来的实心表面与浮层圆角。
+private struct ClipboardPanelChrome: ViewModifier {
+    let dock: Bool
+
+    func body(content: Content) -> some View {
+        if dock {
+            content
+                .dfFloating(opaque: false)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous)
+                        .strokeBorder(DFPalette.border, lineWidth: DFMetrics.hairline)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: DFRadius.card, style: .continuous))
+        } else {
+            content
+                .dfFloating(opaque: true)
+                .modifier(ClipboardPopupSurface())
+        }
+    }
+}
+
+/// 底部面板的宽度由窗口决定（会话内会按结果数收窄），纵向面板沿用固定的 440×高度。
+private struct ClipboardPanelSizing: ViewModifier {
+    let dock: Bool
+
+    func body(content: Content) -> some View {
+        if dock {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content.frame(width: ClipboardPanelController.shared.panelWidth,
+                          height: ClipboardPanelController.shared.panelHeight)
+        }
     }
 }

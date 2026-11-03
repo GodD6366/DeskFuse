@@ -146,6 +146,10 @@ func (s *Service) setPreference(args map[string]any, result any) error {
 		if err := s.prefs.Set(key, enabled); err != nil {
 			return nativeError(err)
 		}
+	case "clipboard_panel_horizontal":
+		if err := s.prefs.Set(key, enabled); err != nil {
+			return nativeError(err)
+		}
 	default:
 		return unsupported(fmt.Sprintf("Windows 版没有设置项 %s。", key))
 	}

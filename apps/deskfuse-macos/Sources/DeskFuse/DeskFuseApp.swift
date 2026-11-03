@@ -45,6 +45,7 @@ import DeskFuseEngine
     private var instanceLockFD: Int32 = -1
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ClipboardPanelPreference.migrateIfNeeded()
         // NSRunningApplication enumeration alone has a startup race: two
         // launches can both observe no peer and both keep their Dock icon.
         // An advisory lock is released by the kernel when the owning process
@@ -121,13 +122,8 @@ import DeskFuseEngine
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if #available(macOS 14.2, *), RemoteApplicationManager.shared.focusViewer() { return true }
-        // A lightweight-mode UI child may have been reclaimed while the host
-        // stayed alive. Reopen must recreate the child before presenting the
-        // main route instead of leaving the Dock click with no window.
-        if MyGoUIHost.shared.suspended {
-            MyGoUIHost.shared.present(page: "devices")
-            return true
-        }
+        // 轻量模式可能已回收界面进程；openMain 会先 ensureUI 再按上次停留的页面
+        // 恢复窗口，不能在这里写死设备页，否则 Dock 一点开就跳到「设备」。
         AppStore.shared.openMain()
         return true
     }

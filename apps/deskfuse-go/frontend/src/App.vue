@@ -7,7 +7,7 @@ const modules = import.meta.glob('./pages/*Page.vue')
 const pageNames: Record<string,string> = { 'clipboard-panel':'ClipboardPanel','quick-look':'QuickLook', clipboard:'Clipboard',devices:'Devices',files:'Transfers',input:'Input',mouse:'Mouse',microphone:'Microphone',remote_applications:'RemoteApps',settings:'Settings',onboarding:'Onboarding',shelf:'Shelf',support:'Support',pairing:'Pairing','transfer-progress':'TransferProgress' }
 const pages = [
  {id:'clipboard',title:'剪贴板',icon:Clipboard,section:'基础'}, {id:'input',title:'键鼠共享',icon:Keyboard,section:'基础'}, {id:'files',title:'局域网传输',icon:ArrowUpDown,section:'基础'},
- {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级'}, {id:'mouse',title:'鼠标按键',icon:Mouse,section:'高级',beta:true},
+ {id:'microphone',title:'麦克风共享',icon:Mic,section:'高级'}, {id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,section:'高级',beta:true}, {id:'mouse',title:'鼠标按键',icon:Mouse,section:'高级',beta:true},
  {id:'devices',title:'设备',icon:Laptop,section:'配置'}, {id:'settings',title:'设置',icon:Settings,section:'设置'},
 ]
 const categories=[['general','通用'],['clipboard','剪贴板'],['workflows','工作流'],['shortcuts','快捷键'],['files','文件'],['permissions','权限'],['about','关于与更新'],['advanced','高级']]
@@ -75,7 +75,7 @@ function onPointerDown(event:PointerEvent){
  if(health.value&&!healthPopover.value?.contains(target)&&!healthButton.value?.contains(target))health.value=false
 }
 let timer:ReturnType<typeof setTimeout>|undefined, stopped=false, refreshing=false, generation=0
-async function select(id:string){help.value=false;health.value=false;if(id.startsWith('settings:')){category.value=id.split(':')[1];id='settings'}selected.value=id;pageError.value='';const g=++generation;const load=modules[`./pages/${pageNames[id]}Page.vue`];if(!load){component.value=null;pageError.value='此页面尚未完成迁移';return}try{const mod=await load() as any;if(g===generation)component.value=mod.default}catch(e){if(g===generation)pageError.value=errorMessage(e)}}
+async function select(id:string){help.value=false;health.value=false;if(id.startsWith('settings:')){category.value=id.split(':')[1];id='settings'}selected.value=id;pageError.value='';if(id!=='settings'&&id!=='clipboard-panel')void backend.invoke('ui.pageChanged',{page:id}).catch(()=>{});const g=++generation;const load=modules[`./pages/${pageNames[id]}Page.vue`];if(!load){component.value=null;pageError.value='此页面尚未完成迁移';return}try{const mod=await load() as any;if(g===generation)component.value=mod.default}catch(e){if(g===generation)pageError.value=errorMessage(e)}}
 async function refresh(){if(fullBleed.value){loading.value=false;return}if(refreshing)return;refreshing=true;try{const value=await backend.snapshot();if(!stopped){snapshot.value=value;error.value=''}}catch(e){if(!stopped)error.value=errorMessage(e)}finally{refreshing=false;loading.value=false;if(!stopped)timer=setTimeout(refresh,1500)}}
 async function report(){try{await backend.invoke('support.report',{error:error.value});closeHelp()}catch(e){error.value=errorMessage(e)}}
 function retry(){if(timer)clearTimeout(timer);refresh()}

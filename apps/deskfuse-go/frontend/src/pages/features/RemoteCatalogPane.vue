@@ -837,12 +837,15 @@ onBeforeUnmount(() => {
 .catalog-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  /* 应用网格按可用宽度换行；横向溢出只会造成多余的横向滚动条，直接禁止。 */
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
   display: grid;
   align-content: start;
   gap: 14px;
 }
+.catalog-body > * { min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .account { position: relative; min-width: 0; }
 .account-button {

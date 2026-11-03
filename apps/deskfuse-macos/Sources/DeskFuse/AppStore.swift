@@ -27,11 +27,11 @@ import DeskFuseEngine
     var isEngineLoading: Bool {
         !selfTest && error == nil && (starting || (client != nil && snapshot == nil))
     }
-    var selectedPage: Page = .devices {
+    var selectedPage: Page = .clipboard {
         didSet { if selectedPage != .settings { workspacePage = selectedPage } }
     }
     /// Keep the workspace mounted while settings occupies the detail area.
-    private(set) var workspacePage: Page = .devices
+    private(set) var workspacePage: Page = .clipboard
     var settingsDestination = SettingsDestination()
     /// Local macOS chrome preference; never part of synced engine business state.
     var hideDockIcon = UserDefaults.standard.bool(forKey: AppStore.hideDockIconDefaultsKey)

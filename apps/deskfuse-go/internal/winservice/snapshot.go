@@ -575,6 +575,9 @@ func (s *Service) sharedSnapshot(value snapshotWire) map[string]any {
 		shared["app"] = app
 	}
 	app["keep_awake"] = s.prefs != nil && s.prefs.Bool("keep_awake")
+	if s.prefs != nil {
+		app["clipboard_panel_horizontal"] = s.prefs.Bool("clipboard_panel_horizontal")
+	}
 	if s.shelf != nil {
 		shared["shelf"] = s.shelf.view()
 	}

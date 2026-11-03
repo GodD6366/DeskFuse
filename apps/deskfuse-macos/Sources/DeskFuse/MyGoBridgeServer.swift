@@ -85,7 +85,8 @@ enum MyGoSnapshot {
                     "settings_category": store.settingsDestination.category.rawValue, "keep_awake": store.keepAwake,
                     "hide_dock_icon": store.hideDockIcon, "workflows_enabled": store.workflowsEnabled,
                     "lightweight_mode": store.lightweightMode,
-                    "channel": UpdateInstallationChannel.current.rawValue]
+                    "channel": UpdateInstallationChannel.current.rawValue,
+                    "clipboard_panel_horizontal": ClipboardPanelPreference.horizontal]
         ]
         guard let s else { return try JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]) }
         out["local"] = ["id": s.localId, "name": s.localName, "runtime_status": s.runtimeStatus,
@@ -252,6 +253,14 @@ enum MyGoSnapshot {
             let runs = try params["runs"].map { try JSONDecoder().decode([MyGoRichText.Run].self, from: JSONSerialization.data(withJSONObject: $0)) }
             let request = try MyGoRichText.mutation(id: id, text: text, runs: runs)
             return Data(try await client.libraryMutate(request).utf8)
+        case "ui.pageChanged", "ui.page_changed":
+            // 侧栏切页只同步“上次停留的页面”，供 Dock 点击恢复；不展示窗口。
+            if let page = string("page"),
+               let match = Page.allCases.first(where: { $0.bridgeID == page }),
+               match != .settings {
+                store.selectedPage = match
+            }
+            return Data(#"{"outcome":"ok"}"#.utf8)
         case "native.openPage", "native.open_page":
             guard let page = string("page") else { throw MyGoBridgeError(code: "invalid_params", message: "需要 page") }
             if let match = Page.allCases.first(where: { $0.bridgeID == page }), match != .settings {
@@ -725,6 +734,7 @@ enum MyGoSnapshot {
             case "workflows_enabled": store.workflowsEnabled = value
             case "lightweight_mode": store.lightweightMode = value
             case "automatic_ocr": UserDefaults.standard.set(value, forKey: ClipboardOCRIndexer.automaticIndexingKey)
+            case "clipboard_panel_horizontal": ClipboardPanelPreference.setHorizontal(value)
             default: throw MyGoBridgeError(code: "unsupported_action", message: "不支持此设置")
             }
             return Data(#"{"outcome":"applied"}"#.utf8)

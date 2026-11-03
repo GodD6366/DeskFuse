@@ -49,6 +49,8 @@ enum DFIconSize: CGFloat {
 /// 圆角只有四档：细条、控件、卡片、浮层。
 enum DFRadius {
     static let small: CGFloat = 4
+    /// 徽标与来源 App 小图标：比控件圆角更紧，避免小尺寸看起来像圆形。
+    static let badge: CGFloat = 6
     static let control: CGFloat = 8
     static let card: CGFloat = 12
     static let panel: CGFloat = 16
@@ -151,6 +153,20 @@ enum DFPalette {
     /// 内容选中与悬停填充：列表行、卡片、分组共用。
     static let selection = accent.opacity(DFOpacity.strong)
     static let hover = accent.opacity(DFOpacity.faint)
+
+    /// 剪贴板卡片类型强调色：结构与 Clipbara 的类型徽标同源，按需求文档的
+    /// 蓝 / 深蓝 / 橙 / 青区分文本、图片、文件与链接，深色模式提亮一档。
+    static func clipTint(_ kind: String, _ scheme: ColorScheme) -> Color {
+        let rgb: (Double, Double, Double)
+        switch kind {
+        case "image": rgb = (0x2B, 0x3B, 0x95)
+        case "files": rgb = (0xC0, 0x6A, 0x17)
+        case "link": rgb = (0x00, 0x89, 0x7A)
+        default: rgb = (0x3F, 0x63, 0xE2)
+        }
+        let boost = scheme == .dark ? 0.28 : 0
+        return Color(red: min(1, rgb.0 / 255 + boost), green: min(1, rgb.1 / 255 + boost), blue: min(1, rgb.2 / 255 + boost))
+    }
 
     /// 品牌签名色，仅用于品牌位与配对确认等少量强调场景。
     static let brandCyan = Color(nsColor: NSColor(srgbRed: 0x22 / 255.0, green: 0xC9 / 255.0, blue: 0xEA / 255.0, alpha: 1))

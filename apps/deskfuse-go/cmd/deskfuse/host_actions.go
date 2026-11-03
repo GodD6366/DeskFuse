@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"runtime"
 
 	"github.com/egoist/mygo"
 )
@@ -64,13 +65,17 @@ func centerWindow(window *mygo.Window, width, height int) {
 }
 
 // fitWindow narrows a requested DIP window size to the primary display's work
-// area. Display bounds are physical pixels while window options take DIPs, so
-// the work area is divided by the scale factor before clamping.
+// area. macOS 的 NSScreen.visibleFrame 本身就是逻辑点（和窗口选项同一单位），
+// 只有 Windows 返回物理像素、需要先除以缩放比；两者用同一套除法会把 macOS
+// 窗口缩成一半（1360×860 变成 1000×500）。
 func fitWindow(width, height int) (int, int) {
 	display := mygo.Screen.PrimaryDisplay()
-	scale := display.ScaleFactor
-	if scale <= 0 {
-		scale = 1
+	scale := 1.0
+	if runtime.GOOS == "windows" {
+		scale = display.ScaleFactor
+		if scale <= 0 {
+			scale = 1
+		}
 	}
 	if display.WorkArea.Width <= 0 || display.WorkArea.Height <= 0 {
 		return width, height

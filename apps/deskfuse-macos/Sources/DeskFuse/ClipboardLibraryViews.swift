@@ -9,6 +9,8 @@ struct ClipboardLibraryTabs: View {
     @Binding var selectedListID: String?
     var spacious = false
     var vertical = false
+    /// 横向标签栏把「新建列表」紧跟在最后一个标签后面，而不是被推到行的最右侧。
+    var inlineAddButton = false
     @State private var editing: ClipboardLibraryList?
     var body: some View {
         Group {
@@ -45,10 +47,15 @@ struct ClipboardLibraryTabs: View {
                                         }
                                     }
                             }
+                            if inlineAddButton {
+                                newListButton(label: nil, vertical: false)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 36)
-                    newListButton(label: nil, vertical: false)
+                    if !inlineAddButton {
+                        newListButton(label: nil, vertical: false)
+                    }
                 }
             }
         }

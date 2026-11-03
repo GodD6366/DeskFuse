@@ -4,10 +4,42 @@ import Observation
 import SwiftUI
 import DeskFuseEngine
 
+/// 剪贴板面板的呈现偏好。底部横向面板的开关此前用过随机后缀的键，
+/// 启动时搬到稳定键，已开启的用户不必重新设置。
+enum ClipboardPanelPreference {
+    static let horizontalKey = "deskfuse.clipboard.bottomPanelHorizontal"
+    private static let legacyHorizontalKey = "deskfuse.clipboard.panelHorizontal"
+
+    static var horizontal: Bool { UserDefaults.standard.bool(forKey: horizontalKey) }
+
+    static func setHorizontal(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: horizontalKey)
+    }
+
+    static func migrateIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: legacyHorizontalKey) != nil else { return }
+        if defaults.object(forKey: horizontalKey) == nil {
+            defaults.set(defaults.bool(forKey: legacyHorizontalKey), forKey: horizontalKey)
+        }
+        defaults.removeObject(forKey: legacyHorizontalKey)
+    }
+}
+
 /// Owns the one status-item presentation. Business settings and content stay in Rust.
 @MainActor @Observable final class ClipboardPanelController: NSObject, NSPopoverDelegate {
     static let shared = ClipboardPanelController()
     private(set) var panelHeight: CGFloat = 780
+    private(set) var panelWidth: CGFloat = 440
+    /// 当前呈现是底部横向面板还是竖向面板；面板右上角的切换按钮会就地换布局。
+    private(set) var dockPresentation = false
+    /// 底部横向面板：贴住屏幕可用区底边，宽度铺满屏幕（左右各留 8pt 给圆角），
+    /// 高度取 320pt；卡片 264×228，比 280pt 版本多出一行内容空间。
+    private static let dockPanelHeight: CGFloat = 320
+
+    static func dockPanelWidth(for visibleWidth: CGFloat) -> CGFloat {
+        min(visibleWidth, max(360, visibleWidth - 16))
+    }
     private(set) var session = UUID()
     private(set) var error: String?
     private(set) var shortcut: WorkflowKey? = WorkflowKey(key_code: 9, modifiers: 0x180000)
@@ -25,6 +57,8 @@ import DeskFuseEngine
     @ObservationIgnored private var hotKey: EventHotKeyRef?
     @ObservationIgnored private var handler: EventHandlerRef?
     @ObservationIgnored private var resignObserver: NSObjectProtocol?
+    /// 底部面板的滚轮监视器：把竖直滚轮转成卡片带的横向滚动。
+    @ObservationIgnored private var dockWheelMonitor: Any?
     @ObservationIgnored private var pasteTask: Task<Void, Never>?
     @ObservationIgnored private var closingForPaste = false
     @ObservationIgnored private var suspended = false
@@ -243,6 +277,12 @@ import DeskFuseEngine
         }
     }
 
+    /// 面板打开在用户正在工作的屏幕：优先鼠标所在屏幕，状态栏点击再退回状态栏屏幕。
+    private var activeScreen: NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? item?.button?.window?.screen ?? NSScreen.main
+    }
+
     private func present(atPointer: Bool) {
         guard featureEnabled, !suspended else { return }
         // Keep the high-frequency clipboard popup native while the MyGo UI is
@@ -273,6 +313,15 @@ import DeskFuseEngine
             : (item?.button?.window?.screen ?? NSScreen.main)
         guard let screen else { return }
         let visible = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+        let horizontal = ClipboardPanelPreference.horizontal
+        dockPresentation = horizontal
+        if horizontal {
+            presentDockPanel(screen: screen)
+            return
+        }
+        removeDockWheelMonitor()
+        pointerPanel?.hasShadow = true
+        panelWidth = 440
         // Leave room for native window chrome / the status popover arrow.
         panelHeight = min(780, max(1, visible.height - 40))
         if atPointer {
@@ -303,6 +352,106 @@ import DeskFuseEngine
                 _ = NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
             }
         }
+    }
+
+    /// 面板右上角的横竖版切换：写回同一个偏好，并在面板打开时就地换布局，
+    /// 不关闭会话；下次从状态栏/快捷键打开时也沿用新布局。
+    func togglePanelLayout() {
+        let makeDock = !ClipboardPanelPreference.horizontal
+        ClipboardPanelPreference.setHorizontal(makeDock)
+        guard isPresenting || popover.isShown else {
+            dockPresentation = makeDock
+            return
+        }
+        // 内容宿主只有一份：先把 popover 里的视图移回浮动面板，再按新布局摆放。
+        if popover.isShown { popover.performClose(nil) }
+        moveHosting(toPopover: false)
+        guard let screen = activeScreen else { return }
+        if makeDock {
+            presentDockPanel(screen: screen)
+        } else {
+            presentVerticalPanelInPlace(screen: screen)
+        }
+    }
+
+    /// 从横版切到竖版时就地放在当前屏幕右上角（状态栏下方），保持面板打开。
+    private func presentVerticalPanelInPlace(screen: NSScreen) {
+        guard let panel = pointerPanel else { return }
+        removeDockWheelMonitor()
+        panel.hasShadow = true
+        panelWidth = 440
+        panelHeight = min(780, max(1, screen.visibleFrame.height - 40))
+        moveHosting(toPopover: false)
+        panel.setContentSize(NSSize(width: panelWidth, height: panelHeight))
+        let area = screen.visibleFrame
+        panel.setFrameOrigin(NSPoint(x: area.maxX - panelWidth - 8, y: area.maxY - panelHeight - 8))
+        dockPresentation = false
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// 底部横向面板：贴住当前屏幕可用区底边居中，尺寸取自 Clipbara；窗口位置固定，
+    /// 内容由 SwiftUI 从底边升起，因此窗口影子在展开期间先关掉，避免勾出空白高度。
+    private func presentDockPanel(screen: NSScreen) {
+        guard let panel = pointerPanel else { return }
+        let area = screen.visibleFrame
+        let width = Self.dockPanelWidth(for: area.width)
+        dockPresentation = true
+        panelWidth = width
+        panelHeight = Self.dockPanelHeight
+        moveHosting(toPopover: false)
+        removeDockWheelMonitor()
+        panel.hasShadow = false
+        panel.setContentSize(NSSize(width: width, height: Self.dockPanelHeight))
+        panel.setFrameOrigin(NSPoint(x: area.midX - width / 2, y: area.minY))
+        panel.makeKeyAndOrderFront(nil)
+        installDockWheelMonitor()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak panel] in
+            panel?.hasShadow = true
+        }
+    }
+
+    /// 底部面板只有一条横向卡片带；普通鼠标滚轮只报告纵向增量，这里把它转成
+    /// 卡片带的横向滚动。只处理同时满足“可横向滚动、不可纵向滚动”的滚动视图，
+    /// 标签栏与卡片带共用这条规则。
+    private func installDockWheelMonitor() {
+        removeDockWheelMonitor()
+        dockWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            let consumed: Bool = MainActor.assumeIsolated {
+                guard let self, let panel = self.pointerPanel, panel.isVisible,
+                      event.window === panel else { return false }
+                return self.scrollDockHorizontally(event, in: panel)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    private func removeDockWheelMonitor() {
+        if let dockWheelMonitor { NSEvent.removeMonitor(dockWheelMonitor) }
+        dockWheelMonitor = nil
+    }
+
+    private func scrollDockHorizontally(_ event: NSEvent, in panel: NSPanel) -> Bool {
+        guard abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX),
+              event.scrollingDeltaY != 0,
+              let content = panel.contentView else { return false }
+        let point = content.convert(event.locationInWindow, from: nil)
+        guard let hit = content.hitTest(point) else { return false }
+        var view: NSView? = hit
+        while let current = view {
+            if let scroll = current as? NSScrollView,
+               let document = scroll.documentView,
+               document.frame.width > scroll.contentView.bounds.width + 0.5,
+               document.frame.height <= scroll.contentView.bounds.height + 0.5 {
+                var origin = scroll.contentView.bounds.origin
+                let delta = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 10)
+                let maximum = document.frame.width - scroll.contentView.bounds.width
+                origin.x = min(max(origin.x - delta, 0), maximum)
+                scroll.contentView.setBoundsOrigin(origin)
+                return true
+            }
+            view = current.superview
+        }
+        return false
     }
 
     /// The WebView panel replaces the AppKit popover when the MyGo client runs.
@@ -392,6 +541,8 @@ import DeskFuseEngine
         closingForPaste = false
         session = UUID()
         pasteTask?.cancel()
+        removeDockWheelMonitor()
+        pointerPanel?.hasShadow = true
         if MyGoUIHost.shared.isActive { MyGoUIHost.shared.hidePanel() }
         // 嵌套的预览气泡会让外层面板的 performClose 失败，必须先卸掉。
         ClipboardQuickLookController.shared.close()

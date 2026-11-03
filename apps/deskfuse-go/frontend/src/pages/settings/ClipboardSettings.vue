@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { backend } from '../../services/backend'
+import AsyncToggle from './AsyncToggle.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import SaveFooter from './SaveFooter.vue'
 import SettingsRow from './SettingsRow.vue'
@@ -140,6 +141,10 @@ onMounted(load)
         <SettingsSection title="普通历史">
           <SettingsRow title="保留天数" detail="默认保留 30 天，不限制条数。手动列表成员长期保留；智能列表不会延长历史保留期。">
             <input v-model.number="draft.retention_days" class="field days" type="number" min="1" aria-label="保留天数" />
+          </SettingsRow>
+          <SettingsRow title="底部横向弹窗" detail="开启后，剪贴板面板从屏幕底部居中展开，横向排列卡片（参考 Clipbara 的卡片面板）；关闭则仍在鼠标附近以列表竖向弹出。默认关闭。">
+            <AsyncToggle :value="preference(snapshot, 'clipboard_panel_horizontal') === true" action="settings.set"
+              :params="(enabled: boolean) => ({ key: 'clipboard_panel_horizontal', value: enabled })" label="底部横向弹窗" />
           </SettingsRow>
           <SettingsRow title="清空剪贴板历史" detail="删除本机保存的全部剪贴板历史，包括手动列表中的归档；内容不会重新同步回来。">
             <button type="button" class="button destructive" :disabled="historyPending" @click="confirmHistory = true">清空…</button>

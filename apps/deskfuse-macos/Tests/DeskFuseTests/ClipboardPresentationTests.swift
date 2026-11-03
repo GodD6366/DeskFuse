@@ -8,6 +8,14 @@ import XCTest
         XCTAssertFalse(ClipboardLibraryList(name: "图片").isDefaultTypeGroup)
     }
 
+    /// 底部横向面板铺满屏幕宽度：左右各留 8pt 给圆角，极小屏不超出屏幕。
+    func testDockPanelWidthSpansTheScreen() {
+        XCTAssertEqual(ClipboardPanelController.dockPanelWidth(for: 2048), 2032)
+        XCTAssertEqual(ClipboardPanelController.dockPanelWidth(for: 1920), 1904)
+        XCTAssertEqual(ClipboardPanelController.dockPanelWidth(for: 800), 784)
+        XCTAssertEqual(ClipboardPanelController.dockPanelWidth(for: 300), 300)
+    }
+
     func testImageViewDefaultOnlyAppliesToAnExclusiveImageFilter() {
         let image = ClipboardLibraryRule(field: "kind", op: "is", value: "image")
         XCTAssertTrue(ClipboardLibraryList(kind: "smart", rules: [image]).filtersOnlyImages)
