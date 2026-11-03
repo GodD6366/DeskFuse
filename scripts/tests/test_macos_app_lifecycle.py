@@ -69,7 +69,7 @@ echo replaced >> "$calls_path"
         self.assertEqual(calls, ["waiting"] * 20)
         self.assertIn("keeping the installed app unchanged", result.stderr)
 
-    def test_stop_returns_when_both_processes_exit(self):
+    def test_stop_returns_when_all_processes_exit(self):
         result, calls = self.run_shell(r'''
 calls_path="$2"
 pkill() { echo "stop $*" >> "$calls_path"; }
@@ -79,7 +79,12 @@ deskfuse_stop_for_install deskfuse-app
 echo ready >> "$calls_path"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["stop -x deskfuse-app", "stop -x deskfuse-input-service", "ready"])
+        self.assertEqual(calls, [
+            "stop -x deskfuse-app",
+            "stop -x deskfuse-input-service",
+            "stop -x deskfuse-mygo",
+            "ready",
+        ])
 
 
 if __name__ == "__main__":
