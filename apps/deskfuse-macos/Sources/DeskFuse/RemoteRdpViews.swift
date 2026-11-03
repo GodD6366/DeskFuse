@@ -515,7 +515,7 @@ private struct RemoteRdpViewer: View {
         .overlay(alignment: .topTrailing) {
             Button { showingDiagnostics.toggle() } label: {
                 Image(systemName: "info.circle")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(DFType.bodyMedium)
                     .padding(6)
                     .background(.regularMaterial, in: Circle())
             }
