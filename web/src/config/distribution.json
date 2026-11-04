@@ -10,6 +10,6 @@
     "x86_64": "DeskFuse-x86_64.dmg",
     "windows_x64": "DeskFuse-windows-x64-setup.exe"
   },
-  "fallback_release_tag": "v0.8.0",
-  "fallback_app_package": false
+  "fallback_release_tag": "v0.8.1",
+  "fallback_app_package": true
 }
