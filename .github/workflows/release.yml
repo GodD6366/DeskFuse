@@ -522,7 +522,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$CASK_PATH" web/src/config/distribution.json
-          git commit -m "chore(cask): pin $RELEASE_TAG DMG checksum"
+          git commit -m "chore(cask): pin $RELEASE_TAG app package checksum"
           for attempt in 1 2 3; do
             git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
             sleep $((attempt * 5))
