@@ -135,8 +135,19 @@ import DeskFuseEngine
             if args.contains("--update-self-test") && transaction == nil { throw StartupError.invalidTransaction }
             selfTest = try prepareStartup(transaction: transaction)
             recordStartup("recovery_ready")
-            if selfTest { starting = false; return }
-        } catch { self.error = error.userFacingMessage; starting = false; return }
+            if selfTest {
+                starting = false
+                // 自检确认必须由启动流程完成，不能依赖某个视图出现：
+                // 0.8.0 的 WebView 迁移删掉了原先承载确认的 MainContentView。
+                confirmSelfTest()
+                return
+            }
+        } catch {
+            NSLog("DeskFuse startup failed: %@", error.userFacingMessage)
+            self.error = error.userFacingMessage
+            starting = false
+            return
+        }
         Task {
             do {
                 await optimizeLocalDataIfNeeded()

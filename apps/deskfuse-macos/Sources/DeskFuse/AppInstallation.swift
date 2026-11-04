@@ -3,6 +3,19 @@ import Darwin
 
 /// File operations are independent of the main application and never touch user data.
 enum AppInstallation {
+    static func isInstalledLocation(
+        bundleURL: URL, applicationDirectories: [URL]? = nil
+    ) -> Bool {
+        guard bundleURL.pathExtension == "app" else { return false }
+        guard bundleURL.lastPathComponent == "DeskFuse.app" else { return false }
+        let directories = applicationDirectories
+            ?? FileManager.default.urls(for: .applicationDirectory, in: .allDomainsMask)
+        let path = bundleURL.resolvingSymlinksInPath().standardizedFileURL.path
+        return directories.contains { directory in
+            path.hasPrefix(directory.resolvingSymlinksInPath().standardizedFileURL.path + "/")
+        }
+    }
+
     static func requiresInstallation(bundleURL: URL, applicationDirectories: [URL]? = nil) -> Bool {
         guard bundleURL.pathExtension == "app" else { return false }
         // Gatekeeper may relocate a quarantined app out of its original disk image.
@@ -13,12 +26,8 @@ enum AppInstallation {
         // A directly distributed .app needs the same installer even without
         // quarantine/App Translocation. Named development bundles remain portable.
         guard bundleURL.lastPathComponent == "DeskFuse.app" else { return false }
-        let directories = applicationDirectories
-            ?? FileManager.default.urls(for: .applicationDirectory, in: .allDomainsMask)
-        let path = bundleURL.resolvingSymlinksInPath().standardizedFileURL.path
-        return !directories.contains { directory in
-            path.hasPrefix(directory.resolvingSymlinksInPath().standardizedFileURL.path + "/")
-        }
+        return !isInstalledLocation(
+            bundleURL: bundleURL, applicationDirectories: applicationDirectories)
     }
 
     static func destination(fileManager: FileManager = .default) -> URL {

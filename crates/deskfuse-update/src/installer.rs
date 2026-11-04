@@ -3,7 +3,7 @@
 //! a durable journal precedes every destructive step.
 use crate::{
     ArtifactDescriptor, PackageKind, PeerAppArtifact, ReleaseVersion, Target, UpdateStatus,
-    write_json_atomic,
+    is_app_zip_name, write_json_atomic,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -86,6 +86,18 @@ pub fn current_bundle() -> Result<PathBuf> {
         return Err("开发程序没有自动安装目标".into());
     }
     fs::canonicalize(bundle).map_err(|e| e.to_string())
+}
+
+/// Automatic replacement is only safe for a bundle already installed under an
+/// Applications directory. Downloads, mounted images and translocated bundles
+/// must keep using the explicit install window.
+#[must_use]
+pub fn is_application_location(bundle: &Path) -> bool {
+    let home_applications = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Applications"));
+    bundle.starts_with("/Applications")
+        || home_applications.is_some_and(|directory| bundle.starts_with(directory))
 }
 /// # Errors
 /// Returns a verification, storage, or platform operation failure.
@@ -325,10 +337,12 @@ fn verify_staged_payload(stage: &Path, journal: &InstallJournal) -> Result<()> {
         return Err("安装暂存缺少来源证明".into());
     }
     let source: InstallSource = read_json(&proof)?;
-    let expected_kind = match source.file_name.as_str() {
-        "DeskFuse-arm64.dmg" => PackageKind::MacosDmg,
-        PeerAppArtifact::FILE_NAME => PackageKind::MacosAppZip,
-        _ => return Err("安装来源证明不匹配".into()),
+    let expected_kind = if source.file_name == "DeskFuse-arm64.dmg" {
+        PackageKind::MacosDmg
+    } else if is_app_zip_name(&source.file_name, &journal.status.release.version, "arm64") {
+        PackageKind::MacosAppZip
+    } else {
+        return Err("安装来源证明不匹配".into());
     };
     if source.file_name != journal.status.artifact.file_name
         || source.sha256 != journal.status.artifact.sha256
@@ -357,7 +371,7 @@ pub fn prepare_github(
     if status.release != *release
         || status.artifact.kind != PackageKind::MacosAppZip
         || status.artifact.target != Target::MacosArm64
-        || status.artifact.file_name != PeerAppArtifact::FILE_NAME
+        || !is_app_zip_name(&status.artifact.file_name, &release.version, "arm64")
     {
         return Err("安装任务不匹配".into());
     }
@@ -365,6 +379,9 @@ pub fn prepare_github(
     let target = current_bundle()?;
     if target.starts_with("/Volumes") {
         return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
+    }
+    if !is_application_location(&target) {
+        return Err("请先把 DeskFuse 安装到应用程序目录，下载目录不能自动更新".into());
     }
     if bundle_update_channel(&target)? != "github" {
         return Err("只有 GitHub 渠道的正式包会从发布页自动安装".into());
@@ -448,6 +465,9 @@ pub fn prepare_peer_zip(
     let target = current_bundle()?;
     if target.starts_with("/Volumes") {
         return Err("请先将 DeskFuse 拖入应用程序目录，磁盘映像内无法自动安装".into());
+    }
+    if !is_application_location(&target) {
+        return Err("请先把 DeskFuse 安装到应用程序目录，下载目录不能自动更新".into());
     }
     let channel = bundle_update_channel(&target)?;
     if !PeerAppArtifact::CHANNELS.contains(&channel.as_str()) {
@@ -651,6 +671,10 @@ pub fn run_helper() -> Result<()> {
         journal.phase = Phase::BackedUp;
         persist(&root, &journal)?;
         fs::rename(&candidate, &journal.target).map_err(|e| e.to_string())?;
+        let _ = Command::new("/usr/bin/xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(&journal.target)
+            .status();
         File::open(journal.target.parent().ok_or("安装目标无效")?)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?;
@@ -698,6 +722,7 @@ pub fn run_helper() -> Result<()> {
     }
     drop(install_lock);
     Command::new(journal.target.join("Contents/MacOS/deskfuse-app"))
+        .arg("--updated-launch")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -837,6 +862,18 @@ fn unresolved_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_updates_only_target_applications_directories() {
+        assert!(is_application_location(Path::new(
+            "/Applications/DeskFuse.app"
+        )));
+        assert!(!is_application_location(Path::new(
+            "/Volumes/DeskFuse/DeskFuse.app"
+        )));
+        assert!(!is_application_location(Path::new("/tmp/DeskFuse.app")));
+    }
+
     fn fixture(phase: Phase) -> (tempfile::TempDir, PathBuf, InstallJournal) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("state/updates");

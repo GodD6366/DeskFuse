@@ -94,6 +94,16 @@ class DistributionConfigTests(unittest.TestCase):
         projection = MODULE["website_projection"](self.active, self.root)
 
         self.assertEqual(projection["fallback_release_tag"], "v0.4.5")
+        self.assertFalse(projection["fallback_app_package"])
+
+    def test_versioned_app_package_starts_after_v080(self):
+        for version, expected in (("0.8.0", False), ("0.8.1", True), ("0.9.0", True)):
+            (self.root / "release.json").write_text(json.dumps({"version": version}))
+            with self.subTest(version=version):
+                self.assertEqual(
+                    MODULE["website_projection"](self.active, self.root)["fallback_app_package"],
+                    expected,
+                )
 
     def test_website_fallback_rejects_invalid_release_version(self):
         for version in (None, "v0.4.5", "0.4", "0.4.5\noutput=bad"):

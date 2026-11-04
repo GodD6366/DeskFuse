@@ -40,9 +40,9 @@ DeskFuse 是 macOS 优先的原生桌面协作工具（Rust 2024 + SwiftUI）：
 
 | 平台 | 状态 |
 | --- | --- |
-| macOS 14+、Apple Silicon | 主平台，发行 arm64 DMG |
+| macOS 14+、Apple Silicon | 主平台，发行 arm64 应用包（zip）；DMG 仅供旧客户端兼容 |
 | macOS 26+ | 导航与操作层使用原生 Liquid Glass，旧系统回退标准材质 |
-| Intel Mac | 发行 x86_64 DMG，功能和实机验收与 arm64 分开记录 |
+| Intel Mac | 发行 x86_64 应用包（zip），功能和实机验收与 arm64 分开记录 |
 | Windows x64 | Beta；提供 Authenticode 签名安装器；安装、SCM、NLA、RemoteApp 和实机验收单独记录 |
 | Linux | 不在首发范围 |
 
@@ -58,11 +58,11 @@ brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse
 brew install --cask godd6366/deskfuse/deskfuse
 ```
 
-`brew trust` 执行一次即可（旧版本无此命令时跳过）。之前从旧发行仓库添加过 tap 的，请先执行 `brew untap godd6366/deskfuse` 再按上面重新添加。cask 固定对应 DMG 的 SHA-256。卸载：`brew uninstall --cask godd6366/deskfuse/deskfuse`，不再使用时 `brew untap godd6366/deskfuse`。
+`brew trust` 执行一次即可（旧版本无此命令时跳过）。之前从旧发行仓库添加过 tap 的，请先执行 `brew untap godd6366/deskfuse` 再按上面重新添加。cask 固定对应应用包 zip 的 SHA-256。卸载：`brew uninstall --cask godd6366/deskfuse/deskfuse`，不再使用时 `brew untap godd6366/deskfuse`。
 
 ### 更新
 
-Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases（包括预发行版）。已经装好、并且带 Developer ID 签名的正式版会下载 `DeskFuse-arm64-update.zip`，校验后自动替换 `/Applications/DeskFuse.app`，不打开安装窗口。没有稳定签名时，从发布页下载同一个应用包，打开后按安装窗口安装。Homebrew 安装请执行：
+Homebrew / GitHub 公开包在“设置 → 更新”中检查 GitHub Releases（包括预发行版）。已经装好、并且带 Developer ID 签名的正式版会下载 `DeskFuse-<版本>-arm64.zip`，校验后自动替换 `/Applications/DeskFuse.app`，直接进入应用界面，不打开安装窗口。没有稳定签名时，从发布页下载同一个应用包，打开后按安装窗口安装。Homebrew 安装请执行：
 
 ```sh
 brew update && brew upgrade --cask deskfuse
@@ -72,11 +72,11 @@ brew update && brew upgrade --cask deskfuse
 
 ### 下载应用包
 
-1. 按芯片从同一 Release 下载 `DeskFuse-arm64-update.zip` 或 `DeskFuse-x86_64-update.zip`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
+1. 按芯片从同一 Release 下载 `DeskFuse-<版本>-arm64.zip` 或 `DeskFuse-<版本>-x86_64.zip`，同时下载 `SHA256SUMS`、`release.json`、`build-info.json`，运行 `shasum -a 256 -c SHA256SUMS`。
 2. 打开压缩包里的 `DeskFuse.app`。安装窗口会把它复制到「应用程序」；同一设备只运行一份实例。已经放在「应用程序」里的副本直接进入应用，不再显示安装窗口。
 3. 按提示允许局域网访问；键鼠共享还需辅助功能授权、可信局域网会话、设备激活和可用显示器布局。
 
-Homebrew 和已经发布的旧客户端仍使用同一 Release 里的 `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg`。那些旧客户端只认磁盘映像，所以发布里继续提供它。
+已经发布的旧客户端仍使用同一 Release 里的 `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg`。那些旧客户端只认磁盘映像，所以发布里继续提供它；Homebrew 和官网都使用应用包。
 
 配置 Apple 凭据后的 GitHub 预发行使用 Developer ID 签名并公证，可直接打开；不要关闭 Gatekeeper 或 SIP。更早的 ad-hoc 预发行若被拦截，用系统“隐私与安全性 → 仍要打开”，或 `sudo xattr -rd com.apple.quarantine "/Applications/DeskFuse.app"`。维护者凭据准备见 [公证凭据](docs/NOTARIZE.md)。
 

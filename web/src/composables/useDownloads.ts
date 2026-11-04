@@ -22,8 +22,12 @@ export function useDownloads() {
   const releaseUrl = computed(
     () => release.value?.url || `${REPOSITORY_URL}/releases/tag/${tag.value}`,
   )
-  const arm64 = computed(() => macAppDownload(release.value?.assets, ARM64_DISK_IMAGE))
-  const intel = computed(() => macAppDownload(release.value?.assets, INTEL_DISK_IMAGE))
+  const arm64 = computed(() =>
+    macAppDownload(release.value?.assets, tag.value, ARM64_DISK_IMAGE, 'arm64'),
+  )
+  const intel = computed(() =>
+    macAppDownload(release.value?.assets, tag.value, INTEL_DISK_IMAGE, 'x86_64'),
+  )
   const arm64Size = computed(() => formatSize(arm64.value.size))
 
   return { tag, prerelease, releaseUrl, arm64, intel, arm64Size }

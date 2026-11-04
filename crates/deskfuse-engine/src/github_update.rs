@@ -14,7 +14,7 @@
 use deskfuse_runtime::updates::{GitHubUpdateView, LanUpdateView};
 use deskfuse_update::{
     ArtifactDescriptor, PackageKind, PeerAppArtifact, ReleaseVersion, Target, UpdatePhase,
-    UpdateStatus, installer,
+    UpdateStatus, app_zip_name, installer,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -29,8 +29,10 @@ use uuid::Uuid;
 include!(concat!(env!("OUT_DIR"), "/distribution.rs"));
 const INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 const PACKAGE_LIMIT: u64 = 512 * 1024 * 1024;
-/// Signed `DeskFuse.app` zip. Old clients ignore this name and still install the DMG.
-const UPDATE_ZIP: &str = PeerAppArtifact::FILE_NAME;
+/// Name used by the release that introduced app-package updates. New releases
+/// use `DeskFuse-<version>-arm64.zip`; the old name stays readable so a client
+/// can update from v0.8.0 without a second manual install.
+const LEGACY_UPDATE_ZIP: &str = PeerAppArtifact::FILE_NAME;
 
 pub(crate) fn is_public_bundle() -> bool {
     has_update_channel("github")
@@ -52,6 +54,7 @@ struct GitHubOffer {
     release: ReleaseVersion,
     release_url: String,
     package_url: String,
+    package_name: String,
     sha256: String,
     size: u64,
     developer_id: bool,
@@ -320,7 +323,7 @@ impl GitHubUpdater {
             artifact: ArtifactDescriptor {
                 target: Target::MacosArm64,
                 kind: PackageKind::MacosAppZip,
-                file_name: UPDATE_ZIP.into(),
+                file_name: offer.package_name.clone(),
                 size: offer.size,
                 sha256: offer.sha256.clone(),
                 minimum_os: semver::Version::new(14, 0, 0),
@@ -511,7 +514,7 @@ struct BuildTarget {
     signing: String,
 }
 
-fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
+fn checksums(text: &str, package_name: &str) -> Result<BTreeMap<String, String>, String> {
     let mut map = BTreeMap::new();
     for line in text.lines().filter(|line| !line.is_empty()) {
         let (hash, name) = line.split_once("  ").ok_or("SHA256SUMS 格式无效")?;
@@ -525,17 +528,14 @@ fn checksums(text: &str) -> Result<BTreeMap<String, String>, String> {
         if name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err("SHA256SUMS 包含无效路径".into());
         }
-        if !matches!(
-            name,
-            "DeskFuse-arm64-update.zip" | "release.json" | "build-info.json"
-        ) {
+        if name != package_name && name != "release.json" && name != "build-info.json" {
             continue;
         }
         if map.insert(name.to_owned(), hash.to_owned()).is_some() {
             return Err("SHA256SUMS 重复条目".into());
         }
     }
-    for required in [UPDATE_ZIP, "release.json", "build-info.json"] {
+    for required in [package_name, "release.json", "build-info.json"] {
         if !map.contains_key(required) {
             return Err("SHA256SUMS 缺少必要文件".into());
         }
@@ -672,12 +672,12 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
     // /latest excludes prereleases; DeskFuse's public channel currently publishes
     // prereleases, so inspect completed release entries and compare SemVer.
     let releases = release_candidates().await?;
-    let (version, tag, size) = releases
+    let (version, tag, package_name, size) = releases
         .into_iter()
         .filter(|release| {
             !release.draft
                 && release.published_at.is_some()
-                && [UPDATE_ZIP, "release.json", "build-info.json", "SHA256SUMS"]
+                && ["release.json", "build-info.json", "SHA256SUMS"]
                     .iter()
                     .all(|name| {
                         release.assets.iter().any(|asset| {
@@ -693,21 +693,30 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
             {
                 return None;
             }
-            let size = release
-                .assets
-                .iter()
-                .find(|asset| asset.name == UPDATE_ZIP)?
-                .size;
+            let package = [
+                app_zip_name(&version, "arm64"),
+                LEGACY_UPDATE_ZIP.to_owned(),
+            ]
+            .into_iter()
+            .find_map(|name| {
+                release
+                    .assets
+                    .iter()
+                    .find(|asset| asset.name == name && asset.state == "uploaded" && asset.size > 0)
+                    .map(|asset| (name, asset.size))
+            })?;
+            let (package_name, size) = package;
             if size == 0 || size > PACKAGE_LIMIT {
                 return None;
             }
-            Some((version, release.tag_name, size))
+            Some((version, release.tag_name, package_name, size))
         })
         .max_by(|a, b| a.0.cmp_precedence(&b.0))
         .ok_or("尚无完整的 macOS 发布包")?;
     let sums = checksums(
         &String::from_utf8(fetch_release_file(&tag, "SHA256SUMS", 65536).await?)
             .map_err(|_| "SHA256SUMS 不是有效文本")?,
+        &package_name,
     )?;
     let release_bytes = fetch_release_file(&tag, "release.json", 65536).await?;
     if sha256_bytes(&release_bytes) != sums["release.json"] {
@@ -729,16 +738,18 @@ async fn fetch_offer() -> Result<GitHubOffer, String> {
     let package = info
         .targets
         .iter()
-        .find(|target| target.asset == UPDATE_ZIP && target.target == "aarch64-apple-darwin")
+        .find(|target| target.asset == package_name && target.target == "aarch64-apple-darwin")
         .ok_or("构建信息缺少 arm64 应用包")?;
-    if info.release != release || package.sha256 != sums[UPDATE_ZIP] {
+    if info.release != release || package.sha256 != sums[&package_name] {
         return Err("构建信息与发布包不一致".into());
     }
+    let sha256 = sums[&package_name].clone();
     Ok(GitHubOffer {
         release,
         release_url: format!("{RELEASES}/{tag}"),
-        package_url: format!("{DOWNLOAD}/{tag}/{UPDATE_ZIP}"),
-        sha256: sums[UPDATE_ZIP].clone(),
+        package_url: format!("{DOWNLOAD}/{tag}/{package_name}"),
+        package_name,
+        sha256,
         size,
         developer_id: package.signing == "developer-id",
     })
@@ -750,26 +761,31 @@ mod tests {
 
     #[test]
     fn checksums_require_package_and_metadata() {
+        let package = "DeskFuse-0.8.1-arm64.zip";
         let text = "\
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  DeskFuse-arm64.dmg
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-0.8.1-arm64.zip
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.json
 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  extra.txt
 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  DeskFuse-x86_64-update.zip
 ";
-        let map = checksums(text).unwrap();
+        let map = checksums(text, package).unwrap();
         assert_eq!(map.len(), 3);
         assert!(!map.contains_key("DeskFuse-arm64.dmg"));
         assert!(!map.contains_key("DeskFuse-x86_64-update.zip"));
-        assert_eq!(map[UPDATE_ZIP].len(), 64);
-        assert_eq!(UPDATE_ZIP, "DeskFuse-arm64-update.zip");
+        assert_eq!(map[package].len(), 64);
+        assert_eq!(
+            app_zip_name(&semver::Version::new(0, 8, 1), "arm64"),
+            package
+        );
+        assert_eq!(LEGACY_UPDATE_ZIP, "DeskFuse-arm64-update.zip");
         let without_dmg = "\
-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-0.8.1-arm64.zip
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json
 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.json
 ";
-        assert_eq!(checksums(without_dmg).unwrap().len(), 3);
+        assert_eq!(checksums(without_dmg, package).unwrap().len(), 3);
     }
 
     fn release(tag: &str, assets: &[(&str, u64)]) -> Release {
@@ -912,10 +928,12 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.jso
 
     #[test]
     fn checksums_reject_paths_and_missing_files() {
-        assert!(checksums("zzzz  DeskFuse-arm64.dmg\n").is_err());
+        let package = "DeskFuse-0.8.1-arm64.zip";
+        assert!(checksums("zzzz  DeskFuse-arm64.dmg\n", package).is_err());
         assert!(
             checksums(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ../evil.dmg\n"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ../evil.dmg\n",
+                package
             )
             .is_err()
         );
@@ -923,6 +941,7 @@ dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  build-info.jso
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  DeskFuse-arm64.dmg\n\
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  DeskFuse-arm64-update.zip\n\
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  release.json\n"
+            , package
         )
         .is_err());
     }

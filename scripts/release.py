@@ -21,16 +21,26 @@ import runpy
 
 ROOT = Path(__file__).resolve().parent.parent
 DISTRIBUTION = runpy.run_path(str(ROOT / "scripts/distribution-config.py"))["load"]()
-# Current clients install the app zip. DMGs stay so Homebrew and already-shipped
-# clients, which only accept those file names, can still update.
+
+
+def version(root: Path = ROOT) -> str:
+    return tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+
+
+def app_zip_name(arch: str) -> str:
+    return f"DeskFuse-{version()}-{arch}.zip"
+
+
+# Current clients install the app zip. DMGs stay so already-shipped clients,
+# which only accept those file names, can still update.
 # ASSETS[0] must remain the arm64 DMG: build-info dmg_sha256 is that file.
-ARM64_UPDATE_ZIP = "DeskFuse-arm64-update.zip"
-X86_64_UPDATE_ZIP = "DeskFuse-x86_64-update.zip"
+ARM64_APP_ZIP = app_zip_name("arm64")
+X86_64_APP_ZIP = app_zip_name("x86_64")
 ASSETS = (
     DISTRIBUTION["assets"]["arm64"],
     DISTRIBUTION["assets"]["x86_64"],
-    ARM64_UPDATE_ZIP,
-    X86_64_UPDATE_ZIP,
+    ARM64_APP_ZIP,
+    X86_64_APP_ZIP,
     DISTRIBUTION["assets"]["windows_x64"],
     "release.json",
     "build-info.json",
@@ -39,8 +49,8 @@ ASSETS = (
 MACOS_ASSETS = (
     DISTRIBUTION["assets"]["arm64"],
     DISTRIBUTION["assets"]["x86_64"],
-    ARM64_UPDATE_ZIP,
-    X86_64_UPDATE_ZIP,
+    ARM64_APP_ZIP,
+    X86_64_APP_ZIP,
     "release.json",
     "build-info.json",
     "SHA256SUMS",
@@ -48,8 +58,8 @@ MACOS_ASSETS = (
 TARGET_ASSETS = {
     DISTRIBUTION["assets"]["arm64"]: "aarch64-apple-darwin",
     DISTRIBUTION["assets"]["x86_64"]: "x86_64-apple-darwin",
-    ARM64_UPDATE_ZIP: "aarch64-apple-darwin",
-    X86_64_UPDATE_ZIP: "x86_64-apple-darwin",
+    ARM64_APP_ZIP: "aarch64-apple-darwin",
+    X86_64_APP_ZIP: "x86_64-apple-darwin",
     DISTRIBUTION["assets"]["windows_x64"]: "win-x64",
 }
 MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
@@ -58,10 +68,6 @@ MACOS_TARGET_ASSETS = {name: target for name, target in TARGET_ASSETS.items()
 # distribution contract. Keep it probeable so a retry does not try to replace
 # an already-published two-DMG release unless --macos-only is explicit.
 LEGACY_RELEASE_VERSIONS = {"0.4.5"}
-
-
-def version(root: Path = ROOT) -> str:
-    return tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
 
 
 def validate(path: Path, expected: str, tag: str | None = None) -> dict:
@@ -129,13 +135,13 @@ def inventory(directory: Path, commit: str, include_windows: bool = True) -> Non
     targets = []
     for name, target in target_assets.items():
         sidecar = None
-        if name.endswith("arm64.dmg") or name == ARM64_UPDATE_ZIP:
+        if name.endswith("arm64.dmg") or name == ARM64_APP_ZIP:
             sidecar = directory / ".signing-arm64"
-        elif name.endswith("x86_64.dmg") or name == X86_64_UPDATE_ZIP:
+        elif name.endswith("x86_64.dmg") or name == X86_64_APP_ZIP:
             sidecar = directory / ".signing-x86_64"
         if sidecar is not None and not sidecar.is_file():
             sidecar = directory / ".signing"
-        if name.endswith(".dmg") or name.endswith("-update.zip"):
+        if name.endswith(".dmg") or name in {ARM64_APP_ZIP, X86_64_APP_ZIP}:
             kind, notarized = signing_status(directory, sidecar)
             target_info = {
                 "asset": name,
@@ -283,8 +289,8 @@ def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: 
         signing_note = "**Experimental prerelease: ad-hoc signed, not notarized.** macOS may block launch; see README installation limitations."
     notes = (f"macOS 14+ · Apple Silicon (arm64) and Intel (x86_64)\n\n"
              "Website download: open the app zip and follow the install window. "
-             "Homebrew still installs the DMG. An installed Developer ID build replaces itself from "
-             "`DeskFuse-arm64-update.zip` and does not show that window. "
+             "Homebrew also installs the app zip. An installed Developer ID build replaces itself from "
+             f"`{ARM64_APP_ZIP}` and does not show that window. "
              "Already shipped clients only recognize the DMG, so this release still includes it.\n\n"
              f"{signing_note}\n\n"
              f"Source: `{commit}` · Build: `{release['build_number']}` · Release ID: `{release['release_id']}`\n\n"

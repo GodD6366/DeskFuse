@@ -4,14 +4,14 @@
 
 | 产物 | 用途 |
 | --- | --- |
-| `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 磁盘映像；Homebrew 与只认该文件名的旧客户端使用。GitHub 预发行在配置凭据后为 Developer ID + 公证；贡献者 Homebrew 仍可 ad-hoc |
-| `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 磁盘映像；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录。Homebrew cask 不使用它 |
+| `dist/DeskFuse-arm64.dmg` | macOS 14+ Apple Silicon 磁盘映像；仅供只认该文件名的旧客户端使用。GitHub 预发行在配置凭据后为 Developer ID + 公证 |
+| `dist/DeskFuse-x86_64.dmg` | macOS 14+ Intel 磁盘映像；与 arm64 使用同一发行描述，签名、公证和设备行为单独记录。官网和 Homebrew 不使用它 |
 | `dist/DeskFuse-windows-x64-setup.exe` | Windows x64 NSIS 安装包；发布 job 要求 Authenticode 有效签名，安装、SCM、GUI 和双机行为单独记录 |
 | `dist/release.json` | 版本、单调构建号和唯一发行 ID；与 bundle 内副本一致 |
 | `dist/build-info.json` | 源 commit、工具链、macOS/Windows 目标、签名状态和资产哈希 |
 | `dist/SHA256SUMS` | 上述发行资产的 SHA-256；校验和本身不是发行签名 |
-| `dist/DeskFuse-arm64-update.zip` | 签过名的 `DeskFuse.app`。官网下载这个包，打开应用后走安装窗口；局域网设备和已安装的正式版用它直接替换应用，不再显示安装窗口。公证成功后会把票据打进这个 zip。已发布的旧客户端只认同一发布里的 DMG，所以 DMG 继续上传 |
-| `dist/DeskFuse-x86_64-update.zip` | Intel 版同一个应用包。官网 Intel 下载用它；当前自动更新只在 Apple Silicon 上静默安装 |
+| `dist/DeskFuse-<version>-arm64.zip` | 签过名的 `DeskFuse.app`。官网和 Homebrew 下载这个包；已安装的正式版用它直接替换应用，不再显示安装窗口。公证成功后会把票据打进这个 zip。已发布的旧客户端只认同一发布里的 DMG，所以 DMG 继续上传 |
+| `dist/DeskFuse-<version>-x86_64.zip` | Intel 版同一个应用包。官网 Intel 和 Homebrew 用它；当前自动更新只在 Apple Silicon 上静默安装 |
 | `dist/manifest.json` | 本机协调端签发的 Ed25519 发布清单；CI 没有私钥时不生成 |
 
 根 `release.json` 是公开且随版本提交的输入，不含凭据。`dist/` 是输出，不提交到 Git。
@@ -167,15 +167,16 @@ Actions 产物保留 14 天；GitHub Release 资产不按此期限过期。首�
 
 ### Homebrew cask
 
-本仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse`）。`Casks/deskfuse.rb` 固定 `DeskFuse-arm64.dmg` 的 SHA-256，只服务公开 GitHub 预发行。公开发行版运行时可以把本机应用打包传给局域网中的其他 GitHub 渠道设备，不依赖 LAN 发行私钥。
+本仓库同时作为 Homebrew tap（`brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse`）。`Casks/deskfuse.rb` 固定 arm64 应用包 zip 的 SHA-256，只服务公开 GitHub 预发行。公开发行版运行时可以把本机应用打包传给局域网中的其他 GitHub 渠道设备，不依赖 LAN 发行私钥。
 
-cask job 下载刚发布的 DMG、重新渲染 cask 并提交到本仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
+cask job 下载刚发布的 arm64 应用包、重新渲染 cask 并提交到本仓库的 main。该 job 需要默认分支允许其 token 直接推送；分支保护会阻止提交，此时在本地手动刷新并提交：
 
 ```sh
-gh release download v0.4.0 --repo GodD6366/DeskFuse --pattern DeskFuse-arm64.dmg --dir dist
-python3 scripts/update-cask.py --dmg dist/DeskFuse-arm64.dmg --version 0.1.0
+VERSION=X.Y.Z
+gh release download "v$VERSION" --repo GodD6366/DeskFuse --pattern "DeskFuse-$VERSION-arm64.zip" --dir dist
+python3 scripts/update-cask.py --zip "dist/DeskFuse-$VERSION-arm64.zip" --version "$VERSION"
 git add Casks/deskfuse.rb
-git commit -m 'chore(cask): pin v0.4.0 DMG checksum'
+git commit -m "chore(cask): pin v$VERSION app package checksum"
 ```
 
 `update-cask.py` 拒绝与根 `Cargo.toml` 版本不一致的输入；cask 版本或校验和未刷新时 `brew install` 会报校验失败。Homebrew 7 要求用户先 `brew trust --cask godd6366/deskfuse/deskfuse` 才能 tap，README 已列出该步骤。

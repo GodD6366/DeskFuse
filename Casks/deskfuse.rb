@@ -2,9 +2,9 @@
 # version and sha256 after a GitHub prerelease becomes public; edit the script.
 cask "deskfuse" do
   version "0.8.0"
-  sha256 "bff4e84c0f20f50dab8e65100d39dd1a84a162db3a47a6175bfdb78dc8c1ddd8"
+  sha256 "260f12da7e8a0a81be570c80d044d0a9b4ddf20361cf27fce18d10fda5605c1b"
 
-  url "https://github.com/GodD6366/DeskFuse/releases/download/v#{version}/DeskFuse-arm64.dmg"
+  url "https://github.com/GodD6366/DeskFuse/releases/download/v#{version}/DeskFuse-arm64-update.zip"
   name "DeskFuse"
   desc "Clipboard, file transfer and input sharing for trusted devices"
   homepage "https://github.com/GodD6366/DeskFuse"

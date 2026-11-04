@@ -1,5 +1,64 @@
 [
   {
+    "tag_name": "v0.8.0",
+    "name": "DeskFuse v0.8.0 (prerelease)",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-11-03T19:50:18Z",
+    "created_at": "2026-11-03T18:42:45Z",
+    "html_url": "https://github.com/GodD6366/DeskFuse/releases/tag/v0.8.0",
+    "assets": [
+      {
+        "name": "build-info.json",
+        "size": 1303,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/build-info.json",
+        "sha256": "d97854605ba26eb03ed47d02ee9d4141139fd333df2292fc5a245dd8ce6f72a0"
+      },
+      {
+        "name": "DeskFuse-arm64-update.zip",
+        "size": 36911842,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/DeskFuse-arm64-update.zip",
+        "sha256": "260f12da7e8a0a81be570c80d044d0a9b4ddf20361cf27fce18d10fda5605c1b"
+      },
+      {
+        "name": "DeskFuse-arm64.dmg",
+        "size": 40906054,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/DeskFuse-arm64.dmg",
+        "sha256": "bff4e84c0f20f50dab8e65100d39dd1a84a162db3a47a6175bfdb78dc8c1ddd8"
+      },
+      {
+        "name": "DeskFuse-x86_64-update.zip",
+        "size": 39648054,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/DeskFuse-x86_64-update.zip",
+        "sha256": "84ce0b9edb58b7b5e814a98838b84f5f2f2d029860f423e4370c863bed900e2e"
+      },
+      {
+        "name": "DeskFuse-x86_64.dmg",
+        "size": 44173470,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/DeskFuse-x86_64.dmg",
+        "sha256": "2fd555397ac77493a2e80b9e28d8575a54d9b40ac9e67fd482e874289a39b101"
+      },
+      {
+        "name": "release.json",
+        "size": 103,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/release.json",
+        "sha256": "6eb96bae0d40a70e36d10971ad01667f6e4c5ce0add70de310097601770f475a"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 517,
+        "state": "uploaded",
+        "browser_download_url": "https://github.com/GodD6366/DeskFuse/releases/download/v0.8.0/SHA256SUMS"
+      }
+    ]
+  },
+  {
     "tag_name": "v0.7.2",
     "name": "DeskFuse v0.7.2 (prerelease)",
     "draft": false,

@@ -132,13 +132,13 @@ case "$MACOS_ARCH" in
 esac
 export DESKFUSE_MACOS_ARCH="$MACOS_ARCH"
 DMG_ASSET="$(python3 scripts/distribution-config.py --value "assets.$MACOS_ARCH")"
-UPDATE_ASSET="${DMG_ASSET%.dmg}-update.zip"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 PACKAGE_NAME="deskfuse-ffi"
 BINARY_NAME="${BINARY_NAME:-deskfuse-app}"
 WORKSPACE_VERSION="$(python3 "$ROOT_DIR/scripts/release.py" version)"
 APP_VERSION="${APP_VERSION:-$WORKSPACE_VERSION}"
 [[ "$APP_VERSION" == "$WORKSPACE_VERSION" ]] || { echo "error: APP_VERSION differs from workspace" >&2; exit 1; }
+UPDATE_ASSET="DeskFuse-$APP_VERSION-$MACOS_ARCH.zip"
 # A shared release descriptor replaces the old Git-commit-count build number.
 # The same descriptor is supplied to the Windows build for a paired release.
 RELEASE_METADATA="${RELEASE_METADATA:-}"
@@ -232,7 +232,7 @@ PYPAIR
   release_assets=()
   for release_arch in arm64 x86_64; do
     release_dmg="$(python3 scripts/distribution-config.py --value "assets.$release_arch")"
-    release_zip="${release_dmg%.dmg}-update.zip"
+    release_zip="DeskFuse-$APP_VERSION-$release_arch.zip"
     release_assets+=("$release_dmg" "$release_zip")
     mv "$RELEASE_STAGE/$release_arch/$release_dmg" "$RELEASE_DIR/"
     mv "$RELEASE_STAGE/$release_arch/$release_zip" "$RELEASE_DIR/"

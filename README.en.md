@@ -40,9 +40,9 @@ Sources (2026-09-15): [Apple Universal Control](https://support.apple.com/en-us/
 
 | Platform | Status |
 | --- | --- |
-| macOS 14+, Apple Silicon | Main platform, arm64 DMG |
+| macOS 14+, Apple Silicon | Main platform, arm64 app package (zip); DMG only for older clients |
 | macOS 26+ | Native Liquid Glass for navigation and actions; standard materials on older systems |
-| Intel Mac | x86_64 DMG is released; behavior and device acceptance are tracked separately from arm64 |
+| Intel Mac | x86_64 app package (zip) is released; behavior and device acceptance are tracked separately from arm64 |
 | Windows x64 | Beta; Authenticode-signed installer; installation, SCM, NLA, RemoteApp and device acceptance are tracked separately |
 | Linux | Not a first-release target |
 
@@ -58,11 +58,11 @@ brew tap godd6366/deskfuse https://github.com/GodD6366/DeskFuse
 brew install --cask godd6366/deskfuse/deskfuse
 ```
 
-Run `brew trust` once (skip it on older Homebrew without the command). If you tapped the old release repository, run `brew untap godd6366/deskfuse` first and tap again as above. The cask pins the matching DMG SHA-256. Uninstall with `brew uninstall --cask godd6366/deskfuse/deskfuse`, then `brew untap godd6366/deskfuse` if unused.
+Run `brew trust` once (skip it on older Homebrew without the command). If you tapped the old release repository, run `brew untap godd6366/deskfuse` first and tap again as above. The cask pins the matching app zip SHA-256. Uninstall with `brew uninstall --cask godd6366/deskfuse/deskfuse`, then `brew untap godd6366/deskfuse` if unused.
 
 ### Updates
 
-Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates. An installed Developer ID build downloads `DeskFuse-arm64-update.zip` and replaces `/Applications/DeskFuse.app` in place, without the install window. Builds without that stable signature download the same app package and follow the install window. Homebrew installations can also run:
+Public GitHub packages check GitHub Releases (including prereleases) in Settings → Updates. An installed Developer ID build downloads `DeskFuse-<version>-arm64.zip` and replaces `/Applications/DeskFuse.app` in place, entering the app directly without the install window. Builds without that stable signature download the same app package and follow the install window. Homebrew installations can also run:
 
 ```sh
 brew update && brew upgrade --cask deskfuse
@@ -72,11 +72,11 @@ Internal signed packages continue using trusted LAN automatic updates. A public 
 
 ### Download the app package
 
-1. Download `DeskFuse-arm64-update.zip` or `DeskFuse-x86_64-update.zip` for your Mac, plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
+1. Download `DeskFuse-<version>-arm64.zip` or `DeskFuse-<version>-x86_64.zip` for your Mac, plus `SHA256SUMS`, `release.json`, and `build-info.json` from the same release, then run `shasum -a 256 -c SHA256SUMS`.
 2. Open `DeskFuse.app` inside the zip. The install window copies it into Applications; run only one instance per device. A copy that is already in Applications opens directly and does not show the install window.
 3. Allow local network access when prompted; input sharing also needs Accessibility permission, a trusted LAN session, enabled devices and a valid display layout.
 
-Homebrew and already shipped clients still use `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg` from the same release. Those older clients only recognize the disk image, so releases keep publishing it.
+Already shipped clients still use `DeskFuse-arm64.dmg` / `DeskFuse-x86_64.dmg` from the same release. Those older clients only recognize the disk image, so releases keep publishing it; Homebrew and the website both use the app package.
 
 GitHub prereleases built with Apple credentials are Developer ID signed and notarized, and should open normally. Never disable Gatekeeper or SIP. Older ad-hoc builds may still be blocked: use the system's “Open Anyway” option, or `sudo xattr -rd com.apple.quarantine "/Applications/DeskFuse.app"`. Maintainer credentials: [notarization secrets](docs/NOTARIZE.md).
 

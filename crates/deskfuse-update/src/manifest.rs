@@ -7,6 +7,23 @@ use uuid::Uuid;
 
 const SIGNATURE_DOMAIN: &[u8] = b"deskfuse/release-manifest/v1\0";
 
+/// Public release asset name: product, version, then architecture.
+#[must_use]
+pub fn app_zip_name(version: &Version, arch: &str) -> String {
+    format!("DeskFuse-{version}-{arch}.zip")
+}
+
+/// Name used by releases published before versioned app packages.
+#[must_use]
+pub fn legacy_app_zip_name(arch: &str) -> String {
+    format!("DeskFuse-{arch}-update.zip")
+}
+
+#[must_use]
+pub fn is_app_zip_name(name: &str, version: &Version, arch: &str) -> bool {
+    name == app_zip_name(version, arch) || name == legacy_app_zip_name(arch)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseVersion {

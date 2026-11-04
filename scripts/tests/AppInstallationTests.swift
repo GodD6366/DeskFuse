@@ -102,6 +102,15 @@ enum AppInstallationTests {
         try expect(!AppInstallation.requiresInstallation(
             bundleURL: manager.homeDirectoryForCurrentUser.appendingPathComponent("Applications/DeskFuse.app")),
             "user installation starts normally")
+        try expect(AppInstallation.isInstalledLocation(
+            bundleURL: URL(fileURLWithPath: "/Applications/DeskFuse.app")),
+            "system installation is an update target")
+        try expect(AppInstallation.isInstalledLocation(
+            bundleURL: manager.homeDirectoryForCurrentUser.appendingPathComponent("Applications/DeskFuse.app")),
+            "user application directory is an update target")
+        try expect(!AppInstallation.isInstalledLocation(
+            bundleURL: manager.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/DeskFuse.app")),
+            "downloads are not an update target")
         try diskImageTest(source: source, root: root)
         print("Installation transaction checks passed, including quarantine, direct app entry and a real read-only DMG")
     }

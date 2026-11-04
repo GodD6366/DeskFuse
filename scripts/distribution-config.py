@@ -44,16 +44,33 @@ def load(root: Path = ROOT) -> dict:
     return active
 
 
-def release_tag(root: Path = ROOT) -> str:
+def release_version(root: Path = ROOT) -> str:
     descriptor = json.loads((root / "release.json").read_text())
     version = descriptor.get("version")
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("invalid release descriptor version")
+    return version
+
+
+def release_tag(root: Path = ROOT) -> str:
+    version = release_version(root)
     return f"v{version}"
+
+
+def has_app_package(version: str) -> bool:
+    # v0.8.0 shipped the app zip as `DeskFuse-<arch>-update.zip`. Versioned
+    # names start with the next release, so the static fallback can still use
+    # the existing asset until that release is published.
+    return tuple(int(part) for part in version.split(".")) >= (0, 8, 1)
+
+
+def app_zip_name(version: str, arch: str) -> str:
+    return f"DeskFuse-{version}-{arch}.zip"
 
 
 def website_projection(active: dict, root: Path = ROOT) -> dict:
     legacy = active.get("legacy_release_repository", "")
+    version = release_version(root)
     return {
         "schema_version": 1,
         "release_repository": active["release_repository"],
@@ -63,7 +80,8 @@ def website_projection(active: dict, root: Path = ROOT) -> dict:
         "homebrew_tap": active["homebrew_tap"],
         "cask_token": active["cask_token"],
         "assets": active["assets"],
-        "fallback_release_tag": release_tag(root),
+        "fallback_release_tag": f"v{version}",
+        "fallback_app_package": has_app_package(version),
     }
 
 
@@ -97,11 +115,14 @@ def main() -> None:
             args.website_output.write_text(content)
         return
     if args.github_output:
+        version = release_version()
         values = {
             "release_repository": active["release_repository"],
             "legacy_release_repository": active.get("legacy_release_repository", ""),
             "arm64_asset": active["assets"]["arm64"],
             "x86_64_asset": active["assets"]["x86_64"],
+            "arm64_zip": app_zip_name(version, "arm64"),
+            "x86_64_zip": app_zip_name(version, "x86_64"),
             "windows_x64_asset": active["assets"]["windows_x64"],
             "cask_path": f'Casks/{active["cask_token"]}.rb',
             "macos_runner": json.dumps(active["macos_runner"], separators=(",", ":")),

@@ -37,6 +37,8 @@ jobs:
       legacy_release_repository: ${{ steps.distribution.outputs.legacy_release_repository }}
       arm64_asset: ${{ steps.distribution.outputs.arm64_asset }}
       x86_64_asset: ${{ steps.distribution.outputs.x86_64_asset }}
+      arm64_zip: ${{ steps.distribution.outputs.arm64_zip }}
+      x86_64_zip: ${{ steps.distribution.outputs.x86_64_zip }}
       windows_x64_asset: ${{ steps.distribution.outputs.windows_x64_asset }}
       cask_path: ${{ steps.distribution.outputs.cask_path }}
       include_windows: ${{ steps.release_mode.outputs.include_windows }}
@@ -89,6 +91,7 @@ jobs:
     needs: [preflight, checks]
     env:
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
+      ARM64_ZIP: ${{ needs.preflight.outputs.arm64_zip }}
     if: needs.preflight.outputs.exists != 'true'
     name: macOS arm64 DMG
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Apple Silicon + Xcode 27 SDK; runtime minimum is still macOS 14
@@ -131,7 +134,7 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh "dist/$ARM64_ASSET"
-          unzip -t dist/DeskFuse-arm64-update.zip
+          unzip -t "dist/$ARM64_ZIP"
           cp dist/.signing dist/signing-arm64.txt
       - name: Remove signing material
         if: always()
@@ -142,7 +145,7 @@ jobs:
           name: release-macos-arm64
           path: |
             dist/${{ env.ARM64_ASSET }}
-            dist/DeskFuse-arm64-update.zip
+            dist/${{ env.ARM64_ZIP }}
             dist/release.json
             dist/signing-arm64.txt
           if-no-files-found: error
@@ -153,6 +156,7 @@ jobs:
     needs: [preflight, checks]
     env:
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
+      X86_64_ZIP: ${{ needs.preflight.outputs.x86_64_zip }}
     if: needs.preflight.outputs.exists != 'true'
     name: macOS Intel x86_64 DMG
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27] # Cross-compiles the Intel target with the same macOS 27 SDK
@@ -195,7 +199,7 @@ jobs:
         run: |
           ./scripts/package-macos.sh --homebrew
           ./scripts/verify-dmg.sh "dist/$X86_64_ASSET"
-          unzip -t dist/DeskFuse-x86_64-update.zip
+          unzip -t "dist/$X86_64_ZIP"
           cp dist/.signing dist/signing-x86_64.txt
       - name: Remove signing material
         if: always()
@@ -206,7 +210,7 @@ jobs:
           name: release-macos-x86_64
           path: |
             dist/${{ env.X86_64_ASSET }}
-            dist/DeskFuse-x86_64-update.zip
+            dist/${{ env.X86_64_ZIP }}
             dist/release.json
             dist/signing-x86_64.txt
           if-no-files-found: error
@@ -339,6 +343,8 @@ jobs:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
+      ARM64_ZIP: ${{ needs.preflight.outputs.arm64_zip }}
+      X86_64_ZIP: ${{ needs.preflight.outputs.x86_64_zip }}
       WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
       INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
@@ -372,10 +378,10 @@ jobs:
       - name: Check downloaded archives
         run: |
           test -s "dist/arm64/$ARM64_ASSET"
-          test -s dist/arm64/DeskFuse-arm64-update.zip
+          test -s "dist/arm64/$ARM64_ZIP"
           test -s dist/arm64/signing-arm64.txt
           test -s "dist/x86_64/$X86_64_ASSET"
-          test -s dist/x86_64/DeskFuse-x86_64-update.zip
+          test -s "dist/x86_64/$X86_64_ZIP"
           test -s dist/x86_64/signing-x86_64.txt
       - name: Verify downloaded macOS DMGs
         env:
@@ -389,9 +395,9 @@ jobs:
           set -euo pipefail
           source scripts/rust-toolchain-env.sh
           cp "dist/arm64/$ARM64_ASSET" dist/
-          cp dist/arm64/DeskFuse-arm64-update.zip dist/
+          cp "dist/arm64/$ARM64_ZIP" dist/
           cp "dist/x86_64/$X86_64_ASSET" dist/
-          cp dist/x86_64/DeskFuse-x86_64-update.zip dist/
+          cp "dist/x86_64/$X86_64_ZIP" dist/
           inventory_args=(--macos-only)
           if [[ "$INCLUDE_WINDOWS" == "true" ]]; then
             cp "dist/windows/$WINDOWS_ASSET" dist/
@@ -474,6 +480,7 @@ jobs:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       LEGACY_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.legacy_release_repository }}
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
+      ARM64_ZIP: ${{ needs.preflight.outputs.arm64_zip }}
       CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
     runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
     timeout-minutes: 15
@@ -486,7 +493,7 @@ jobs:
         with:
           ref: main
           path: source
-      - name: Download the published arm64 DMG
+      - name: Download the published arm64 app package
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -494,14 +501,14 @@ jobs:
           set -euo pipefail
           [[ "${RELEASE_TAG#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: unexpected release tag: $RELEASE_TAG" >&2; exit 1; }
           mkdir -p dist
-          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --pattern "$ARM64_ASSET" --dir dist --clobber
+          gh release download "$RELEASE_TAG" --repo "$DESKFUSE_RELEASE_REPOSITORY" --pattern "$ARM64_ZIP" --dir dist --clobber
       - name: Commit refreshed cask and website config
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           cd source
-          python3 scripts/update-cask.py --dmg "../dist/$ARM64_ASSET" --version "${RELEASE_TAG#v}" --cask "$CASK_PATH"
+          python3 scripts/update-cask.py --zip "../dist/$ARM64_ZIP" --version "${RELEASE_TAG#v}" --cask "$CASK_PATH"
           # 站点回退版本取自 tag 对应的 release.json，而不是 main 上可能更新的描述文件。
           git fetch --quiet --depth 1 origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           git show "$RELEASE_TAG:release.json" > /tmp/deskfuse-release-descriptor.json
@@ -535,7 +542,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          python3 source/scripts/update-cask.py --dmg "dist/$ARM64_ASSET" --version "${RELEASE_TAG#v}" \
+          python3 source/scripts/update-cask.py --zip "dist/$ARM64_ZIP" --version "${RELEASE_TAG#v}" \
             --cask "legacy/$CASK_PATH" --retap-notice
           cd legacy
           if git diff --quiet -- "$CASK_PATH"; then

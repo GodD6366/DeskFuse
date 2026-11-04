@@ -568,6 +568,10 @@ pub fn run_helper() -> Result<()> {
         journal.phase = Phase::BackedUp;
         persist(&root, &journal)?;
         fs::rename(&candidate, &journal.target).map_err(|e| e.to_string())?;
+        let _ = Command::new("/usr/bin/xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(&journal.target)
+            .status();
         File::open(journal.target.parent().ok_or("安装目标无效")?)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?;
@@ -615,6 +619,7 @@ pub fn run_helper() -> Result<()> {
     }
     drop(install_lock);
     Command::new(journal.target.join("Contents/MacOS/deskfuse-app"))
+        .arg("--updated-launch")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
