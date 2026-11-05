@@ -12,6 +12,7 @@ export interface LatestRelease {
   tag: string
   prerelease: boolean
   url: string
+  publishedAt?: string
   assets: ReleaseAsset[]
 }
 
@@ -54,6 +55,7 @@ function fetchLatest(): Promise<LatestRelease | null> {
       tag: latest.tag_name || '',
       prerelease: Boolean(latest.prerelease),
       url: latest.html_url || '',
+      publishedAt: typeof latest.published_at === 'string' ? latest.published_at : undefined,
       assets: (latest.assets || []).map((a: any) => ({
         name: a.name,
         url: a.browser_download_url,

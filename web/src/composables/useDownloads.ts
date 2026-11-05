@@ -29,6 +29,15 @@ export function useDownloads() {
     macAppDownload(release.value?.assets, tag.value, INTEL_DISK_IMAGE, 'x86_64'),
   )
   const arm64Size = computed(() => formatSize(arm64.value.size))
+  const intelSize = computed(() => formatSize(intel.value.size))
+  const date = computed(() => {
+    const raw = release.value?.publishedAt
+    if (!raw) return ''
+    const value = new Date(raw)
+    if (Number.isNaN(value.getTime())) return ''
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
+  })
 
-  return { tag, prerelease, releaseUrl, arm64, intel, arm64Size }
+  return { tag, prerelease, releaseUrl, arm64, intel, arm64Size, intelSize, date }
 }
