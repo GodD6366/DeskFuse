@@ -7,7 +7,7 @@ use deskfuse_core::*;
 use deskfuse_discovery::{DiscoveryEvent, DiscoveryProvider, PlatformDiscovery, ServiceRecord};
 use deskfuse_platform::ports::EnginePlatformPort;
 use deskfuse_runtime::{
-    ControlTransportAdapter, SnapshotView,
+    ControlTransportAdapter, RuntimeCommand, SnapshotView,
     input_service::{Authority, ChildConnection},
 };
 use deskfuse_transport::{ControlTransport, PeerHello, QuinnTransport, QuinnTransportConfig};
@@ -125,6 +125,15 @@ async fn run(
         None
     };
     let mut authority = child.authority.borrow().clone();
+    // A Wi-Fi move changes both the interface set and the input helper's
+    // Bonjour namespace. The host refreshes its own discovery, but that does
+    // not rebuild this isolated browse or the 42425 listeners. Observe the
+    // authorized SSID stream here so a settled network change gets one fresh
+    // browse and one forced listener reconciliation, without restarting the
+    // whole app.
+    let mut wifi_refresh = WifiRefresh::new();
+    let mut network_refresh_at: Option<Instant> = None;
+    let mut link_retry_at: Option<Instant> = None;
     // Bonjour 发现结果单独保存，路由表每次由两路来源合并重建。
     let mut mdns_routes = BTreeMap::new();
     let mut routes = BTreeMap::new();
@@ -230,6 +239,35 @@ async fn run(
     while !child.stopping.load(Ordering::Acquire) {
         tokio::select! {
             _ = tick.tick() => {
+                if network_refresh_at.is_some_and(|at| Instant::now() >= at) {
+                    network_refresh_at = None;
+                    if sharing_enabled {
+                        let refreshed = discovery.refresh();
+                        transport.refresh_lan_listeners();
+                        // The listener task reconciles asynchronously. Give it
+                        // a beat, then clear the input actor's retry ladder so
+                        // it redials this peer instead of waiting out a 30 s
+                        // backoff.
+                        link_retry_at = Some(Instant::now() + Duration::from_secs(2));
+                        crate::diagnostics::record!(
+                            input_records,
+                            crate::diagnostics::DiagnosticLevel::Info,
+                            "input_discovery",
+                            "refresh_after_wifi_change",
+                            Some(match refreshed {
+                                Ok(()) => "browse_refreshed listeners_rebound".to_owned(),
+                                Err(error) => format!(
+                                    "browse_refresh_failed listeners_rebound error={error}"
+                                ),
+                            }),
+                            None,
+                        );
+                    }
+                }
+                if link_retry_at.is_some_and(|at| Instant::now() >= at) {
+                    link_retry_at = None;
+                    let _ = runtime.handle.try_send(RuntimeCommand::RefreshInputNetwork);
+                }
                 if matches!(child.pause.load(Ordering::Acquire), 6 | 7) && child.emergency.swap(false, Ordering::AcqRel) {
                     let _ = child.pause.compare_exchange(7, 0, Ordering::AcqRel, Ordering::Acquire);
                     let _ = child.pause.compare_exchange(6, 0, Ordering::AcqRel, Ordering::Acquire);
@@ -376,6 +414,13 @@ async fn run(
             }
             Some(packet) = child.remote.recv() => { remote_input.receive(packet, &authority); },
             Some((id,command)) = child.commands.recv() => {
+                if let RuntimeCommand::ObserveWifiEnvironment { ssid } = &command
+                    && wifi_refresh.observe(ssid)
+                {
+                    // DHCP and the peer's mDNS advertisement need a moment to
+                    // settle; coalesce flapping SSID readings into one refresh.
+                    network_refresh_at = Some(Instant::now() + Duration::from_secs(2));
+                }
                 if let Err(error) = runtime.handle.try_send(command) { status.native.error = Some(error.to_string()); }
                 status.last_command = id;
             }
@@ -420,6 +465,35 @@ fn permission_code(value: deskfuse_platform::PermissionStatus) -> u8 {
         Denied => 2,
         Unknown => 0,
         NeedsUserAction => 3,
+    }
+}
+
+/// Tracks the authorized SSID stream without treating the helper's first
+/// observation as a network change; a fresh helper already has a live browse
+/// and listener set. Returns true only when a later observation differs.
+#[derive(Default)]
+struct WifiRefresh {
+    seen: Option<Option<String>>,
+    first: bool,
+}
+
+impl WifiRefresh {
+    fn new() -> Self {
+        Self {
+            seen: None,
+            first: true,
+        }
+    }
+
+    fn observe(&mut self, ssid: &Option<String>) -> bool {
+        if self.first {
+            self.first = false;
+            self.seen = Some(ssid.clone());
+            return false;
+        }
+        let changed = self.seen.as_ref() != Some(ssid);
+        self.seen = Some(ssid.clone());
+        changed
     }
 }
 
@@ -516,6 +590,18 @@ mod tests {
             .iter()
             .map(|r| r.endpoint.host.clone())
             .collect()
+    }
+
+    #[test]
+    fn wifi_refresh_skips_the_first_observation_and_the_stable_repeats() {
+        let mut refresh = WifiRefresh::new();
+        assert!(!refresh.observe(&Some("home".into())));
+        assert!(!refresh.observe(&Some("home".into())));
+        assert!(refresh.observe(&Some("office".into())));
+        assert!(!refresh.observe(&Some("office".into())));
+        assert!(refresh.observe(&None));
+        assert!(!refresh.observe(&None));
+        assert!(refresh.observe(&Some("office".into())));
     }
 
     #[test]

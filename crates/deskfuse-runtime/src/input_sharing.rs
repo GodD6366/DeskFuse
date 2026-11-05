@@ -804,6 +804,11 @@ impl InputActor {
                 self.move_layout(device_id, display_id, x, y).await;
             }
             RuntimeCommand::ObserveWifiEnvironment { ssid } => self.observe_environment(ssid),
+            RuntimeCommand::RefreshInputNetwork => {
+                self.links.reset_for_network_change();
+                self.attempted.clear();
+                self.tick();
+            }
             RuntimeCommand::ChooseEnvironmentController {
                 controller,
                 remember,

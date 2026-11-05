@@ -595,6 +595,7 @@ fn host_command_allowed(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::RestartInputActivation { .. }
             | RuntimeCommand::ForgetInputPeer { .. }
             | RuntimeCommand::RefreshNativeObserver
+            | RuntimeCommand::RefreshInputNetwork
             | RuntimeCommand::PublishDisplayWallpaper { .. }
             | RuntimeCommand::MoveInputDevice { .. }
             | RuntimeCommand::PauseManagedActivation { .. }

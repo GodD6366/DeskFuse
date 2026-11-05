@@ -1104,6 +1104,9 @@ pub enum RuntimeCommand {
     ForgetControllerEnvironment {
         ssid: String,
     },
+    /// Local physical network changed. Drop input-link backoff so the new
+    /// 42425 listeners are used immediately instead of after the retry ladder.
+    RefreshInputNetwork,
     /// Native wake notification: refresh discovery and expedite recovery.
     SystemWoke,
     LeaveDeviceNetwork,
@@ -1252,6 +1255,7 @@ impl RuntimeCommand {
             Self::ObserveWifiEnvironment { .. }
                 | Self::ChooseEnvironmentController { .. }
                 | Self::ForgetControllerEnvironment { .. }
+                | Self::RefreshInputNetwork
                 | Self::SaveInputSharingScene { .. }
                 | Self::SaveEnvironmentLayout { .. }
                 | Self::ApplyInputSharingScene { .. }

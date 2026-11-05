@@ -1736,6 +1736,7 @@ struct QuinnShared {
     config: TransportConfig,
     lan_port: Option<Arc<dyn deskfuse_platform::ports::LanWebPort>>,
     shutdown: Arc<Notify>,
+    refresh_lan: Arc<Notify>,
     inbound: broadcast::Sender<(DeviceId, Message)>,
     control_peers: broadcast::Sender<ControlPeerConnected>,
     admission: Arc<Mutex<ControlAdmission>>,
@@ -1802,6 +1803,7 @@ pub struct QuinnTransport {
     config: QuinnTransportConfig,
     counters: Arc<Counters>,
     shutdown: Arc<Notify>,
+    refresh_lan: Arc<Notify>,
     accept_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     shutdown_started: Arc<AtomicBool>,
     shutdown_finished: Arc<AtomicBool>,
@@ -1878,6 +1880,7 @@ impl QuinnTransport {
             config: self.config.transport,
             lan_port: self.config.lan_port.clone(),
             shutdown: self.shutdown.clone(),
+            refresh_lan: self.refresh_lan.clone(),
             inbound: self.inbound.clone(),
             control_peers: self.control_peers.clone(),
             admission: self.admission.clone(),
@@ -1918,6 +1921,7 @@ impl QuinnTransport {
             ),
             counters: Arc::new(Counters::default()),
             shutdown: Arc::new(Notify::new()),
+            refresh_lan: Arc::new(Notify::new()),
             accept_task: Arc::new(Mutex::new(None)),
             shutdown_started: Arc::new(AtomicBool::new(false)),
             shutdown_finished: Arc::new(AtomicBool::new(false)),
@@ -2159,6 +2163,7 @@ impl QuinnTransport {
         let sessions = Arc::new(Mutex::new(BTreeMap::new()));
         let counters = Arc::new(Counters::default());
         let shutdown = Arc::new(Notify::new());
+        let refresh_lan = Arc::new(Notify::new());
         let (inbound, _) = broadcast::channel(256);
         let (control_peers, _) = broadcast::channel(64);
         let admission = Arc::new(Mutex::new(ControlAdmission::default()));
@@ -2234,6 +2239,7 @@ impl QuinnTransport {
             config: config.transport,
             lan_port: config.lan_port.clone(),
             shutdown: Arc::clone(&shutdown),
+            refresh_lan: Arc::clone(&refresh_lan),
             inbound: inbound.clone(),
             control_peers: control_peers.clone(),
             admission: Arc::clone(&admission),
@@ -2302,6 +2308,7 @@ impl QuinnTransport {
             config,
             counters,
             shutdown,
+            refresh_lan,
             accept_task: Arc::new(Mutex::new(accept_task)),
             shutdown_started: stopping,
             shutdown_finished: Arc::new(AtomicBool::new(false)),
@@ -2329,6 +2336,14 @@ impl QuinnTransport {
             ))?
             .local_addr()
             .map_err(|error| TransportError::Quic(error.to_string()))
+    }
+
+    /// Force a physical-interface listener reconciliation after a network
+    /// change. The periodic task still owns the sockets; this only asks it to
+    /// close the old set first, so a listener that survived an interface
+    /// rename cannot leave 42425 answering on a dead address.
+    pub fn refresh_lan_listeners(&self) {
+        self.refresh_lan.notify_one();
     }
 
     /// Return the local signed hello.
@@ -3314,11 +3329,33 @@ async fn refresh_lan_listeners(shared: QuinnShared, config: QuinnTransportConfig
     let mut interval = time::interval(Duration::from_secs(2));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     interval.tick().await;
+    let mut force = false;
     loop {
         if shared.stopping.load(Ordering::Acquire) {
             break;
         }
-        tokio::select! {_=shared.shutdown.notified()=>break,_=interval.tick()=>{}}
+        tokio::select! {
+            _=shared.shutdown.notified()=>break,
+            _=shared.refresh_lan.notified()=>{ force = true; },
+            _=interval.tick()=>{}
+        }
+        // A Wi-Fi move can keep the old interface name and IP while its QUIC
+        // endpoint driver is already dead. Closing the old set before asking
+        // the OS for sockets guarantees the replacement is not skipped just
+        // because the address still looks active.
+        if force {
+            force = false;
+            if let Ok(mut listeners) = shared.lan_endpoints.lock() {
+                for (address, (interface, endpoint)) in std::mem::take(&mut *listeners) {
+                    socket_diag::record(
+                        "listener_closed",
+                        address,
+                        format!("interface={interface} reason=explicit_network_refresh"),
+                    );
+                    endpoint.close(QUIC_CLOSE_CODE, b"physical interface changed");
+                }
+            }
+        }
         let lan_port = shared.lan_port.clone();
         let sockets = tokio::select! {
             _=shared.shutdown.notified()=>break,

@@ -51,6 +51,20 @@ impl Drop for Links {
         }
     }
 }
+impl Links {
+    /// A physical network change invalidates every route observation and every
+    /// retry deadline. Abort in-flight dials so a fresh snapshot is used.
+    pub(super) fn reset_for_network_change(&mut self) {
+        for (_, attempt) in std::mem::take(&mut self.active) {
+            attempt.task.abort();
+            self.retired.push(attempt.task);
+        }
+        self.retries.clear();
+        self.failures.clear();
+        self.checked.clear();
+    }
+}
+
 impl InputActor {
     pub(super) fn maintain_link(&mut self, peer: DeviceId, endpoints: Vec<Endpoint>) {
         // Only the controller upgrades a live route. The receiver follows that
@@ -344,6 +358,29 @@ mod tests {
         actor.snapshot.settings.participants.clear();
         actor.tick_links();
         assert!(!actor.links.retries.contains_key(&peer));
+    }
+
+    #[test]
+    fn network_change_discards_retry_ladder_and_route_checks() {
+        let (mut actor, peer, _, _, _) = super::super::tests::setup(true);
+        let generation = actor.transport.control_generation(peer).unwrap_or(0);
+        actor.links.retries.insert(
+            peer,
+            Retry {
+                generation,
+                failures: 5,
+                due: Instant::now() + Duration::from_secs(30),
+            },
+        );
+        actor
+            .links
+            .failures
+            .insert(peer, InputLinkFailure::PeerUnresponsive);
+        actor.links.checked.insert(peer, Instant::now());
+        actor.links.reset_for_network_change();
+        assert!(actor.links.retries.is_empty());
+        assert!(actor.links.failures.is_empty());
+        assert!(actor.links.checked.is_empty());
     }
 
     #[test]
