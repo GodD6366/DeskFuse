@@ -156,9 +156,9 @@ git push origin vX.Y.Z
 `scripts/check.sh` 与 macOS 构建入口都会通过 `scripts/rust-toolchain-env.sh` 选择仓库固定的 Rust 工具链；CI 也会将该工具链加入后续步骤的 PATH，避免 Homebrew 的 `cargo`/`rustc` 抢先。检查日志同时记录实际使用的 `rustc` 和 `cargo` 版本。
 
 1. preflight 验证 tag／workspace／descriptor；已发布同 tag 时下载并核对全部资产、版本和 source commit，成功后不重建或覆盖。
-2. 调用 macOS 和 Windows CI 检查。Windows job 在 `windows-2022` 上运行固定 Rust/MSVC、服务与目录测试，并构建 x64 服务/桌面输入适配器；发布 job 还必须使用 `WINDOWS_AUTHENTICODE_PFX_B64` / `WINDOWS_AUTHENTICODE_PFX_PASSWORD` 签署 Windows 安装包，缺少签名会 fail closed。
-3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。
-4. publish job 负责建 draft、上传、下载校验；全部通过后转为 prerelease，不标记为 latest。
+2. preflight 不再重跑 CI，只读取 tag 提交上 `macOS arm64 checks` 的既有结论（`scripts/release.py verify-ci`）。该 job 未通过或不存在时立即失败，所以仍必须先让 main CI 变绿再打 tag。Windows 检查在 main CI 的 GitHub-hosted `windows-2022` job 中运行；发布 job 若包含 Windows 安装包，还必须用 `WINDOWS_AUTHENTICODE_PFX_B64` / `WINDOWS_AUTHENTICODE_PFX_PASSWORD` 签署，缺少签名会 fail closed。
+3. Self-hosted Apple Silicon runner 分别构建 arm64 和 x86_64 DMG。macOS jobs 使用已提交 descriptor、Developer ID、`--homebrew` + headless 打包、hardened runtime、`notarytool` 公证并 staple。缺少 Apple secret 时 macOS jobs 失败。打包 job 通过 `scripts/ci-build-cache.sh` 复用 runner 本地的 `~/deskfuse-ci-target/<job>`（Rust target、roc 构建、Swift scratch），checkout 清理不再让它们从零重编。
+4. publish job 在 GitHub-hosted runner 上建 draft、4 路并行直连上传、用 GitHub 记录的 sha256 校验，全部通过后转为 prerelease，不标记为 latest。上传不经过自托管 Mac 的上行链路，也不使用 Actions artifact 之外的额外下载。
 5. cask job 在 publish 确认资产公开后刷新 Homebrew cask 并提交到默认分支（见下），pages job 随即部署站点。publish 与 cask 是仅有的两个 `contents: write` job，pages 只有 `actions: write`。
 
 当前 `xcode-27` 是 GitHub 的预览镜像，用于满足已使用的 SDK 27 API；发布前须确认该镜像可用并检查实际运行结果。

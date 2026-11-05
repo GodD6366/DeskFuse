@@ -20,6 +20,7 @@ class ReleaseTests(unittest.TestCase):
         self.path = self.root / "release.json"
         self.save()
         self.commit = "a" * 40
+        self.upload_url = "https://uploads.github.test/repos/owner/repo/releases/1/assets{?name,label}"
 
     def save(self):
         self.path.write_text(json.dumps(self.data))
@@ -79,12 +80,40 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release, "version", return_value=self.data["version"]), patch.object(release.subprocess, "check_output", return_value="rustc test"):
             release.inventory(self.root, self.commit, include_windows=False)
 
+    def local_digests(self, names):
+        return {name: release.checksum(self.root / name) for name in names}
+
     def test_macos_only_inventory_round_trip(self):
         self.make_macos_inventory()
         release.verify_inventory(self.root, self.data, self.commit, include_windows=False)
         info = json.loads((self.root / "build-info.json").read_text())
         self.assertEqual({item["target"] for item in info["targets"]}, set(release.MACOS_TARGET_ASSETS.values()))
         self.assertNotIn(release.DISTRIBUTION["assets"]["windows_x64"], (self.root / "SHA256SUMS").read_text())
+
+    def test_inventory_records_supplied_rustc_version(self):
+        self.make_macos_inventory()
+        with patch.object(release, "version", return_value=self.data["version"]):
+            release.inventory(self.root, self.commit, include_windows=False,
+                              rustc_version="rustc 1.97.1 (release 2026-01-01)")
+            info = json.loads((self.root / "build-info.json").read_text())
+            self.assertEqual(info["rustc"], "rustc 1.97.1 (release 2026-01-01)")
+            with self.assertRaises(ValueError):
+                release.inventory(self.root, self.commit, include_windows=False, rustc_version="1.97.1")
+
+    def test_verify_ci_requires_a_green_macos_check(self):
+        with patch.object(release, "api", return_value={"check_runs": [
+                {"name": "macOS arm64 checks", "conclusion": "success"},
+                {"name": "checks / macOS arm64 checks", "conclusion": "failure"}]}):
+            release.verify_ci("owner/repo", self.commit)
+        for checks, message in (
+                ([{"name": "macOS arm64 checks", "conclusion": "failure"}], "did not succeed"),
+                ([{"name": "macOS arm64 checks", "conclusion": None}], "did not succeed"),
+                ([{"name": "Windows adapters, service, and catalog checks", "conclusion": "failure"}],
+                 "no `macOS arm64 checks` check run")):
+            with self.subTest(message=message):
+                with patch.object(release, "api", return_value={"check_runs": checks}):
+                    with self.assertRaisesRegex(ValueError, message):
+                        release.verify_ci("owner/repo", self.commit)
 
     def test_inventory_round_trip_and_wrong_source(self):
         self.make_inventory()
@@ -157,7 +186,7 @@ class ReleaseTests(unittest.TestCase):
         for candidate in ("0.4.5", "0.4.6"):
             self.data["version"] = candidate
             self.save()
-            with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=candidate), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release.subprocess, "run") as download, patch.object(release, "verify_inventory") as verify:
+            with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=candidate), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release, "download_assets") as download, patch.object(release, "verify_inventory") as verify:
                 if candidate == "0.4.5":
                     self.assertTrue(release.probe("owner/repo", f"v{candidate}", self.commit))
                     download.assert_called_once()
@@ -171,11 +200,11 @@ class ReleaseTests(unittest.TestCase):
     def test_probe_macos_only_release_requires_explicit_mode(self):
         remote = {"draft": False, "prerelease": True,
                   "assets": [{"name": name} for name in release.MACOS_ASSETS]}
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release.subprocess, "run") as download, patch.object(release, "verify_inventory") as verify:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release, "download_assets") as download, patch.object(release, "verify_inventory") as verify:
             self.assertTrue(release.probe("owner/repo", "v0.1.0", self.commit, include_windows=False))
             download.assert_called_once()
             self.assertFalse(verify.call_args.kwargs["include_windows"])
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release.subprocess, "run") as download:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release, "download_assets") as download:
             with self.assertRaisesRegex(ValueError, "assets conflict"):
                 release.probe("owner/repo", "v0.1.0", self.commit)
             download.assert_not_called()
@@ -183,12 +212,17 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_macos_only_uploads_only_selected_assets(self):
         self.make_macos_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory") as verify:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory") as verify, patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.MACOS_ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit, include_windows=False)
-            upload = next(call.args[0] for call in runner.call_args_list if call.args[0][2] == "upload")
-            self.assertEqual({Path(path).name for path in upload[6:]}, set(release.MACOS_ASSETS))
+            commands = [call.args[0] for call in runner.call_args_list]
+            uploads = [Path(call.args[1]).name for call in upload.call_args_list]
+            self.assertEqual(set(uploads), set(release.MACOS_ASSETS))
+            # One upload per asset on its own connection, and no download when
+            # GitHub reports the stored digests.
+            self.assertEqual(len(uploads), len(release.MACOS_ASSETS))
+            self.assertNotIn("download", [command[2] for command in commands])
             self.assertTrue(all(call.kwargs["include_windows"] is False for call in probe.call_args_list))
-            self.assertTrue(all(call.kwargs["include_windows"] is False for call in verify.call_args_list))
+            verify.assert_called_once()
 
     def test_missing_asset(self):
         self.make_inventory()
@@ -235,22 +269,35 @@ class ReleaseTests(unittest.TestCase):
     def test_upload_failure_leaves_draft_unpublished(self):
         self.make_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        def run(command, **kwargs):
-            if command[2] == "upload":
-                raise release.subprocess.CalledProcessError(1, command)
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run", side_effect=run) as runner:
-            with self.assertRaises(release.subprocess.CalledProcessError):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset", side_effect=ValueError("upload failed")):
+            with self.assertRaises(ValueError):
                 release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
-            self.assertEqual([call.args[0][2] for call in runner.call_args_list], ["create", "upload"])
+            commands = [call.args[0][2] for call in runner.call_args_list]
+            self.assertEqual(commands[0], "create")
+            self.assertNotIn("edit", commands)
             self.assertIn("--draft", runner.call_args_list[0].args[0])
 
     def test_download_mismatch_never_publishes(self):
         self.make_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory", side_effect=[None, ValueError("uploaded checksum mismatch")]):
+        # GitHub deployments without asset digests still verify by downloading.
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory", side_effect=[None, ValueError("uploaded checksum mismatch")]), patch.object(release, "remote_asset_digests", return_value=None), patch.object(release.time, "sleep"), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"), patch.object(release, "download_assets") as download:
             with self.assertRaises(ValueError):
                 release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
-            self.assertEqual([call.args[0][2] for call in runner.call_args_list], ["create", "upload", "download"])
+            commands = [call.args[0][2] for call in runner.call_args_list]
+            self.assertEqual(commands[0], "create")
+            self.assertNotIn("edit", commands)
+            download.assert_called_once()
+
+    def test_digest_mismatch_never_publishes(self):
+        self.make_inventory()
+        (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
+        digests = self.local_digests(release.ASSETS)
+        digests[release.ARM64_APP_ZIP] = "0" * 64
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=digests), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
+            with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
+            self.assertNotIn("edit", [call.args[0][2] for call in runner.call_args_list])
 
     def test_publish_order_and_confirmation(self):
         self.make_inventory()
@@ -259,12 +306,15 @@ class ReleaseTests(unittest.TestCase):
         def run(command, **kwargs):
             if command[2] == "create":
                 notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run", side_effect=run) as runner, patch.object(release, "verify_inventory"):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run", side_effect=run) as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
-            self.assertEqual([call.args[0][2] for call in runner.call_args_list], ["create", "upload", "download", "edit"])
+            commands = [call.args[0] for call in runner.call_args_list]
+            self.assertEqual(commands[0][2], "create")
+            self.assertEqual(commands[-1][2], "edit")
+            self.assertNotIn("download", [command[2] for command in commands])
             self.assertEqual(probe.call_count, 2)
-            self.assertIn("--prerelease", runner.call_args_list[-1].args[0])
-            self.assertNotIn("--clobber", runner.call_args_list[1].args[0])
+            self.assertIn("--prerelease", commands[-1])
+            self.assertEqual(len(upload.call_args_list), len(release.ASSETS))
             self.assertIn("ad-hoc signed, not notarized", notes[0])
 
     def test_publish_notes_for_notarized_build(self):
@@ -275,10 +325,19 @@ class ReleaseTests(unittest.TestCase):
         def run(command, **kwargs):
             if command[2] == "create":
                 notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "verify_inventory"):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
         self.assertIn("Developer ID signed and notarized", notes[0])
         self.assertNotIn("ad-hoc signed", notes[0])
+
+    def test_probe_verifies_digests_without_downloading_assets(self):
+        remote = {"draft": False, "prerelease": True, "assets": [
+            {"name": name, "digest": "sha256:" + "a" * 64} for name in release.MACOS_ASSETS]}
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "api", side_effect=[{}, remote]), patch.object(release, "download_assets") as download, patch.object(release, "verify_inventory") as verify:
+            self.assertTrue(release.probe("owner/repo", "v0.1.0", self.commit, include_windows=False))
+            self.assertEqual(download.call_args.args[3], {"release.json", "build-info.json", "SHA256SUMS"})
+            self.assertEqual(verify.call_args.kwargs["digests"],
+                             {name: "a" * 64 for name in release.MACOS_ASSETS})
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
 
 # 发行版与源码在同一个公开仓库。顶层 GITHUB_TOKEN 只读；只有 publish（创建 Release）、
 # cask（提交 Casks/ 与站点配置）和 pages（触发站点部署）三个 job 单独声明写权限。
@@ -15,6 +16,11 @@ permissions:
 # 签名与发行凭据存放在 `release` environment，只对 `v*` tag 开放（tag 由 ruleset
 # 限定管理员创建）；读取 secrets 的 job 必须声明 environment: release。
 # 自托管 runner 不执行未审阅代码（见 ci.yml）。
+#
+# 时间预算：自托管 runner 只有一台，macOS job 严格串行，所以 release 不重复跑 CI，
+# 只核对 tag 提交上 `macOS arm64 checks` 的既有结果；打包 job 复用持久 target 缓存；
+# publish / mirror / cask 放在 GitHub-hosted runner 上，避免本机上行成为上传瓶颈
+# （同一批 161MB 资产从本机上传实测 38 分钟，托管 runner 上是秒级）。
 #
 # Keep Windows out of the prerelease until Authenticode signing is available.
 # Set the DESKFUSE_INCLUDE_WINDOWS_RELEASE repository variable to `true` to
@@ -65,6 +71,11 @@ jobs:
           esac
           echo "include_windows=$DESKFUSE_INCLUDE_WINDOWS_RELEASE" >> "$GITHUB_OUTPUT"
           echo "Windows release assets enabled: $DESKFUSE_INCLUDE_WINDOWS_RELEASE"
+      - name: Verify the release commit passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKFUSE_RELEASE_REPOSITORY: ${{ steps.distribution.outputs.release_repository }}
+        run: python3 scripts/release.py verify-ci --commit "$GITHUB_SHA"
       - id: probe
         name: Validate tag and immutable release
         env:
@@ -81,14 +92,9 @@ jobs:
           if [[ "$DESKFUSE_INCLUDE_WINDOWS_RELEASE" != "true" ]]; then probe_args+=(--macos-only); fi
           python3 scripts/release.py probe --tag "$RELEASE_TAG" "${probe_args[@]}"
 
-  checks:
-    needs: preflight
-    if: needs.preflight.outputs.exists != 'true'
-    uses: ./.github/workflows/ci.yml
-
   macos-arm64:
     environment: release
-    needs: [preflight, checks]
+    needs: [preflight]
     env:
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
       ARM64_ZIP: ${{ needs.preflight.outputs.arm64_zip }}
@@ -108,11 +114,8 @@ jobs:
           rustup component add rust-src
           source scripts/rust-toolchain-env.sh
           dirname "$(command -v cargo)" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: deskfuse-macos
-          key: release-arm64
-          save-if: false
+      - name: Reuse the persistent build cache
+        run: ./scripts/ci-build-cache.sh "$GITHUB_JOB"
       - name: Import Developer ID
         env:
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
@@ -136,6 +139,7 @@ jobs:
           ./scripts/verify-dmg.sh "dist/$ARM64_ASSET"
           unzip -t "dist/$ARM64_ZIP"
           cp dist/.signing dist/signing-arm64.txt
+          rustc --version > dist/rustc.txt
       - name: Remove signing material
         if: always()
         run: ./scripts/cleanup-developer-id.sh
@@ -148,12 +152,13 @@ jobs:
             dist/${{ env.ARM64_ZIP }}
             dist/release.json
             dist/signing-arm64.txt
+            dist/rustc.txt
           if-no-files-found: error
           retention-days: 1
 
   macos-x86_64:
     environment: release
-    needs: [preflight, checks]
+    needs: [preflight]
     env:
       X86_64_ASSET: ${{ needs.preflight.outputs.x86_64_asset }}
       X86_64_ZIP: ${{ needs.preflight.outputs.x86_64_zip }}
@@ -173,11 +178,8 @@ jobs:
           rustup component add rust-src
           source scripts/rust-toolchain-env.sh
           dirname "$(command -v cargo)" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: deskfuse-macos
-          key: release-x86_64
-          save-if: false
+      - name: Reuse the persistent build cache
+        run: ./scripts/ci-build-cache.sh "$GITHUB_JOB"
       - name: Import Developer ID
         env:
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
@@ -218,7 +220,7 @@ jobs:
 
   windows-x64:
     environment: release
-    needs: [preflight, checks]
+    needs: [preflight]
     if: needs.preflight.outputs.exists != 'true' && needs.preflight.outputs.include_windows == 'true'
     name: Windows x64 installer
     runs-on: windows-2022
@@ -230,6 +232,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: deskfuse-windows
+          key: release
+          save-if: false
       - name: Require NSIS and Authenticode signing tools
         shell: pwsh
         run: |
@@ -347,10 +354,10 @@ jobs:
       X86_64_ZIP: ${{ needs.preflight.outputs.x86_64_zip }}
       WINDOWS_ASSET: ${{ needs.preflight.outputs.windows_x64_asset }}
       INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
-    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
-    # Artifact downloads on the self-hosted runner can be slow; keep enough
-    # time for both DMGs before the public inventory is assembled.
-    timeout-minutes: 90
+    # Publishing moves bytes, not code: run it where the uplink is fast, and let
+    # the Mac runner go idle as soon as both DMGs are built.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # 创建并发布本仓库的 Release 需要 contents: write；tag 由 ruleset 限定管理员创建。
     permissions:
       contents: write
@@ -380,20 +387,13 @@ jobs:
           test -s "dist/arm64/$ARM64_ASSET"
           test -s "dist/arm64/$ARM64_ZIP"
           test -s dist/arm64/signing-arm64.txt
+          test -s dist/arm64/rustc.txt
           test -s "dist/x86_64/$X86_64_ASSET"
           test -s "dist/x86_64/$X86_64_ZIP"
           test -s dist/x86_64/signing-x86_64.txt
-      - name: Verify downloaded macOS DMGs
-        env:
-          DESKFUSE_REQUIRE_NOTARIZE: '1'
-          DESKFUSE_DMG_FINDER_LAYOUT: '0'
-        run: |
-          DESKFUSE_MACOS_ARCH=arm64 ./scripts/verify-dmg.sh "dist/arm64/$ARM64_ASSET"
-          DESKFUSE_MACOS_ARCH=x86_64 ./scripts/verify-dmg.sh "dist/x86_64/$X86_64_ASSET"
       - name: Assemble and verify the complete release inventory
         run: |
           set -euo pipefail
-          source scripts/rust-toolchain-env.sh
           cp "dist/arm64/$ARM64_ASSET" dist/
           cp "dist/arm64/$ARM64_ZIP" dist/
           cp "dist/x86_64/$X86_64_ASSET" dist/
@@ -408,8 +408,10 @@ jobs:
           cp dist/arm64/release.json dist/release.json
           cp dist/arm64/signing-arm64.txt dist/.signing-arm64
           cp dist/x86_64/signing-x86_64.txt dist/.signing-x86_64
-          python3 scripts/release.py inventory --directory dist --commit "$GITHUB_SHA" "${inventory_args[@]}"
-          (cd dist && shasum -a 256 -c SHA256SUMS)
+          # The DMGs were verified on the Mac right after packaging; here only the
+          # published inventory has to be assembled and checksum-verified.
+          python3 scripts/release.py inventory --directory dist --commit "$GITHUB_SHA" \
+            --rustc "$(cat dist/arm64/rustc.txt)" "${inventory_args[@]}"
       - name: Verify, upload draft, then publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -434,8 +436,8 @@ jobs:
       DESKFUSE_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
       LEGACY_RELEASE_REPOSITORY: ${{ needs.preflight.outputs.legacy_release_repository }}
       INCLUDE_WINDOWS: ${{ needs.preflight.outputs.include_windows }}
-    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -482,7 +484,7 @@ jobs:
       ARM64_ASSET: ${{ needs.preflight.outputs.arm64_asset }}
       ARM64_ZIP: ${{ needs.preflight.outputs.arm64_zip }}
       CASK_PATH: ${{ needs.preflight.outputs.cask_path }}
-    runs-on: [self-hosted, macOS, ARM64, deskfuse-macos, xcode-27]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # 把 Casks/ 与站点配置提交到本仓库 main；这是 tap 与站点读取的位置。
     permissions:

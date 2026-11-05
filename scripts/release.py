@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.parse
@@ -123,7 +125,8 @@ def signing_status(directory: Path, sidecar: Path | None = None) -> tuple[str, b
     return kind, notarized
 
 
-def inventory(directory: Path, commit: str, include_windows: bool = True) -> None:
+def inventory(directory: Path, commit: str, include_windows: bool = True,
+              rustc_version: str | None = None) -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("expected full source commit SHA")
     release = validate(directory / "release.json", version())
@@ -171,9 +174,15 @@ def inventory(directory: Path, commit: str, include_windows: bool = True) -> Non
                 "authenticode": authenticode,
             }
         targets.append(target_info)
-    rustc = "unavailable"
-    if shutil.which("rustc"):
-        rustc = subprocess.check_output(["rustc", "--version"], text=True).strip()
+    # The publish job runs where the compilers are not; it passes the version the
+    # build jobs recorded so the published metadata keeps describing the build.
+    rustc = rustc_version
+    if rustc is None:
+        rustc = "unavailable"
+        if shutil.which("rustc"):
+            rustc = subprocess.check_output(["rustc", "--version"], text=True).strip()
+    elif not rustc.startswith("rustc "):
+        raise ValueError("rustc version must be the `rustc --version` line")
     write_json(directory / "build-info.json", {
         "commit": commit, "release": release, "targets": targets,
         "minimum_macos": "14.0", "rustc": rustc,
@@ -183,7 +192,21 @@ def inventory(directory: Path, commit: str, include_windows: bool = True) -> Non
     verify_inventory(directory, release, commit, include_windows=include_windows)
 
 
-def verify_inventory(directory: Path, release: dict, commit: str, include_windows: bool | None = None) -> None:
+def verify_inventory(directory: Path, release: dict, commit: str, include_windows: bool | None = None,
+                     digests: dict[str, str] | None = None) -> None:
+    """Validate an inventory from local files, or from GitHub's stored digests.
+
+    `digests` lets the same checks run without downloading the large assets: the
+    caller passes sha256 values GitHub reports for the uploaded bytes and only the
+    small metadata files are read from `directory`.
+    """
+    def asset_digest(name: str) -> str:
+        if digests is not None:
+            if name not in digests:
+                raise ValueError("release inventory is missing an uploaded asset")
+            return digests[name]
+        return checksum(directory / name)
+
     all_expected = {name for name in ASSETS if name != "SHA256SUMS"}
     legacy_expected = all_expected - {DISTRIBUTION["assets"]["windows_x64"]}
     actual = {}
@@ -198,7 +221,7 @@ def verify_inventory(directory: Path, release: dict, commit: str, include_window
             raise ValueError("Windows installer required for this release")
     expected = all_expected if include_windows else legacy_expected
     target_map = TARGET_ASSETS if include_windows else MACOS_TARGET_ASSETS
-    if set(actual) != expected or any(checksum(directory / name) != digest for name, digest in actual.items()):
+    if set(actual) != expected or any(asset_digest(name) != digest for name, digest in actual.items()):
         raise ValueError("release assets failed checksum verification")
     if json.loads((directory / "release.json").read_text()) != release:
         raise ValueError("existing release descriptor conflicts with source")
@@ -232,12 +255,17 @@ def verify_inventory(directory: Path, release: dict, commit: str, include_window
         raise ValueError("existing build information conflicts with source")
 
 
-def api(path: str, *, missing_ok: bool = False) -> dict | None:
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if not token:
+def token() -> str:
+    value = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not value:
         raise ValueError("GH_TOKEN required")
+    return value
+
+
+def api(path: str, *, missing_ok: bool = False) -> dict | None:
+    token_value = token()
     request = urllib.request.Request("https://api.github.com/" + path, headers={
-        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token_value}", "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "deskfuse-release",
     })
     try:
@@ -249,11 +277,147 @@ def api(path: str, *, missing_ok: bool = False) -> dict | None:
         raise ValueError(f"GitHub API request failed: HTTP {error.code}") from None
 
 
+def remote_asset_digests(repo: str, tag: str, release: dict,
+                         include_windows: bool = True,
+                         remote: dict | None = None) -> dict[str, str] | None:
+    """Return the sha256 GitHub stores for each published asset.
+
+    Returns None when this GitHub deployment does not report digests; callers then
+    verify by downloading the assets instead.
+    """
+    remote = remote if remote is not None else release_record(repo, tag)
+    assets = {item["name"]: item for item in remote["assets"]}
+    expected = set(ASSETS if include_windows else MACOS_ASSETS)
+    legacy = expected - {DISTRIBUTION["assets"]["windows_x64"]}
+    if assets.keys() != expected and not (
+            include_windows and assets.keys() == legacy
+            and release["version"] in LEGACY_RELEASE_VERSIONS):
+        raise ValueError("existing release type/assets conflict; refusing to overwrite")
+    digests = {}
+    for name, item in assets.items():
+        digest = item.get("digest") or ""
+        if not digest.startswith("sha256:"):
+            return None
+        digests[name] = digest.split(":", 1)[1]
+    return digests
+
+
+def remote_release(repo: str, tag: str, *, missing_ok: bool = False) -> dict | None:
+    return api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=missing_ok)
+
+
+def release_record(repo: str, tag: str) -> dict:
+    """Return the release for `tag`, including a draft that is not tag-addressable yet."""
+    remote = remote_release(repo, tag, missing_ok=True)
+    if remote is not None:
+        return remote
+    for item in api(f"repos/{repo}/releases?per_page=100") or []:
+        if item.get("tag_name") == tag and item.get("draft"):
+            return item
+    raise ValueError(f"release {tag} is missing")
+
+
+def verify_ci(repo: str, commit: str, job: str = "macOS arm64 checks") -> None:
+    """Require the macOS check job to have passed for the tagged commit.
+
+    Re-running the whole CI suite inside the release only repeated work the tag's
+    commit had already validated; reading the recorded result keeps the guarantee
+    and costs seconds. A failing Windows job must not block a macOS release, so
+    the decision is made per job instead of per workflow run.
+    """
+    if not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise ValueError("expected full source commit SHA")
+    checks = api(f"repos/{repo}/commits/{commit}/check-runs?per_page=100")["check_runs"]
+    names = {job, f"checks / {job}"}
+    matching = [check for check in checks if check.get("name") in names]
+    if not matching:
+        raise ValueError(f"no `{job}` check run for {commit}; push the release commit and wait for CI before tagging")
+    if any(check.get("conclusion") == "success" for check in matching):
+        return
+    raise ValueError(f"`{job}` did not succeed for {commit}; wait for a green CI run before tagging")
+
+
+def download_assets(repo: str, tag: str, directory: Path, names: set[str] | None = None) -> None:
+    """Download release assets directly.
+
+    `gh release download` moves the same bytes at a fraction of the speed on this
+    route, and the metadata-only verification path should not pay for it at all.
+    """
+    remote = remote_release(repo, tag)
+    if remote is None:
+        raise ValueError("release is missing")
+    for item in remote["assets"]:
+        if names is not None and item["name"] not in names:
+            continue
+        target = directory / item["name"]
+        run_curl(["--location", "--output", str(target), item["browser_download_url"]])
+
+
+def run_curl(args: list[str]) -> None:
+    """Move release bytes with curl; `gh` and urllib both crawl on this link."""
+    subprocess.run(["curl", "--fail", "--silent", "--show-error", "--retry", "3",
+                    "--retry-delay", "2", "--connect-timeout", "30", *args], check=True)
+
+
+def download_metadata(repo: str, tag: str, directory: Path) -> None:
+    download_assets(repo, tag, directory, {"release.json", "build-info.json", "SHA256SUMS"})
+
+
+UPLOAD_CONCURRENCY = 4
+UPLOAD_ATTEMPTS = 3
+
+
+def upload_asset(url: str, path: Path) -> None:
+    """POST the file body to a release upload URL, retrying transient failures."""
+    token_value = token()
+    for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+        try:
+            run_curl(["--max-time", "900", "--request", "POST",
+                      "--output", os.devnull,
+                      "--header", f"Authorization: Bearer {token_value}",
+                      "--header", "Accept: application/vnd.github+json",
+                      "--header", "Content-Type: application/octet-stream",
+                      "--header", "X-GitHub-Api-Version: 2022-11-28",
+                      "--data-binary", f"@{path}", url])
+            return
+        except subprocess.CalledProcessError as error:
+            if attempt == UPLOAD_ATTEMPTS:
+                raise ValueError(f"failed to upload {path.name}: curl exit {error.returncode}") from None
+        print(f"upload retry {attempt} for {path.name}", flush=True)
+        time.sleep(2 * attempt)
+
+
+def upload_assets(directory: Path, repo: str, tag: str, names: tuple[str, ...]) -> None:
+    """Upload every asset on its own connection and report how long each took.
+
+    A single stalled stream must not serialize the whole release, and per-asset
+    timing makes the slow one visible in the job log.
+    """
+    remote = release_record(repo, tag)
+    base = remote["upload_url"].split("{", 1)[0]
+
+    def upload(name: str) -> None:
+        started = time.monotonic()
+        upload_asset(f"{base}?name={urllib.parse.quote(name)}", directory / name)
+        print(f"uploaded {name} in {time.monotonic() - started:.1f}s", flush=True)
+
+    failures: list[Exception] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(UPLOAD_CONCURRENCY, len(names))) as pool:
+        futures = [pool.submit(upload, name) for name in names]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as error:  # surfaced again after every upload settles
+                failures.append(error)
+    if failures:
+        raise failures[0]
+
+
 def probe(repo: str, tag: str, commit: str, include_windows: bool = True) -> bool:
     # A repository lookup disambiguates a missing tag from missing repo access.
     api(f"repos/{repo}")
     release = validate(ROOT / "release.json", version(), tag)
-    remote = api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=True)
+    remote = remote_release(repo, tag, missing_ok=True)
     if remote is None:
         if f"## [{version()}]" not in (ROOT / "CHANGELOG.md").read_text():
             raise ValueError("CHANGELOG entry required for release version")
@@ -262,16 +426,19 @@ def probe(repo: str, tag: str, commit: str, include_windows: bool = True) -> boo
         raise ValueError("unfinished release draft exists; inspect/delete that draft before retrying (do not recreate the tag)")
     if not remote["prerelease"]:
         raise ValueError("existing release is not a prerelease; refusing to overwrite")
+    digests = remote_asset_digests(repo, tag, release, include_windows, remote=remote)
     remote_assets = {item["name"] for item in remote["assets"]}
-    expected_assets = set(ASSETS if include_windows else MACOS_ASSETS)
-    legacy_assets = expected_assets - {DISTRIBUTION["assets"]["windows_x64"]}
-    if remote_assets != expected_assets and not (include_windows and
-            remote_assets == legacy_assets and release["version"] in LEGACY_RELEASE_VERSIONS):
-        raise ValueError("existing release type/assets conflict; refusing to overwrite")
     with tempfile.TemporaryDirectory(prefix="deskfuse-release-verify-") as temporary:
-        subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", temporary], check=True)
-        verify_inventory(Path(temporary), release, commit,
-                         include_windows=DISTRIBUTION["assets"]["windows_x64"] in remote_assets)
+        target = Path(temporary)
+        if digests is None:
+            download_assets(repo, tag, target)
+            verify_inventory(target, release, commit,
+                             include_windows=DISTRIBUTION["assets"]["windows_x64"] in remote_assets)
+        else:
+            download_metadata(repo, tag, target)
+            verify_inventory(target, release, commit,
+                             include_windows=DISTRIBUTION["assets"]["windows_x64"] in remote_assets,
+                             digests=digests)
     return True
 
 
@@ -306,11 +473,24 @@ def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: 
         path.write_text(notes)
         subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
         asset_names = ASSETS if include_windows else MACOS_ASSETS
-        subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *[str(directory / name) for name in asset_names]], check=True)
-        # Verify uploaded bytes while still a draft. Failure leaves an unpublished draft.
-        download = Path(temporary) / "download"
-        subprocess.run(["gh", "release", "download", tag, "--repo", repo, "--dir", str(download)], check=True)
-        verify_inventory(download, release, commit, include_windows=include_windows)
+        upload_assets(directory, repo, tag, asset_names)
+        # Verify the uploaded bytes while still a draft; a mismatch leaves an
+        # unpublished draft. GitHub reports the sha256 of what it stored, so the
+        # large assets only have to be downloaded when digests are unavailable.
+        digests = remote_asset_digests(repo, tag, release, include_windows)
+        if digests is None:
+            # The digest can lag a moment behind the asset record after upload.
+            time.sleep(5)
+            digests = remote_asset_digests(repo, tag, release, include_windows)
+        if digests is None:
+            download = Path(temporary) / "download"
+            download.mkdir()
+            download_assets(repo, tag, download)
+            verify_inventory(download, release, commit, include_windows=include_windows)
+        else:
+            for name, digest in digests.items():
+                if checksum(directory / name) != digest:
+                    raise ValueError(f"uploaded asset digest mismatch: {name}")
         subprocess.run(["gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease", "--latest=false"], check=True)
     if not probe(repo, tag, commit, include_windows=include_windows):
         raise ValueError("release publication was not confirmed")
@@ -318,12 +498,13 @@ def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["version", "prepare", "validate", "inventory", "probe", "publish"])
+    parser.add_argument("command", choices=["version", "prepare", "validate", "inventory", "probe", "publish", "verify-ci"])
     parser.add_argument("--descriptor", type=Path, default=ROOT / "release.json")
     parser.add_argument("--directory", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag")
     parser.add_argument("--repo", default=os.environ.get("DESKFUSE_RELEASE_REPOSITORY", DISTRIBUTION["release_repository"]))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
+    parser.add_argument("--rustc", default=None, help="`rustc --version` line recorded by the build jobs")
     parser.add_argument("--macos-only", action="store_true", help="publish and verify only the macOS DMGs and app zips")
     args = parser.parse_args()
     if args.command == "version":
@@ -334,7 +515,12 @@ def main() -> None:
         validate(args.descriptor, version(), args.tag)
         print("release descriptor verified")
     elif args.command == "inventory":
-        inventory(args.directory, args.commit or "", include_windows=not args.macos_only)
+        inventory(args.directory, args.commit or "", include_windows=not args.macos_only, rustc_version=args.rustc)
+    elif args.command == "verify-ci":
+        if not args.repo or not args.commit:
+            parser.error("--repo and --commit required")
+        verify_ci(args.repo, args.commit)
+        print("release commit checks passed")
     else:
         if not args.tag or not args.repo or not args.commit:
             parser.error("--repo, --tag and --commit required")
