@@ -524,6 +524,14 @@ fn router(state: HttpState) -> Router {
                 )
             }),
         )
+        .route(
+            "/favicon.svg",
+            get(|| async { asset("image/svg+xml", include_str!("lan_web_assets/favicon.svg")) }),
+        )
+        .route(
+            "/favicon.ico",
+            get(|| async { asset("image/svg+xml", include_str!("lan_web_assets/favicon.svg")) }),
+        )
         .route("/api/state", get(content::state))
         .route("/api/items", get(content::items))
         .route("/api/items/{id}", get(content::item))

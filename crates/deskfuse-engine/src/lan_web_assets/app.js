@@ -163,7 +163,14 @@
     if (!item.has_image && !item.file_count && item.available) {
       const textarea = node('textarea', 'item-text');
       textarea.readOnly = true; textarea.hidden = true; textarea.setAttribute('aria-label', '完整文字');
-      const copy = node('button', 'button secondary copy-action', '复制'); copy.type = 'button';
+      const copy = node('button', 'button secondary copy-action'); copy.type = 'button';
+      const copyIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      copyIcon.setAttribute('viewBox', '0 0 20 20');
+      copyIcon.setAttribute('aria-hidden', 'true');
+      copyIcon.setAttribute('focusable', 'false');
+      copyIcon.innerHTML = '<rect x="7" y="7" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 13V4h9" fill="none" stroke="currentColor" stroke-width="1.6"/>';
+      const copyLabel = node('span', '', '复制');
+      copy.append(copyIcon, copyLabel);
       let textPromise;
       const read = () => {
         if (!textPromise) textPromise = api(itemPath(item.id)).then((detail) => {
@@ -173,10 +180,10 @@
         return textPromise;
       };
       copy.addEventListener('click', async () => {
-        copy.disabled = true; copy.textContent = '读取中…'; message(feedback, '');
+        copy.disabled = true; copyLabel.textContent = '读取中…'; message(feedback, '');
         try { await read(); if (card.isConnected) await copyText(textarea, feedback); }
         catch (error) { message(feedback, `复制失败：${error.message}`, true); }
-        finally { copy.disabled = false; copy.textContent = '复制'; }
+        finally { copy.disabled = false; copyLabel.textContent = '复制'; }
       });
       actions.append(copy); body.append(textarea);
     }
@@ -404,7 +411,10 @@
     ui['photo-input'].value = ''; renderUploads(); void runPhotos();
   });
   $('clear-completed').addEventListener('click', () => { for (let index = uploads.length - 1; index >= 0; index--) if (uploads[index].state === 'done') uploads.splice(index, 1); renderUploads(); });
+  const clearSearch = $('clear-search');
+  const syncSearchClear = () => { clearSearch.hidden = !ui.search.value; };
   ui.search.addEventListener('input', () => {
+    syncSearchClear();
     clearTimeout(searchTimer);
     queryGeneration++;
     listController?.abort();
@@ -413,6 +423,13 @@
     ui['load-more'].hidden = true;
     searchTimer = setTimeout(changeFilter, 250);
   });
+  clearSearch.addEventListener('click', () => {
+    ui.search.value = '';
+    syncSearchClear();
+    ui.search.dispatchEvent(new Event('input', { bubbles: true }));
+    ui.search.focus();
+  });
+  syncSearchClear();
   ui['list-filter'].addEventListener('change', changeFilter);
   ui['source-filter'].addEventListener('change', changeFilter);
   ui['load-more'].addEventListener('click', () => loadItems(true));
