@@ -4,6 +4,7 @@ import DevicesPage from './DevicesPage.vue'
 import RemoteCatalogPane from './features/RemoteCatalogPane.vue'
 import WindowsRemoteAppHost from './features/WindowsRemoteAppHost.vue'
 import Icon from './features/Icon.vue'
+import FeatureGate from './features/FeatureGate.vue'
 import { camelize } from './features/core'
 import { backend, errorMessage } from '../services/backend'
 
@@ -31,7 +32,12 @@ const restriction = computed(() =>
 </script>
 
 <template>
-  <WindowsRemoteAppHost v-if="snapshot?.platform === 'windows'" :snapshot="snapshot" />
+  <FeatureGate
+    v-if="snapshot && snapshot.platform !== 'windows' && snapshot.features?.remote_applications === false"
+    page="remoteApplications"
+    title="远程应用"
+  />
+  <WindowsRemoteAppHost v-else-if="snapshot?.platform === 'windows'" :snapshot="snapshot" />
   <DevicesPage v-else :snapshot="snapshot" :shows-applications="true">
     <template #detail="{ device }">
       <div v-if="!canOperate" class="empty-state remote-empty">

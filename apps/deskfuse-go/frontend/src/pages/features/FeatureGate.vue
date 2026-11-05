@@ -2,12 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './Icon.vue'
 import Notice from './Notice.vue'
+import FeatureDemo from './FeatureDemo.vue'
 import { backend } from '../../services/backend'
 import { useAction } from './core'
 import type { PageKey } from './core'
 
 // 对应 FeatureOnboardingView + FeatureGateView：功能总开关关闭时唯一的引导页。
-// 演示动画（FeatureDemos）未迁移，用图标徽标代替。
+// 演示动画由 FeatureDemo.vue 以 SVG 重建，恢复原生 FeatureDemos 的六个场景。
 const props = defineProps<{ page: Exclude<PageKey, 'devices' | 'settings'>; title: string; blockedReason?: string }>()
 
 type Permission = 'accessibility' | 'screenRecording' | 'inputMonitoring'
@@ -88,7 +89,7 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshPermission))
 <template>
   <div class="gate">
     <div class="inner">
-      <div class="badge" aria-hidden="true"><Icon :name="info.icon" :size="22" /></div>
+      <FeatureDemo :page="page" />
       <h2 class="df-title">{{ title }}</h2>
       <p class="message df-detail df-secondary">{{ info.message }}</p>
       <p v-if="props.blockedReason" class="message df-detail df-secondary">{{ props.blockedReason }}</p>
@@ -111,11 +112,22 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshPermission))
 </template>
 
 <style scoped>
-.gate { flex: 1; display: grid; place-items: center; padding: 28px; min-height: 0; }
-.inner { width: min(520px, 100%); display: grid; justify-items: center; gap: 20px; text-align: center; }
-.badge {
-  width: 56px; height: 56px; display: grid; place-items: center; border-radius: 16px;
-  color: var(--accent); background: var(--surface); border: 0.5px solid var(--line);
+.gate {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 0;
+  padding: 28px;
+  overflow: auto;
+}
+.inner {
+  width: min(520px, 100%);
+  margin: auto;
+  display: grid;
+  justify-items: center;
+  gap: 20px;
+  text-align: center;
 }
 .message { margin: 0; }
 .bullets { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
