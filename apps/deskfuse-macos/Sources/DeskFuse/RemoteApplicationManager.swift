@@ -26,7 +26,8 @@ import DeskFuseRemoteApplication
             if !windowsEnabled { stopWindows() }
         }
     }
-    var virtualDisplayEnabled = UserDefaults.standard.object(forKey: "remoteApplication.virtualDisplayEnabled") as? Bool ?? false {
+    /// 虚拟屏幕模式：默认开启；可在远程应用选择器或窗口菜单关闭。
+    var virtualDisplayEnabled = UserDefaults.standard.object(forKey: "remoteApplication.virtualDisplayEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(virtualDisplayEnabled, forKey: "remoteApplication.virtualDisplayEnabled") }
     }
     @ObservationIgnored private var engine: Engine?

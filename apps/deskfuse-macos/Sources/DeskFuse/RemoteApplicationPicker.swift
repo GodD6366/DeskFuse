@@ -30,7 +30,7 @@ struct RemoteApplicationDisplayModeToggle: View {
                     .toggleStyle(.switch).controlSize(.small)
                 DFBadge("实验性")
             }
-                .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
+                .help("默认开启。开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。不会立即改变已打开的会话。")
             Text("下次打开或重新连接时生效")
                 .font(DFType.caption).foregroundStyle(.secondary)
         }
@@ -169,7 +169,7 @@ struct RemoteApplicationPicker: View {
             Toggle("虚拟屏幕模式", isOn: $remote.virtualDisplayEnabled)
                 .toggleStyle(.switch).controlSize(.small).labelsHidden()
         }
-        .help("开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。下次打开或重新连接时生效。")
+        .help("默认开启。开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。下次打开或重新连接时生效。")
     }
     private var categoryButtons: some View {
         HStack(spacing: 5) {
