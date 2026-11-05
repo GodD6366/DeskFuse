@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
+withDefaults(defineProps<{ caption?: boolean }>(), { caption: true })
+
 /*
  * 首屏的屏幕排布，与应用「键鼠共享」页同一套规则：
  * 几台电脑的屏幕按真实位置拼在一起，光标只能从两块屏幕相接的那段边穿过去，
@@ -284,7 +286,8 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onScreenDown(event: PointerEvent, s: Screen) {
-  if (event.button !== 0) return
+  // 触屏上拖屏幕会顶掉页面滚动；换位置只在有鼠标时可用。
+  if (event.pointerType !== 'mouse' || event.button !== 0) return
   event.preventDefault()
   const p = toStage(event)
   stage.value!.setPointerCapture(event.pointerId)
@@ -392,11 +395,11 @@ const cursorStyle = computed(() => {
       </svg>
     </div>
 
-    <figcaption class="desk__caption">
+    <figcaption v-if="caption" class="desk__caption">
       <span class="desk__now">
         键鼠正在 <b>{{ activeName }}</b> 上
       </span>
-      <span class="desk__hint">{{ canHover ? '移动鼠标试试，拖动屏幕可以换位置' : '拖动屏幕可以换位置' }}</span>
+      <span class="desk__hint">{{ canHover ? '移动鼠标试试，拖动屏幕可以换位置' : '光标会自己走过每一块屏幕' }}</span>
     </figcaption>
   </figure>
 </template>
@@ -433,7 +436,7 @@ const cursorStyle = computed(() => {
     top 0.32s var(--ease),
     width 0.32s var(--ease),
     height 0.32s var(--ease);
-  touch-action: none;
+  touch-action: pan-y;
 }
 
 .is-dragging .screen {
