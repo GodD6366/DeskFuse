@@ -677,7 +677,7 @@ fn injection_worker(
 /// 对应 5 格滚轮（浏览器缩放 5 档）。
 const ZOOM_WHEEL_PER_MAGNIFICATION: f64 = 600.0;
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn inject_batch(
     injector: &mut OrdinaryDesktopInjector,
     lease: &SessionLease,

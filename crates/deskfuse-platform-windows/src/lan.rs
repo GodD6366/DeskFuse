@@ -135,8 +135,10 @@ fn interface_kind(if_type: u32) -> InterfaceKind {
 }
 
 fn best_interface_index(remote: Ipv4Addr) -> Result<u32, String> {
-    let mut destination = SOCKADDR_IN::default();
-    destination.sin_family = AF_INET;
+    let mut destination = SOCKADDR_IN {
+        sin_family: AF_INET,
+        ..Default::default()
+    };
     destination.sin_addr.S_un.S_addr = u32::from_ne_bytes(remote.octets());
     let mut index = 0_u32;
     // SAFETY: destination is an initialized IPv4 sockaddr and index is writable.
