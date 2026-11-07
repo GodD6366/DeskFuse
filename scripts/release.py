@@ -306,14 +306,29 @@ def remote_release(repo: str, tag: str, *, missing_ok: bool = False) -> dict | N
     return api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}", missing_ok=missing_ok)
 
 
-def release_record(repo: str, tag: str) -> dict:
-    """Return the release for `tag`, including a draft that is not tag-addressable yet."""
-    remote = remote_release(repo, tag, missing_ok=True)
-    if remote is not None:
-        return remote
+def draft_release(repo: str, tag: str) -> dict | None:
+    """The unpublished draft for `tag`, if one exists."""
     for item in api(f"repos/{repo}/releases?per_page=100") or []:
         if item.get("tag_name") == tag and item.get("draft"):
             return item
+    return None
+
+
+def release_record(repo: str, tag: str, attempts: int = 20, interval: float = 0.5) -> dict:
+    """Return the release for `tag`, including a draft that is not tag-addressable yet.
+
+    A freshly created draft can take a few seconds to appear in the release
+    list, so a single lookup turned a successful create into a hard failure.
+    """
+    for attempt in range(attempts):
+        remote = remote_release(repo, tag, missing_ok=True)
+        if remote is not None:
+            return remote
+        draft = draft_release(repo, tag)
+        if draft is not None:
+            return draft
+        if attempt + 1 < attempts:
+            time.sleep(interval)
     raise ValueError(f"release {tag} is missing")
 
 
@@ -471,7 +486,10 @@ def publish(directory: Path, repo: str, tag: str, commit: str, include_windows: 
     with tempfile.TemporaryDirectory(prefix="deskfuse-release-notes-") as temporary:
         path = Path(temporary) / "notes.md"
         path.write_text(notes)
-        subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
+        # A previous attempt may have left its draft behind; reusing it lets a
+        # failed publish be retried without recreating the tag or the release.
+        if draft_release(repo, tag) is None:
+            subprocess.run(["gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft", "--prerelease", "--title", f"DeskFuse {tag} (prerelease)", "--notes-file", str(path)], check=True)
         asset_names = ASSETS if include_windows else MACOS_ASSETS
         upload_assets(directory, repo, tag, asset_names)
         # Verify the uploaded bytes while still a draft; a mismatch leaves an
