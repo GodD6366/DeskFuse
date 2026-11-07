@@ -105,6 +105,7 @@ function Assert-ExecutableImports([string]$Path, [string]$PayloadDirectory) {
         'oleaut32.dll','opengl32.dll','pdh.dll','powrprof.dll','propsys.dll','psapi.dll',
         'rpcrt4.dll','rstrtmgr.dll','sechost.dll','secur32.dll','setupapi.dll','shell32.dll',
         'shlwapi.dll','sspicli.dll','ucrtbase.dll','user32.dll','userenv.dll','usp10.dll',
+        'wlanapi.dll',
         'uxtheme.dll','version.dll','winhttp.dll','wininet.dll','winmm.dll','winscard.dll',
         'winspool.drv','wldap32.dll','ws2_32.dll','wtsapi32.dll')
     foreach ($dependency in $imports) {
