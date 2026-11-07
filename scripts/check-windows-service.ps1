@@ -11,8 +11,15 @@ Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-ar
 Set-Location $ProjectRoot
 & rustc -vV
 if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust unavailable' }
-& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets
-if ($LASTEXITCODE -ne 0) { throw 'Service tests failed' }
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-identity --all-targets
+if ($LASTEXITCODE -ne 0) { throw 'Identity tests failed' }
+# The input helper embeds a uiAccess=true manifest, so Windows refuses to start
+# any test harness built from that target (Win32 740) outside a signed trusted
+# install; it carries no unit tests of its own and is still built below.
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service --lib --tests
+if ($LASTEXITCODE -ne 0) { throw 'Service library tests failed' }
+& cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service --bin deskfuse-service --bin deskfuse-service-client
+if ($LASTEXITCODE -ne 0) { throw 'Service binary tests failed' }
 & cargo test --locked --target x86_64-pc-windows-msvc -p deskfuse-service remote_app_catalog
 if ($LASTEXITCODE -ne 0) { throw 'RemoteApp catalog tests failed' }
 & cargo clippy --locked --target x86_64-pc-windows-msvc -p deskfuse-service -p deskfuse-identity --all-targets --no-deps -- -D warnings
