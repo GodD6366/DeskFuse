@@ -66,7 +66,7 @@ function Assert-Snapshot {
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ne $paths[$path]) { throw "Source changed: $path" }
     }
     # Reject omitted or newly-added build inputs, not just mismatches in supplied entries.
-    $required = & git -C $ProjectRoot ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
+    $required = & git -C $ProjectRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate source inputs' }
     foreach ($path in $required) {
         if ($path -match '/(bin|obj|target)/') { continue }

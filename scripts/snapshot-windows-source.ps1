@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 if (!$ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 Push-Location $ProjectRoot
 try {
-    $paths = & git ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
+    # Non-ASCII names must arrive verbatim; git otherwise C-quotes them into a
+    # path Windows cannot open (resources/microphone has a Chinese name).
+    $paths = & git -c core.quotepath=false ls-files --cached --others --exclude-standard -- Cargo.toml Cargo.lock rust-toolchain.toml release.json .cargo resources crates apps/deskfuse-service apps/deskfuse-windows scripts/build-windows.ps1 scripts/build-windows-desktop.ps1 scripts/package-windows.ps1 scripts/snapshot-windows-source.ps1 installer/windows
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate source snapshot' }
     $paths = @($paths | Where-Object { $_ -notmatch '/(bin|obj|target)/' } | Sort-Object -Unique)
     if (!$paths.Count) { throw 'No source files found' }
