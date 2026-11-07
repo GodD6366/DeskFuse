@@ -18,12 +18,20 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
     private readonly SemaphoreSlim requests = new(1, 1);
     private long nextRequest;
     private Task? poll;
+    private Task? watch;
+    /// <summary>Releases the poll delay so remote content is fetched at once.</summary>
+    private readonly SemaphoreSlim pollWake = new(0, 1);
+    /// <summary>Current desktop generation for the watch loop; 0 before Snapshot.</summary>
+    private long liveEpoch;
     public bool IsConnected { get; private set; }
     public JsonElement? LatestSnapshot { get; private set; }
     public event Action<JsonElement>? SnapshotChanged;
     public event Action<JsonElement>? ClipboardReceived;
     public event Action<JsonElement>? LanWebUploadReceived;
     public event Action? PollStarting;
+    /// <summary>Remote clipboard content a paste must wait for, or null. Raised on
+    /// the UI thread whenever it changes, including per received chunk.</summary>
+    public event Action<JsonElement?>? ClipboardInFlightChanged;
     private long? sessionEpoch;
     private long clipboardCursor;
     private static long lastStartAttempt;
@@ -55,7 +63,56 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
         SendAsync(Command("RenameScene", new { scene_id = sceneId, name }), token);
     public Task DeleteSceneAsync(string sceneId, CancellationToken token = default) =>
         SendAsync(Command("DeleteScene", new { scene_id = sceneId }), token);
-    public void Start() => poll ??= Task.Run(PollAsync);
+    public void Start()
+    {
+        poll ??= Task.Run(PollAsync);
+        watch ??= Task.Run(WatchAsync);
+    }
+    private void WakePoll()
+    {
+        try { if (pollWake.CurrentCount == 0) pollWake.Release(); }
+        catch (SemaphoreFullException) { }
+    }
+    /// <summary>
+    /// Long poll on its own pipe, outside the request queue: the service answers
+    /// the moment a copy is announced, a chunk arrives or content is ready, so a
+    /// held paste and its progress never wait for the 1 s poll. The content itself
+    /// still comes from Poll, whose pre-request baseline protects newer local copies.
+    /// </summary>
+    private async Task WatchAsync()
+    {
+        ulong known = 0;
+        bool reported = false;
+        while (!stop.IsCancellationRequested)
+        {
+            long epoch = Interlocked.Read(ref liveEpoch);
+            try
+            {
+                if (epoch == 0)
+                {
+                    known = 0;
+                    await Task.Delay(250, stop.Token);
+                    continue;
+                }
+                var reply = await ExchangeAsync(Command("WaitClipboard", new { session_epoch = epoch, after_sequence = Interlocked.Read(ref clipboardCursor), known, timeout_ms = 10000 }), TimeSpan.FromSeconds(15), stop.Token);
+                if (!reply.TryGetProperty("ClipboardWatch", out var state)) throw new IOException("服务不支持剪贴板推送，请更新服务和客户端到同一版本。");
+                known = state.GetProperty("fingerprint").GetUInt64();
+                if (state.Bool("pending")) WakePoll();
+                JsonElement? inFlight = state.TryGetProperty("in_flight", out var item) && item.ValueKind == JsonValueKind.Object ? item.Clone() : null;
+                if (inFlight is null && !reported) continue;
+                reported = inFlight is not null;
+                await dispatcher.EnqueueAsync(() => ClipboardInFlightChanged?.Invoke(inFlight));
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
+            catch (Exception)
+            {
+                // Nothing in flight can be trusted without the service: release holds.
+                known = 0;
+                if (reported) { reported = false; try { await dispatcher.EnqueueAsync(() => ClipboardInFlightChanged?.Invoke(null)); } catch (Exception) { } }
+                try { await Task.Delay(1000, stop.Token); } catch (OperationCanceledException) { break; }
+            }
+        }
+    }
     private async Task PollAsync()
     {
         while (!stop.IsCancellationRequested)
@@ -69,11 +126,11 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
                 JsonElement snapshot;
                 JsonElement? incoming = null;
                 JsonElement[] lanWebUploads = [];
-                if (initial && reply.TryGetProperty("Snapshot", out snapshot)) { sessionEpoch = snapshot.Number("session_epoch"); clipboardCursor = 0; }
+                if (initial && reply.TryGetProperty("Snapshot", out snapshot)) { sessionEpoch = snapshot.Number("session_epoch"); Interlocked.Exchange(ref clipboardCursor, 0); Interlocked.Exchange(ref liveEpoch, sessionEpoch.Value); }
                 else if (!initial && reply.TryGetProperty("Poll", out var result))
                 {
                     snapshot = result.GetProperty("snapshot");
-                    clipboardCursor = result.Number("clipboard_sequence");
+                    Interlocked.Exchange(ref clipboardCursor, result.Number("clipboard_sequence"));
                     if (result.TryGetProperty("clipboard", out var item) && item.ValueKind == JsonValueKind.Object) incoming = item.Clone();
                     if (result.TryGetProperty("lan_web_uploads", out var uploads) && uploads.ValueKind == JsonValueKind.Array)
                         lanWebUploads = uploads.EnumerateArray().Select(item => item.Clone()).ToArray();
@@ -95,9 +152,10 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
             catch (Exception ex)
             {
                 string message = ex is EndOfStreamException ? "后台连接中断，正在自动重连；本机历史仍可使用。" : ex is TimeoutException or OperationCanceledException ? "后台组件尚未就绪，正在自动重试。" : ex is IOException ? ex.Message : "后台连接暂时不可用，正在自动重试。";
-                await dispatcher.EnqueueAsync(() => { IsConnected = false; LatestSnapshot = null; sessionEpoch = null; clipboardCursor = 0; ConnectionChanged?.Invoke(false, message); });
+                Interlocked.Exchange(ref liveEpoch, 0);
+                await dispatcher.EnqueueAsync(() => { IsConnected = false; LatestSnapshot = null; sessionEpoch = null; Interlocked.Exchange(ref clipboardCursor, 0); ConnectionChanged?.Invoke(false, message); });
             }
-            try { await Task.Delay(TimeSpan.FromSeconds(1), stop.Token); }
+            try { await pollWake.WaitAsync(TimeSpan.FromSeconds(1), stop.Token); }
             catch (OperationCanceledException) { break; }
         }
     }
@@ -106,6 +164,15 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token, stop.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
         await requests.WaitAsync(timeout.Token).ConfigureAwait(false);
+        try { return await ExchangeAsync(command, null, timeout.Token).ConfigureAwait(false); }
+        finally { requests.Release(); }
+    }
+    /// <summary>One request on its own pipe. Callers other than the long poll
+    /// go through <see cref="SendAsync"/>, which serialises them.</summary>
+    private async Task<JsonElement> ExchangeAsync(object command, TimeSpan? limit, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token, stop.Token);
+        if (limit is TimeSpan span) timeout.CancelAfter(span);
         try
         {
             long id = Interlocked.Increment(ref nextRequest);
@@ -134,7 +201,6 @@ public sealed class ServiceClient(DispatcherQueue dispatcher) : IDisposable
             return result.Clone();
         }
         catch (JsonException) { throw new IOException("服务返回的状态格式不合法。"); }
-        finally { requests.Release(); }
     }
     private static SafeFileHandle Connect(CancellationToken token)
     {

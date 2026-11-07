@@ -30,6 +30,7 @@ export interface MacDownload {
 
 export const ARM64_DISK_IMAGE = config.assets.arm64
 export const INTEL_DISK_IMAGE = config.assets.x86_64
+export const WINDOWS_X64_INSTALLER = config.assets.windows_x64
 
 /** 与打包脚本一致：`DeskFuse-<version>-<arch>.zip`。 */
 export function appPackageName(tag: string, arch: 'arm64' | 'x86_64'): string {

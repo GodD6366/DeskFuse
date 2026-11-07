@@ -152,6 +152,32 @@ impl State {
     fn commit_input_push(&mut self, sequence: u64) {
         self.input_delivered = self.input_delivered.max(sequence);
     }
+    /// Identity of the remote clipboard state the desktop reacts to. A waiting
+    /// `WaitClipboard` returns as soon as this differs from what it last saw.
+    pub(super) fn clipboard_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.sync.pending().hash(&mut hasher);
+        self.sync.in_flight().hash(&mut hasher);
+        hasher.finish()
+    }
+    /// Content itself still travels on `Poll`, whose pre-request clipboard
+    /// baseline is what lets a newer local copy win; the watch only says when.
+    fn clipboard_watch(&self, after: u64) -> ipc::Reply {
+        let (pending, clipboard_sequence) = self.sync.pending();
+        ipc::Reply::ClipboardWatch {
+            pending: pending > after,
+            clipboard_sequence,
+            in_flight: self.sync.in_flight().map(|(peer, received, total)| {
+                ipc::ClipboardInFlight {
+                    peer_id: peer.to_string(),
+                    received,
+                    total,
+                }
+            }),
+            fingerprint: self.clipboard_fingerprint(),
+        }
+    }
     fn input_state(&self, network: &Network) -> ipc::InputState {
         let input = network.input_runtime.handle.input_snapshot();
         let managed = input.managed_control.as_ref();
@@ -559,7 +585,7 @@ impl State {
                 selected_route: peer.selected_route.map(|id| id.to_string()),
                 remote_app_rdp: peer.routes.iter().any(|route| {
                     route
-                        .capabilities()
+                        .capabilities
                         .contains(deskfuse_core::Capabilities::REMOTE_APPLICATION_RDP)
                 }),
                 routes: peer
@@ -582,7 +608,7 @@ impl State {
                 selected_route: None,
                 remote_app_rdp: hint.routes.iter().any(|route| {
                     route
-                        .capabilities()
+                        .capabilities
                         .contains(deskfuse_core::Capabilities::REMOTE_APPLICATION_RDP)
                 }),
                 routes: hint
@@ -709,11 +735,14 @@ impl State {
             paths.into_iter().map(std::path::PathBuf::from).collect(),
         )?;
         let mut first_id = None;
+        let mut served = Vec::new();
         for (peer, id, frame) in frames {
             first_id.get_or_insert_with(|| id.to_hex());
             let data = frame.encode().map_err(|error| error.to_string())?;
             self.sync.announce_file_offer(&network.runtime, peer, data);
+            served.push(peer);
         }
+        self.sync.finish_announcement(&network.runtime, &served);
         first_id.ok_or_else(|| "没有已连接的受信任文件设备".into())
     }
 
@@ -738,13 +767,18 @@ impl State {
                 target_peer_id,
             } => {
                 if paths.is_empty() || paths.len() > 512 {
+                    self.sync.finish_announcement(&network.runtime, &[]);
                     return failed(BoundaryErrorCode::InvalidRequest, "invalid file list");
                 }
                 match self.publish_file_data_object(network, paths, target_peer_id) {
                     Ok(id) => ipc::Reply::Platform {
                         event: PlatformEvent::FileDataObjectCreated { id },
                     },
-                    Err(message) => failed(BoundaryErrorCode::Native, &message),
+                    Err(message) => {
+                        // Nothing will follow the announcement: release held pastes now.
+                        self.sync.finish_announcement(&network.runtime, &[]);
+                        failed(BoundaryErrorCode::Native, &message)
+                    }
                 }
             }
             PlatformCommand::ReadClipboardHost { content } => {
@@ -972,6 +1006,7 @@ impl State {
             ipc::Command::InvalidateClipboard {
                 session_epoch,
                 sequence,
+                announce,
             } => {
                 if session_epoch != epoch || sequence == 0 || sequence <= self.local_sequence {
                     return ipc::Reply::rejected(
@@ -981,7 +1016,27 @@ impl State {
                 }
                 self.local_sequence = sequence;
                 self.sync.invalidate_copy(&network.runtime);
+                // `announce` says whether content for this change will follow;
+                // a change that will not be published retracts a pending one.
+                if announce {
+                    self.sync.announce(&network.runtime);
+                } else {
+                    self.sync.finish_announcement(&network.runtime, &[]);
+                }
                 ipc::Reply::queued()
+            }
+            ipc::Command::WaitClipboard {
+                session_epoch,
+                after_sequence,
+                ..
+            } => {
+                if session_epoch != epoch {
+                    return ipc::Reply::rejected(
+                        "session_expired",
+                        "open a fresh desktop snapshot",
+                    );
+                }
+                self.clipboard_watch(after_sequence)
             }
             ipc::Command::PublishClipboard {
                 session_epoch,
@@ -1226,11 +1281,14 @@ impl State {
                     Ok(frames) => frames,
                     Err(message) => return ipc::Reply::rejected("files_unavailable", &message),
                 };
+                let mut served = Vec::new();
                 for (peer, _id, frame) in frames {
                     if let Ok(data) = frame.encode() {
                         self.sync.announce_file_offer(&network.runtime, peer, data);
+                        served.push(peer);
                     }
                 }
+                self.sync.finish_announcement(&network.runtime, &served);
                 ipc::Reply::queued()
             }
             ipc::Command::RequestFileClipboard {
@@ -2338,6 +2396,12 @@ async fn serve(
                 Ok(Err(error)) => return Err(error),
                 Err(_) => return Ok(()),
             };
+        if let ipc::Command::WaitClipboard {
+            known, timeout_ms, ..
+        } = &request.command
+        {
+            wait_clipboard(control, *known, *timeout_ms).await;
+        }
         let mut epoch = control.epoch.load(Ordering::Acquire);
         let helper_request = matches!(
             &request.command,
@@ -2491,6 +2555,33 @@ async fn serve(
         }
         // 这次请求可能产生了投递；唤醒这条连接上的推送。
         control.signal_input_push();
+        control.signal_clipboard();
+    }
+}
+
+/// Holds a `WaitClipboard` until the remote clipboard state differs from the
+/// one the desktop already has, so a received copy or a paste hold reaches it
+/// at once instead of on the next poll. The reply is built afterwards on the
+/// normal authenticated path.
+async fn wait_clipboard(control: &Control, known: u64, timeout_ms: u64) {
+    // Subscribe before the first check: a change between check and wait is kept.
+    let mut changes = control.clipboard.subscribe();
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(20_000));
+    loop {
+        if control.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let current = match control.desktop.lock() {
+            Ok(state) => state.clipboard_fingerprint(),
+            Err(_) => return,
+        };
+        let now = Instant::now();
+        if current != known || now >= deadline {
+            return;
+        }
+        if timeout(deadline - now, changes.changed()).await.is_err() {
+            return;
+        }
     }
 }
 

@@ -106,9 +106,6 @@ impl FilePolicy {
         if offer.requested {
             return Ok(());
         }
-        if offer.total_bytes > self.settings.cache_max_bytes {
-            return Err("文件超过缓存上限，请调整设置后重试".into());
-        }
         // Register before awaiting network I/O: newer copies detach this request
         // but cannot cancel the user's already captured Finder intention.
         offer.requested = true;
@@ -610,23 +607,10 @@ impl FilePolicy {
                 || self.workflow_demand == Some(offer.id)
                 || self.settings.should_prefetch(offer.total_bytes))
         {
+            // The cache quota bounds only automatic prefetch (`should_prefetch`
+            // already excludes offers above it); a paste or workflow is the user
+            // asking for this file and is never refused for size.
             let offer = self.pending.as_mut().expect("checked pending");
-            if offer.total_bytes > self.settings.cache_max_bytes {
-                let id = offer.id;
-                self.cancel(
-                    id,
-                    "文件超过缓存上限，请在设置中调整后重新复制",
-                    flag,
-                    requested,
-                    target,
-                    runtime,
-                    sequence,
-                    ui,
-                    incoming,
-                )
-                .await;
-                return;
-            }
             if !requested.load(Ordering::Acquire)
                 && self.workflow_demand != Some(offer.id)
                 && self.cache.snapshot().is_ok_and(|snapshot| {

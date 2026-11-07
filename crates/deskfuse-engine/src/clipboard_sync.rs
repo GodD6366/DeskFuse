@@ -46,7 +46,12 @@ struct Peer {
     /// Receive budget the remote advertised on its HELLO; older peers get
     /// the full wire limit until they prove otherwise.
     max_content: u64,
+    /// The remote announced content for this revision; it has not started
+    /// arriving yet. `(revision, local baseline, announced at)`.
+    announced: Option<(u64, i64, Instant)>,
 }
+/// An announcement whose content never starts arriving stops holding pastes.
+const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 impl Drop for Peer {
     fn drop(&mut self) {
         if let Some(task) = &self.decode {
@@ -125,6 +130,9 @@ pub(super) struct Sync {
     tx: TokioSender<Work>,
     rx: TokioReceiver<Work>,
     helpers: Vec<tokio::task::JoinHandle<()>>,
+    /// Signalled when background work lands, so the bridge polls it now
+    /// instead of on its next clipboard tick.
+    wake: Arc<tokio::sync::Notify>,
 }
 impl Default for Sync {
     fn default() -> Self {
@@ -144,6 +152,7 @@ impl Default for Sync {
             tx,
             rx,
             helpers: Vec::new(),
+            wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -161,6 +170,57 @@ impl Drop for Sync {
     }
 }
 impl Sync {
+    fn intent_targets(&self) -> Vec<(DeviceId, Epoch, Epoch)> {
+        self.peers
+            .iter()
+            .filter(|(_, p)| p.ready)
+            .filter_map(|(id, p)| Some((*id, p.epoch.clone(), p.remote.clone()?)))
+            .collect()
+    }
+    /// Tell every ready peer that content for the next revision is coming, so
+    /// a Command-V there waits for it. Call as soon as the local clipboard
+    /// changes, before reading or encoding it; returns the announced revision.
+    pub fn announce(&mut self, runtime: &RuntimeHandle) -> u64 {
+        let revision = self.revision.saturating_add(1);
+        for (peer, source, target) in self.intent_targets() {
+            self.control(
+                runtime,
+                peer,
+                SyncMessage::intent(source, target, revision, false),
+            );
+        }
+        revision
+    }
+    /// Retract the announcement to one peer whose content will not be sent.
+    fn withdraw_peer(&mut self, runtime: &RuntimeHandle, peer: DeviceId, revision: u64) {
+        if let Some((_, source, target)) = self
+            .intent_targets()
+            .into_iter()
+            .find(|(id, _, _)| *id == peer)
+        {
+            self.control(
+                runtime,
+                peer,
+                SyncMessage::intent(source, target, revision, true),
+            );
+        }
+    }
+    /// Retract [`Sync::announce`] when no content followed (echo, read error).
+    pub fn withdraw(&mut self, runtime: &RuntimeHandle, revision: u64) {
+        if self.revision >= revision {
+            return; // Content was published; its DATA supersedes the intent.
+        }
+        for (peer, source, target) in self.intent_targets() {
+            self.control(
+                runtime,
+                peer,
+                SyncMessage::intent(source, target, revision, true),
+            );
+        }
+    }
+    pub fn wake(&self) -> Arc<tokio::sync::Notify> {
+        self.wake.clone()
+    }
     pub fn take_finished(&mut self) -> Vec<TransferId> {
         std::mem::take(&mut self.finished)
     }
@@ -208,6 +268,35 @@ impl Sync {
             return;
         }
         self.publish_to(snapshot, peer, selection, runtime, ui);
+    }
+    /// Newest clipboard content announced, being received or decoded:
+    /// `(peer, received, total, pasteboard baseline)`; `total == 0` means
+    /// announced but not started. A file reference counts until installed;
+    /// the file pipeline then owns the wait for its bytes.
+    pub fn in_flight(&self) -> Option<(DeviceId, u64, u64, i64)> {
+        let receiving = self
+            .peers
+            .iter()
+            .filter_map(|(peer, state)| Some((peer, state.incoming.as_ref()?)))
+            .map(|(peer, incoming)| {
+                let received = if incoming.processing {
+                    incoming.frame.total
+                } else {
+                    incoming.data.len() as u64
+                };
+                (
+                    incoming.started,
+                    (*peer, received, incoming.frame.total, incoming.baseline),
+                )
+            });
+        let announced = self.peers.iter().filter_map(|(peer, state)| {
+            let (_, baseline, at) = state.announced?;
+            Some((at, (*peer, 0, 0, baseline)))
+        });
+        receiving
+            .chain(announced)
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, flight)| flight)
     }
     pub fn take_disconnected(&mut self) -> Vec<DeviceId> {
         std::mem::take(&mut self.disconnected)
@@ -316,6 +405,7 @@ impl Sync {
                 incoming: None,
                 receipt: None,
                 max_content: wire::MAX_BYTES as u64,
+                announced: None,
             });
             if !state.ready && Instant::now() >= state.hello_due {
                 state.hello_due = Instant::now() + Duration::from_secs(1);
@@ -455,6 +545,7 @@ impl Sync {
             );
             let cpu = self.cpu.clone();
             let tx = self.tx.clone();
+            let wake = self.wake.clone();
             let snapshot = snapshot.clone();
             let cancel = if explicit {
                 self.manual
@@ -514,6 +605,7 @@ impl Sync {
                     copy_generation,
                     result,
                 });
+                wake.notify_one();
             }));
         }
     }
@@ -549,6 +641,7 @@ impl Sync {
             );
             Self::status(ui, peer, &error);
             self.finish_manual(peer, Err(error), ui);
+            self.withdraw_peer(runtime, peer, payload.sequence);
             return;
         }
         let Some(state) = self.peers.get_mut(&peer) else {
@@ -568,6 +661,7 @@ impl Sync {
         let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(4);
         let runtime = runtime.clone();
         let tx = self.tx.clone();
+        let wake = self.wake.clone();
         let job_id = id.clone();
         let job_epoch = source.clone();
         let task = tokio::spawn(async move {
@@ -634,6 +728,7 @@ impl Sync {
                 revision,
                 result,
             });
+            wake.notify_one();
         });
         state.job = Some(Job {
             id,
@@ -733,6 +828,28 @@ impl Sync {
         if !state.accepts(&frame) {
             return;
         }
+        if frame.kind == wire::INTENT {
+            if frame.outcome == wire::SUPERSEDED {
+                if state
+                    .announced
+                    .is_some_and(|(revision, _, _)| revision == frame.revision)
+                {
+                    state.announced = None;
+                }
+            } else if accept_content
+                && state
+                    .incoming
+                    .as_ref()
+                    .is_none_or(|i| i.frame.revision < frame.revision)
+                && state
+                    .receipt
+                    .as_ref()
+                    .is_none_or(|(revision, _, _)| *revision < frame.revision)
+            {
+                state.announced = Some((frame.revision, count, Instant::now()));
+            }
+            return;
+        }
         if frame.kind == wire::ACK {
             if let Some(job) = &state.job
                 && job.id == frame.sync_id
@@ -758,6 +875,12 @@ impl Sync {
             if incoming.processing && frame.sync_id == incoming.frame.sync_id {
                 return;
             }
+        }
+        if state
+            .announced
+            .is_some_and(|(revision, _, _)| revision <= frame.revision)
+        {
+            state.announced = None;
         }
         if frame.offset == 0 {
             let previous = state
@@ -809,6 +932,7 @@ impl Sync {
             let data = std::mem::take(&mut incoming.data);
             let baseline = incoming.baseline;
             let tx = self.tx.clone();
+            let wake = self.wake.clone();
             let cpu = self.cpu.clone();
             state.decode = Some(tokio::spawn(async move {
                 let Ok(permit) = cpu.acquire_owned().await else {
@@ -849,6 +973,7 @@ impl Sync {
                     baseline,
                     result,
                 });
+                wake.notify_one();
             }));
         }
     }
@@ -884,6 +1009,11 @@ impl Sync {
         outgoing: &DeferredSources,
     ) -> Option<Ready> {
         for p in self.peers.values_mut() {
+            if p.announced
+                .is_some_and(|(_, _, at)| at.elapsed() > ANNOUNCE_TIMEOUT)
+            {
+                p.announced = None;
+            }
             if p.incoming
                 .as_ref()
                 .is_some_and(|i| i.started.elapsed() > Duration::from_secs(60))
@@ -969,6 +1099,7 @@ impl Sync {
                         }
                         Err(error) => {
                             for peer in targets {
+                                self.withdraw_peer(runtime, peer, revision);
                                 Self::status(ui, peer, &format!("同步失败：{error}"));
                                 self.finish_manual(peer, Err(error.clone()), ui);
                             }
@@ -1120,6 +1251,7 @@ mod tests {
             incoming: None,
             receipt: None,
             max_content: wire::MAX_BYTES as u64,
+            announced: None,
         }
     }
     fn frame() -> SyncMessage {
@@ -1188,5 +1320,14 @@ mod tests {
         sync.invalidate_copy(&ui);
         assert!(sync.peers[&id].incoming.is_none());
         assert_eq!(sync.peers[&id].duplicate(&frame), Some(wire::SUPERSEDED));
+    }
+    #[test]
+    fn announced_content_holds_paste_before_any_data() {
+        let id = DeviceId::from_bytes([5; 32]);
+        let mut p = peer(10);
+        p.announced = Some((3, 10, Instant::now()));
+        let mut sync = Sync::default();
+        sync.peers.insert(id, p);
+        assert_eq!(sync.in_flight(), Some((id, 0, 0, 10)));
     }
 }

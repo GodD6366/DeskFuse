@@ -18,8 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{ editTitle: []; delete: [] }>()
 
 const root = ref<HTMLElement | null>(null)
-const { src, failed, loaded, onLoad, onError } = useThumbnail(() => props.item, 480)
-const loading = computed(() => !!src.value && !loaded.value && !failed.value)
+const { src, failed, loading, onLoad, onError } = useThumbnail(() => props.item, 480)
 // 卡片右下角的来源应用水印（原生 ClipboardMasonryGrid.sourceAppWatermark）。
 const appInfo = useAppInfo(() => props.item.source_app_id)
 const appIcon = computed(() => appInfo.value?.icon ?? null)

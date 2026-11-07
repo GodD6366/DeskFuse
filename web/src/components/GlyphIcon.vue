@@ -55,6 +55,11 @@ defineProps<{ name: string; size?: number }>()
       <path d="M3 5.5 10.5 4v7H3zM13.5 3.5 21 2v9h-7.5zM3 13h7.5v7L3 18.5zM13.5 13H21v9l-7.5-1.5z" />
     </template>
 
+    <template v-else-if="name === 'mouse'">
+      <rect x="6" y="2" width="12" height="20" rx="6" />
+      <path d="M12 2v7M6 10h6M18 12h3M18 16h3" />
+    </template>
+
     <template v-else-if="name === 'mic'">
       <rect x="9" y="3" width="6" height="11" rx="3" />
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" />

@@ -29,6 +29,9 @@ enum Frame {
         /// 发送端日志纪元与高水位；旧版本不发送，接收端退回每次从头拉取。
         #[serde(default)]
         log: Option<LogPosition>,
+        /// 支持缩略图帧；旧版本不发送，也不会收到缩略图帧。
+        #[serde(default)]
+        thumbnails: bool,
     },
     Pull {
         after: u64,
@@ -57,6 +60,15 @@ enum Frame {
     },
     Missing {
         hash: String,
+    },
+    /// A small preview for a remote row, sent ahead of its payload.
+    ThumbnailRequest {
+        hash: String,
+    },
+    /// Hex PNG; empty when the peer has no payload for `hash`.
+    Thumbnail {
+        hash: String,
+        data: String,
     },
 }
 
@@ -351,11 +363,30 @@ impl Drop for BlobTask {
         }
     }
 }
+/// Ask this peer for every wanted thumbnail it has not been asked for recently.
+async fn request_thumbnails(
+    runtime: &RuntimeHandle,
+    peer: DeviceId,
+    generation: u64,
+    library: &Library,
+    asked: &mut HashMap<String, std::time::Instant>,
+) -> Result<(), String> {
+    asked.retain(|_, at| at.elapsed() < Duration::from_secs(20));
+    for hash in library.wanted_thumbnails() {
+        if asked.contains_key(&hash) || asked.len() >= 64 {
+            continue;
+        }
+        asked.insert(hash.clone(), std::time::Instant::now());
+        send(runtime, peer, generation, Frame::ThumbnailRequest { hash }).await?;
+    }
+    Ok(())
+}
 fn hello(library: &crate::clipboard_library::Library) -> Result<Frame, String> {
     Ok(Frame::Hello {
         version: 1,
         operation_chunks: true,
         log: Some(library.operation_log_position()?),
+        thumbnails: true,
     })
 }
 async fn worker(
@@ -374,6 +405,9 @@ async fn worker(
     let mut receive_updated = std::time::Instant::now();
     let mut ready = false;
     let mut supports_chunks = false;
+    let mut supports_thumbnails = false;
+    // Thumbnails already asked of this peer, so each is requested once per peer.
+    let mut asked_thumbnails = HashMap::<String, std::time::Instant>::new();
     let mut outgoing_operations: Option<OperationsTransfer> = None;
     let mut incoming_operations = OperationsReceiver::default();
     let mut operations_updated = std::time::Instant::now();
@@ -391,6 +425,9 @@ async fn worker(
         }
         tokio::select! {
             biased; // Drain received chunks before sending more, keeping the bounded queue clear.
+            _ = library.thumbnail_wanted.notified(), if ready && supports_thumbnails => {
+                request_thumbnails(&runtime, peer, generation, &library, &mut asked_thumbnails).await?;
+            }
             _ = timer.tick() => {
                 if !ready {
                     hello_attempts += 1;
@@ -400,6 +437,9 @@ async fn worker(
                 if !ready || incoming_operations.0.is_none() {
                     let frame = if ready { Frame::Pull { after: cursor } } else { hello(&library)? };
                     send(&runtime, peer, generation, frame).await?;
+                }
+                if ready && supports_thumbnails {
+                    request_thumbnails(&runtime, peer, generation, &library, &mut asked_thumbnails).await?;
                 }
                 if receive_updated.elapsed() > Duration::from_secs(30) { receiving = None; }
                 if ready && receiving.is_none() {
@@ -430,10 +470,11 @@ async fn worker(
                 }
                 let Some(frame) = incoming_operations.receive(cursor, frame)? else { continue; };
                 match frame {
-                    Frame::Hello { version, operation_chunks, log } => {
+                    Frame::Hello { version, operation_chunks, log, thumbnails } => {
                         if version != 1 { return Err("对端需升级列表同步协议".into()); }
                         if !ready { send(&runtime, peer, generation, hello(&library)?).await?; }
                         supports_chunks = operation_chunks;
+                        supports_thumbnails = thumbnails;
                         if let Some(log) = log {
                             cursor = library.pull_cursor(&peer_key, &log)?;
                             remote_epoch = Some(log.epoch);
@@ -537,6 +578,24 @@ async fn worker(
                             pending.remove(&hash);
                             receiving = None;
                         }
+                    }
+                    Frame::ThumbnailRequest { hash } => {
+                        if !valid_hash(&hash) || !supports_thumbnails { continue; }
+                        let library = library.clone();
+                        let runtime = runtime.clone();
+                        // Rendering a large payload's thumbnail must not stall this loop.
+                        tokio::spawn(async move {
+                            let lookup = library.clone();
+                            let key = hash.clone();
+                            let bytes = tokio::task::spawn_blocking(move || lookup.thumbnail_for_blob(&key, CHUNK))
+                                .await.ok().and_then(Result::ok).flatten().unwrap_or_default();
+                            let _ = send(&runtime, peer, generation, Frame::Thumbnail { hash, data: hex::encode(bytes) }).await;
+                        });
+                    }
+                    Frame::Thumbnail { hash, data } => {
+                        if !valid_hash(&hash) || data.is_empty() || data.len() > CHUNK * 2 { continue; }
+                        let bytes = hex::decode(data).map_err(|_| "无效缩略图")?;
+                        library.store_remote_thumbnail(&hash, &bytes)?;
                     }
                     Frame::OperationsChunk { .. } => unreachable!("chunks are assembled before dispatch"),
                     Frame::Missing { hash } => {
@@ -693,7 +752,8 @@ mod tests {
             Frame::Hello {
                 version: 1,
                 operation_chunks: false,
-                log: None
+                log: None,
+                thumbnails: false
             }
         ));
         let (small, transfer) =
@@ -871,6 +931,7 @@ mod tests {
         let Frame::Hello {
             log: Some(log),
             operation_chunks: true,
+            thumbnails: true,
             ..
         } = serde_json::from_slice(&bytes).unwrap()
         else {

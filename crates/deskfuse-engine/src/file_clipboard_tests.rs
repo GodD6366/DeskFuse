@@ -337,12 +337,12 @@ async fn superseded_clipboard_cannot_be_overwritten_or_replayed_by_late_completi
             .any(|event| matches!(event, UiEvent::PasteReady { .. }))
     );
 }
-#[test]
-fn receiver_rejects_over_quota_manifest_before_creating_staging() {
+#[tokio::test(flavor = "current_thread")]
+async fn receiver_accepts_requested_content_above_cache_quota() {
     let fixture = Fixture::new(false);
     let mut harness = ReceiveHarness::new(&fixture);
-    harness.cache.set_limit(1024 * 1024).unwrap();
-    let error = apply_remote_file_clipboard(
+    harness.cache.set_limit(1).unwrap();
+    apply_remote_file_clipboard(
         &MemoryPasteboard::new(),
         &fixture.frames(false)[0].encode().unwrap(),
         &mut harness.incoming,
@@ -351,10 +351,8 @@ fn receiver_rejects_over_quota_manifest_before_creating_staging() {
         &harness.sender,
         &harness.ui,
     )
-    .unwrap_err();
-    assert!(error.contains("缓存空间不足"));
-    assert!(harness.incoming.is_empty());
-    assert!(!fixture.received.exists());
+    .unwrap();
+    assert_eq!(harness.incoming.len(), 1);
     assert_eq!(harness.cache.snapshot().unwrap().active_reserved_bytes, 0);
 }
 #[tokio::test]
@@ -426,11 +424,8 @@ async fn slow_commit_keeps_heartbeat_and_cancel_responsive_and_reserves_until_wo
     }
     let key = (DeviceId::from_bytes([0x5a; 32]), fixture.plan.transfer_id());
     harness.incoming.get_mut(&key).unwrap().cancel();
-    assert_eq!(
-        harness.cache.snapshot().unwrap().active_reserved_bytes,
-        total
-    );
-    assert!(harness.cache.reserve(TransferId::new(), 1).is_err());
+    // Received content was requested by the user: protected, but outside the quota.
+    assert_eq!(harness.cache.snapshot().unwrap().active_reserved_bytes, 0);
     assert_eq!(harness.cache.clear_completed().unwrap().removed_bytes, 0);
     assert!(harness.incoming.contains_key(&key));
     gate.release();
@@ -527,10 +522,8 @@ async fn cancelling_after_disk_commit_before_publication_cleans_the_committed_fi
         )
         .is_none()
     );
-    assert_eq!(
-        harness.cache.snapshot().unwrap().active_reserved_bytes,
-        fixture.plan.manifest().total_bytes()
-    );
+    // Still protected until the disk worker exits.
+    assert_eq!(harness.cache.snapshot().unwrap().active_transfers, 1);
     assert!(harness.finish(&pasteboard).await.is_empty());
     assert!(pasteboard.read().unwrap().file_urls.is_empty());
     assert_eq!(harness.cache.snapshot().unwrap().used_bytes, 0);

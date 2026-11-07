@@ -4,7 +4,7 @@
 //! the UI; the service/engine layer can consume frames and encode them for the
 //! authenticated microphone transport.
 
-use cpal::{Device, FromSample, Sample, SampleFormat, Stream, StreamConfig, traits::*};
+use cpal::{Device, FromSample, SampleFormat, Stream, StreamConfig, traits::*};
 use std::{
     collections::VecDeque,
     sync::{
@@ -225,13 +225,16 @@ fn select_output_device(host: &cpal::Host, wanted: Option<&str>) -> Result<Devic
         .ok_or(CaptureError::NoInputDevice)
 }
 
-fn build<T: Sample + FromSample<f32> + Send + 'static>(
+fn build<T: cpal::SizedSample + Send + 'static>(
     device: &Device,
     config: &StreamConfig,
     tx: SyncSender<Vec<i16>>,
     level: Arc<AtomicU32>,
     error: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<Stream, String> {
+) -> Result<Stream, String>
+where
+    f32: FromSample<T>,
+{
     let mut pending = Vec::with_capacity(FRAME_SAMPLES);
     device
         .build_input_stream(
@@ -258,7 +261,7 @@ fn build<T: Sample + FromSample<f32> + Send + 'static>(
         .map_err(|e| e.to_string())
 }
 
-fn build_output<T: Sample + FromSample<f32> + Send + 'static>(
+fn build_output<T: cpal::SizedSample + FromSample<f32> + Send + 'static>(
     device: &Device,
     config: &StreamConfig,
     queue: Arc<Mutex<VecDeque<f32>>>,

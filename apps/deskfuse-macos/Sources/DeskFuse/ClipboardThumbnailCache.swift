@@ -11,6 +11,8 @@ final class ClipboardThumbnailCache {
     private struct Request {
         let client: EngineClient
         let sourceIsImage: Bool
+        /// A remote row's payload may still arrive: never cache its miss.
+        let cacheMiss: Bool
         var waiters: [UUID: CheckedContinuation<NSImage?, Never>]
     }
     private var entries: [Key: Entry] = [:]
@@ -40,10 +42,27 @@ final class ClipboardThumbnailCache {
         return .some(entry.image)
     }
 
-    func thumbnail(for id: UInt64, client: EngineClient, maxPixelSize: Int = 160, sourceIsImage: Bool = true) async -> NSImage? {
+    /// `remotePending`: a remote index row whose payload is not local yet. The
+    /// engine asks the source device for a small thumbnail (never the full
+    /// payload); retry without caching the miss until it lands.
+    func thumbnail(for id: UInt64, client: EngineClient, maxPixelSize: Int = 160, sourceIsImage: Bool = true,
+                   remotePending: Bool = false) async -> NSImage? {
+        guard remotePending else {
+            return await fetch(id, client: client, maxPixelSize: maxPixelSize, sourceIsImage: sourceIsImage, cacheMiss: true)
+        }
+        for attempt in 0..<40 {
+            if let image = await fetch(id, client: client, maxPixelSize: maxPixelSize, sourceIsImage: sourceIsImage, cacheMiss: false) {
+                return image
+            }
+            do { try await Task.sleep(for: .milliseconds(attempt < 20 ? 500 : 2000)) } catch { return nil }
+        }
+        return nil
+    }
+
+    private func fetch(_ id: UInt64, client: EngineClient, maxPixelSize: Int, sourceIsImage: Bool, cacheMiss: Bool) async -> NSImage? {
         guard !Task.isCancelled else { return nil }
         let key = Key(id: id, size: maxPixelSize)
-        if let entry = entries[key] { touch(key); return entry.image }
+        if let entry = entries[key], entry.image != nil || cacheMiss { touch(key); return entry.image }
         let waiter = UUID()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -52,7 +71,7 @@ final class ClipboardThumbnailCache {
                     requests[key]?.waiters[waiter] = continuation
                 } else {
                     guard requests.count < 128 else { continuation.resume(returning: nil); return }
-                    requests[key] = Request(client: client, sourceIsImage: sourceIsImage, waiters: [waiter: continuation])
+                    requests[key] = Request(client: client, sourceIsImage: sourceIsImage, cacheMiss: cacheMiss, waiters: [waiter: continuation])
                     pending.append(key)
                 }
                 if worker == nil { worker = Task { await self.drain() } }
@@ -86,7 +105,7 @@ final class ClipboardThumbnailCache {
                 }
                 guard requests[key] != nil else { continue }
                 let image = data.flatMap { NSImage(data: $0) }
-                store(image, for: key)
+                if image != nil || requests[key]?.cacheMiss == true { store(image, for: key) }
                 finish(key, image: image)
             } catch {
                 // Do not permanently cache transient engine/content failures.

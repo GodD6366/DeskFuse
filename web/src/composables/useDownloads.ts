@@ -4,6 +4,7 @@ import {
   FALLBACK_RELEASE_TAG,
   INTEL_DISK_IMAGE,
   REPOSITORY_URL,
+  WINDOWS_X64_INSTALLER,
   macAppDownload,
 } from '../config/distribution'
 import { useLatestRelease } from './useLatestRelease'
@@ -28,8 +29,20 @@ export function useDownloads() {
   const intel = computed(() =>
     macAppDownload(release.value?.assets, tag.value, INTEL_DISK_IMAGE, 'x86_64'),
   )
+  // Windows 支持按 Release 资产发布；旧 Release 没有安装器时进入版本页，不拼接 404 地址。
+  const windows = computed(() => {
+    const installer = release.value?.assets.find(
+      (asset) => asset.name === WINDOWS_X64_INSTALLER && asset.url,
+    )
+    return {
+      url: installer?.url || releaseUrl.value,
+      size: installer?.size,
+      available: Boolean(installer),
+    }
+  })
   const arm64Size = computed(() => formatSize(arm64.value.size))
   const intelSize = computed(() => formatSize(intel.value.size))
+  const windowsSize = computed(() => formatSize(windows.value.size))
   const date = computed(() => {
     const raw = release.value?.publishedAt
     if (!raw) return ''
@@ -39,5 +52,16 @@ export function useDownloads() {
     return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
   })
 
-  return { tag, prerelease, releaseUrl, arm64, intel, arm64Size, intelSize, date }
+  return {
+    tag,
+    prerelease,
+    releaseUrl,
+    arm64,
+    intel,
+    windows,
+    arm64Size,
+    intelSize,
+    windowsSize,
+    date,
+  }
 }

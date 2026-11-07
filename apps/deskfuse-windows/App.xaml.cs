@@ -51,6 +51,7 @@ public partial class App : Application
         }
         window.Closed += (_, _) => Cleanup();
         clipboard.ShelfFactory = () => new ShelfWindow(clipboard, service, window.Notify);
+        clipboard.PasteHudFactory = cancel => new RemotePasteHud(dispatcher, cancel);
         clipboard.Start(window.Handle);
         shelfDragMonitor = new ShelfDragShakeMonitor(dispatcher, () => clipboard?.ShowShelfAtPointer(), message => window?.Notify(message));
 

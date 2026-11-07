@@ -59,11 +59,12 @@ fn validate(items: &[PasteboardItem]) -> Result<(), String> {
 
 pub fn encode(items: &[PasteboardItem]) -> Result<Vec<u8>, String> {
     validate(items)?;
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-    codec()
-        .serialize_into(&mut encoder, items)
-        .map_err(|e| e.to_string())?;
-    encoder.flush().map_err(|e| e.to_string())?;
+    // Serialize first, then compress in one write. Streaming bincode into the
+    // encoder issues one tiny write per field, and flate2 re-zeroes its whole
+    // output buffer on each: a 3 MB screenshot took about a second to encode.
+    let raw = codec().serialize(items).map_err(|e| e.to_string())?;
+    let mut encoder = ZlibEncoder::new(Vec::with_capacity(raw.len() + 1024), Compression::fast());
+    encoder.write_all(&raw).map_err(|e| e.to_string())?;
     encoder.finish().map_err(|e| e.to_string())
 }
 

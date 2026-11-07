@@ -34,9 +34,9 @@ type auxiliaryTransfer struct {
 }
 
 const (
-	transferPanelWidth  = 316
-	transferPanelPill   = 84 // 76 pt pill + 8 pt stack spacing
-	transferPanelInset  = 16
+	transferPanelWidth  = 324 // 300 pt pill + room for its shadow
+	transferPanelPill   = 84  // 76 pt pill + 8 pt stack spacing
+	transferPanelInset  = 24
 	transferPanelMargin = 16
 )
 
@@ -82,7 +82,8 @@ func (a *auxiliaryWindows) reconcileTransfers() {
 		a.transfers = mygo.NewWindow(mygo.WindowOptions{
 			Title: "传输进度", URL: "/?page=transfer-progress", Width: transferPanelWidth, Height: transferPanelPill,
 			Frameless: true, Panel: true, AlwaysOnTop: true, DisableResize: true,
-			Transparent: true, Vibrancy: mygo.VibrancyPopover, DisableShadow: true,
+			// Fully transparent: each pill is its own card, with no backdrop behind the stack.
+			Transparent: true, DisableShadow: true,
 		})
 	}
 	area := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea

@@ -186,6 +186,7 @@ impl deskfuse_platform::ports::WorkflowOutputPort for MacOSWorkflowOutputPort {
 
 struct TapContext {
     file_capture: Option<Arc<crate::FilePasteCapture>>,
+    remote_paste: Option<Arc<deskfuse_platform::ports::RemoteClipboardPaste>>,
     pending_file: Arc<AtomicBool>,
     paste_requested: Arc<AtomicBool>,
     target_pid: Arc<AtomicI32>,
@@ -239,6 +240,7 @@ impl MacOSPasteShortcutMonitor {
             workflows,
             workflow_events,
             None,
+            None,
         )
     }
 
@@ -249,6 +251,7 @@ impl MacOSPasteShortcutMonitor {
         workflows: Arc<Mutex<WorkflowHotkeys>>,
         workflow_events: std::sync::mpsc::Sender<WorkflowHotkeyEvent>,
         file_capture: Option<Arc<crate::FilePasteCapture>>,
+        remote_paste: Option<Arc<deskfuse_platform::ports::RemoteClipboardPaste>>,
     ) -> PlatformResult<Self> {
         let runloop = Arc::new(Mutex::new(None));
         let runloop_for_thread = Arc::clone(&runloop);
@@ -265,6 +268,7 @@ impl MacOSPasteShortcutMonitor {
                     workflows,
                     workflow_events,
                     file_capture,
+                    remote_paste,
                 );
             })
             .map_err(|_| PlatformError::InputCaptureUnavailable)?;
@@ -308,10 +312,12 @@ fn paste_tap_thread(
     workflows: Arc<Mutex<WorkflowHotkeys>>,
     workflow_events: std::sync::mpsc::Sender<WorkflowHotkeyEvent>,
     file_capture: Option<Arc<crate::FilePasteCapture>>,
+    remote_paste: Option<Arc<deskfuse_platform::ports::RemoteClipboardPaste>>,
 ) {
     let runloop = CFRunLoop::get_current();
     let context = Box::new(TapContext {
         file_capture,
+        remote_paste,
         pending_file,
         paste_requested,
         target_pid,
@@ -477,6 +483,24 @@ unsafe extern "C" fn paste_tap_callback(
     if event_type != CGEventType::KeyDown as u32 {
         return event;
     }
+    // Remote clipboard content still in flight: hold this paste and let the
+    // engine replay it once the content replaces the current pasteboard.
+    if let Some(remote) = &context.remote_paste
+        && should_intercept_paste(keycode, flags, marker, true)
+        && remote.request(
+            workflow_frontmost_pid(),
+            objc2_app_kit::NSPasteboard::generalPasteboard().changeCount() as i64,
+        )
+    {
+        if physical
+            && let Some(captured) = usize::try_from(keycode)
+                .ok()
+                .and_then(|i| context.captured_keys.get(i))
+        {
+            captured.store(true, Ordering::Release);
+        }
+        return ptr::null_mut();
+    }
     if !should_intercept_paste(
         keycode,
         flags,
@@ -598,6 +622,7 @@ mod tests {
 
         let context = TapContext {
             file_capture: None,
+            remote_paste: None,
             pending_file: Arc::new(AtomicBool::new(true)),
             paste_requested: Arc::new(AtomicBool::new(false)),
             target_pid: Arc::new(AtomicI32::new(0)),

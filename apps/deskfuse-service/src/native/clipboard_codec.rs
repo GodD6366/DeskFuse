@@ -68,11 +68,15 @@ pub fn encode(formats: &[Format]) -> Result<(String, Vec<u8>), ()> {
             data,
         });
     }
-    let mut compressor = ZlibEncoder::new(Vec::new(), Compression::fast());
-    codec()
-        .serialize_into(&mut compressor, &vec![Item { representations }])
+    // Serialize first, then compress in one write: streaming bincode into the
+    // encoder re-zeroes flate2's output buffer per field and takes ~1 s for a
+    // 3 MB image.
+    let raw = codec()
+        .serialize(&vec![Item { representations }])
         .map_err(|_| ())?;
-    compressor.flush().map_err(|_| ())?;
+    let mut compressor =
+        ZlibEncoder::new(Vec::with_capacity(raw.len() + 1024), Compression::fast());
+    compressor.write_all(&raw).map_err(|_| ())?;
     Ok((BUNDLE_MIME.into(), compressor.finish().map_err(|_| ())?))
 }
 pub fn decode(mime: &str, data: &[u8]) -> Result<Vec<Format>, ()> {

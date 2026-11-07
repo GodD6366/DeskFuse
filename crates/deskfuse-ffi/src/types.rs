@@ -768,6 +768,18 @@ pub enum EngineEvent {
         target_pid: i32,
         change_count: i64,
     },
+    /// A held Command-V is waiting for remote clipboard content.
+    RemotePasteProgress {
+        peer_id: String,
+        received: u64,
+        total: u64,
+    },
+    /// Replay the held Command-V when `error` is `None`; otherwise show it.
+    RemotePasteFinished {
+        target_pid: i32,
+        change_count: i64,
+        error: Option<String>,
+    },
     ClipboardLibraryChanged {
         revision: u64,
     },

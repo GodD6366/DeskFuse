@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::{io::Write, os::unix::net::UnixStream};
 
+pub(crate) const SEND_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Bounded metadata from the process that owns the native input connection.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputServiceQuality {
@@ -48,8 +50,90 @@ pub struct ServiceControl {
     pub(crate) sequence: Arc<Mutex<u64>>,
     /// Last restart for a locally refused LAN send; bounds a restart loop.
     pub(crate) send_recovery_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Host-side evidence must survive replacement of the child's status text.
+    pub(crate) recovery_diagnostics: Arc<Mutex<std::collections::VecDeque<serde_json::Value>>>,
 }
 impl ServiceControl {
+    #[cfg(unix)]
+    pub(crate) fn record_recovery(
+        &self,
+        stage: &str,
+        generation: u64,
+        pid: u32,
+        detail: serde_json::Value,
+    ) {
+        let record = serde_json::json!({
+            "subsystem": "input_service_recovery",
+            "timestamp_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
+            "host_pid": std::process::id(),
+            "pid": pid,
+            "generation": generation,
+            "stage": stage,
+            "detail": detail,
+        });
+        let mut records = self
+            .recovery_diagnostics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if records.len() == 128 {
+            records.pop_front();
+        }
+        records.push_back(record);
+    }
+
+    /// Include supervisor decisions even with debug collection disabled or after
+    /// a helper restart. The engine redacts the combined export before writing.
+    pub fn diagnostics_json_lines(&self) -> String {
+        // Release each lock before taking the next: the status writer also uses
+        // these fields, and a diagnostics export must never stall input IPC.
+        let native = self
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let generation = *self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let remaining = self
+            .send_recovery_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|at| SEND_RECOVERY_INTERVAL.saturating_sub(at.elapsed()))
+            .unwrap_or_default();
+        let mut lines = serde_json::json!({
+            "subsystem": "input_service_recovery",
+            "stage": "export_snapshot",
+            "timestamp_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
+            "host_pid": std::process::id(),
+            "generation": generation,
+            "history_capacity": 128,
+            "native": {
+                "running": native.running,
+                "pid": native.pid,
+                "locked": native.locked,
+                "recording_ready": native.recording_ready,
+                "observer_recovery_required": native.observer_recovery_required,
+                "locally_refused_hosts": native.locally_refused_hosts,
+                "update_paused": native.update_paused,
+                "error": native.error,
+            },
+            "cooldown_remaining_ms": remaining.as_millis(),
+        })
+        .to_string();
+        lines.push('\n');
+        for record in self
+            .recovery_diagnostics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            lines.push_str(&record.to_string());
+            lines.push('\n');
+        }
+        lines.push_str(&self.diagnostics.lock().unwrap_or_else(|e| e.into_inner()));
+        lines
+    }
+
     pub fn signal(&self, byte: u8) -> bool {
         #[cfg(unix)]
         {

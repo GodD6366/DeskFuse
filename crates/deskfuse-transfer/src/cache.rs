@@ -5,7 +5,7 @@
 use crate::TransferId;
 use deskfuse_core::TransferCacheSnapshot;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -20,6 +20,10 @@ pub struct TransferCache {
     root: PathBuf,
     max_bytes: u64,
     active: HashMap<TransferId, u64>,
+    /// Transfers the user explicitly asked for (direct sends, pastes). They
+    /// never count against the quota while running or in use; once released
+    /// they are ordinary entries and the oldest-first eviction reclaims them.
+    requested: HashSet<TransferId>,
     pins: HashMap<TransferId, usize>,
     external: ExternalCacheLeases,
     partial_cleanup: CacheCleanup,
@@ -56,6 +60,7 @@ impl TransferCache {
             root,
             max_bytes,
             active: HashMap::new(),
+            requested: HashSet::new(),
             pins: HashMap::new(),
             external: Arc::default(),
             partial_cleanup: CacheCleanup::default(),
@@ -160,13 +165,26 @@ impl TransferCache {
             }
         }
     }
+    /// Bytes reserved by quota-bound active transfers.
+    fn reserved_bytes(&self) -> u64 {
+        self.active
+            .iter()
+            .filter(|(id, _)| !self.requested.contains(id))
+            .map(|(_, size)| size)
+            .sum()
+    }
+    /// A user-requested entry that is still running or in use sits outside the quota.
+    fn exempt(&self, id: TransferId) -> bool {
+        self.requested.contains(&id) && self.protected(id)
+    }
     fn protected_bytes(&self, entries: &[(TransferId, PathBuf, u64, SystemTime)]) -> u64 {
-        self.active.values().sum::<u64>().saturating_add(
+        self.reserved_bytes().saturating_add(
             entries
                 .iter()
                 .filter(|entry| {
                     (self.pins.contains_key(&entry.0) || self.externally_pinned(entry.0))
                         && !self.active.contains_key(&entry.0)
+                        && !self.requested.contains(&entry.0)
                 })
                 .map(|entry| entry.2)
                 .sum::<u64>(),
@@ -213,10 +231,25 @@ impl TransferCache {
         self.active.insert(id, size);
         Ok(cleanup)
     }
+    /// Reserve a transfer the user explicitly started. The quota only bounds
+    /// automatic prefetch, so this never fails for size; the disk itself is
+    /// the remaining limit.
+    pub fn reserve_requested(&mut self, id: TransferId, size: u64) -> Result<(), String> {
+        if self.active.contains_key(&id) {
+            return Ok(());
+        }
+        let destination = self.destination(id);
+        if destination.exists() && tree_bytes(&destination)? > 0 {
+            return Err("传输标识已被已接收文件使用，请重新复制生成新请求".into());
+        }
+        self.requested.insert(id);
+        self.active.insert(id, size);
+        Ok(())
+    }
     fn make_room(&mut self, required: u64) -> Result<CacheCleanup, String> {
         let entries = self.entries()?;
         let protected = self.protected_bytes(&entries);
-        let reserved = self.active.values().sum::<u64>();
+        let reserved = self.reserved_bytes();
         if required.saturating_add(protected) > self.max_bytes {
             return Err(format!(
                 "缓存空间不足：任务需要 {required} 字节，上限 {} 字节，活动任务已预留 {reserved} 字节",
@@ -226,7 +259,7 @@ impl TransferCache {
         let mut accounted = reserved.saturating_add(
             entries
                 .iter()
-                .filter(|e| !self.active.contains_key(&e.0))
+                .filter(|e| !self.active.contains_key(&e.0) && !self.exempt(e.0))
                 .map(|e| e.2)
                 .sum::<u64>(),
         );
@@ -247,6 +280,7 @@ impl TransferCache {
                     return Err(error);
                 }
             }
+            self.requested.remove(&id);
             accounted = accounted.saturating_sub(size);
             result.removed_bytes = result.removed_bytes.saturating_add(size);
             result.removed_paths.push(path);
@@ -259,6 +293,9 @@ impl TransferCache {
     }
     pub fn finish(&mut self, id: TransferId) {
         self.active.remove(&id);
+        if !self.destination(id).exists() {
+            self.requested.remove(&id);
+        }
     }
     pub fn clear_completed(&mut self) -> Result<CacheCleanup, String> {
         let mut result = CacheCleanup::default();
@@ -274,6 +311,7 @@ impl TransferCache {
                     continue;
                 }
             }
+            self.requested.remove(&id);
             result.removed_bytes = result.removed_bytes.saturating_add(size);
             result.removed_paths.push(path);
         }
@@ -333,6 +371,31 @@ mod tests {
         assert!(cache.destination(active).join("partial").exists());
         assert_eq!(fs::read(source).unwrap(), b"keep");
         assert_eq!(cache.snapshot().unwrap().active_reserved_bytes, 8);
+    }
+    #[test]
+    fn requested_transfers_bypass_quota_until_released() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cache =
+            TransferCache::new(temp.path().canonicalize().unwrap().join("cache"), 12).unwrap();
+        let large = TransferId::new();
+        cache.reserve_requested(large, 100).unwrap();
+        fs::create_dir(cache.destination(large)).unwrap();
+        let file = cache.destination(large).join("movie");
+        fs::write(&file, [0; 100]).unwrap();
+        // A running request neither blocks quota-bound work nor settings changes.
+        assert_eq!(cache.snapshot().unwrap().active_reserved_bytes, 0);
+        assert!(cache.reserve(TransferId::new(), 5).is_ok());
+        assert!(cache.set_limit(10).is_ok());
+        cache.finish(large);
+        // Still on the clipboard: kept, and still outside the quota.
+        let pins = cache.pin_sources(&[file.to_string_lossy().into_owned()]);
+        assert_eq!(cache.clear_completed().unwrap().removed_bytes, 0);
+        assert!(cache.set_limit(12).is_ok());
+        assert!(file.exists());
+        // Released: an ordinary entry that the next eviction reclaims.
+        cache.unpin_sources(&pins);
+        assert_eq!(cache.set_limit(12).unwrap().removed_bytes, 100);
+        assert!(!file.exists());
     }
     #[test]
     fn outgoing_cache_sources_are_protected_from_quota_eviction_and_clear() {

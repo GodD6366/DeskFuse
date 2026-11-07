@@ -30,7 +30,7 @@ struct MenuBarClipboardRow: View {
     @State private var requestFiles = false
     @State private var loading = false
     @State private var editingTitle = false
-    private var loadKey: String { "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)" }
+    private var loadKey: String { "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)-\(remoteUnavailable)" }
 
     var body: some View {
         Button(action: select) {
@@ -100,7 +100,7 @@ struct MenuBarClipboardRow: View {
         guard active, let client else { return }
         if item.hasImage {
             loading = true
-            let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 320)
+            let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 320, remotePending: remoteUnavailable)
             guard !Task.isCancelled else { return }
             loading = false
             image = cached
@@ -212,7 +212,7 @@ struct MenuBarClipboardCard: View {
         }
         .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)") { await loadPreview() }
+        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)-\(remoteUnavailable)") { await loadPreview() }
         .onDisappear { image = nil; media = nil; loading = false }
     }
 
@@ -284,7 +284,7 @@ struct MenuBarClipboardCard: View {
         guard active, let client else { return }
         if item.hasImage {
             loading = true
-            let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 320)
+            let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 320, remotePending: remoteUnavailable)
             guard !Task.isCancelled else { return }
             loading = false
             image = cached

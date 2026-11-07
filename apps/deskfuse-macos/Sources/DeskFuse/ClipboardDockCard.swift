@@ -104,7 +104,7 @@ struct ClipboardDockCard: View {
         .accessibilityLabel(item.clipboardTitle)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .help(item.clipboardTitle)
-        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)") { await loadThumbnail() }
+        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(presentation)-\(active)-\(remoteUnavailable)") { await loadThumbnail() }
         .onDisappear { image = nil; loading = false }
     }
 
@@ -269,7 +269,7 @@ struct ClipboardDockCard: View {
     }
 
     @MainActor private func loadThumbnail() async {
-        guard item.hasImage, !remoteUnavailable else { image = nil; loading = false; return }
+        guard item.hasImage else { image = nil; loading = false; return }
         if let cached = ClipboardThumbnailCache.shared.cached(item.id, maxPixelSize: 480) {
             image = cached; loading = false
             return
@@ -277,7 +277,7 @@ struct ClipboardDockCard: View {
         image = nil
         guard active, let client else { loading = false; return }
         loading = true
-        let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 480)
+        let cached = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 480, remotePending: remoteUnavailable)
         guard !Task.isCancelled else { return }
         loading = false
         image = cached

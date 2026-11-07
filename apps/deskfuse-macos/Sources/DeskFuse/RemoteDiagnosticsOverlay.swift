@@ -36,6 +36,7 @@ struct RemoteDiagnosticsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Divider()
                     metric("编码前替换帧", remote.map { String($0.media.replacedBeforeEncode) } ?? "—")
+                    metric("静止画面重编码帧", remote?.media.paintOverFrames.map(String.init) ?? "—")
                     metric("编码器丢帧", remote.map { String($0.media.encoderDropped) } ?? "—")
                     metric("解码链重置", String(local.chainResets))
                     metric("解码队列溢出", String(local.queueOverflows ?? 0))

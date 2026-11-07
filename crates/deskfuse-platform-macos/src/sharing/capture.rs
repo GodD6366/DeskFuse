@@ -6,7 +6,7 @@ use crate::{PlatformError, PlatformResult, SYNTHETIC_PASTE_EVENT_MARKER};
 use core_foundation::{
     base::TCFType,
     mach_port::CFMachPort,
-    runloop::{CFRunLoop, kCFRunLoopDefaultMode},
+    runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode},
 };
 use core_foundation_sys::mach_port::{CFMachPortInvalidate, CFMachPortRef};
 use core_graphics::{
@@ -332,6 +332,60 @@ impl Drop for MacOSSharingCapture {
 }
 
 type TapCallback = unsafe extern "C" fn(*const c_void, u32, CGEventRef, *mut c_void) -> CGEventRef;
+/// `CGEventTapInformation`, in the order WindowServer runs the taps.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct TapInformation {
+    event_tap_id: u32,
+    tap_point: u32,
+    options: u32,
+    events_of_interest: u64,
+    tapping_process: i32,
+    process_being_tapped: i32,
+    enabled: bool,
+    min_usec_latency: f32,
+    avg_usec_latency: f32,
+    max_usec_latency: f32,
+}
+const KEYBOARD_EVENTS: u64 = (1 << CGEventType::KeyDown as u32)
+    | (1 << CGEventType::KeyUp as u32)
+    | (1 << CGEventType::FlagsChanged as u32);
+/// Whether another process's keyboard tap runs before ours at the same stage.
+///
+/// Taps placed with `HeadInsertEventTap` run newest first, so an app that
+/// (re)creates its tap after ours sees every key before we can withhold it from
+/// this Mac. While input belongs to a remote screen that leaks local shortcuts,
+/// e.g. an input method's push-to-talk key starting dictation on this Mac.
+fn keyboard_tap_ahead(taps: &[TapInformation], own_pid: i32, tap_point: u32, mask: u64) -> bool {
+    let stage = |tap: &&TapInformation| tap.tap_point == tap_point && tap.process_being_tapped == 0;
+    // Without our own entry there is nothing reliable to reorder against.
+    let Some(own) = taps
+        .iter()
+        .filter(stage)
+        .position(|tap| tap.tapping_process == own_pid && tap.events_of_interest == mask)
+    else {
+        return false;
+    };
+    taps.iter().filter(stage).take(own).any(|tap| {
+        tap.tapping_process != own_pid
+            && tap.enabled
+            && tap.events_of_interest & KEYBOARD_EVENTS != 0
+    })
+}
+fn event_taps() -> Vec<TapInformation> {
+    let mut count = 0;
+    // SAFETY: a null list only queries the count.
+    if unsafe { CGGetEventTapList(0, ptr::null_mut(), &mut count) } != 0 || count == 0 {
+        return Vec::new();
+    }
+    let mut taps = vec![TapInformation::default(); count as usize];
+    // SAFETY: the buffer holds `count` entries and the call writes at most that many.
+    if unsafe { CGGetEventTapList(count, taps.as_mut_ptr(), &mut count) } != 0 {
+        return Vec::new();
+    }
+    taps.truncate(count as usize);
+    taps
+}
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventTapCreate(
@@ -343,6 +397,7 @@ unsafe extern "C" {
         user_info: *mut c_void,
     ) -> CFMachPortRef;
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGGetEventTapList(max: u32, list: *mut TapInformation, count: *mut u32) -> i32;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetDoubleValueField(event: CGEventRef, field: u32) -> f64;
     fn CGEventGetFlags(event: CGEventRef) -> u64;
@@ -746,8 +801,10 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         )
     };
     let mut level = "hid";
+    let mut location = CGEventTapLocation::HID;
     if raw.is_null() {
         level = "session";
+        location = CGEventTapLocation::Session;
         raw = unsafe {
             CGEventTapCreate(
                 CGEventTapLocation::Session,
@@ -768,10 +825,11 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         let _ = ready.send(Err(PlatformError::InputCaptureUnavailable));
         return;
     }
+    let tap_point = location as u32;
     // SAFETY: CoreGraphics returned a non-null Create-rule CFMachPort.
-    let tap = unsafe { CFMachPort::wrap_under_create_rule(raw) };
+    let mut tap = unsafe { CFMachPort::wrap_under_create_rule(raw) };
     context.tap = raw;
-    let source = match tap.create_runloop_source(0) {
+    let mut source = match tap.create_runloop_source(0) {
         Ok(source) => source,
         Err(()) => {
             // SAFETY: invalidate before the owning callback context is dropped.
@@ -842,12 +900,26 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
     // that pays the window server's default 0.25 s of suppressed local events.
     let _ = apply_cursor_operation(CursorOperation::ZeroSuppressionInterval);
     let _ = ready.send(Ok(()));
+    let mut tap_order_checked = Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         while let Ok(command) = commands.try_recv() {
             match command {
                 Command::Enter(x, y, reply) => {
                     let started = Instant::now();
                     let was_remote = context.cursor.hidden;
+                    if !was_remote {
+                        reinsert_if_overtaken(
+                            &mut context,
+                            &runloop,
+                            &mut raw,
+                            &mut tap,
+                            &mut source,
+                            location,
+                            tap_point,
+                            mask,
+                        );
+                        tap_order_checked = Instant::now();
+                    }
                     let result = if shared.deadline.expired() {
                         Err(PlatformError::InputCaptureUnavailable)
                     } else {
@@ -913,6 +985,23 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         if shared.exclusive.load(Ordering::Acquire) && shared.deadline.expired() {
             context.fail_open(3);
         }
+        // Other apps may recreate their taps at any time (an input method does
+        // so whenever its tap is disabled), so keep checking while remote.
+        if shared.exclusive.load(Ordering::Acquire)
+            && tap_order_checked.elapsed() >= TAP_ORDER_INTERVAL
+        {
+            reinsert_if_overtaken(
+                &mut context,
+                &runloop,
+                &mut raw,
+                &mut tap,
+                &mut source,
+                location,
+                tap_point,
+                mask,
+            );
+            tap_order_checked = Instant::now();
+        }
         if !shared.exclusive.load(Ordering::Acquire) && context.cursor.hidden {
             let _ = context.exit_remote(None);
         }
@@ -944,6 +1033,69 @@ fn capture_thread(shared: Arc<Shared>, commands: mpsc::Receiver<Command>, ready:
         CFMachPortInvalidate(raw);
     }
     let _ = context.exit_remote(None);
+}
+const TAP_ORDER_INTERVAL: Duration = Duration::from_millis(500);
+/// Move our tap back to the head of its stage when another process's keyboard
+/// tap has been inserted ahead of it. The new tap is live before the old one is
+/// invalidated, and both callbacks run on this thread, so no event is missed or
+/// handled twice.
+#[allow(clippy::too_many_arguments)]
+fn reinsert_if_overtaken(
+    context: &mut Context,
+    runloop: &CFRunLoop,
+    raw: &mut CFMachPortRef,
+    tap: &mut CFMachPort,
+    source: &mut CFRunLoopSource,
+    location: CGEventTapLocation,
+    tap_point: u32,
+    mask: u64,
+) {
+    let started = Instant::now();
+    if !keyboard_tap_ahead(&event_taps(), std::process::id() as i32, tap_point, mask) {
+        return;
+    }
+    // SAFETY: same callback ABI and context as the original tap; the context
+    // outlives every tap created here because each is invalidated on this thread.
+    let fresh = unsafe {
+        CGEventTapCreate(
+            location,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::Default,
+            mask,
+            tap_callback,
+            (context as *mut Context).cast(),
+        )
+    };
+    let reinserted = !fresh.is_null() && {
+        // SAFETY: CoreGraphics returned a non-null Create-rule CFMachPort.
+        let port = unsafe { CFMachPort::wrap_under_create_rule(fresh) };
+        match port.create_runloop_source(0) {
+            Ok(fresh_source) => {
+                // SAFETY: default mode is a process-lifetime constant; the old
+                // tap is invalidated only after the new one is enabled.
+                unsafe {
+                    runloop.add_source(&fresh_source, kCFRunLoopDefaultMode);
+                    CGEventTapEnable(fresh, true);
+                    CFMachPortInvalidate(*raw);
+                }
+                *raw = fresh;
+                context.tap = fresh;
+                *tap = port;
+                *source = fresh_source;
+                true
+            }
+            Err(()) => {
+                // SAFETY: never added to a run loop; drop it and keep the old tap.
+                unsafe { CFMachPortInvalidate(fresh) };
+                false
+            }
+        }
+    };
+    super::timing::record!(
+        "capture_tap_reinserted",
+        started.elapsed(),
+        format!("ok={reinserted}")
+    );
 }
 unsafe extern "C" fn tap_callback(
     _proxy: *const c_void,
@@ -1341,6 +1493,45 @@ pub fn restore_pointer_after_service_exit() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyboard_tap_ahead_only_counts_other_keyboard_taps_at_the_same_stage() {
+        const ME: i32 = 10;
+        let mask = KEYBOARD_EVENTS | 1;
+        let tap = |point, pid, interest, enabled| TapInformation {
+            tap_point: point,
+            tapping_process: pid,
+            events_of_interest: interest,
+            enabled,
+            ..TapInformation::default()
+        };
+        let own = tap(0, ME, mask, true);
+        let ime = tap(0, 20, 1 << CGEventType::FlagsChanged as u32, true);
+        assert!(keyboard_tap_ahead(&[ime, own], ME, 0, mask));
+        assert!(!keyboard_tap_ahead(&[own, ime], ME, 0, mask));
+        // Another stage, a mouse-only tap, a disabled tap or a per-process tap
+        // never sees this stage's keys first.
+        let session = tap(1, 20, KEYBOARD_EVENTS, true);
+        let mouse = tap(0, 20, 1 << CGEventType::MouseMoved as u32, true);
+        let disabled = tap(0, 20, KEYBOARD_EVENTS, false);
+        let per_process = TapInformation {
+            process_being_tapped: 30,
+            ..ime
+        };
+        assert!(!keyboard_tap_ahead(
+            &[session, mouse, disabled, per_process, own],
+            ME,
+            0,
+            mask
+        ));
+        // Our own other taps and an unlisted own tap never cause churn.
+        assert!(!keyboard_tap_ahead(
+            &[tap(0, ME, KEYBOARD_EVENTS, true), own],
+            ME,
+            0,
+            mask
+        ));
+        assert!(!keyboard_tap_ahead(&[ime], ME, 0, mask));
+    }
     use super::*;
 
     #[test]

@@ -1,128 +1,67 @@
 <script setup lang="ts">
+import { asset } from '../../modules/asset'
 import { useDownloads } from '../../composables/useDownloads'
 import { REPOSITORY_URL } from '../../config/distribution'
 
-const { tag, arm64 } = useDownloads()
+const { tag } = useDownloads()
 </script>
 
 <template>
-  <section class="cta">
-    <div class="page cta__grid">
-      <div class="cta__copy">
-        <span class="eyebrow">END NOTE / 下一次复制</span>
-        <h2>复制在这台，<br />粘贴在那台。</h2>
+  <section class="cta section section--gray">
+    <div class="page cta__inner">
+      <img class="cta__icon" :src="asset('assets/icon.png')" alt="" width="76" height="76" />
+      <h2>复制在这台，<br />粘贴在那台。</h2>
+      <p>在每台电脑上安装，配对一次。键鼠、剪贴板和文件就能跟着你走。</p>
+      <div class="cta__actions">
+        <a class="btn btn--primary" href="#download">下载 DeskFuse</a>
+        <a class="text-link" :href="REPOSITORY_URL" target="_blank" rel="noopener">在 GitHub 查看 <span aria-hidden="true">›</span></a>
       </div>
-      <div class="cta__aside">
-        <p>两台都装好，配对一次。之后键鼠、剪贴板、文件和麦克风都像在同一台电脑上。</p>
-        <div class="cta__actions">
-          <a class="btn btn--primary" :href="arm64.url">下载 DeskFuse</a>
-          <a class="cta__link" :href="REPOSITORY_URL" target="_blank" rel="noopener">
-            在 GitHub 查看 <span aria-hidden="true">↗</span>
-          </a>
-        </div>
-        <p class="cta__meta">{{ tag }} · macOS 14 或更新 · Apple 芯片与 Intel</p>
-      </div>
-    </div>
-    <div class="page cta__folio">
-      <span>DESKFUSE / 2026</span>
-      <span>LOCAL NETWORK · NO CLOUD</span>
+      <p class="cta__meta">{{ tag }} · 局域网直连 · 设备密钥配对</p>
     </div>
   </section>
 </template>
 
 <style scoped>
 .cta {
-  padding-block: clamp(72px, 9vw, 120px) 18px;
-  border-top: 1px solid var(--rule-strong);
-  background: var(--paper-2);
+  text-align: center;
 }
 
-.cta__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
-  gap: clamp(32px, 6vw, 88px);
-  align-items: end;
+.cta__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.cta__copy h2 {
-  margin-top: 16px;
-  font-size: clamp(2.7rem, 1.7rem + 3.6vw, 4.8rem);
-  line-height: 1.15;
+.cta__icon {
+  margin-bottom: 28px;
+  border-radius: 18px;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 12%);
 }
 
-.cta__aside {
-  padding-bottom: 4px;
+.cta h2 {
+  font-size: var(--t-h2);
 }
 
-.cta__aside > p:first-child {
-  max-width: 32em;
+.cta__inner > p:not(.cta__meta) {
+  margin-top: 20px;
   color: var(--body);
-  font-size: 1.0625rem;
-  line-height: 1.85;
+  font-size: var(--t-lead);
+  line-height: 1.6;
 }
 
 .cta__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 22px;
-  margin-top: 24px;
-}
-
-.cta__link {
-  padding-bottom: 2px;
-  border-bottom: 1px solid var(--rule-strong);
-  color: var(--ink);
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.cta__link:hover {
-  color: var(--vermilion);
-  border-bottom-color: var(--vermilion);
+  justify-content: center;
+  gap: 12px 26px;
+  margin-top: 28px;
 }
 
 .cta__meta {
   margin-top: 18px;
   color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.03em;
+  font-size: 0.75rem;
   line-height: 1.6;
-}
-
-.cta__folio {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  margin-top: clamp(48px, 7vw, 88px);
-  padding-top: 12px;
-  border-top: 1px solid var(--rule);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 0.5625rem;
-  letter-spacing: 0.08em;
-  line-height: 1.5;
-}
-
-@media (max-width: 900px) {
-  .cta__grid {
-    grid-template-columns: 1fr;
-    gap: 28px;
-  }
-}
-
-@media (max-width: 640px) {
-  .cta__actions {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .cta__folio {
-    flex-direction: column;
-    gap: 4px;
-  }
 }
 </style>

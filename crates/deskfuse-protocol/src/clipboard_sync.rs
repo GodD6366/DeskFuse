@@ -2,11 +2,18 @@
 use crate::ProtocolError;
 use prost::Message;
 pub const MIME: &str = "application/x-deskfuse-clipboard-sync-v2";
+/// Bytes carried by one DATA frame. Each frame rides its own QUIC stream and
+/// the sender waits for delivery before opening the next, so this is also the
+/// unit of round-trip cost: a screenshot fits in one frame instead of four.
 pub const CHUNK_BYTES: usize = 1024 * 1024;
 pub const MAX_BYTES: usize = 257 * 1024 * 1024;
 pub const HELLO: u32 = 0;
 pub const DATA: u32 = 1;
 pub const ACK: u32 = 2;
+/// Sent the moment the sender's clipboard changes, before the content is read
+/// or encoded, so the receiver can hold a Command-V instead of pasting the
+/// previous clipboard. `outcome == SUPERSEDED` withdraws it: no content follows.
+pub const INTENT: u32 = 3;
 pub const APPLIED: u32 = 1;
 pub const REJECTED: u32 = 2;
 pub const SUPERSEDED: u32 = 3;
@@ -105,6 +112,12 @@ impl SyncMessage {
                             .is_some_and(|end| end <= self.total)
                         && (self.total == 0 || !self.data.is_empty())
                 }
+                INTENT => {
+                    self.target_epoch.len() == 16
+                        && self.revision > 0
+                        && self.data.is_empty()
+                        && matches!(self.outcome, 0 | SUPERSEDED)
+                }
                 ACK => {
                     self.target_epoch.len() == 16
                         && self.sync_id.len() == 16
@@ -131,6 +144,23 @@ impl SyncMessage {
             max_content_bytes,
             source_epoch,
             target_epoch,
+            ..Default::default()
+        }
+    }
+    /// Announce (or, with `withdraw`, retract) content for `revision`.
+    pub fn intent(
+        source_epoch: Vec<u8>,
+        target_epoch: Vec<u8>,
+        revision: u64,
+        withdraw: bool,
+    ) -> Self {
+        Self {
+            kind: INTENT,
+            policy_version: POLICY_VERSION,
+            source_epoch,
+            target_epoch,
+            revision,
+            outcome: if withdraw { SUPERSEDED } else { 0 },
             ..Default::default()
         }
     }
@@ -303,5 +333,20 @@ mod tests {
     fn legacy_hello_without_budget_falls_back_to_the_wire_limit() {
         let hello = SyncMessage::hello(vec![1; 16], Vec::new(), 0);
         assert_eq!(hello.advertised_max_content(), MAX_BYTES as u64);
+    }
+    #[test]
+    fn intent_announces_and_withdraws_without_content() {
+        for withdraw in [false, true] {
+            let intent = SyncMessage::intent(vec![1; 16], vec![2; 16], 7, withdraw);
+            let decoded = SyncMessage::decode_checked(&intent.encode_checked().unwrap()).unwrap();
+            assert_eq!(decoded.kind, INTENT);
+            assert_eq!(decoded.outcome == SUPERSEDED, withdraw);
+        }
+        let mut carrying = SyncMessage::intent(vec![1; 16], vec![2; 16], 7, false);
+        carrying.data = vec![0];
+        assert!(
+            carrying.encode_checked().is_err(),
+            "an intent never carries content"
+        );
     }
 }

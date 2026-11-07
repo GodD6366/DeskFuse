@@ -306,6 +306,7 @@ import DeskFuseEngine
                 pairingDecisions.formIntersection(Set(value.pairing.map(\.id)))
                 autoJoinInputParticipants(value)
                 shelf?.reconcileTransfers(value.transfers)
+                MyGoUIHost.shared.reconcileAuxiliaryDemand(value)
             }
         case .clipboardLibraryChanged(let revision):
             ClipboardLibraryStore.shared.libraryChanged(revision)
@@ -324,24 +325,39 @@ import DeskFuseEngine
         case .pairingFailed(let id, let message):
             pairingDecisions.remove(id); error = message
         case .pasteReady(let pid, let count):
-            Task {
-                do {
-                    guard pid > 0 else { throw ClipboardPanelFailure.message("无法确认原粘贴目标；文件已就绪，可手动粘贴。") }
-                    for _ in 0..<100 {
-                        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-                            throw ClipboardPanelFailure.message("目标应用已切换；文件已就绪，可手动粘贴。")
-                        }
-                        if NSEvent.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
-                            try clipboardPasteIfCurrent(targetPid: pid, expectedChangeCount: count)
-                            return
-                        }
-                        try await Task.sleep(for: .milliseconds(20))
-                    }
-                    throw ClipboardPanelFailure.message("修饰键尚未释放；文件已就绪，可手动粘贴。")
-                } catch { self.error = error.userFacingMessage }
-            }
+            RemotePasteHUD.shared.dismiss()
+            replayPaste(targetPid: pid, changeCount: count, subject: "文件")
+        case .remotePasteProgress(let peerId, let received, let total):
+            let name = snapshot?.devices.first { $0.id == peerId }?.name ?? ""
+            let hud = RemotePasteHUD.shared
+            hud.onCancel = { [weak self] in self?.engine?.cancelRemotePaste() }
+            hud.update(source: name, received: received, total: total)
+        case .remotePasteFinished(let pid, let count, let message):
+            RemotePasteHUD.shared.dismiss()
+            // A held file paste ends without target or error: its replay (if
+            // any) arrives as `pasteReady`, so this only closes the HUD.
+            if let message { error = message } else if pid > 0 || count >= 0 { replayPaste(targetPid: pid, changeCount: count, subject: "内容") }
         case .stageFiles(let paths): shelf?.append(paths.map { URL(fileURLWithPath: $0) })
         case .quit: NSApp.terminate(nil)
+        }
+    }
+    /// Replays a Command-V held while remote content was still arriving.
+    private func replayPaste(targetPid pid: Int32, changeCount count: Int64, subject: String) {
+        Task {
+            do {
+                guard pid > 0 else { throw ClipboardPanelFailure.message("无法确认原粘贴目标；\(subject)已就绪，可手动粘贴。") }
+                for _ in 0..<100 {
+                    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                        throw ClipboardPanelFailure.message("目标应用已切换；\(subject)已就绪，可手动粘贴。")
+                    }
+                    if NSEvent.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                        try clipboardPasteIfCurrent(targetPid: pid, expectedChangeCount: count)
+                        return
+                    }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                throw ClipboardPanelFailure.message("修饰键尚未释放；\(subject)已就绪，可手动粘贴。")
+            } catch { self.error = error.userFacingMessage }
         }
     }
     /// `completion` is a submission receipt; `applied` confirms worker completion.
@@ -481,7 +497,7 @@ enum Page: String, CaseIterable, Identifiable {
     }
     /// 侧栏功能分两组：日常协作的基础功能在上，进阶差异化功能（Beta）在下。
     static let primary: [Page] = [.clipboard, .input, .files]
-    static let extended: [Page] = [.remoteApplications, .microphone, .mouse]
+    static let extended: [Page] = [.microphone, .mouse, .remoteApplications]
     /// Beta 只标实现仍在完善的型号能力；麦克风共享已验证稳定，不再标注。
     var isBeta: Bool { self == .remoteApplications || self == .mouse }
     /// 侧栏分组名，同时作为页面顶栏面包屑的第一级。

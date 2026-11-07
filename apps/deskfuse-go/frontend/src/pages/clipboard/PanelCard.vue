@@ -18,8 +18,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ editTitle: [] }>()
 
-const { src, failed, loaded, onLoad, onError } = useThumbnail(() => props.item, 320)
-const loading = computed(() => !!src.value && !loaded.value && !failed.value)
+const { src, failed, loading, onLoad, onError } = useThumbnail(() => props.item, 320)
 const appInfo = useAppInfo(() => props.item.source_app_id)
 const appIcon = computed(() => appInfo.value?.icon ?? null)
 

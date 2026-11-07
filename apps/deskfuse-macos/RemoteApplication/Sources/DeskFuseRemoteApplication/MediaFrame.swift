@@ -163,6 +163,9 @@ public struct MediaStatistics: Codable, Sendable {
     public var capturedStarted: UInt64 = 0
     public var capturedOther: UInt64 = 0
     public var replacedBeforeEncode: UInt64 = 0
+    /// Frames encoded again after the screen settled, at the raised target that
+    /// sharpens a still picture. Bounded by the paint-over burst, not by motion.
+    public var paintOverFrames: UInt64?
     public var encoderSubmitted: UInt64 = 0
     public var encoderCallbacks: UInt64 = 0
     public var encoderDropped: UInt64 = 0

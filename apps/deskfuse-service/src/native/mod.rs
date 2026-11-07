@@ -64,6 +64,8 @@ pub(super) struct Control {
     /// Input-delivery revision. The helper's push task waits on it, so a
     /// delivery reaches the helper without waiting for its next poll.
     input_push: tokio::sync::watch::Sender<u64>,
+    /// Remote clipboard revision; waiting `WaitClipboard` requests watch it.
+    clipboard: tokio::sync::watch::Sender<u64>,
 }
 impl Default for Control {
     fn default() -> Self {
@@ -74,6 +76,7 @@ impl Default for Control {
             allow_locked_session: AtomicBool::default(),
             allow_remote_session: AtomicBool::default(),
             input_push: tokio::sync::watch::channel(0).0,
+            clipboard: tokio::sync::watch::channel(0).0,
         }
     }
 }
@@ -82,6 +85,11 @@ impl Control {
     /// so a signal raised before the task waits is still observed.
     pub(super) fn signal_input_push(&self) {
         self.input_push
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+    /// Wake clipboard waiters; they re-check the state fingerprint themselves.
+    pub(super) fn signal_clipboard(&self) {
+        self.clipboard
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
     pub(super) fn session_policy(&self) -> SessionPolicy {
@@ -321,6 +329,7 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break Err(io::Error::other("network event stream closed")),
                         }
                     }
+                    control.signal_clipboard();
                 }
                 _ = input_sync_tick.tick() => {
                     network.schedule_input_authority();
@@ -329,6 +338,7 @@ async fn serve(status: &StatusHandle) -> io::Result<()> {
                 _ = desktop_tick.tick() => {
                     if let Ok(mut state) = control.desktop.lock() { state.tick(&network, &control); }
                     control.signal_input_push();
+                    control.signal_clipboard();
                     network.serve_remote_applications();
                 },
             }

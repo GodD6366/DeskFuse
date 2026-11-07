@@ -17,6 +17,10 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private readonly CanonicalLibraryClient canonical;
     private readonly DispatcherQueue dispatcher;
     private IShelfHost? shelf;
+    private readonly RemotePasteHold pasteHold;
+    private IRemotePasteHud? pasteHud;
+    private JsonElement? remoteInFlight;
+    private IntPtr pasteTarget;
     private bool paused;
     private bool disposed;
     private Task? canonicalMigration;
@@ -48,6 +52,8 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     private readonly string preferencesFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskFuse", "desktop", "settings-v1.json");
     /// <summary>Shelf window factory. Wired by the app so the controller keeps no UI type.</summary>
     public Func<IShelfHost>? ShelfFactory { get; set; }
+    /// <summary>Held-paste progress window factory, wired by the app like the shelf.</summary>
+    public Func<Action, IRemotePasteHud>? PasteHudFactory { get; set; }
     /// <summary>Shared with the shelf window; the controller stays the owner.</summary>
     internal NativeClipboard Native => native;
     internal ClipboardHistory History => history;
@@ -85,6 +91,8 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         historyMaintenance.Interval = TimeSpan.FromHours(1);
         historyMaintenance.Tick += (_, _) => { if (!disposed) history.Prune(); };
         historyMaintenance.Start();
+        pasteHold = new RemotePasteHold(dispatcher, PasteHeld, () => EndHeldPaste(null));
+        service.ClipboardInFlightChanged += InFlightChanged;
         native.Changed += LocalChanged;
         native.LocalInvalidated += ObserveNativeChange;
         native.Error += message => { ObserveNativeChange(); Error?.Invoke(message); };
@@ -365,6 +373,49 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         _ = InvalidateAndPublishAsync(null);
     }
 
+    private string PeerName(string peer) =>
+        service.LatestSnapshot?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", peer) ?? peer;
+
+    private IRemotePasteHud? PasteHud => pasteHud ??= PasteHudFactory?.Invoke(() => EndHeldPaste(null));
+
+    private void InFlightChanged(JsonElement? inFlight)
+    {
+        if (disposed) return;
+        remoteInFlight = inFlight;
+        pasteHold.SetArmed(inFlight is not null && SyncEnabled && !paused);
+        if (!pasteHold.Pending) return;
+        if (inFlight is JsonElement item) ShowHeldProgress(item);
+        // Announced or partial content that ended without reaching the clipboard.
+        else EndHeldPaste("对方没有发来新内容，未粘贴");
+    }
+
+    /// <summary>A Ctrl+V was swallowed while remote content is on its way.</summary>
+    private void PasteHeld(IntPtr target)
+    {
+        pasteTarget = target;
+        if (remoteInFlight is JsonElement item) { ShowHeldProgress(item); return; }
+        // The content landed between the key press and this callback.
+        EndHeldPaste(null, replay: true);
+    }
+
+    private void ShowHeldProgress(JsonElement item)
+    {
+        var (x, y) = RemotePasteHold.Anchor(pasteTarget);
+        PasteHud?.Present(PeerName(item.String("peer_id")), item.Number("received"), item.Number("total"), x, y);
+    }
+
+    /// <summary>Close a held paste: replay it, or report why it was dropped
+    /// (null with no replay is a user cancel).</summary>
+    private void EndHeldPaste(string? failure, bool replay = false)
+    {
+        if (!pasteHold.Pending) return;
+        pasteHold.Reset();
+        if (replay && !RemotePasteHold.Replay(pasteTarget)) failure = "目标窗口已切换，未自动粘贴";
+        if (failure is null) PasteHud?.Dismiss();
+        else PasteHud?.Fail(failure);
+        pasteTarget = IntPtr.Zero;
+    }
+
     private void Snapshot(JsonElement snapshot)
     {
         long epoch = snapshot.Number("session_epoch");
@@ -374,7 +425,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
 
     private void Connection(bool connected, string message)
     {
-        if (!connected) { generation = null; pollNativeSequence = null; }
+        if (!connected) { generation = null; pollNativeSequence = null; InFlightChanged(null); }
         else if (localLibrary is not null)
         {
             canonicalMigration ??= MigrateCanonicalAsync();
@@ -421,13 +472,21 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         var snapshot = service.LatestSnapshot;
         if (paused || !service.IsConnected || snapshot is null || generation is null) return;
         long epoch = generation.Value;
+        bool clipboardCapable = snapshot.Value.TryGetProperty("capabilities", out var capabilities) && capabilities.Bool("clipboard");
+        IReadOnlyList<ClipboardRepresentation>? representations = content is null || content.Files is { Count: > 0 } ? null : content.Representations ?? [new ClipboardRepresentation(content.Mime, content.Data)];
+        // Peers hold their pastes from this moment on; say so only when content
+        // can follow. A change seen before it is read (content null) announces
+        // too, and the read that follows confirms or retracts it.
+        bool announce = SyncEnabled && clipboardCapable && (content is null
+            || (content.Files is { Count: > 0 } ? capabilities.Bool("files")
+                : representations!.Sum(r => (long)r.Data.Length) <= NativeClipboard.MaxContentBytes));
         try
         {
             // Every native mutation first cancels old remote content, even when
             // sync is disabled or the new clipboard cannot be transported.
-            await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
+            await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence, announce }));
             if (disposed || paused || generation != epoch || nativeRevision != revision) return;
-            if (!snapshot.Value.TryGetProperty("capabilities", out var capabilities) || !capabilities.Bool("clipboard")) return;
+            if (!clipboardCapable) return;
             if (!SyncEnabled) return;
             if (content is not null && content.Files is { Count: > 0 })
             {
@@ -435,8 +494,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                 await service.SendAsync(ServiceClient.Command("PublishFileClipboard", new { session_epoch = epoch, sequence = ++publishSequence, paths = content.Files }));
                 return;
             }
-            if (content is null) return;
-            var representations = content.Representations ?? [new ClipboardRepresentation(content.Mime, content.Data)];
+            if (content is null || representations is null) return;
             if (representations.Sum(r => (long)r.Data.Length) > NativeClipboard.MaxContentBytes) { Error?.Invoke("内容已保存在本机历史；当前桌面同步通道最多支持 16 MiB。"); return; }
             await service.SendAsync(ServiceClient.Command("PublishClipboard", new { session_epoch = epoch, sequence = ++publishSequence, source_app = application, formats = representations.Select(r => new { mime = r.Mime, data_base64 = Convert.ToBase64String(r.Data) }).ToArray() }));
         }
@@ -473,7 +531,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
                     nativeRevision++; // Retire any older local publication awaiting an IPC response.
                     observedNativeSequence = native.SequenceNumber;
                     string peer = item.String("peer_id");
-                    string name = service.LatestSnapshot?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", peer) ?? peer;
+                    string name = PeerName(peer);
                     var origin = item.TryGetProperty("source_metadata", out var metadata) ? metadata : default;
                     if (CaptureEnabled && !origin.Bool("no_history"))
                     {
@@ -487,6 +545,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             }
         }
         catch (Exception) { Error?.Invoke(applied ? "远端剪贴板已写入，但本机历史保存失败。" : "远端剪贴板未能写入；未向对端确认应用成功。"); }
+        // Replay before the commit: the commit ends the in-flight state, which
+        // would otherwise cancel the held paste first.
+        if (pasteHold.Pending) EndHeldPaste(applied ? null : "远端内容未能写入剪贴板，未粘贴", replay: applied);
         try
         {
             if (!disposed && generation == epoch) await service.SendAsync(ServiceClient.Command("CommitClipboard", new { session_epoch = epoch.Value, sequence, applied }));
@@ -673,7 +734,11 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     {
         long epoch = generation ?? throw new IOException("桌面会话已失效");
         service.SendAsync(ServiceClient.Command("RequestFileClipboard", new { session_epoch = epoch, transfer_id = transferId })).GetAwaiter().GetResult();
-        var deadline = Environment.TickCount64 + 60_000;
+        // Large files take as long as the network needs; give up only when the
+        // transfer stops making progress or the service reports it ended.
+        const long stallLimit = 60_000;
+        long deadline = Environment.TickCount64 + stallLimit;
+        long progress = -1;
         while (Environment.TickCount64 < deadline)
         {
             var reply = service.SendAsync(ServiceClient.Command("Poll", new { session_epoch = epoch, after_sequence = 0L })).GetAwaiter().GetResult();
@@ -681,7 +746,17 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             {
                 foreach (var transfer in poll.GetProperty("snapshot").Array("file_transfers"))
                 {
-                    if (transfer.String("transfer_id") == transferId && transfer.String("state") == "staged")
+                    if (transfer.String("transfer_id") != transferId) continue;
+                    string state = transfer.String("state");
+                    if (state is "failed" or "cancelled")
+                        throw new IOException(transfer.String("detail", "远端文件传输未完成，请重新复制"));
+                    long transferred = transfer.Number("transferred_bytes");
+                    if (transferred > progress)
+                    {
+                        progress = transferred;
+                        deadline = Environment.TickCount64 + stallLimit;
+                    }
+                    if (state == "staged")
                     {
                         var paths = transfer.Array("staged_paths").Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString() ?? "").Where(File.Exists).ToArray();
                         if (paths.Length > 0 || metadata.Any(item => item.IsDirectory))
@@ -713,7 +788,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             }
             Thread.Sleep(100);
         }
-        throw new IOException("远端文件准备超时，Explorer 未收到文件内容");
+        throw new IOException("远端文件超过 60 秒没有进展，请检查两台设备的连接后重新复制");
     }
 
     public async Task<bool> ReceiveFileAsync(string transferId, string destination)
@@ -748,7 +823,8 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
             throw new IOException("后台组件尚未就绪，无法发送文件。");
         if (!FilesEnabled) throw new IOException("文件传输尚未就绪，请检查文件共享开关与对端握手。");
         long epoch = generation.Value;
-        await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence }));
+        // Only a broadcast makes every peer hold its paste for these files.
+        await service.SendAsync(ServiceClient.Command("InvalidateClipboard", new { session_epoch = epoch, sequence = ++publishSequence, announce = targetPeerId is null }));
         return await CreateFileDataObjectAsync(paths, epoch, ++publishSequence, targetPeerId);
     }
 
@@ -896,7 +972,7 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
     {
         if (disposed) return;
         if (args.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff or SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteConnect)
-        { paused = true; native.Pause(); generation = null; shelf?.Hide(); }
+        { paused = true; native.Pause(); generation = null; shelf?.Hide(); InFlightChanged(null); }
         else if (args.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect)
         { paused = false; native.Resume(); }
     });
@@ -906,6 +982,9 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         disposed = true;
         SystemEvents.SessionSwitch -= SessionChanged;
         service.ClipboardReceived -= RemoteReceived;
+        service.ClipboardInFlightChanged -= InFlightChanged;
+        pasteHold.Dispose();
+        pasteHud?.Shutdown();
         service.PollStarting -= PollStarting;
         service.SnapshotChanged -= Snapshot;
         service.ConnectionChanged -= Connection;
@@ -915,6 +994,15 @@ public sealed class DesktopClipboardController : IDisposable, ClipboardCapturePo
         shelf?.Shutdown();
         history.Dispose();
     }
+}
+
+/// <summary>Held-paste progress window contract; physical-pixel caret anchor.</summary>
+public interface IRemotePasteHud
+{
+    void Present(string peer, long received, long total, int x, int y);
+    void Fail(string message);
+    void Dismiss();
+    void Shutdown();
 }
 
 /// <summary>Shelf window contract, so the controller holds no WinUI type.</summary>

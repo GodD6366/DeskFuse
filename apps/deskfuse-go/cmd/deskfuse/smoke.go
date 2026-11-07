@@ -463,7 +463,7 @@ func installSmoke(window *mygo.Window, panel *panelWindow, snapshot func() (any,
 				width, height  int
 			}{
 				{"pairing", ".pairing .titlebar h1", 480, 320},
-				{"transfer-progress", ".stack", 316, 100},
+				{"transfer-progress", ".stack", 324, 108},
 			} {
 				window := mygo.NewWindow(mygo.WindowOptions{
 					Title: extra.page, URL: "/?page=" + extra.page,

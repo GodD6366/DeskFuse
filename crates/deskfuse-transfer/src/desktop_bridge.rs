@@ -548,9 +548,8 @@ impl FileBridge {
         if offer.requested {
             return Ok(());
         }
-        if offer.total_bytes > self.inner.limits.cache_max_bytes {
-            return Err("文件超过缓存上限，请调整设置后重试".into());
-        }
+        // A request is always the user pasting or saving this file; the cache
+        // quota only governs automatic work, never an explicit transfer.
         if state.receiving.len() >= self.inner.limits.max_receiving {
             return Err("已有文件正在接收，请等待完成后再试".into());
         }
@@ -1260,17 +1259,6 @@ impl FileBridge {
                 ClipboardFileFrame::Cancel {
                     transfer_id,
                     reason: "接收任务已达上限，请稍后重试".into(),
-                },
-            );
-            return;
-        }
-        if manifest.total_bytes() > self.inner.limits.cache_max_bytes {
-            state.incoming.remove(&transfer_id);
-            let _ = self.inner.sink.send(
-                peer,
-                ClipboardFileFrame::Cancel {
-                    transfer_id,
-                    reason: "文件超过缓存上限".into(),
                 },
             );
             return;
@@ -2471,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn oversize_offers_cannot_be_requested() {
+    fn offers_above_cache_quota_can_be_requested() {
         let receiver = harness("quota");
         let id = TransferId::new();
         receiver.bridge.on_frame(
@@ -2488,11 +2476,10 @@ mod tests {
                 }],
             },
         );
-        let error = receiver
+        receiver
             .bridge
             .request_incoming(&id.to_hex())
-            .expect_err("quota rejection");
-        assert!(error.contains("缓存上限"));
+            .expect("explicit request ignores the cache quota");
         receiver.bridge.reset(false);
         let _ = fs::remove_dir_all(&receiver.root);
     }

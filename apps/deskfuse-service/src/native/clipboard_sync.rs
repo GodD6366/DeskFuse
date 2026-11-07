@@ -21,6 +21,9 @@ struct Incoming {
     frame: SyncMessage,
     body: Vec<u8>,
     started: Instant,
+    /// Last chunk arrival. A large copy on a slow link stays alive while it
+    /// keeps moving; only a stalled transfer expires.
+    progressed: Instant,
 }
 struct Outgoing {
     frames: Vec<SyncMessage>,
@@ -38,7 +41,13 @@ struct Peer {
     incoming: Option<Incoming>,
     outgoing: Option<Outgoing>,
     receipt: Option<(u64, Vec<u8>, u32)>,
+    /// The peer announced content for this revision; a paste here waits for it.
+    announced: Option<(u64, Instant)>,
 }
+/// How long an announcement from a peer holds paste before its DATA arrives.
+const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a local announcement may wait for the desktop's publication.
+const LOCAL_ANNOUNCE_GRACE: Duration = Duration::from_secs(5);
 fn data_frames(
     peer: &Peer,
     revision: u64,
@@ -80,6 +89,8 @@ pub struct Sync {
     cursor: u64,
     revision: u64,
     helpers: Vec<JoinHandle<()>>,
+    /// Revision announced to peers that no content has consumed yet.
+    announcing: Option<(u64, Instant)>,
     pub status: Option<String>,
 }
 impl Drop for Sync {
@@ -192,6 +203,7 @@ impl Sync {
                 incoming: None,
                 outgoing: None,
                 receipt: None,
+                announced: None,
             });
             if !peer.ready && now >= peer.hello_due {
                 peer.hello_due = now + Duration::from_secs(1);
@@ -205,9 +217,15 @@ impl Sync {
                 ));
             }
             if peer.incoming.as_ref().is_some_and(|incoming| {
-                now.duration_since(incoming.started) > Duration::from_secs(10)
+                now.duration_since(incoming.progressed) > Duration::from_secs(10)
             }) {
                 peer.incoming = None;
+            }
+            if peer
+                .announced
+                .is_some_and(|(_, at)| now.duration_since(at) > ANNOUNCE_TIMEOUT)
+            {
+                peer.announced = None;
             }
             if let Some(job) = &mut peer.outgoing {
                 if job
@@ -239,6 +257,98 @@ impl Sync {
             self.status = Some("desktop clipboard application timed out".into());
         }
         self.send_grouped(runtime, sends);
+        if self
+            .announcing
+            .is_some_and(|(_, at)| now.duration_since(at) > LOCAL_ANNOUNCE_GRACE)
+        {
+            self.finish_announcement(runtime, &[]);
+        }
+    }
+    /// Intents are tiny control frames. They are not tracked with content jobs,
+    /// so a following invalidation or publication cannot cancel them unsent.
+    fn send_control(runtime: &RuntimeHandle, peer: DeviceId, frame: SyncMessage) {
+        let Some(generation) = runtime.control_generation(peer) else {
+            return;
+        };
+        let Some(payload) = frame
+            .encode_checked()
+            .ok()
+            .and_then(|data| ClipboardPayload::new(wire::MIME, data, frame.revision).ok())
+        else {
+            return;
+        };
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                runtime.send_clipboard_on_session(peer, generation, payload),
+            )
+            .await;
+        });
+    }
+    /// Tell every ready peer that content for the next revision is coming, so a
+    /// paste there waits for it. Sent as soon as the desktop sees a local copy,
+    /// before the content is read or encoded.
+    pub fn announce(&mut self, runtime: &RuntimeHandle) {
+        let revision = self.revision.saturating_add(1);
+        for (id, peer) in &self.peers {
+            if let (true, Some(remote)) = (peer.ready, peer.remote.clone()) {
+                Self::send_control(
+                    runtime,
+                    *id,
+                    SyncMessage::intent(peer.local.clone(), remote, revision, false),
+                );
+            }
+        }
+        self.announcing = Some((revision, Instant::now()));
+    }
+    /// Close the pending announcement. Ready peers outside `served` get no
+    /// content for it, so they are told to stop waiting.
+    pub fn finish_announcement(&mut self, runtime: &RuntimeHandle, served: &[DeviceId]) {
+        let Some((revision, _)) = self.announcing.take() else {
+            return;
+        };
+        for (id, peer) in &self.peers {
+            if served.contains(id) {
+                continue;
+            }
+            if let (true, Some(remote)) = (peer.ready, peer.remote.clone()) {
+                Self::send_control(
+                    runtime,
+                    *id,
+                    SyncMessage::intent(peer.local.clone(), remote, revision, true),
+                );
+            }
+        }
+    }
+    /// Remote content the desktop should hold a paste for: the content being
+    /// applied, then the newest partial transfer, then an announcement.
+    /// Returns `(peer, received, total)`; an announcement is `0/0`.
+    pub fn in_flight(&self) -> Option<(DeviceId, u64, u64)> {
+        if let Some(apply) = &self.apply {
+            return Some((apply.peer, apply.frame.total, apply.frame.total));
+        }
+        let incoming = self
+            .peers
+            .iter()
+            .filter_map(|(id, peer)| {
+                let incoming = peer.incoming.as_ref()?;
+                Some((
+                    incoming.started,
+                    *id,
+                    incoming.body.len() as u64,
+                    incoming.frame.total,
+                ))
+            })
+            .max_by_key(|(started, ..)| *started);
+        if let Some((_, id, received, total)) = incoming {
+            return Some((id, received, total));
+        }
+        self.peers
+            .iter()
+            .filter_map(|(id, peer)| peer.announced.map(|(_, at)| (at, *id)))
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, id)| (id, 0, 0))
     }
     fn ack(&mut self, runtime: &RuntimeHandle, id: DeviceId, frame: &SyncMessage, outcome: u32) {
         let Some(peer) = self.peers.get_mut(&id) else {
@@ -311,6 +421,7 @@ impl Sync {
                     peer.incoming = None;
                     peer.outgoing = None;
                     peer.receipt = None;
+                    peer.announced = None;
                     if self.apply.as_ref().is_some_and(|a| a.peer == id) {
                         self.apply = None;
                     }
@@ -356,6 +467,30 @@ impl Sync {
                 );
             }
             return;
+        }
+        if frame.kind == wire::INTENT {
+            if frame.outcome == wire::SUPERSEDED {
+                if peer.announced.is_some_and(|(r, _)| r == frame.revision) {
+                    peer.announced = None;
+                }
+            } else if peer
+                .incoming
+                .as_ref()
+                .is_none_or(|i| frame.revision > i.frame.revision)
+                && peer
+                    .receipt
+                    .as_ref()
+                    .is_none_or(|(revision, _, _)| frame.revision > *revision)
+            {
+                peer.announced = Some((frame.revision, Instant::now()));
+            }
+            return;
+        }
+        if frame.kind != wire::DATA {
+            return;
+        }
+        if peer.announced.is_some_and(|(r, _)| r <= frame.revision) {
+            peer.announced = None;
         }
         if !frame.data_policy_ok() {
             peer.incoming = None;
@@ -406,6 +541,7 @@ impl Sync {
                 frame: frame.clone(),
                 body: Vec::new(),
                 started: Instant::now(),
+                progressed: Instant::now(),
             });
         }
         let Some(incoming) = &mut peer.incoming else {
@@ -422,6 +558,7 @@ impl Sync {
             return;
         }
         incoming.body.extend_from_slice(&frame.data);
+        incoming.progressed = Instant::now();
         if incoming.body.len() as u64 != frame.total {
             return;
         }
@@ -477,6 +614,13 @@ impl Sync {
         });
         self.status = Some("clipboard awaiting desktop application".into());
     }
+    /// `(content sequence awaiting application or 0, cursor)` without cloning.
+    pub fn pending(&self) -> (u64, u64) {
+        (
+            self.apply.as_ref().map_or(0, |a| a.clipboard.sequence),
+            self.cursor,
+        )
+    }
     pub fn poll(&self, after: u64) -> (Option<Clipboard>, u64) {
         (
             self.apply
@@ -526,6 +670,8 @@ impl Sync {
         let mut retired = Vec::new();
         for (id, peer) in &mut self.peers {
             peer.outgoing = None;
+            // A local copy replaces whatever a peer announced.
+            peer.announced = None;
             if let Some(incoming) = peer.incoming.take() {
                 retired.push((*id, incoming.frame));
             }
@@ -543,6 +689,18 @@ impl Sync {
         runtime: &RuntimeHandle,
         formats: &[Format],
         metadata: &wire::SourceMetadata,
+    ) -> Result<(), &'static str> {
+        let mut served = Vec::new();
+        let result = self.publish_content(runtime, formats, metadata, &mut served);
+        self.finish_announcement(runtime, &served);
+        result
+    }
+    fn publish_content(
+        &mut self,
+        runtime: &RuntimeHandle,
+        formats: &[Format],
+        metadata: &wire::SourceMetadata,
+        served: &mut Vec<DeviceId>,
     ) -> Result<(), &'static str> {
         self.invalidate_copy(runtime);
         let (mime, body) = clipboard_codec::encode(formats)
@@ -564,6 +722,7 @@ impl Sync {
             if !peer.ready || body.len() as u64 > peer.max_content_bytes {
                 continue;
             }
+            served.push(*id);
             let chunks = data_frames(peer, self.revision, &mime, &body, metadata);
             for frame in &chunks {
                 sends.push((*id, frame.clone()));
@@ -710,6 +869,7 @@ mod policy_tests {
             incoming: None,
             outgoing: None,
             receipt: None,
+            announced: None,
         };
         let metadata = wire::SourceMetadata {
             app_bundle_id: Some("excluded-app.exe".into()),

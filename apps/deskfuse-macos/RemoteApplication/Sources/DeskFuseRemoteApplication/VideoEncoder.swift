@@ -14,6 +14,14 @@ public final class VideoEncoder: @unchecked Sendable {
     private var sequence: UInt64 = 0
     private var inFlight = 0
     private let flowControlled: Bool
+    private let paintOver: PaintOverPolicy
+    /// Encoder-queue-confined refinement state. `refinementPending` marks the
+    /// frame in `latest` as a still pass instead of new content, so `drain` can
+    /// tell the two apart when it consumes it.
+    private var planner = PaintOverPlanner()
+    private var paintingOver = false
+    private var refinementPending = false
+    private var settleGeneration: UInt64 = 0
     private var outstanding: [UInt64: Double] = [:]
     private var windowLimit = 6
     private var measuredPresentationRtt: Double = 0
@@ -35,11 +43,13 @@ public final class VideoEncoder: @unchecked Sendable {
     private let output: @Sendable (Result<EncodedVideoFrame, RemoteApplicationError>) -> Void
 
     public init(surface: SurfaceIdentity, profile: VideoProfile, metrics: MediaMetrics, flowControlled: Bool = false,
+                paintOver: PaintOverPolicy = .standard,
                 output: @escaping @Sendable (Result<EncodedVideoFrame, RemoteApplicationError>) -> Void) throws {
         guard profile.pixels.isValid, profile.framesPerSecond.isFinite, profile.framesPerSecond > 0,
               profile.framesPerSecond <= 120, profile.bitrate > 0 else { throw RemoteApplicationError.invalidGeometry }
         self.surface = surface; self.profile = profile; self.metrics = metrics; self.output = output
         self.flowControlled = flowControlled; self.currentBitrate = profile.bitrate
+        self.paintOver = paintOver
         // A bitrate-targeted encoder answers a starved target by dropping
         // frames, so keep a floor that still carries motion. High-resolution
         // profiles bottom out near a tenth of their target, matching RustDesk's
@@ -99,6 +109,17 @@ public final class VideoEncoder: @unchecked Sendable {
             if latest != nil { metrics.update { $0.replacedBeforeEncode += 1 } }
             latest = frame
             lastCaptured = frame
+            refinementPending = false
+            // One settle check per capture. Only the last capture before the
+            // screen goes quiet still passes the generation test; the rest are
+            // cheap no-ops, so arming per frame needs no timer bookkeeping.
+            if paintOver.isEnabled {
+                settleGeneration &+= 1
+                let generation = settleGeneration
+                queue.asyncAfter(deadline: .now() + paintOver.settleDelay) { [weak self] in
+                    self?.refineStillPicture(generation: generation)
+                }
+            }
             guard !scheduled else { return false }
             scheduled = true; return true
         }
@@ -152,6 +173,9 @@ public final class VideoEncoder: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, self.flowControlled, self.session != nil,
                   !self.lock.withLock({ self.stopped }), rttMilliseconds.isFinite else { return }
+            // This sample owns the adaptive target: end a refinement burst so
+            // its raised ceiling cannot look like congestion of its own.
+            self.endRefinement()
             let rtt = min(2, max(0.001, rttMilliseconds / 1000))
             self.measuredNetworkRtt = rtt
             self.refreshWindowLimit()
@@ -239,11 +263,21 @@ public final class VideoEncoder: @unchecked Sendable {
                 lock.withLock { scheduled = false }
                 return
             }
-            guard let frame = lock.withLock({ () -> CapturedVideoFrame? in
-                guard !stopped else { latest = nil; scheduled = false; return nil }
-                guard let frame = latest else { scheduled = false; return nil }
-                latest = nil; return frame
+            guard let (frame, refinement) = lock.withLock({ () -> (CapturedVideoFrame, Bool)? in
+                guard !stopped else { latest = nil; refinementPending = false; scheduled = false; return nil }
+                guard let frame = latest else { scheduled = false; refinementPending = false; return nil }
+                latest = nil
+                let refinement = refinementPending
+                refinementPending = false
+                return (frame, refinement)
             }) else { return }
+            // New content owns the screen again: a running refinement has to
+            // give the adaptive target back instead of spending it on a picture
+            // the viewer has already left.
+            if !refinement {
+                planner.activity(at: ProcessInfo.processInfo.systemUptime)
+                endRefinement()
+            }
             guard CVPixelBufferGetWidth(frame.buffer) == profile.pixels.width,
                   CVPixelBufferGetHeight(frame.buffer) == profile.pixels.height else {
                 output(.failure(.invalidGeometry)); continue
@@ -300,9 +334,84 @@ public final class VideoEncoder: @unchecked Sendable {
         }
     }
 
+    /// Runs on the encoder queue once the picture has been quiet for
+    /// `settleDelay`. A newer capture bumps the generation and cancels this.
+    private func refineStillPicture(generation: UInt64) {
+        guard session != nil, !lock.withLock({ stopped }) else { return }
+        guard lock.withLock({ settleGeneration == generation }) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard planner.begin(at: now, policy: paintOver) else {
+            // Capture is quiet but the newest frame may have been drained after
+            // the check was armed, or the cooldown has not elapsed yet. Look
+            // again on the next frame interval rather than losing this still
+            // picture; a new capture invalidates the generation and ends it.
+            guard paintOver.isEnabled else { return }
+            queue.asyncAfter(deadline: .now() + 1 / max(1, profile.framesPerSecond)) { [weak self] in
+                self?.refineStillPicture(generation: generation)
+            }
+            return
+        }
+        // A refinement is still a frame on the wire; never add one behind an
+        // already full flow-control window.
+        guard !flowControlled || outstanding.count < windowLimit else {
+            planner.activity(at: now)
+            return
+        }
+        submitRefinementPass()
+    }
+
+    /// Encodes the last captured frame once more at the raised target and
+    /// schedules the next pass. Stops as soon as new content or a full window
+    /// makes the remaining passes pointless.
+    private func submitRefinementPass() {
+        guard session != nil, !lock.withLock({ stopped }), planner.takePass() else {
+            endRefinement(); return
+        }
+        guard let frame = lock.withLock({ () -> CapturedVideoFrame? in
+            // New content supersedes this still; an earlier pass of this same
+            // burst still waiting for a free slot does not, so the burst keeps
+            // its cadence instead of collapsing to one frame.
+            guard latest == nil || refinementPending else { return nil }
+            return lastCaptured
+        }) else { endRefinement(); return }
+        if !paintingOver {
+            paintingOver = true
+            do {
+                try set(kVTCompressionPropertyKey_AverageBitRate,
+                        NSNumber(value: paintOver.refinementBitrate(for: currentBitrate)))
+            } catch {
+                metrics.update { $0.bitrateUpdateFailures = ($0.bitrateUpdateFailures ?? 0) + 1 }
+            }
+        }
+        metrics.update { $0.paintOverFrames = ($0.paintOverFrames ?? 0) + 1 }
+        let wake = lock.withLock { () -> Bool in
+            guard !stopped else { return false }
+            latest = frame
+            refinementPending = true
+            guard !scheduled else { return false }
+            scheduled = true; return true
+        }
+        if wake { drain() }
+        queue.asyncAfter(deadline: .now() + 1 / max(1, profile.framesPerSecond)) { [weak self] in
+            self?.submitRefinementPass()
+        }
+    }
+
+    /// Hands the adaptive target back after a burst. Idempotent, because new
+    /// content, burst completion, a network sample and `stop()` all reach it.
+    private func endRefinement() {
+        guard paintingOver else { return }
+        paintingOver = false
+        guard session != nil else { return }
+        do { try set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: currentBitrate)) }
+        catch { metrics.update { $0.bitrateUpdateFailures = ($0.bitrateUpdateFailures ?? 0) + 1 } }
+    }
+
     public func stop() {
-        lock.withLock { stopped = true; latest = nil; lastCaptured = nil }
+        lock.withLock { stopped = true; latest = nil; lastCaptured = nil; refinementPending = false }
         queue.sync {
+            paintingOver = false
+            planner = PaintOverPlanner()
             if let session {
                 VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
                 VTCompressionSessionInvalidate(session)

@@ -48,6 +48,10 @@ static RECORDS: Mutex<VecDeque<SocketDiagRecord>> = Mutex::new(VecDeque::new());
 static DROPPED_RECORDS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn record(event: &'static str, local_addr: SocketAddr, detail: String) {
+    record_metadata(event, local_addr.to_string(), detail);
+}
+
+fn record_metadata(event: &'static str, local_addr: String, detail: String) {
     let Ok(mut records) = RECORDS.lock() else {
         DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed);
         return;
@@ -59,7 +63,7 @@ pub(crate) fn record(event: &'static str, local_addr: SocketAddr, detail: String
     records.push_back(SocketDiagRecord {
         timestamp_ms: crate::motion_diag::timestamp_ms(),
         event,
-        local_addr: local_addr.to_string(),
+        local_addr,
         detail,
     });
 }
@@ -170,18 +174,43 @@ pub(crate) fn record_local_refusal(remote: IpAddr) {
             rounds: 0,
             last: now,
         });
-        if now.duration_since(refusal.last) > REFUSAL_WINDOW {
+        let gap = now.duration_since(refusal.last);
+        let reset = gap > REFUSAL_WINDOW;
+        if reset {
             refusal.rounds = 0;
         }
         refusal.rounds += 1;
         refusal.last = now;
+        let rounds = refusal.rounds;
+        drop(refusals);
+        record_metadata(
+            "local_refusal_round",
+            String::new(),
+            format!(
+                "remote={remote} rounds={rounds} threshold={REFUSAL_ROUNDS} persistent={} gap_ms={} reset={reset}",
+                rounds >= REFUSAL_ROUNDS,
+                gap.as_millis(),
+            ),
+        );
     }
 }
 
 /// A dialer reached `remote`, so this process can send there again.
 pub(crate) fn clear_local_refusal(remote: IpAddr) {
     if let Ok(mut refusals) = REFUSALS.lock() {
-        refusals.remove(&remote);
+        let removed = refusals.remove(&remote);
+        drop(refusals);
+        if let Some(refusal) = removed {
+            record_metadata(
+                "local_refusal_cleared",
+                String::new(),
+                format!(
+                    "remote={remote} rounds={} age_ms={} reason=identity_probe_succeeded",
+                    refusal.rounds,
+                    refusal.last.elapsed().as_millis(),
+                ),
+            );
+        }
     }
 }
 
@@ -195,12 +224,33 @@ pub fn locally_refused_hosts() -> Vec<IpAddr> {
     let Ok(mut refusals) = REFUSALS.lock() else {
         return Vec::new();
     };
-    refusals.retain(|_, refusal| refusal.last.elapsed() <= REFUSAL_WINDOW);
-    refusals
+    let mut expired = Vec::new();
+    refusals.retain(|remote, refusal| {
+        let age = refusal.last.elapsed();
+        if age <= REFUSAL_WINDOW {
+            return true;
+        }
+        expired.push((*remote, refusal.rounds, age));
+        false
+    });
+    let persistent = refusals
         .iter()
         .filter(|(_, refusal)| refusal.rounds >= REFUSAL_ROUNDS)
         .map(|(ip, _)| *ip)
-        .collect()
+        .collect();
+    drop(refusals);
+    for (remote, rounds, age) in expired {
+        record_metadata(
+            "local_refusal_expired",
+            String::new(),
+            format!(
+                "remote={remote} rounds={rounds} age_ms={} window_ms={}",
+                age.as_millis(),
+                REFUSAL_WINDOW.as_millis(),
+            ),
+        );
+    }
+    persistent
 }
 
 /// Quinn's Tokio UDP socket with the same semantics, plus error records.

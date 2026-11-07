@@ -5,7 +5,7 @@ import { backend,errorMessage } from '../services/backend'
 const props=defineProps<{snapshot:Record<string,any>|null}>()
 const emit=defineEmits<{navigate:[page:string]}>()
 const step=ref(0),selected=ref('clipboard'),busy=ref(false),error=ref('')
-const features=[{id:'clipboard',title:'剪贴板同步',icon:Clipboard,detail:'在一台 Mac 复制，另一台直接粘贴。文字、图片和文件都会同步。'},{id:'input',title:'键鼠共享',icon:Keyboard,detail:'一套键盘和鼠标穿过屏幕边缘，控制同一网络里的其他 Mac。需要辅助功能权限。'},{id:'files',title:'局域网传输',icon:ArrowUpDown,detail:'用手机或电脑的浏览器把文件发到这台电脑，也能直接在电脑之间传文件。'},{id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,detail:'把另一台 Mac 上的应用窗口，直接打开在这台 Mac 上。需要屏幕录制权限。',beta:true},{id:'microphone',title:'麦克风共享',icon:Mic,detail:'把另一台 Mac 或 iPhone 的麦克风，作为这台 Mac 的输入设备。开启后还需选择音源。'},{id:'mouse',title:'鼠标自定义',icon:Mouse,detail:'把鼠标侧键映射成快捷键、窗口切换或系统操作。需要输入监控权限。',beta:true}]
+const features=[{id:'clipboard',title:'剪贴板同步',icon:Clipboard,detail:'在一台 Mac 复制，另一台直接粘贴。文字、图片和文件都会同步。'},{id:'input',title:'键鼠共享',icon:Keyboard,detail:'一套键盘和鼠标穿过屏幕边缘，控制同一网络里的其他 Mac。需要辅助功能权限。'},{id:'files',title:'局域网传输',icon:ArrowUpDown,detail:'用手机或电脑的浏览器把文件发到这台电脑，也能直接在电脑之间传文件。'},{id:'microphone',title:'麦克风共享',icon:Mic,detail:'把另一台 Mac 或 iPhone 的麦克风，作为这台 Mac 的输入设备。开启后还需选择音源。'},{id:'mouse',title:'鼠标自定义',icon:Mouse,detail:'把鼠标侧键映射成快捷键、窗口切换或系统操作。需要输入监控权限。',beta:true},{id:'remote_applications',title:'远程应用',icon:PanelsTopLeft,detail:'把另一台 Mac 上的应用窗口，直接打开在这台 Mac 上。需要屏幕录制权限。',beta:true}]
 const enabled=ref<Record<string,boolean>>({})
 watch(()=>props.snapshot?.features,(value)=>{if(value&&Object.keys(enabled.value).length===0)enabled.value={...value}},{immediate:true})
 const permissions=computed<any[]>(()=>props.snapshot?.permissions?.items??[])

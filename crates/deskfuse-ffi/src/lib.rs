@@ -233,6 +233,7 @@ impl Engine {
         let event_workflows = workflows.clone();
         let interception = bridge.paste_interception_state();
         let file_paste_capture = bridge.file_paste_capture();
+        let remote_paste = bridge.remote_paste();
         let event_bridge = bridge.clone();
         let worker=thread::Builder::new().name("deskfuse-native-events".into()).spawn(move||{
    let mut listener:Option<Box<dyn EngineListener>>=None;
@@ -261,7 +262,7 @@ impl Engine {
        let Some(event)=event else{break;};
        if let UiEvent::PermissionSnapshot(p)=&event {
         if p.accessibility().is_granted() && paste_monitor.is_none(){
-         paste_monitor=deskfuse_platform_macos::MacOSPasteShortcutMonitor::start_with_file_capture(interception.0.clone(),interception.1.clone(),interception.2.clone(),monitor_workflows.clone(),workflow_tx.clone(),Some(file_paste_capture.clone())).ok();
+         paste_monitor=deskfuse_platform_macos::MacOSPasteShortcutMonitor::start_with_file_capture(interception.0.clone(),interception.1.clone(),interception.2.clone(),monitor_workflows.clone(),workflow_tx.clone(),Some(file_paste_capture.clone()),Some(remote_paste.clone())).ok();
         }else if !p.accessibility().is_granted(){paste_monitor=None;}
        }
        let notification=match &event{
@@ -269,6 +270,8 @@ impl Engine {
         UiEvent::CommandResult{request_id,error}=>{event_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(request_id);Some(match error{Some(message)=>EngineEvent::CommandFailed{request_id:*request_id,message:message.clone()},None=>EngineEvent::CommandApplied{request_id:*request_id}})},
         UiEvent::RuntimeEvent(deskfuse_runtime::RuntimeEvent::PairingDecisionFailed{request_id,reason})=>Some(EngineEvent::PairingFailed{request_id:request_id.to_string(),message:reason.clone()}),
         UiEvent::PasteReady{target_pid,expected_change_count}=>Some(EngineEvent::PasteReady{target_pid:*target_pid,change_count:*expected_change_count}),
+        UiEvent::RemotePasteProgress{peer_id,received,total}=>Some(EngineEvent::RemotePasteProgress{peer_id:peer_id.to_string(),received:*received,total:*total}),
+        UiEvent::RemotePasteFinished{target_pid,expected_change_count,error}=>Some(EngineEvent::RemotePasteFinished{target_pid:*target_pid,change_count:*expected_change_count,error:error.clone()}),
         UiEvent::WorkflowCatalogChanged=>Some(EngineEvent::WorkflowCatalogChanged),
         UiEvent::WorkflowRun(run)=>Some(EngineEvent::WorkflowRun{run:run.clone().into()}),
         UiEvent::StageFileShelf(paths)=>Some(EngineEvent::StageFiles{paths:paths.clone()}),
@@ -654,6 +657,17 @@ impl Engine {
     }
 
     /// 工作流入口由界面开关控制；关闭时全局工作流快捷键一并停用。
+    /// Release a Command-V held for in-flight remote clipboard content. The
+    /// transfer continues; a later Command-V waits for it again.
+    /// Drops the held Command-V, whether it waits on native content or on a
+    /// remote file. The content itself still lands on the clipboard.
+    pub fn cancel_remote_paste(&self) {
+        self.bridge.remote_paste().cancel();
+        let (_, paste_requested, paste_target_pid) = self.bridge.paste_interception_state();
+        paste_requested.store(false, Ordering::Release);
+        paste_target_pid.store(0, Ordering::Release);
+    }
+
     pub fn set_workflow_hotkeys_enabled(&self, enabled: bool) {
         if let Ok(mut keys) = self.workflow_hotkeys.lock() {
             keys.disabled = !enabled;

@@ -10,6 +10,7 @@ mod input;
 mod native;
 mod pasteboard_adapter;
 mod permission;
+mod remote_paste;
 mod workflow;
 
 pub use clipboard::*;
@@ -20,6 +21,7 @@ pub use input::*;
 pub use native::*;
 pub use pasteboard_adapter::{PasteboardPort, apply_clipboard};
 pub use permission::*;
+pub use remote_paste::RemoteClipboardPaste;
 pub use workflow::*;
 
 use std::sync::Arc;

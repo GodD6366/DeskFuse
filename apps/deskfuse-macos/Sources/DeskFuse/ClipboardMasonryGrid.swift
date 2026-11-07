@@ -286,6 +286,7 @@ struct ClipboardHistoryCard: View {
     @State private var loading = false
     @State private var editingTitle = false
     @State private var hovering = false
+    private var remotePending: Bool { meta?.remote == true && meta?.available == false }
     @State private var hoveringActions = false
     @State private var showingImagePreview = false
     @State private var hoverImage: NSImage?
@@ -361,11 +362,11 @@ struct ClipboardHistoryCard: View {
             guard !Task.isCancelled else { return }
             showingImagePreview = hoverImage != nil || thumbnail != nil || selectedImage != nil
         }
-        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)") {
+        .task(id: "\(item.id)-\(item.copiedAtMs ?? 0)-\(remotePending)") {
             guard item.hasImage, let client else { return }
             if let cached = ClipboardThumbnailCache.shared.cached(item.id, maxPixelSize: 480) { thumbnail = cached; return }
             loading = true
-            let image = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 480)
+            let image = await ClipboardThumbnailCache.shared.thumbnail(for: item.id, client: client, maxPixelSize: 480, remotePending: remotePending)
             guard !Task.isCancelled else { return }
             loading = false
             thumbnail = image

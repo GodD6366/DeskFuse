@@ -140,8 +140,8 @@ html.transparent-window body { background: transparent !important; }
 </style>
 
 <style scoped>
-.stack{display:flex;flex-direction:column;gap:8px;padding:8px;height:100vh;overflow:auto;box-sizing:border-box}
-.pill{display:flex;gap:12px;width:300px;height:76px;flex:0 0 76px;padding:12px 14px;border-radius:16px;box-sizing:border-box;background:color-mix(in srgb,var(--surface) 94%,transparent);box-shadow:0 1px 3px #0002,0 8px 24px #0001;color:var(--text)}
+.stack{display:flex;flex-direction:column;gap:8px;padding:12px;height:100vh;overflow:auto;box-sizing:border-box}
+.pill{display:flex;gap:12px;width:300px;height:76px;flex:0 0 76px;padding:12px 14px;border-radius:16px;box-sizing:border-box;background:var(--surface);box-shadow:0 0 0 .5px var(--line),0 1px 2px #00000014,0 4px 10px #0000001a;color:var(--text)}
 .icon{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;flex:0 0 30px}
 .pill.outgoing .icon{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
 .pill.incoming .icon{color:var(--success);background:color-mix(in srgb,var(--success) 14%,transparent)}

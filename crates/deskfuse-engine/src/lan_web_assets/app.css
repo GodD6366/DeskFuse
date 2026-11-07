@@ -1,23 +1,22 @@
-/*
- * DeskFuse 局域网传输页 · 与官网同一套纸/墨/朱砂
- * 系统中文无衬线负责操作，宋体只负责页面标题；图标统一为 1.6px 方头线稿。
- */
+/* DeskFuse 局域网传输页：与官网一致的 Apple 式浅色界面；不改变传输与 CSP 契约。 */
 :root {
-  --paper: #faf8f2;
-  --paper-2: #f2ede2;
-  --surface: #fffdf8;
-  --ink: #1b1a17;
-  --body: #514b41;
-  --muted: #6f685d;
-  --rule: #d7cfbf;
-  --rule-strong: #1b1a17;
-  --vermilion: #b23a2a;
-  --vermilion-dark: #8f2b1e;
-  --online: #4f7a5a;
-  --serif: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC", serif;
+  --paper: #f5f5f7;
+  --paper-2: #e8e8ed;
+  --surface: #ffffff;
+  --ink: #1d1d1f;
+  --body: #4e4e52;
+  --muted: #6e6e73;
+  --rule: #d2d2d7;
+  --rule-strong: #86868b;
+  --vermilion: #0071e3;
+  --vermilion-dark: #0058b0;
+  --online: #248a3d;
+  --error: #d70015;
+  --serif: var(--sans);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   color-scheme: light;
   font-family: var(--sans);
@@ -35,8 +34,10 @@
 }
 
 body {
+  min-width: 280px;
   margin: 0;
   background: var(--paper);
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -65,7 +66,7 @@ button {
 
 button:disabled {
   cursor: wait;
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 a {
@@ -77,7 +78,7 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--ink);
+  outline: 2px solid var(--vermilion);
   outline-offset: 3px;
 }
 
@@ -91,57 +92,61 @@ svg {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
-  stroke-linecap: square;
-  stroke-linejoin: miter;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .shell {
-  max-width: 780px;
+  max-width: 820px;
   margin: auto;
   padding: 0 max(24px, env(safe-area-inset-right)) 0 max(24px, env(safe-area-inset-left));
 }
 
-/* 报头 */
+/* 顶部品牌与真实连接状态 */
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 72px;
+  min-height: 68px;
   padding-top: env(safe-area-inset-top);
-  border-bottom: 1px solid var(--rule-strong);
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   color: var(--ink);
-  font-family: var(--serif);
-  font-size: 22px;
-  font-weight: 500;
+  font-family: var(--sans);
+  font-size: 20px;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1;
   text-decoration: none;
 }
 
 .brand-icon {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   flex: none;
+  border-radius: 8px;
   stroke: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 7%);
 }
 
 .connection {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 7px;
-  max-width: 46%;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.01em;
+  gap: 6px;
+  max-width: 52%;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 980px;
+  background: var(--paper-2);
+  color: var(--body);
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1.5;
   text-align: right;
 }
@@ -150,7 +155,8 @@ svg {
   width: 6px;
   height: 6px;
   flex: none;
-  background: #9a968b;
+  border-radius: 50%;
+  background: var(--muted);
   content: "";
 }
 
@@ -159,44 +165,45 @@ svg {
 }
 
 .connection.offline {
-  color: var(--vermilion);
+  color: var(--error);
 }
 
 .connection.offline::before {
-  background: var(--vermilion);
+  background: var(--error);
 }
 
-/* 传输 / 查看 */
+/* Apple 式分段控件 */
 .page-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border-bottom: 1px solid var(--rule-strong);
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--paper-2);
 }
 
 .page-tabs button {
-  min-height: 48px;
+  min-height: 44px;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-radius: 8px;
   background: transparent;
-  color: var(--muted);
+  color: var(--body);
   font-family: var(--sans);
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0;
-}
-
-.page-tabs button:hover {
-  color: var(--ink);
+  transition: background-color 160ms var(--ease), color 160ms var(--ease), box-shadow 160ms var(--ease);
 }
 
 .page-tabs button[aria-selected="true"] {
-  border-bottom-color: var(--vermilion);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
   color: var(--ink);
 }
 
-/* 传输页 */
-.send-section {
-  padding: 26px 0 40px;
+.send-section,
+.library {
+  padding: 28px 0 40px;
 }
 
 .intro {
@@ -208,11 +215,11 @@ svg {
 
 .intro h1 {
   margin: 0;
-  font-family: var(--serif);
+  font-family: var(--sans);
   font-size: 32px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
 .intro p {
@@ -225,39 +232,37 @@ svg {
 .local-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding-top: 6px;
-  color: var(--vermilion);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  min-height: 26px;
+  padding: 3px 9px;
+  border-radius: 980px;
+  background: var(--paper-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1.5;
   white-space: nowrap;
 }
 
-.local-badge::before {
-  width: 5px;
-  height: 5px;
-  background: currentColor;
-  content: "";
-}
-
 .composer {
   margin-top: 22px;
-  border: 1px solid var(--rule);
+  overflow: hidden;
+  border: 1px solid rgb(0 0 0 / 5%);
+  border-radius: 12px;
   background: var(--surface);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 4%);
 }
 
 .composer:focus-within {
-  border-color: var(--ink);
+  border-color: var(--vermilion);
+  box-shadow: 0 0 0 3px rgb(0 113 227 / 10%);
 }
 
 .composer textarea {
   display: block;
   width: 100%;
-  min-height: 140px;
+  min-height: 148px;
   max-height: 400px;
-  padding: 14px;
+  padding: 16px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -267,7 +272,10 @@ svg {
   scrollbar-width: none;
 }
 
-.composer textarea::-webkit-scrollbar {
+.composer textarea::-webkit-scrollbar,
+.item-text::-webkit-scrollbar,
+.upload-queue::-webkit-scrollbar,
+.preview-content::-webkit-scrollbar {
   display: none;
 }
 
@@ -284,32 +292,32 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--rule);
+  padding: 12px;
+  border-top: 1px solid var(--paper-2);
 }
 
 .composer-bar .muted {
-  padding-left: 2px;
+  padding-left: 4px;
   font-size: 11px;
 }
 
-/* 按钮 */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
   min-height: 44px;
-  padding: 0 14px;
+  padding: 0 17px;
   border: 1px solid transparent;
-  border-radius: 2px;
+  border-radius: 980px;
   font-family: var(--sans);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.3;
   text-align: center;
   text-decoration: none;
   white-space: nowrap;
+  transition: background-color 160ms var(--ease), color 160ms var(--ease), transform 160ms var(--ease);
 }
 
 .button svg {
@@ -320,25 +328,25 @@ svg {
 
 .button.primary {
   background: var(--vermilion);
-  color: var(--paper);
+  color: #fff;
 }
 
 .button.primary:hover {
-  background: var(--vermilion-dark);
+  background: #0077ed;
 }
 
 .button.secondary {
-  border-color: var(--rule-strong);
-  background: transparent;
+  border-color: transparent;
+  background: var(--paper-2);
   color: var(--ink);
 }
 
 .button.secondary:hover {
-  background: var(--paper-2);
+  background: #dedee3;
 }
 
 .button:active {
-  transform: translateY(1px);
+  transform: scale(0.98);
 }
 
 .muted {
@@ -352,9 +360,10 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--rule);
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .photo-bar strong {
@@ -365,27 +374,30 @@ svg {
 
 .photo-bar .muted {
   display: block;
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 12px;
 }
 
 .inline-message {
-  margin: 16px 0 0;
+  margin: 16px 2px 0;
   color: var(--body);
   font-size: 13px;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 
-.inline-message.error {
-  color: var(--vermilion);
+.inline-message.error,
+.task-message.error,
+.list-message.error {
+  color: var(--error);
 }
 
-/* 发送记录 */
+/* 上传任务 */
 .queue-section {
-  margin-top: 24px;
-  padding-top: 14px;
-  border-top: 1px solid var(--rule-strong);
+  margin-top: 20px;
+  padding: 18px;
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .queue-heading {
@@ -397,45 +409,44 @@ svg {
 
 .queue-heading h2 {
   margin: 0;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .text-button {
-  min-height: 32px;
+  min-height: 44px;
   padding: 4px 0;
   border: 0;
   background: none;
   color: var(--vermilion);
   font-family: var(--sans);
   font-size: 12px;
+  text-decoration: none;
+}
+
+.text-button:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
 .upload-queue {
+  max-height: 300px;
   margin: 6px 0 0;
   padding: 0;
-  list-style: none;
-  max-height: 300px;
   overflow: auto;
+  overscroll-behavior: contain;
+  list-style: none;
   scrollbar-width: none;
-}
-
-.upload-queue::-webkit-scrollbar {
-  display: none;
 }
 
 .upload-task {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 0;
-  border-bottom: 1px solid var(--rule);
+  padding: 12px 0;
+  border-bottom: 1px solid var(--paper-2);
 }
 
 .upload-task:last-child {
@@ -463,78 +474,68 @@ svg {
   overflow-wrap: anywhere;
 }
 
-.task-message.error {
-  color: var(--vermilion);
-}
-
 .task-state {
   flex: none;
   color: var(--online);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .task-state.error {
-  color: var(--vermilion);
+  color: var(--error);
 }
 
 .task-info progress {
   display: block;
   width: 100%;
   height: 4px;
-  margin-top: 7px;
+  margin-top: 8px;
   accent-color: var(--vermilion);
 }
 
 /* 剪贴板列表 */
-.library {
-  padding: 26px 0 40px;
-}
-
 .library-heading {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .library-heading h2 {
   margin: 0 0 4px;
-  font-family: var(--serif);
-  font-size: 28px;
-  font-weight: 500;
+  font-family: var(--sans);
+  font-size: 30px;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1.25;
 }
 
 .library-heading .muted {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  font-size: 12px;
 }
 
 .view-switch {
   display: flex;
   flex: none;
-  border: 1px solid var(--rule);
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--paper-2);
 }
 
 .view-switch button {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border: 0;
-  border-left: 1px solid var(--rule);
+  border-radius: 7px;
   background: transparent;
   color: var(--muted);
-}
-
-.view-switch button:first-child {
-  border-left: 0;
+  transition: background-color 160ms var(--ease), color 160ms var(--ease), box-shadow 160ms var(--ease);
 }
 
 .view-switch button svg {
@@ -543,14 +544,14 @@ svg {
 }
 
 .view-switch button[aria-pressed="true"] {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--surface);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 8%);
+  color: var(--ink);
 }
 
-/* 筛选 */
 .filters {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 18px;
 }
 
@@ -560,15 +561,17 @@ svg {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  height: 44px;
+  height: 46px;
   padding: 0 12px;
-  border: 1px solid var(--rule);
+  border: 1px solid transparent;
+  border-radius: 10px;
   background: var(--surface);
   color: var(--muted);
 }
 
 .search-field:focus-within {
-  border-color: var(--ink);
+  border-color: var(--vermilion);
+  box-shadow: 0 0 0 3px rgb(0 113 227 / 10%);
 }
 
 .search-field svg {
@@ -601,17 +604,13 @@ svg {
 .search-clear {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 44px;
+  height: 44px;
   flex: none;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted);
-}
-
-.search-clear:hover {
-  color: var(--ink);
 }
 
 .search-clear svg {
@@ -621,7 +620,7 @@ svg {
 
 .filter-selects {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 .filter-selects label {
@@ -631,36 +630,45 @@ svg {
 .filter-selects select {
   width: 132px;
   max-width: 100%;
-  height: 44px;
-  padding: 0 9px;
-  border: 1px solid var(--rule);
-  border-radius: 0;
-  background: var(--surface);
+  height: 46px;
+  padding: 0 32px 0 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background-color: var(--surface);
   color: var(--ink);
   font-size: 16px;
 }
 
+.filter-selects select:focus-visible {
+  outline-offset: 1px;
+}
 
-/* 列表 / 瀑布流 */
+/* 列表与瀑布流 */
+.items:empty {
+  display: none;
+}
+
 .items.list {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--rule-strong);
+  padding: 0 14px;
+  border-radius: 12px;
+  background: var(--surface);
 }
 
 .item {
   width: 100%;
-  padding: 14px 0;
+  padding: 16px 4px;
   border: 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--paper-2);
   border-radius: 0;
   background: transparent;
   color: inherit;
   text-align: left;
 }
 
-.item:hover {
-  background: var(--paper-2);
+.items.list .item:last-child {
+  border-bottom: 0;
 }
 
 .item:focus-visible {
@@ -670,8 +678,8 @@ svg {
 .list .item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 88px;
+  gap: 14px;
+  min-height: 96px;
 }
 
 .item-inner {
@@ -707,12 +715,11 @@ svg {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px 8px;
+  gap: 5px 10px;
   margin-top: 8px;
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.01em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   line-height: 1.5;
 }
 
@@ -724,7 +731,7 @@ svg {
 }
 
 .item-meta .unavailable {
-  color: var(--vermilion);
+  color: var(--error);
 }
 
 .item-image {
@@ -738,14 +745,13 @@ svg {
   width: 64px;
   height: 64px;
   flex: none;
-  border: 1px solid var(--rule);
+  border-radius: 8px;
 }
 
 .item-file {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--rule);
   background: var(--paper-2);
   color: var(--muted);
   font-size: 11px;
@@ -757,10 +763,8 @@ svg {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--rule);
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .item-actions:empty {
@@ -768,9 +772,9 @@ svg {
 }
 
 .item-actions .button {
-  min-height: 38px;
-  padding: 0 11px;
-  font-size: 11.5px;
+  min-height: 44px;
+  padding: 0 13px;
+  font-size: 12px;
 }
 
 .item-actions .button svg {
@@ -778,24 +782,20 @@ svg {
   height: 14px;
 }
 
-
 .item-text {
   display: block;
   width: 100%;
   height: 170px;
-  margin-top: 10px;
-  padding: 11px;
-  border: 1px solid var(--rule);
-  background: var(--surface);
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--paper);
   color: var(--ink);
   font-size: 16px;
   line-height: 1.7;
   resize: vertical;
   scrollbar-width: none;
-}
-
-.item-text::-webkit-scrollbar {
-  display: none;
 }
 
 .save-hint {
@@ -808,21 +808,18 @@ svg {
 
 .masonry {
   columns: 2;
-  column-gap: 10px;
+  column-gap: 12px;
 }
 
 .masonry .item {
   display: inline-block;
   width: 100%;
-  margin-bottom: 10px;
-  padding: 9px;
-  border: 1px solid var(--rule);
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 0;
+  border-radius: 12px;
   background: var(--surface);
   break-inside: avoid;
-}
-
-.masonry .item:hover {
-  background: var(--paper);
 }
 
 .masonry .item-inner {
@@ -832,29 +829,27 @@ svg {
 .masonry .item-image {
   width: 100%;
   max-height: 300px;
-  margin-bottom: 9px;
-  border: 0;
+  margin-bottom: 10px;
+  border-radius: 8px;
 }
 
 .masonry .item-file {
   height: 92px;
-  margin-bottom: 9px;
+  margin-bottom: 10px;
+  border-radius: 8px;
 }
 
 .masonry .item-title {
-  white-space: normal;
   overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .masonry .item-preview {
   -webkit-line-clamp: 8;
 }
 
-.masonry .item-actions {
-  justify-content: flex-start;
-}
-
-.item-open {
+.item-open,
+.image-open {
   display: block;
   width: 100%;
   padding: 0;
@@ -862,16 +857,16 @@ svg {
   background: none;
   color: inherit;
   text-align: left;
+}
+
+.item-open {
   cursor: pointer;
 }
 
 .image-open {
-  display: block;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: zoom-in;
   overflow: hidden;
+  border-radius: 8px;
+  cursor: zoom-in;
 }
 
 .list .image-open {
@@ -880,8 +875,7 @@ svg {
 }
 
 .masonry .image-open {
-  width: 100%;
-  margin-bottom: 9px;
+  margin-bottom: 10px;
 }
 
 .masonry .image-open .item-image {
@@ -889,7 +883,9 @@ svg {
 }
 
 .list-message {
-  padding: 28px 10px;
+  padding: 34px 20px;
+  border-radius: 12px;
+  background: var(--surface);
   color: var(--muted);
   font-size: 13px;
   line-height: 1.7;
@@ -897,25 +893,22 @@ svg {
 }
 
 .list-message.error {
-  color: var(--vermilion);
-  padding: 12px 0;
+  padding: 18px;
 }
 
 .pagination {
   display: flex;
   justify-content: center;
   gap: 10px;
-  padding-top: 18px;
+  padding-top: 20px;
 }
 
 footer {
-  padding: 24px 0 max(30px, env(safe-area-inset-bottom));
-  border-top: 1px solid var(--rule);
+  padding: 20px 0 max(30px, env(safe-area-inset-bottom));
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  font-size: 11px;
   line-height: 1.7;
+  text-align: center;
 }
 
 .toast {
@@ -924,10 +917,11 @@ footer {
   bottom: max(20px, env(safe-area-inset-bottom));
   z-index: 5;
   max-width: calc(100% - 32px);
-  padding: 11px 15px;
-  border: 1px solid var(--ink);
+  padding: 12px 18px;
+  border-radius: 12px;
   background: var(--ink);
-  color: var(--paper);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 18%);
+  color: #fff;
   font-size: 13px;
   line-height: 1.5;
   text-align: center;
@@ -946,16 +940,17 @@ footer {
   border: 0;
 }
 
-/* 预览 */
+/* 原生 dialog 保留焦点管理与 Esc；仅更新外观。 */
 .preview-dialog {
   width: min(720px, calc(100vw - 28px));
   height: min(640px, calc(100dvh - 40px));
   max-width: none;
   max-height: none;
   padding: 0;
-  border: 1px solid var(--rule-strong);
-  border-radius: 2px;
-  background: var(--paper);
+  border: 0;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgb(0 0 0 / 24%);
   color: inherit;
   overflow: hidden;
 }
@@ -966,7 +961,7 @@ footer {
 }
 
 .preview-dialog::backdrop {
-  background: rgb(27 26 23 / 55%);
+  background: rgb(0 0 0 / 45%);
 }
 
 .preview-header {
@@ -975,8 +970,8 @@ footer {
   justify-content: space-between;
   gap: 16px;
   flex-shrink: 0;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--rule-strong);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--paper-2);
 }
 
 .preview-header > div {
@@ -985,20 +980,19 @@ footer {
 
 .preview-header h2 {
   margin: 0;
-  font-family: var(--serif);
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.4;
+  font-family: var(--sans);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .preview-header p {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1008,12 +1002,13 @@ footer {
 #preview-close {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   flex: none;
-  border: 1px solid var(--rule);
-  border-radius: 0;
-  background: transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--paper-2);
   color: var(--ink);
 }
 
@@ -1028,12 +1023,8 @@ footer {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  background: var(--paper-2);
+  background: var(--paper);
   scrollbar-width: none;
-}
-
-.preview-content::-webkit-scrollbar {
-  display: none;
 }
 
 .preview-text {
@@ -1072,24 +1063,23 @@ footer {
 
 .preview-footer {
   flex-shrink: 0;
-  padding: 10px 18px;
-  border-top: 1px solid var(--rule);
+  padding: 12px 18px;
+  border-top: 1px solid var(--paper-2);
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
   text-align: center;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .button.primary:hover,
-  .button.secondary:hover,
-  .page-tabs button:hover,
-  .view-switch button:hover,
-  .item:hover {
-    transition:
-      background-color 150ms var(--ease, ease),
-      color 150ms var(--ease, ease);
+  .page-tabs button:not([aria-selected="true"]):hover,
+  .view-switch button:not([aria-pressed="true"]):hover {
+    color: var(--ink);
+    background: rgb(255 255 255 / 45%);
+  }
+
+  .items.list .item:hover {
+    background: #fafafd;
   }
 }
 
@@ -1101,7 +1091,7 @@ footer {
 
   .send-section,
   .library {
-    padding-top: 32px;
+    padding-top: 34px;
   }
 
   .intro h1 {
@@ -1110,10 +1100,6 @@ footer {
 
   .masonry {
     columns: 3;
-  }
-
-  .item-actions .button {
-    min-height: 40px;
   }
 }
 
@@ -1127,43 +1113,31 @@ footer {
     min-height: 64px;
   }
 
-  .brand {
-    font-size: 20px;
-  }
-
-  .brand-icon {
-    width: 28px;
-    height: 28px;
-  }
-
-  .intro {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-
-  .local-badge {
-    order: -1;
-    padding-top: 0;
-    margin-bottom: 5px;
+  .connection {
+    font-size: 11px;
   }
 
   .intro h1 {
     font-size: 28px;
   }
 
+  .local-badge {
+    margin-top: 2px;
+  }
+
   .send-section,
   .library {
-    padding-top: 22px;
+    padding-top: 24px;
   }
 
   .composer textarea {
-    min-height: 128px;
-    padding: 12px;
+    min-height: 136px;
+    padding: 14px;
   }
 
   .composer-bar {
     gap: 8px;
-    padding: 9px 10px;
+    padding: 10px;
   }
 
   .composer-bar .muted {
@@ -1173,33 +1147,29 @@ footer {
 
   .photo-bar {
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
+    padding: 16px;
   }
 
   .photo-bar > div {
-    flex: 1 1 150px;
+    flex: 1 1 140px;
   }
 
   .filters {
     flex-direction: column;
   }
 
-  .filter-selects label {
-    flex: 1;
+  .filter-selects {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .filter-selects select {
     width: 100%;
-    font-size: 16px;
   }
 
   .library-heading h2 {
-    font-size: 26px;
-  }
-
-  .view-switch button {
-    width: 40px;
-    height: 38px;
+    font-size: 28px;
   }
 
   .list .item {
@@ -1214,7 +1184,7 @@ footer {
   }
 
   .item-actions .button {
-    min-height: 42px;
+    min-height: 44px;
   }
 
   .preview-dialog {
@@ -1223,19 +1193,36 @@ footer {
   }
 
   .preview-header {
-    padding: 12px 14px;
+    padding: 10px 12px;
   }
 
   .preview-text {
     padding: 16px;
-    font-size: 15px;
   }
 }
 
 @media (max-width: 350px) {
   .shell {
-    padding-right: 10px;
-    padding-left: 10px;
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+
+  .brand {
+    font-size: 18px;
+  }
+
+  .connection {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .intro {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .local-badge {
+    width: fit-content;
   }
 
   .intro h1 {
@@ -1243,11 +1230,15 @@ footer {
   }
 
   .composer-bar .muted {
-    max-width: 130px;
+    max-width: 124px;
   }
 
-  .photo-bar strong {
-    font-size: 13px;
+  .photo-bar > div {
+    flex-basis: 110px;
+  }
+
+  .photo-bar .button {
+    padding: 0 13px;
   }
 
   .masonry {
@@ -1255,12 +1246,12 @@ footer {
   }
 
   .masonry .item {
-    padding: 8px;
     margin-bottom: 8px;
+    padding: 10px;
   }
 
   .item-actions .button {
-    padding: 0 9px;
+    padding: 0 11px;
     font-size: 11px;
   }
 }

@@ -382,22 +382,80 @@ mod build_identity_tests {
         };
         let control = ServiceControl::default();
         let connected = view(ConnectionState::Connected);
-        assert_eq!(send_recovery_required(&control, &connected), None);
+        assert_eq!(
+            send_recovery_check(&control, &connected).decision,
+            "no_refusals"
+        );
         // 拒发的是另一个地址：可能只是那个地址的主机不在。
         control.status.lock().unwrap().locally_refused_hosts = vec!["10.0.0.9".parse().unwrap()];
-        assert_eq!(send_recovery_required(&control, &connected), None);
+        assert_eq!(
+            send_recovery_check(&control, &connected).decision,
+            "no_matching_control_route"
+        );
         // 对端离线时本机拒发同样可能只是 ARP 失败，不重启。
         control.status.lock().unwrap().locally_refused_hosts = vec!["10.0.0.2".parse().unwrap()];
         assert_eq!(
-            send_recovery_required(&control, &view(ConnectionState::Backoff)),
-            None
+            send_recovery_check(&control, &view(ConnectionState::Backoff)).decision,
+            "no_matching_control_route"
         );
+        let mut no_selected_route = connected.clone();
+        no_selected_route.snapshot.peers[0].selected_route = None;
+        let missing = send_recovery_check(&control, &no_selected_route);
+        assert_eq!(missing.decision, "no_matching_control_route");
+        assert!(missing.control_routes[0].endpoint.is_none());
+        assert!(control.send_recovery_at.lock().unwrap().is_none());
+        let restart = send_recovery_check(&control, &connected);
+        assert_eq!(restart.decision, "restart");
+        assert_eq!(restart.restart_peer.as_deref(), Some("office"));
+        assert_eq!(restart.matched_peer, Some(connected.snapshot.peers[0].id));
         assert_eq!(
-            send_recovery_required(&control, &connected).as_deref(),
-            Some("office")
+            restart.control_routes[0].endpoint.as_ref().unwrap().host,
+            "10.0.0.2"
         );
         // 重启后的新进程仍被拒时不循环重启，交给状态说明。
-        assert_eq!(send_recovery_required(&control, &connected), None);
+        let cooldown = send_recovery_check(&control, &connected);
+        assert_eq!(cooldown.decision, "cooldown");
+        assert!(cooldown.restart_peer.is_none());
+        assert!(cooldown.cooldown_remaining_ms > 0 && cooldown.cooldown_remaining_ms <= 600_000);
+        *control.send_recovery_at.lock().unwrap() =
+            Some(std::time::Instant::now() - Duration::from_secs(601));
+        assert_eq!(
+            send_recovery_check(&control, &connected).decision,
+            "restart"
+        );
+    }
+
+    #[test]
+    fn supervisor_evidence_survives_child_diagnostics_replacement_and_is_bounded() {
+        use super::*;
+        let control = ServiceControl::default();
+        for generation in 1..=130 {
+            control.record_recovery(
+                "process_spawned",
+                generation,
+                100,
+                serde_json::json!({"build":"test"}),
+            );
+        }
+        *control.diagnostics.lock().unwrap() = "{\"subsystem\":\"new_child\"}\n".into();
+        control.status.lock().unwrap().locally_refused_hosts = vec!["10.0.0.2".parse().unwrap()];
+        control.status.lock().unwrap().remote_application_lease = Some("private-lease".into());
+        *control.send_recovery_at.lock().unwrap() = Some(std::time::Instant::now());
+        let exported: Vec<serde_json::Value> = control
+            .diagnostics_json_lines()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(exported.len(), 130); // current status, 128 host records, new child
+        assert_eq!(
+            exported[0]["native"]["locally_refused_hosts"][0],
+            "10.0.0.2"
+        );
+        assert!(exported[0]["cooldown_remaining_ms"].as_u64().unwrap() > 0);
+        assert_eq!(exported[1]["generation"], 3);
+        assert_eq!(exported[128]["generation"], 130);
+        assert_eq!(exported[129]["subsystem"], "new_child");
+        assert!(!control.diagnostics_json_lines().contains("private-lease"));
     }
 
     #[test]
@@ -626,19 +684,58 @@ fn process_recovery_required(control: &ServiceControl) -> bool {
         .is_ok_and(|status| status.observer_recovery_required)
 }
 
-/// Restart the input service when the system refuses its LAN sends to a peer
+#[derive(PartialEq, Serialize)]
+struct RecoveryControlRoute {
+    peer: DeviceId,
+    connection: deskfuse_core::ConnectionState,
+    selected_route: Option<deskfuse_core::RouteId>,
+    endpoint: Option<deskfuse_core::Endpoint>,
+}
+
+#[derive(Serialize)]
+struct SendRecoveryCheck {
+    decision: &'static str,
+    refused_hosts: Vec<std::net::IpAddr>,
+    control_routes: Vec<RecoveryControlRoute>,
+    matched_peer: Option<DeviceId>,
+    cooldown_remaining_ms: u128,
+    #[serde(skip)]
+    restart_peer: Option<String>,
+}
+
+/// Assess restarting the input service when the system refuses its LAN sends to a peer
 /// that this process reaches over the same address right now.
 ///
 /// Refusal alone is ambiguous: a fresh socket to an absent on-link host also
 /// gets `EHOSTUNREACH` once ARP gives up. A live control session to the same
 /// IP proves the peer is there, so the refusal belongs to the input process
 /// (macOS evaluates local-network policy per process and a long-lived one can
-/// stay denied until relaunched). Returns the peer's name. At most one restart
+/// stay denied until relaunched). At most one restart
 /// per interval: if a fresh process is refused too, the status reason tells
 /// the user instead of looping.
-fn send_recovery_required(control: &ServiceControl, view: &SnapshotView) -> Option<String> {
-    const INTERVAL: Duration = Duration::from_secs(600);
-    let refused = control.status.lock().ok()?.locally_refused_hosts.clone();
+fn send_recovery_check(control: &ServiceControl, view: &SnapshotView) -> SendRecoveryCheck {
+    use super::input_service_types::SEND_RECOVERY_INTERVAL;
+    let refused = control
+        .status
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .locally_refused_hosts
+        .clone();
+    let control_routes = view
+        .snapshot
+        .peers
+        .iter()
+        .map(|peer| RecoveryControlRoute {
+            peer: peer.id,
+            connection: peer.connection,
+            selected_route: peer.selected_route,
+            endpoint: peer
+                .routes
+                .iter()
+                .find(|route| Some(route.id) == peer.selected_route)
+                .map(|route| route.endpoint.clone()),
+        })
+        .collect();
     let peer = view.snapshot.peers.iter().find(|peer| {
         peer.connection == deskfuse_core::ConnectionState::Connected
             && peer
@@ -647,13 +744,36 @@ fn send_recovery_required(control: &ServiceControl, view: &SnapshotView) -> Opti
                 .find(|route| Some(route.id) == peer.selected_route)
                 .and_then(|route| route.endpoint.host.parse::<std::net::IpAddr>().ok())
                 .is_some_and(|ip| refused.contains(&ip))
-    })?;
-    let mut last = control.send_recovery_at.lock().ok()?;
-    if last.is_some_and(|at| at.elapsed() < INTERVAL) {
-        return None;
+    });
+    let mut last = control
+        .send_recovery_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let remaining = last
+        .map(|at| SEND_RECOVERY_INTERVAL.saturating_sub(at.elapsed()))
+        .unwrap_or_default();
+    let mut check = SendRecoveryCheck {
+        decision: "no_refusals",
+        refused_hosts: refused,
+        control_routes,
+        matched_peer: peer.map(|p| p.id),
+        cooldown_remaining_ms: remaining.as_millis(),
+        restart_peer: None,
+    };
+    if !check.refused_hosts.is_empty() {
+        check.decision = if let Some(peer) = peer {
+            if remaining.is_zero() {
+                *last = Some(std::time::Instant::now());
+                check.restart_peer = Some(peer.display_name.clone());
+                "restart"
+            } else {
+                "cooldown"
+            }
+        } else {
+            "no_matching_control_route"
+        };
     }
-    *last = Some(std::time::Instant::now());
-    Some(peer.display_name.clone())
+    check
 }
 
 /// The input service is the only component that can capture and inject input.
@@ -670,11 +790,28 @@ fn input_service_retry_delay(attempts: u32) -> Duration {
     }
 }
 
-struct Process(Child);
-impl Drop for Process {
+struct Process<'a>(Child, &'a ServiceControl, u64);
+impl Drop for Process<'_> {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let already_exited = self.0.try_wait().ok().flatten();
+        let forced_kill = already_exited.is_none();
+        let kill_error = if forced_kill {
+            self.0.kill().err()
+        } else {
+            None
+        };
+        let exit = self.0.wait();
+        self.1.record_recovery(
+            "process_exit",
+            self.2,
+            self.0.id(),
+            serde_json::json!({
+                "forced_kill": forced_kill,
+                "kill_error": kill_error.map(|e| e.to_string()),
+                "exit": exit.as_ref().ok().map(|s| s.to_string()),
+                "wait_error": exit.err().map(|e| e.to_string()),
+            }),
+        );
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -723,6 +860,16 @@ pub(super) async fn run_host(
         }
         if error.is_some() {
             attempts += 1;
+            control.record_recovery(
+                "supervisor_retry",
+                generation,
+                0,
+                serde_json::json!({
+                    "error": error,
+                    "attempt": attempts,
+                    "retry_after_ms": input_service_retry_delay(attempts).as_millis(),
+                }),
+            );
             if attempts > 3 {
                 error = Some("输入服务自动恢复未成功，正在后台重试；可点击重试立即恢复".into());
             }
@@ -804,6 +951,16 @@ async fn run_process(
             .stderr(Stdio::from(std::os::fd::OwnedFd::from(child_urgent)))
             .spawn()
             .map_err(|e| format!("无法启动独立输入进程：{e}"))?,
+        control,
+        generation,
+    );
+    control.record_recovery(
+        "process_spawned",
+        generation,
+        process.0.id(),
+        serde_json::json!({
+            "build": build_identity(),
+        }),
     );
     *control.urgent.lock().unwrap_or_else(|e| e.into_inner()) = Some(urgent);
     let bootstrap = Bootstrap {
@@ -816,6 +973,12 @@ async fn run_process(
         stored: StoredInput::load(store.as_ref()).map_err(|e| e.to_string())?,
     };
     write_frame(&mut command, &HostMessage::Bootstrap(bootstrap)).map_err(|e| e.to_string())?;
+    control.record_recovery(
+        "bootstrap_sent",
+        generation,
+        process.0.id(),
+        serde_json::json!({}),
+    );
     let writer = Arc::new(Mutex::new(command.try_clone().map_err(|e| e.to_string())?));
     let (remote_tx, remote_rx) = std::sync::mpsc::sync_channel(128);
     *control.remote.lock().map_err(|e| e.to_string())? = Some(remote_tx);
@@ -895,6 +1058,7 @@ async fn run_process(
         pending.pop_front();
     }
     let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut last_recovery_check: Option<(SendRecoveryCheck, std::time::Instant)> = None;
     loop {
         tokio::select! {
             c = commands.recv() => match c {
@@ -926,6 +1090,9 @@ async fn run_process(
             _ = tick.tick() => {
                 if let Some(exit) = process.0.try_wait().map_err(|e|e.to_string())? { return Err(format!("独立输入进程已退出：{exit}")); }
                 if process_recovery_required(control) {
+                    control.record_recovery("restart_requested", generation, process.0.id(), serde_json::json!({
+                        "reason": "observer_recovery_required",
+                    }));
                     // The coordinator already retired native sessions. Do not send
                     // the user-emergency command: that would persist a managed pause.
                     // Bound cleanup even if an OS query never returns.
@@ -937,8 +1104,19 @@ async fn run_process(
                     }
                     return Err("原生输入检查持续无响应，正在重启输入服务".into());
                 }
-                let refused_peer = send_recovery_required(control, &network.borrow());
-                if let Some(peer) = refused_peer {
+                let check = send_recovery_check(control, &network.borrow());
+                // A countdown must not turn the 50 ms health tick into log spam.
+                let changed = last_recovery_check.as_ref().is_none_or(|(previous, at)| {
+                    previous.decision != check.decision
+                        || previous.refused_hosts != check.refused_hosts
+                        || previous.control_routes != check.control_routes
+                        || (!check.refused_hosts.is_empty() && at.elapsed() >= Duration::from_secs(30))
+                });
+                if changed {
+                    control.record_recovery("send_recovery_check", generation, process.0.id(),
+                        serde_json::to_value(&check).map_err(|e| e.to_string())?);
+                }
+                if let Some(peer) = check.restart_peer.as_ref() {
                     control.signal(b'Q');
                     let deadline = std::time::Instant::now() + Duration::from_secs(2);
                     while std::time::Instant::now() < deadline {
@@ -946,6 +1124,11 @@ async fn run_process(
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                     return Err(format!("输入服务无法向「{peer}」发送局域网数据，正在重启输入服务"));
+                }
+                // Keep the countdown out of the change comparison, and retain
+                // the emission time so an unchanged failure gets a 30 s sample.
+                if changed {
+                    last_recovery_check = Some((check, std::time::Instant::now()));
                 }
                 control.signal(if deskfuse_core::debug_logging::enabled() { b'D' } else { b'd' });
             },

@@ -281,7 +281,9 @@ pub(super) fn apply_remote_file_clipboard_frame(
             };
             let destination = cache.destination(id);
             let root_paths = clipboard_root_paths(&destination, &manifest)?;
-            cache.reserve(id, manifest.total_bytes())?;
+            // Content only arrives for a direct send or after a Request; automatic
+            // prefetch is quota-checked before it requests, so receiving is exempt.
+            cache.reserve_requested(id, manifest.total_bytes())?;
             let (sender, frames) = tokio::sync::mpsc::channel(RECEIVE_QUEUE_FRAMES);
             let cancelled = Arc::new(AtomicBool::new(false));
             let name = clipboard_transfer_name(&root_paths);

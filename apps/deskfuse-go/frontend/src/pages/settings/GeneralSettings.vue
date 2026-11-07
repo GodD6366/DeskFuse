@@ -27,9 +27,9 @@ const features = computed<Feature[]>(() => {
     { id: 'clipboard', title: '剪贴板', icon: Clipboard },
     { id: 'input', title: '键鼠共享', icon: Keyboard },
     { id: 'files', title: '局域网传输', icon: ArrowUpDown },
-    { id: 'remote_applications', title: '远程应用', beta: true, icon: PanelsTopLeft },
     { id: 'microphone', title: '麦克风共享', icon: Mic },
     { id: 'mouse', title: '鼠标自定义', beta: true, icon: Mouse },
+    { id: 'remote_applications', title: '远程应用', beta: true, icon: PanelsTopLeft },
   ]
     .filter((feature) => values[feature.id] !== undefined)
     .map((feature) => ({

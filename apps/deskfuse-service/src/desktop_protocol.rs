@@ -101,6 +101,20 @@ pub enum Command {
     InvalidateClipboard {
         session_epoch: u64,
         sequence: u64,
+        /// Content for this change will be published: tell ready peers now so
+        /// a paste there waits for it instead of pasting the old clipboard.
+        #[serde(default)]
+        announce: bool,
+    },
+    /// Long poll for remote clipboard state. Returns as soon as the pending
+    /// content or the in-flight transfer differs from `known` (the fingerprint
+    /// of the previous reply), or after `timeout_ms` (capped at 20 s).
+    WaitClipboard {
+        session_epoch: u64,
+        after_sequence: u64,
+        known: u64,
+        #[serde(default)]
+        timeout_ms: u64,
     },
     PublishClipboard {
         session_epoch: u64,
@@ -406,6 +420,13 @@ pub struct Response {
     pub request_id: u64,
     pub result: Reply,
 }
+/// Remote clipboard content still on its way; `total == 0` is announced only.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClipboardInFlight {
+    pub peer_id: String,
+    pub received: u64,
+    pub total: u64,
+}
 // 每次 IPC 请求只构造一次并立即序列化，枚举大小不影响性能。
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Serialize, Deserialize)]
@@ -420,6 +441,16 @@ pub enum Reply {
     },
     InputRegistered {
         session_epoch: u64,
+    },
+    ClipboardWatch {
+        /// Remote content after `after_sequence` awaits application; fetch it
+        /// with `Poll`.
+        pending: bool,
+        clipboard_sequence: u64,
+        /// Remote content a paste must wait for; `total == 0` means announced
+        /// but no bytes yet.
+        in_flight: Option<ClipboardInFlight>,
+        fingerprint: u64,
     },
     InputPoll {
         state: InputState,

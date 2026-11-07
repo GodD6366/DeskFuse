@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Darwin
+import DeskFuseEngine
 
 /// `--mygo-ui <executable>` overrides the UI client. Without it the app uses the
 /// client bundled in Contents/MacOS, and falls back to the native window only in
@@ -219,11 +220,33 @@ final class MyGoPipeWriter: @unchecked Sendable {
     }
 
     /// 需要界面时重新拉起界面进程；`route` 是启动页，避免拉起后还要再发一次请求。
-    private func resumeForUI(route: String?, panelFrame: String? = nil) {
+    /// `background` 只为浮窗拉起：主窗口保持隐藏。
+    private func resumeForUI(route: String?, panelFrame: String? = nil, background: Bool = false) {
         guard suspended || !isActive else { return }
         suspended = false
         lastScreenActivity = Date()
-        startIfRequested(initialRoute: route, panelFrame: panelFrame)
+        startIfRequested(initialRoute: route, panelFrame: panelFrame, background: background)
+    }
+
+    private var seenTransfers = Set<String>()
+
+    /// 传输胶囊和配对弹窗由界面进程绘制。轻量模式回收界面后，新的传输、
+    /// 进行中的传输或待处理的配对请求都要在后台把它拉起来，否则用户什么都
+    /// 看不到；之后仍按空闲规则回收。
+    func reconcileAuxiliaryDemand(_ snapshot: EngineSnapshot) {
+        let previous = seenTransfers
+        seenTransfers = Set(snapshot.transfers.map(\.id))
+        guard suspended, !isActive else { return }
+        let pairing = snapshot.pairing.contains(where: \.incoming)
+        let transfers = snapshot.transfers.contains { transfer in
+            switch transfer.phase {
+            case .completed: return false
+            case .failed, .cancelled: return !previous.contains(transfer.id)
+            default: return true
+            }
+        }
+        guard pairing || transfers else { return }
+        resumeForUI(route: nil, background: true)
     }
 
     /// Show the compact clipboard panel at a top-left origin in screen points.
@@ -290,7 +313,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
 
     /// 界面进程是硬依赖：发布包里它总是与主程序并列存在，缺失或不可执行即为
     /// 安装损坏。这里不再退回到任何原生界面，直接报错退出，避免出现两套 UI。
-    func startIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments, initialRoute: String? = nil, panelFrame: String? = nil) {
+    func startIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments, initialRoute: String? = nil, panelFrame: String? = nil, background: Bool = false) {
         let executable: URL?
         do { executable = try MyGoUIOptions.executableURL(arguments: arguments) } catch {
             NSLog("DeskFuse MyGo UI not started: %@", String(describing: error))
@@ -303,7 +326,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
             fail(expected: expected)
             return
         }
-        start(executable: executable, initialRoute: initialRoute, panelFrame: panelFrame, engine: { await MainActor.run { AppStore.shared.client } }, snapshot: { try await MainActor.run { try MyGoSnapshot.encode(AppStore.shared) } }, invoke: { action, params in try await MyGoInvocation.run(action: action, params: params, store: AppStore.shared) })
+        start(executable: executable, initialRoute: initialRoute, panelFrame: panelFrame, background: background, engine: { await MainActor.run { AppStore.shared.client } }, snapshot: { try await MainActor.run { try MyGoSnapshot.encode(AppStore.shared) } }, invoke: { action, params in try await MyGoInvocation.run(action: action, params: params, store: AppStore.shared) })
         guard isActive else { return }
         AppStore.shared.applyDockIconPolicy()
         startAuxiliaryUpdates()
@@ -325,7 +348,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
         NSApp.terminate(nil)
     }
 
-    func start(executable: URL, initialRoute: String? = nil, panelFrame: String? = nil, engine: @escaping MyGoEngineProvider, snapshot: MyGoSnapshotProvider? = nil, invoke: MyGoInvokeHandler? = nil) {
+    func start(executable: URL, initialRoute: String? = nil, panelFrame: String? = nil, background: Bool = false, engine: @escaping MyGoEngineProvider, snapshot: MyGoSnapshotProvider? = nil, invoke: MyGoInvokeHandler? = nil) {
         guard process == nil else { return }
         // 轻量模式回收后再启动：清掉上一次 stop() 留下的退出标记。
         stopping = false
@@ -338,6 +361,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
             [MyGoBridge.environmentKey: MyGoBridge.environmentValue]) { _, new in new }
         if let initialRoute { environment["DESKFUSE_INITIAL_ROUTE"] = initialRoute }
         if let panelFrame { environment["DESKFUSE_PANEL_FRAME"] = panelFrame }
+        if background { environment["DESKFUSE_UI_BACKGROUND"] = "1" }
         process.environment = environment
         process.standardInput = toChild
         process.standardOutput = fromChild

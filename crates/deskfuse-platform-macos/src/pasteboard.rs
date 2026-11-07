@@ -161,6 +161,19 @@ fn read_file_paths(pasteboard: &objc2_app_kit::NSPasteboard) -> PlatformResult<V
     Ok(paths.into_iter().collect())
 }
 
+/// Image formats AppKit derives on demand from a canonical one. Materializing
+/// them doubles or triples both transfer size and the decode work on every
+/// clipboard change, while a paste target still receives them on request.
+const DERIVED_IMAGE_ALIASES: [&str; 7] = [
+    "public.tiff",
+    "public.jpeg",
+    "public.jpeg-2000",
+    "public.avif",
+    "com.compuserve.gif",
+    "com.microsoft.bmp",
+    "8BPS",
+];
+
 fn read_items(pasteboard: &objc2_app_kit::NSPasteboard) -> PlatformResult<Vec<PasteboardItem>> {
     let mut result = Vec::new();
     if let Some(items) = pasteboard.pasteboardItems() {
@@ -168,10 +181,23 @@ fn read_items(pasteboard: &objc2_app_kit::NSPasteboard) -> PlatformResult<Vec<Pa
             let item = items.objectAtIndex(index);
             let mut representations = Vec::new();
             let types = item.types();
+            let names = (0..types.count())
+                .map(|type_index| types.objectAtIndex(type_index).to_string())
+                .collect::<Vec<_>>();
+            // A canonical image already carries these pixels; only formats the
+            // item declares natively survive without one.
+            let has_png = names.iter().any(|name| name == "public.png");
+            let has_image = has_png || names.iter().any(|name| name == "public.tiff");
             for type_index in 0..types.count() {
                 let kind = types.objectAtIndex(type_index);
                 let type_name = kind.to_string();
                 if is_remote_bookkeeping(&type_name) {
+                    continue;
+                }
+                if has_image
+                    && DERIVED_IMAGE_ALIASES.contains(&type_name.as_str())
+                    && !(type_name == "public.tiff" && !has_png)
+                {
                     continue;
                 }
                 // Materialize promised data while the original owner is alive.
@@ -416,6 +442,25 @@ mod tests {
         let destination = objc2_app_kit::NSPasteboard::pasteboardWithUniqueName();
         write_items(&destination, &items).expect("write all formats");
         assert_eq!(read_items(&destination).expect("read remote"), items);
+    }
+
+    #[test]
+    fn derived_image_aliases_are_not_materialized_beside_png() {
+        let source = objc2_app_kit::NSPasteboard::pasteboardWithUniqueName();
+        let png = objc2_foundation::NSData::with_bytes(b"\x89PNG\r\n\x1a\n fake");
+        let tiff = objc2_foundation::NSData::with_bytes(b"II\x2a\0 huge derived image");
+        let bmp = objc2_foundation::NSData::with_bytes(b"BM huge derived image");
+        assert!(source.setData_forType(Some(&png), &NSString::from_str("public.png")));
+        assert!(source.setData_forType(Some(&tiff), &NSString::from_str("public.tiff")));
+        assert!(source.setData_forType(Some(&bmp), &NSString::from_str("com.microsoft.bmp")));
+        let items = read_items(&source).expect("read all formats");
+        assert_eq!(items.len(), 1);
+        let names = items[0]
+            .representations
+            .iter()
+            .map(|r| r.type_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["public.png"]);
     }
 
     #[test]

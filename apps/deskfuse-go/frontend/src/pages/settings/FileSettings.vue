@@ -106,7 +106,7 @@ async function clearCache() {
           <SettingsRow v-if="cache" compact subdued title="已使用" :detail="cacheMessage || undefined">
             <span class="value">{{ formatBytes(Number(get(cache, 'used'))) }} / {{ formatBytes(Number(get(cache, 'maximum'))) }}</span>
           </SettingsRow>
-          <SettingsRow title="缓存上限" detail="传输过程中临时占用的空间上限；超出后复用最早的文件。">
+          <SettingsRow title="缓存上限" detail="复制后自动预取文件的空间上限；主动发送和粘贴不受限制。超出后清理最早的文件。">
             <input v-model.number="cacheLimit" class="field limit" type="number" min="1" :disabled="saving || !saved" aria-label="缓存上限（MiB）" />
             <span class="unit">MiB</span>
           </SettingsRow>

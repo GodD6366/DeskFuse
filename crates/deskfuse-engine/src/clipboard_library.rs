@@ -488,6 +488,10 @@ pub struct Library {
     /// blob 文件目录：<AppSupport>/DeskFuse/blobs/
     /// 新写入只存文件，cl_blobs 保留空占位行（bytes=x''）。
     blob_dir: std::path::PathBuf,
+    /// Remote-row thumbnails wanted from peers, by blob hash. Small images
+    /// travel ahead of their (possibly huge) payloads.
+    wanted_thumbnails: Mutex<HashMap<String, std::time::Instant>>,
+    pub(crate) thumbnail_wanted: tokio::sync::Notify,
     // Drop the connection before removing its test database directory.
     #[cfg(test)]
     _test_directory: tempfile::TempDir,
@@ -680,6 +684,8 @@ END;").map_err(err)?;
             counts_generation: AtomicU64::new(1),
             state_cache: Mutex::new(None),
             blob_dir,
+            wanted_thumbnails: Mutex::new(HashMap::new()),
+            thumbnail_wanted: tokio::sync::Notify::new(),
         };
         this.import_legacy()?;
         this.migrate_image_digests()?;
@@ -1439,7 +1445,112 @@ END;").map_err(err)?;
     }
     /// Return only a display-sized derivative across FFI, not the 1600px
     /// detail preview or the original restorable clipboard representations.
+    /// Thumbnail PNG, or empty when none exists yet. A remote row whose
+    /// payload is not local falls back to the peer-sent thumbnail and asks
+    /// the source device for one if it has not arrived.
     pub fn thumbnail(&self, id: u64, max_pixel_size: u32) -> Result<Vec<u8>> {
+        let local = self.local_thumbnail(id, max_pixel_size);
+        if local.as_ref().is_ok_and(|bytes| !bytes.is_empty()) {
+            return local;
+        }
+        let hash: Option<String> = self
+            .reader()?
+            .query_row(
+                "SELECT blob_hash FROM cl_items WHERE id=?1 AND blob_hash IS NOT NULL AND payload IS NULL",
+                [id as i64],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        let Some(hash) = hash.filter(|hash| hash.len() == 64) else {
+            return local;
+        };
+        if let Ok(bytes) = std::fs::read(self.remote_thumbnail_path(&hash)) {
+            return Ok(bytes);
+        }
+        // Only ask for rows whose payload never arrived; a local payload that
+        // simply failed to decode has no better thumbnail elsewhere.
+        if !blob_file_path(&self.blob_dir, &hash).exists() {
+            self.want_thumbnail(&hash);
+        }
+        local
+    }
+
+    fn remote_thumbnail_path(&self, hash: &str) -> std::path::PathBuf {
+        self.blob_dir.join("thumbnails").join(format!("{hash}.png"))
+    }
+
+    fn want_thumbnail(&self, hash: &str) {
+        if let Ok(mut wanted) = self.wanted_thumbnails.lock() {
+            wanted.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
+            if wanted.len() < 256 {
+                wanted
+                    .entry(hash.to_owned())
+                    .or_insert_with(std::time::Instant::now);
+            }
+        }
+        self.thumbnail_wanted.notify_waiters();
+    }
+
+    /// Hashes whose thumbnails are still wanted from peers.
+    pub fn wanted_thumbnails(&self) -> Vec<String> {
+        self.wanted_thumbnails
+            .lock()
+            .map(|mut wanted| {
+                wanted.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
+                wanted.keys().cloned().collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A thumbnail for a payload this device holds, small enough for one
+    /// sync frame. `None` when the payload is not local or has no image.
+    pub fn thumbnail_for_blob(&self, hash: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        let id: Option<i64> = self
+            .reader()?
+            .query_row(
+                "SELECT id FROM cl_items WHERE blob_hash=?1 ORDER BY id DESC LIMIT 1",
+                [hash],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        let Some(id) = id else { return Ok(None) };
+        for size in [480, 320, 200] {
+            let bytes = self.local_thumbnail(id as u64, size)?;
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            if bytes.len() <= max_bytes {
+                return Ok(Some(bytes));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Store a peer-sent thumbnail for a remote row and refresh the UI.
+    pub fn store_remote_thumbnail(&self, hash: &str, bytes: &[u8]) -> Result<()> {
+        let wanted = self
+            .wanted_thumbnails
+            .lock()
+            .map_err(err)?
+            .remove(hash)
+            .is_some();
+        if !wanted || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Ok(());
+        }
+        let path = self.remote_thumbnail_path(hash);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, bytes).map_err(err)?;
+        std::fs::rename(&tmp, &path).map_err(err)?;
+        self.changed_order();
+        Ok(())
+    }
+
+    fn local_thumbnail(&self, id: u64, max_pixel_size: u32) -> Result<Vec<u8>> {
         let max_pixel_size = max_pixel_size.clamp(64, 480);
         let mut snapshot = self.snapshot(id)?;
         let device = self.device.lock().map_err(err)?.clone();
