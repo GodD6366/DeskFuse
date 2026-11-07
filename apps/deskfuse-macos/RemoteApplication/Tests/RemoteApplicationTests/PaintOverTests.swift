@@ -170,6 +170,8 @@ private func makeEncoder(surface: SurfaceIdentity, metrics: MediaMetrics, policy
 
     encoder.submit(try makeFrame(surface: surface, seed: 0, at: 0))
     #expect(waitUntil { (metrics.snapshot().paintOverFrames ?? 0) == 2 })
+    // The metric counts queued passes; the collector sees them once encoded.
+    #expect(waitUntil { collected.counts.frames >= 3 })
     let settled = collected.counts.frames
     // Cooldown is 30 s here: the burst is over and nothing more may follow.
     Thread.sleep(forTimeInterval: 0.4)
