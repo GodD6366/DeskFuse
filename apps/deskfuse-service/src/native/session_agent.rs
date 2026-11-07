@@ -8,6 +8,9 @@
 
 use crate::desktop_protocol::SessionAgentState;
 
+// Secure/login desktops are constructed by the authenticated agent channel,
+// which is not wired into the service yet; tests cover the admission rules.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AgentDesktop {
     Locked,
@@ -17,6 +20,7 @@ pub(super) enum AgentDesktop {
 
 /// Facts that must come from the service-authenticated agent channel. Values
 /// supplied by the ordinary desktop pipe or a peer are not sufficient.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct AgentObservation {
     pub service_epoch: u64,
@@ -63,6 +67,7 @@ impl SessionAgent {
     /// an authenticated process alone is not authorization and an agent cannot
     /// claim SAS support. The service currently has no production agent
     /// channel, so this method is intentionally not called by ordinary IPC.
+    #[allow(dead_code)]
     pub(super) fn admit(&mut self, observation: AgentObservation) {
         let session_bound = observation.session_id == observation.active_console_session
             && observation.session_id == observation.token_session

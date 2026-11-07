@@ -4,6 +4,12 @@
 //! the UI; the service/engine layer can consume frames and encode them for the
 //! authenticated microphone transport.
 
+//! Windows microphone capture/playback for the microphone transport.
+//!
+//! The transport half is still macOS-only, so nothing in the service uses
+//! these adapters yet; they compile against cpal on Windows today.
+#![allow(dead_code)]
+
 use cpal::{Device, FromSample, SampleFormat, Stream, StreamConfig, traits::*};
 use std::{
     collections::VecDeque,

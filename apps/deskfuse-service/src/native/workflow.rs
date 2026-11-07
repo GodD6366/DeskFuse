@@ -132,12 +132,12 @@ fn decode_payload(
 }
 
 fn validate_input(kind: WorkflowContentType, payload: &Payload) -> std::result::Result<(), String> {
-    let compatible = match (kind, payload) {
-        (WorkflowContentType::Any, _) => true,
-        (WorkflowContentType::Text, Payload::Text(_)) => true,
-        (WorkflowContentType::Image, Payload::Image { .. }) => true,
-        _ => false,
-    };
+    let compatible = matches!(
+        (kind, payload),
+        (WorkflowContentType::Any, _)
+            | (WorkflowContentType::Text, Payload::Text(_))
+            | (WorkflowContentType::Image, Payload::Image { .. })
+    );
     compatible
         .then_some(())
         .ok_or_else(|| "工作流声明的输入类型与 Windows 当前剪贴板不兼容".into())
@@ -422,6 +422,9 @@ enum CatalogFrame<'a> {
     Record {
         record: &'a CatalogRecord,
     },
+    /// Reserved for the acknowledged catalog exchange; the current sync is
+    /// one-way and never sends it.
+    #[allow(dead_code)]
     Ack {
         digest: String,
     },
@@ -431,13 +434,18 @@ enum CatalogFrame<'a> {
 enum IncomingFrame {
     Summary {
         version: u32,
+        // Accepted for forward compatibility with peers that already send them.
+        #[allow(dead_code)]
         device_id: String,
+        #[allow(dead_code)]
         digest: String,
     },
     Record {
         record: CatalogRecord,
     },
+    /// Accepted from peers that acknowledge; the current sync never reads it.
     Ack {
+        #[allow(dead_code)]
         digest: String,
     },
 }

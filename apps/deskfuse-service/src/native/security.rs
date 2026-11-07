@@ -96,7 +96,7 @@ pub fn user_library_dir(session: &ClientSession) -> io::Result<std::path::PathBu
         return Err(io::Error::last_os_error());
     }
     let sid = unsafe {
-        std::ffi::OsString::from_wide(&std::slice::from_raw_parts(
+        std::ffi::OsString::from_wide(std::slice::from_raw_parts(
             sid_text,
             (0..).take_while(|i| *sid_text.add(*i) != 0).count(),
         ))
@@ -135,7 +135,7 @@ pub fn user_library_dir(session: &ClientSession) -> io::Result<std::path::PathBu
         || (kind != REG_SZ && kind != REG_EXPAND_SZ)
         || bytes == 0
         || bytes > 32_768
-        || bytes % 2 != 0
+        || !bytes.is_multiple_of(2)
     {
         unsafe { RegCloseKey(key) };
         return Err(io::Error::new(

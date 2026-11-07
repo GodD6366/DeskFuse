@@ -328,15 +328,13 @@ impl State {
                 state_epoch,
                 events,
             }),
-            RuntimeEvent::InputControlGranted {
-                session_id,
-                lease_expires_at: _,
-                ..
-            } => self.push_input(|sequence| ipc::InputDelivery::ControlGranted {
-                sequence,
-                session_id: session_id.to_string(),
-                lease_ms: 1_500,
-            }),
+            RuntimeEvent::InputControlGranted { session_id, .. } => {
+                self.push_input(|sequence| ipc::InputDelivery::ControlGranted {
+                    sequence,
+                    session_id: session_id.to_string(),
+                    lease_ms: 1_500,
+                })
+            }
             RuntimeEvent::InputControlDenied {
                 session_id, reason, ..
             } => {

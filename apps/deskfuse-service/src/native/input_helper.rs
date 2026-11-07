@@ -94,8 +94,7 @@ pub fn run_input_helper(parent_pid: u32) -> io::Result<()> {
         // Temporary diagnosis: confirm whether Windows granted the UIAccess flag.
         let mut token: HANDLE = std::ptr::null_mut();
         // SAFETY: pseudo handle of the current process and writable token out param.
-        if unsafe { OpenProcessToken(unsafe { GetCurrentProcess() }, TOKEN_QUERY, &mut token) } != 0
-        {
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0 {
             let mut flag = 0_u32;
             let mut needed = 0_u32;
             let status = unsafe {

@@ -115,11 +115,6 @@ impl Control {
 }
 static CONTROL: OnceLock<Arc<Control>> = OnceLock::new();
 
-/// Process-wide handle for async desktop-state updates (file publication
-/// results). Returns `None` before SCM dispatch started.
-pub(super) fn desktop_control() -> Option<&'static Arc<Control>> {
-    CONTROL.get()
-}
 pub use input_helper::run_input_helper;
 
 /// Enter SCM dispatch; running this directly never silently starts a console service.

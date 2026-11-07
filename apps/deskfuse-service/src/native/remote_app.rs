@@ -458,7 +458,6 @@ fn launchable_apps() -> Vec<RemoteAppEntry> {
 
 /// Render a RemoteApp document. The logical hostname cannot be dialed; the
 /// native bridge always supplies a socketpair-backed QUIC transport.
-#[must_use]
 pub fn rdp_file(app: &RemoteAppEntry) -> io::Result<String> {
     // Callers may construct entries directly. Do not rely on debug assertions:
     // every field must be validated before reaching the line-oriented RDP file.

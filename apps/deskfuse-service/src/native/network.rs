@@ -198,7 +198,7 @@ impl Network {
 
     pub async fn sync_input_authority(&self) -> io::Result<()> {
         self.refresh_input_routes();
-        let mut view = input_view(self.runtime.snapshot_view());
+        let view = input_view(self.runtime.snapshot_view());
         let allowed = view
             .snapshot
             .peers
@@ -240,7 +240,7 @@ impl Network {
     /// The input transport only dials its own port, so an authoritative control
     /// view alone can never satisfy a link request.
     fn refresh_input_routes(&self) {
-        let (Ok(mut events), Ok(mut routes)) =
+        let (Ok(events), Ok(mut routes)) =
             (self.input_discovery_events.lock(), self.input_routes.lock())
         else {
             return;
