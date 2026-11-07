@@ -212,7 +212,7 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_macos_only_uploads_only_selected_assets(self):
         self.make_macos_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory") as verify, patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.MACOS_ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value=self.data["version"]), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory") as verify, patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.MACOS_ASSETS)), patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit, include_windows=False)
             commands = [call.args[0] for call in runner.call_args_list]
             uploads = [Path(call.args[1]).name for call in upload.call_args_list]
@@ -269,7 +269,7 @@ class ReleaseTests(unittest.TestCase):
     def test_upload_failure_leaves_draft_unpublished(self):
         self.make_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset", side_effect=ValueError("upload failed")):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset", side_effect=ValueError("upload failed")):
             with self.assertRaises(ValueError):
                 release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
             commands = [call.args[0][2] for call in runner.call_args_list]
@@ -277,11 +277,21 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotIn("edit", commands)
             self.assertIn("--draft", runner.call_args_list[0].args[0])
 
+    def test_retry_reuses_an_existing_draft(self):
+        self.make_inventory()
+        (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "draft_release", return_value={"upload_url": self.upload_url}), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
+            release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
+            commands = [call.args[0][2] for call in runner.call_args_list]
+            self.assertNotIn("create", commands)
+            self.assertIn("edit", commands)
+            self.assertTrue(upload.called)
+
     def test_download_mismatch_never_publishes(self):
         self.make_inventory()
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
         # GitHub deployments without asset digests still verify by downloading.
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory", side_effect=[None, ValueError("uploaded checksum mismatch")]), patch.object(release, "remote_asset_digests", return_value=None), patch.object(release.time, "sleep"), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"), patch.object(release, "download_assets") as download:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory", side_effect=[None, ValueError("uploaded checksum mismatch")]), patch.object(release, "remote_asset_digests", return_value=None), patch.object(release.time, "sleep"), patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"), patch.object(release, "download_assets") as download:
             with self.assertRaises(ValueError):
                 release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
             commands = [call.args[0][2] for call in runner.call_args_list]
@@ -294,7 +304,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root / "CHANGELOG.md").write_text("## [0.1.0]\nTest release")
         digests = self.local_digests(release.ASSETS)
         digests[release.ARM64_APP_ZIP] = "0" * 64
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=digests), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", return_value=False), patch.object(release.subprocess, "run") as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=digests), patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
             with self.assertRaisesRegex(ValueError, "digest mismatch"):
                 release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
             self.assertNotIn("edit", [call.args[0][2] for call in runner.call_args_list])
@@ -306,7 +316,7 @@ class ReleaseTests(unittest.TestCase):
         def run(command, **kwargs):
             if command[2] == "create":
                 notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run", side_effect=run) as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]) as probe, patch.object(release.subprocess, "run", side_effect=run) as runner, patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset") as upload:
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
             commands = [call.args[0] for call in runner.call_args_list]
             self.assertEqual(commands[0][2], "create")
@@ -325,7 +335,7 @@ class ReleaseTests(unittest.TestCase):
         def run(command, **kwargs):
             if command[2] == "create":
                 notes.append(Path(command[command.index("--notes-file") + 1]).read_text())
-        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
+        with patch.object(release, "ROOT", self.root), patch.object(release, "version", return_value="0.1.0"), patch.object(release, "probe", side_effect=[False, True]), patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "verify_inventory"), patch.object(release, "remote_asset_digests", return_value=self.local_digests(release.ASSETS)), patch.object(release, "draft_release", return_value=None), patch.object(release, "remote_release", return_value={"upload_url": self.upload_url}), patch.object(release, "upload_asset"):
             release.publish(self.root, "owner/repo", "v0.1.0", self.commit)
         self.assertIn("Developer ID signed and notarized", notes[0])
         self.assertNotIn("ad-hoc signed", notes[0])
