@@ -64,6 +64,10 @@ path = "src/client.rs"
 [[bin]]
 name = "deskfuse-input-helper"
 path = "src/input_helper.rs"
+# The helper embeds a uiAccess=true manifest, so any test harness built from
+# this target cannot start outside a signed trusted install. It has no unit
+# tests; its behaviour is covered by the lib and adapter tests.
+test = false
 
 [lints]
 workspace = true
