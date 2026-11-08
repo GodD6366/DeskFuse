@@ -14,6 +14,7 @@ const accountMode = ref<'saved' | 'manual'>('saved')
 const accountID = ref('')
 const search = ref('')
 const searchFocused = ref(false)
+const scrollbarVisible = ref(false)
 const loading = ref(false)
 const error = ref('')
 const actionError = ref('')
@@ -47,6 +48,7 @@ const manualAccountName = ref('')
 
 let disposed = false
 let revision = 0
+let scrollbarTimer: ReturnType<typeof setTimeout> | undefined
 
 const favoritesStore = localStore<string[]>(`deskfuse.remoteapps.favorites.${props.device.id}`, [])
 const storedFavorites = favoritesStore.read()
@@ -207,6 +209,11 @@ async function setVirtualDisplay(enabled: boolean) {
 }
 function clearSearch() {
   search.value = ''
+}
+function revealScrollbar() {
+  scrollbarVisible.value = true
+  clearTimeout(scrollbarTimer)
+  scrollbarTimer = setTimeout(() => { scrollbarVisible.value = false }, 650)
 }
 
 async function load(refresh = false) {
@@ -440,6 +447,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true
   ++revision
+  clearTimeout(scrollbarTimer)
   document.removeEventListener('mousedown', closeAccountMenu)
   // 只关闭浏览通道；已打开的远程应用窗口由原生管理器保留。
   void backend.invoke('remoteApps.closeCatalog', { device_id: props.device.id }).catch(() => {})
@@ -473,7 +481,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else class="catalog-body">
+    <div v-else class="catalog-body" :class="{ scrolling: scrollbarVisible }" @scroll="revealScrollbar">
       <div class="toolbar">
         <div v-if="rdp" ref="accountRoot" class="account">
           <button
@@ -624,15 +632,14 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="tile"
-              :class="{ mac: !rdp }"
               :disabled="!canOpen || opening !== null"
               :title="tileHelp(app)"
               :aria-label="`打开 ${appTitle(app)}`"
               @click="open(app)"
             >
-              <img v-if="app.icon" class="tile-app-icon" :class="{ rdp }" :src="app.icon" alt="" draggable="false" />
-              <span v-else class="tile-icon"><Icon name="window" :size="24" /></span>
-              <span class="tile-name" :class="{ single: !rdp }">{{ appTitle(app) }}</span>
+              <img v-if="app.icon" class="tile-app-icon" :src="app.icon" alt="" draggable="false" />
+              <span v-else class="tile-icon"><Icon name="window" :size="30" /></span>
+              <span class="tile-name single">{{ appTitle(app) }}</span>
               <span v-if="!rdp" class="tile-status">
                 <i v-if="app.opened === true || app.running === true" :class="{ open: app.opened === true }" />
                 {{ appStatus(app) }}
@@ -670,9 +677,9 @@ onBeforeUnmount(() => {
               :aria-label="`打开 ${appTitle(app)}`"
               @click="open(app)"
             >
-              <img v-if="app.icon" class="tile-app-icon rdp" :src="app.icon" alt="" draggable="false" />
-              <span v-else class="tile-icon"><Icon name="window" :size="24" /></span>
-              <span class="tile-name">{{ appTitle(app) }}</span>
+              <img v-if="app.icon" class="tile-app-icon" :src="app.icon" alt="" draggable="false" />
+              <span v-else class="tile-icon"><Icon name="window" :size="30" /></span>
+              <span class="tile-name single">{{ appTitle(app) }}</span>
             </button>
             <button
               type="button"
@@ -826,12 +833,25 @@ onBeforeUnmount(() => {
   min-height: 0;
   /* 应用网格按可用宽度换行；横向溢出只会造成多余的横向滚动条，直接禁止。 */
   overflow-y: auto;
+  overflow-y: overlay;
   overflow-x: hidden;
-  padding: 20px;
+  padding: 12px 20px 20px;
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 12px;
+  scrollbar-width: none;
 }
+.catalog-body::-webkit-scrollbar { width: 0; height: 0; }
+.catalog-body.scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--secondary) 45%, transparent) transparent;
+}
+.catalog-body.scrolling::-webkit-scrollbar { width: 4px; height: 4px; }
+.catalog-body.scrolling::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--secondary) 45%, transparent);
+}
+.catalog-body.scrolling::-webkit-scrollbar-track { background: transparent; }
 .catalog-body > * { min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .account { position: relative; min-width: 0; }
@@ -930,23 +950,20 @@ onBeforeUnmount(() => {
 .tile-wrap { position: relative; min-width: 0; }
 .tile {
   width: 100%;
-  min-height: 86px;
+  min-height: 120px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text);
 }
-.tile:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
-.tile.mac { min-height: 120px; border-color: transparent; background: transparent; padding: 8px 4px; }
-.tile.mac:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.tile:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .tile-app-icon { width: 64px; height: 64px; object-fit: contain; }
-.tile-app-icon.rdp { width: 42px; height: 42px; }
 .tile-name.single { -webkit-line-clamp: 1; max-width: 100%; }
 .tile-status { display: inline-flex; align-items: center; gap: 4px; min-height: 13px; font-size: 11px; color: var(--secondary); }
 .tile-status i { width: 5px; height: 5px; border-radius: 50%; background: var(--secondary); }
@@ -958,11 +975,11 @@ onBeforeUnmount(() => {
 .virtual-display { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--secondary); flex: none; }
 .catalog-foot { display: flex; justify-content: space-between; margin: 0; }
 .tile-icon {
-  width: 42px;
-  height: 42px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
 }

@@ -578,7 +578,7 @@ const recent = computed(() => transfers.value.slice(0, 3))
 .empty-line { padding: 20px 11px; margin: 0; }
 
 .detail { flex: 1 1 0; min-width: 420px; margin-top: 8px; padding: 4px 24px 24px; display: grid; align-content: start; gap: 16px; }
-.detail.applications { display: flex; flex-direction: column; align-content: normal; gap: 0; padding: 0; }
+.detail.applications { display: flex; flex-direction: column; align-content: normal; gap: 0; margin-top: 0; padding: 0; }
 .detail.applications > .notice { margin: 12px 20px 0; }
 .pairing-message { margin: 0; user-select: text; }
 .head-card { display: flex; align-items: flex-start; gap: 16px; padding: 20px; }
