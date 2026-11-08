@@ -87,7 +87,7 @@ let deskfuseTargets: [Target] = [
             .linkedFramework("Vision"),
         ]
     ),
-    .testTarget(name: "DeskFuseTests", dependencies: ["DeskFuse", "DeskFuseEngine"], path: "Tests/DeskFuseTests"),
+    .testTarget(name: "DeskFuseTests", dependencies: ["DeskFuse", "DeskFuseEngine", "DeskFuseRemoteApplication"], path: "Tests/DeskFuseTests"),
 ]
 
 let package = Package(

@@ -129,7 +129,14 @@ enum MyGoRemoteCatalog {
         if let icon = app.iconPNG { meta["icon"] = "data:image/png;base64," + icon.base64EncodedString() }
         return meta
     }
-    private static func rdpMetadata(_ app: RemoteRdpApp) -> [String: Any] { ["id": rdpID(app), "name": app.displayName.isEmpty ? app.name : app.displayName, "bundle_id": NSNull(), "category": "windows"] }
+    static func rdpMetadata(_ app: RemoteRdpApp) -> [String: Any] {
+        var meta: [String: Any] = ["id": rdpID(app), "name": app.displayName.isEmpty ? app.name : app.displayName,
+                                   "bundle_id": NSNull(), "category": "windows"]
+        if let icon = app.iconPng, Data(base64Encoded: icon) != nil {
+            meta["icon"] = "data:image/png;base64," + icon
+        }
+        return meta
+    }
     private static func favoritesKey(_ peerID: String) -> String { "remote-rdp-favorites.\(peerID)" }
     private static func rdpFavoriteNames(_ peerID: String) -> Set<String> { Set(UserDefaults.standard.stringArray(forKey: favoritesKey(peerID)) ?? []) }
     private static func rdpFavoriteIDs(peerID: String, apps: [RemoteRdpApp]) -> [String] {

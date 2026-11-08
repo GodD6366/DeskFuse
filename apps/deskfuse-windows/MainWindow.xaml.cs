@@ -3669,10 +3669,15 @@ public sealed partial class MainWindow : Window
         // 未摆放过的远端屏幕紧贴本机组摆放；留 96 的空隙会让它看起来是浮着的。
         double fallbackX = tiles.Max(t => t.X + t.Width);
         var layoutSettings = JsonProperty(input, "settings");
+        var participants = InputLayout.Participants(layoutSettings);
         var wallpapers = JsonProperty(input, "remote_wallpapers");
         foreach (var remote in input.Array("remote_topologies"))
         {
             string peer = remote.String("peer_id");
+            // The service publishes each peer's topology so the device picker can
+            // report screen readiness; only added participants are part of the
+            // desktop layout.
+            if (!participants.Contains(peer)) continue;
             string name = latest?.Array("peers").FirstOrDefault(p => p.String("peer_id") == peer).String("display_name", "远端") ?? "远端";
             var displays = JsonProperty(remote, "topology").Array("displays").ToArray();
             double minX = displays.Length == 0 ? 0 : displays.Min(d => LayoutNumber(d, "frame_x"));
@@ -3865,6 +3870,8 @@ public sealed partial class MainWindow : Window
         }
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(DfUi.Detail("选择已配对的电脑，添加它的全部屏幕。屏幕尺寸由对端提供，连接就绪后才能跨屏操作。"));
+        var helperNotice = DfUi.Text("", 12, foreground: DfUi.Warning);
+        panel.Children.Add(helperNotice);
         var rows = new StackPanel { Spacing = 8 };
         panel.Children.Add(new ScrollViewer { Content = rows, MaxHeight = 320 });
         var hint = DfUi.Detail("");
@@ -3876,6 +3883,10 @@ public sealed partial class MainWindow : Window
             var settings = JsonProperty(JsonProperty(state, "input"), "settings");
             var included = settings.Array("participants").Select(p => p.GetString() ?? "").ToHashSet();
             var activations = JsonProperty(state, "input").Array("activations").ToArray();
+            bool inputReady = JsonProperty(state, "capabilities").Bool("input");
+            helperNotice.Text = inputReady ? "" : inputHelperFailure
+                ?? "本机输入组件未就绪：鼠标共享需要已签名的 UIAccess 输入组件。请在设置 → 权限查看原因。";
+            helperNotice.Visibility = inputReady ? Visibility.Collapsed : Visibility.Visible;
             foreach (var peer in state.Array("peers").Where(p => p.String("trust") == "trusted"))
             {
                 string id = peer.String("peer_id");

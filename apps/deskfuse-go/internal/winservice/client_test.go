@@ -383,6 +383,19 @@ func TestSnapshotProjectsServiceInputState(t *testing.T) {
 	}
 }
 
+func TestSnapshotOnlyListsAddedRemoteScreens(t *testing.T) {
+	withExtraPeer := strings.Replace(sampleInputSnapshot, `"remote_topologies": [`,
+		`"remote_topologies": [{"peer_id":"mac-2","topology":{"generation":1,"displays":[{"id":"d2","frame_x":0,"frame_y":0,"width":1280,"height":800,"scale_factor":2,"rotation_degrees":0,"is_primary":true}]}},`, 1)
+	_, dial := newDesktopPipe(t, withExtraPeer, queuedReply)
+	service := NewService(dial)
+
+	value := mustCall(t, service, "app.snapshot", nil)
+	displays := value["input"].(map[string]any)["displays"].([]any)
+	if len(displays) != 1 || displays[0].(map[string]any)["device_id"] != "mac-1" {
+		t.Fatalf("未添加设备的屏幕不应出现在布局中: %v", displays)
+	}
+}
+
 func TestInvokeTranslatesPairingActions(t *testing.T) {
 	cases := []struct {
 		action  string

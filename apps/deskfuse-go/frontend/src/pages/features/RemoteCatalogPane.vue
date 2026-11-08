@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import DeviceIcon from './DeviceIcon.vue'
 import Icon from './Icon.vue'
 import { localStore } from './core'
 import { backend, errorMessage } from '../../services/backend'
@@ -449,19 +448,6 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="catalog">
-    <header class="catalog-head">
-      <DeviceIcon :name="device.name" :src="device.iconUrl" :size="42" />
-      <div class="head-text">
-        <div class="df-title df-ellipsis">{{ device.name }}</div>
-        <div class="df-detail df-secondary">应用列表</div>
-      </div>
-      <span class="df-spacer" />
-      <button type="button" class="refresh-button" aria-label="刷新应用列表" title="刷新应用列表" :disabled="loading" @click="load(true)">
-        <Icon name="refresh" :size="15" />
-      </button>
-    </header>
-    <hr class="df-divider" />
-
     <div v-if="loading && !rows.length" class="state-wrap">
       <div class="state">
         <span class="spinner" role="status" aria-label="正在读取应用列表" />
@@ -538,6 +524,11 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+        <label v-if="!rdp" class="virtual-display" title="开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。下次打开或重新连接时生效。">
+          <span>虚拟屏幕</span>
+          <span class="badge beta">实验性</span>
+          <input class="toggle" type="checkbox" :checked="virtualDisplay" aria-label="虚拟屏幕模式" @change="setVirtualDisplay(($event.target as HTMLInputElement).checked)" />
+        </label>
         <span class="df-spacer" />
         <div v-if="rdp" class="scope" role="tablist" aria-label="应用范围">
           <button type="button" role="tab" :aria-pressed="scope === 'all'" @click="scope = 'all'">全部</button>
@@ -556,6 +547,9 @@ onBeforeUnmount(() => {
             <Icon name="x-circle" :size="13" />
           </button>
         </label>
+        <button type="button" class="refresh-button" aria-label="刷新应用列表" title="刷新应用列表" :disabled="loading" @click="load(true)">
+          <Icon name="refresh" :size="15" />
+        </button>
       </div>
 
       <div v-if="rdp && accountMode === 'manual'" class="manual-account">
@@ -603,12 +597,6 @@ onBeforeUnmount(() => {
             @click="category = item"
           >{{ item }}</button>
         </div>
-        <span class="df-spacer" />
-        <label class="virtual-display" title="开启后，每个远程应用使用专属虚拟屏幕；关闭后使用被控 Mac 上的原有应用窗口。下次打开或重新连接时生效。">
-          <span>虚拟屏幕</span>
-          <span class="badge beta">实验性</span>
-          <input class="toggle" type="checkbox" :checked="virtualDisplay" aria-label="虚拟屏幕模式" @change="setVirtualDisplay(($event.target as HTMLInputElement).checked)" />
-        </label>
       </div>
 
       <p v-if="actionError" class="inline-error" role="alert"><Icon name="alert" :size="14" />{{ actionError }}</p>
@@ -642,7 +630,7 @@ onBeforeUnmount(() => {
               :aria-label="`打开 ${appTitle(app)}`"
               @click="open(app)"
             >
-              <img v-if="!rdp && app.icon" class="tile-app-icon" :src="app.icon" alt="" draggable="false" />
+              <img v-if="app.icon" class="tile-app-icon" :class="{ rdp }" :src="app.icon" alt="" draggable="false" />
               <span v-else class="tile-icon"><Icon name="window" :size="24" /></span>
               <span class="tile-name" :class="{ single: !rdp }">{{ appTitle(app) }}</span>
               <span v-if="!rdp" class="tile-status">
@@ -682,7 +670,8 @@ onBeforeUnmount(() => {
               :aria-label="`打开 ${appTitle(app)}`"
               @click="open(app)"
             >
-              <span class="tile-icon"><Icon name="window" :size="24" /></span>
+              <img v-if="app.icon" class="tile-app-icon rdp" :src="app.icon" alt="" draggable="false" />
+              <span v-else class="tile-icon"><Icon name="window" :size="24" /></span>
               <span class="tile-name">{{ appTitle(app) }}</span>
             </button>
             <button
@@ -819,11 +808,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   color: var(--text);
 }
-.catalog-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 20px; }
-.head-text { display: grid; gap: 4px; min-width: 0; }
 .refresh-button {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   flex: none;
   display: grid;
   place-items: center;
@@ -959,12 +946,13 @@ onBeforeUnmount(() => {
 .tile.mac { min-height: 120px; border-color: transparent; background: transparent; padding: 8px 4px; }
 .tile.mac:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .tile-app-icon { width: 64px; height: 64px; object-fit: contain; }
+.tile-app-icon.rdp { width: 42px; height: 42px; }
 .tile-name.single { -webkit-line-clamp: 1; max-width: 100%; }
 .tile-status { display: inline-flex; align-items: center; gap: 4px; min-height: 13px; font-size: 11px; color: var(--secondary); }
 .tile-status i { width: 5px; height: 5px; border-radius: 50%; background: var(--secondary); }
 .tile-status i.open { background: var(--accent); }
-.categories { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.category-chips { display: flex; align-items: center; gap: 5px; overflow-x: auto; min-width: 0; }
+.categories { display: flex; align-items: center; min-width: 0; }
+.category-chips { flex: 1; display: flex; align-items: center; gap: 5px; overflow-x: auto; min-width: 0; }
 .category-chips button { height: 22px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--secondary); font-size: 11px; white-space: nowrap; flex: none; }
 .category-chips button.on { background: var(--accent); border-color: transparent; color: #fff; }
 .virtual-display { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--secondary); flex: none; }

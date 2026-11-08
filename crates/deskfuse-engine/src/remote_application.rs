@@ -278,8 +278,7 @@ impl Service {
         ticket: Vec<u8>,
         socket: std::os::unix::net::UnixStream,
     ) -> Result<Arc<RdpTunnelConnection>, String> {
-        socket.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let socket = tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())?;
+        let socket = rdp_unix_stream(&self.executor, socket)?;
         self.open_rdp_stream(peer, ticket, socket)
     }
 
@@ -299,7 +298,7 @@ impl Service {
             .set_nonblocking(true)
             .map_err(|e| format!("无法配置本地 RDP 端口：{e}"))?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| e.to_string())?;
+        let listener = rdp_tcp_listener(&self.executor, listener)?;
         let service = self.clone();
         self.executor.spawn(async move {
             let accepted =
@@ -313,5 +312,67 @@ impl Service {
             }
         });
         Ok(port)
+    }
+}
+
+/// `from_std` registers the socket immediately and therefore needs a Tokio
+/// reactor even though all subsequent I/O runs on `executor`. UniFFI calls this
+/// from the native UI thread, so explicitly enter the installed runtime first.
+#[cfg(unix)]
+fn rdp_unix_stream(
+    executor: &tokio::runtime::Handle,
+    socket: std::os::unix::net::UnixStream,
+) -> Result<tokio::net::UnixStream, String> {
+    socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let _runtime = executor.enter();
+    tokio::net::UnixStream::from_std(socket).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn rdp_tcp_listener(
+    executor: &tokio::runtime::Handle,
+    listener: std::net::TcpListener,
+) -> Result<tokio::net::TcpListener, String> {
+    let _runtime = executor.enter();
+    tokio::net::TcpListener::from_std(listener).map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn rdp_unix_socket_can_be_registered_from_a_native_ui_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let executor = runtime.handle().clone();
+        std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            let (socket, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let socket = super::rdp_unix_stream(&executor, socket).unwrap();
+            drop((socket, peer));
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdp_tcp_listener_can_be_registered_from_a_native_ui_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let executor = runtime.handle().clone();
+        std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = super::rdp_tcp_listener(&executor, listener).unwrap();
+            drop(listener);
+        })
+        .join()
+        .unwrap();
     }
 }

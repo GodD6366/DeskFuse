@@ -297,8 +297,20 @@ func (in inputWire) view(peers []peerWire) map[string]any {
 		ready[link.PeerID] = link.Ready
 	}
 
+	// The service publishes a topology for every peer that reported one; the
+	// layout only owns screens of participants added to this desktop.
+	participants := make(map[string]struct{})
+	if in.Settings != nil {
+		for _, id := range in.Settings.Participants {
+			participants[id] = struct{}{}
+		}
+	}
+
 	displays := make([]map[string]any, 0)
 	for _, topology := range in.RemoteTopologies {
+		if _, added := participants[topology.PeerID]; !added {
+			continue
+		}
 		name := names[topology.PeerID]
 		if name == "" {
 			name = topology.PeerID

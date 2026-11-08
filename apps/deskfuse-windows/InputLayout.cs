@@ -26,6 +26,20 @@ internal static class InputLayout
         return null;
     }
 
+    /// <summary>Peers whose screens belong on this desktop. The service exposes
+    /// topologies for every peer that reported one; only added participants are
+    /// part of the layout.</summary>
+    public static HashSet<string> Participants(JsonElement settings)
+    {
+        var participants = new HashSet<string>(StringComparer.Ordinal);
+        if (settings.ValueKind != JsonValueKind.Object || !settings.TryGetProperty("participants", out var list)
+            || list.ValueKind != JsonValueKind.Array) return participants;
+        foreach (var item in list.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } id)
+                participants.Add(id);
+        return participants;
+    }
+
     public static bool Confirms(JsonElement settings, IReadOnlyList<InputLayoutRect> before, string deviceId, double dx, double dy)
     {
         var moving = before.Where(r => r.DeviceId == deviceId).ToArray();

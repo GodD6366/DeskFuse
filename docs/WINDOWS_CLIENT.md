@@ -56,7 +56,7 @@ Windows MSVC x64 / .NET 8 / NSIS 3：
 
 脚本默认不运行测试、不安装服务、不启动应用。安装器实际执行时按安装说明注册服务和仅 Private / LocalSubnet 的程序端口规则。移除只处理本安装器的载荷和规则，保留身份、配对和用户数据。
 
-没有 Authenticode 或发行签名时明确记录未签名。**该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。机器 helper 已接线 UAC/SCM admission、GUI/service/input-helper 协调、SQLite/WAL/SHM 备份恢复和启动自检证据；当前 NSIS 仍只允许首次安装，缺少签名事务载荷/activation contract 时 helper 在 replacement 前拒绝执行，updater 继续为 false。Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
+没有 Authenticode 或发行签名时明确记录未签名。**未签名的 input helper 不能通过 Windows UIAccess 校验（Win32 8235），键鼠共享会显示「本机输入组件未就绪」；这不是设备添加或布局配置失败。** **该安装器不是 LAN 自动更新载荷**，不得绕过发行验证导入更新库存。机器 helper 已接线 UAC/SCM admission、GUI/service/input-helper 协调、SQLite/WAL/SHM 备份恢复和启动自检证据；当前 NSIS 仍只允许首次安装，缺少签名事务载荷/activation contract 时 helper 在 replacement 前拒绝执行，updater 继续为 false。Windows 安全桌面、Windows 作为主控、Explorer 按需拖放、真实两机与视觉验收仍分别记录，不用跨编译成功替代。
 
 ## 剪贴板去回环修正（build 105）
 

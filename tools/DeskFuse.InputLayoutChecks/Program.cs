@@ -13,6 +13,13 @@ Check(InputLayout.Placement(saved, "remote", "other") is null, "wrong display ma
 Check(InputLayout.Placement(default, "remote", "mac") is null, "empty snapshot must have no position");
 Console.WriteLine("PASS: runtime placement schema, negative/fractional coordinates and missing display");
 
+var participants = JsonSerializer.SerializeToElement(new { participants = new[] { "remote", "" }, placements = Array.Empty<object>() });
+var selected = InputLayout.Participants(participants);
+Check(selected.SetEquals(["remote"]), "participants were not read");
+Check(InputLayout.Participants(Settings()).Count == 0, "missing participants must not add screens");
+Check(InputLayout.Participants(default).Count == 0, "empty settings must not add screens");
+Console.WriteLine("PASS: only added participants own remote screens");
+
 InputLayoutRect[] two = [new("local", "win", 0, 0, 2560, 1440), new("remote", "mac", 2560, 0, 1920, 1080)];
 var left = InputLayout.SnapMove(two, "remote", -700, 170.5);
 Check(left == (-4480, 180), "leftward overlap did not preview the left seam");

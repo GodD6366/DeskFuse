@@ -1,4 +1,5 @@
 import XCTest
+import DeskFuseRemoteApplication
 @testable import DeskFuse
 
 private final class FrameCollector: @unchecked Sendable {
@@ -222,6 +223,18 @@ final class MyGoBridgeTests: XCTestCase {
         XCTAssertThrowsError(try MyGoBridgeReply.success(id: "x", result: Data("[1]".utf8))) {
             XCTAssertEqual(($0 as? MyGoBridgeError)?.code, "internal")
         }
+    }
+
+    // MARK: remote application catalog
+
+    @available(macOS 14.2, *)
+    @MainActor
+    func testRDPCatalogMetadataKeepsWindowsIcon() throws {
+        let json = #"{"name":"notepad","display_name":"记事本","path":"C:\\Windows\\notepad.exe","command_line":"","icon_path":"","icon_index":0,"icon_png":"aGVsbG8="}"#
+        let app = try JSONDecoder().decode(RemoteRdpApp.self, from: Data(json.utf8))
+        let metadata = MyGoRemoteCatalog.rdpMetadata(app)
+        XCTAssertEqual(metadata["name"] as? String, "记事本")
+        XCTAssertEqual(metadata["icon"] as? String, "data:image/png;base64,aGVsbG8=")
     }
 
     // MARK: opt-in activation

@@ -16,7 +16,7 @@
 
 Rust Windows target 全依赖使用静态 CRT（`-C target-feature=+crt-static`），保留调用方有效 Rust flags；结束后恢复原 `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`。打包器对五个应用/helper EXE 检查普通及 delay-load imports；非系统依赖必须以准确 DLL 名称随包存在，不能依赖构建机已经安装的 VC runtime，也不会从构建机复制任意 DLL。该检查不等价于所有随包 DLL 的递归依赖或实际启动验证。
 
-输出至 `dist/windows/`：EXE、`.manifest.json` 和 `.sha256`。清单分别记录每个载荷的 SHA-256 与 Authenticode 状态。开发机未传 `-AuthenticodeCertificateThumbprint` 时仍输出 `NotSigned`；正式发布 job 从受保护的 PFX secret 导入证书，签署载荷和安装器并要求状态为 `Valid`。没有发行清单签名的安装器仍标记 `lan_update_eligible: false`；即使 helper 已随包存在，当前 `updater_helper_enabled` 仍为 `false`，不会绕过服务协调器执行更新。
+输出至 `dist/windows/`：EXE、`.manifest.json` 和 `.sha256`。清单分别记录每个载荷的 SHA-256 与 Authenticode 状态。开发机未传 `-AuthenticodeCertificateThumbprint` 时仍输出 `NotSigned`；正式发布 job 从受保护的 PFX secret 导入证书，签署载荷和安装器并要求状态为 `Valid`。**未签名的 `deskfuse-input-helper.exe` 无法通过 UIAccess 启动校验（Windows 错误 8235），键鼠共享会停在「本机输入组件未就绪」；剪贴板、文件传输和其余非 UIAccess 功能不受影响。**没有发行清单签名的安装器仍标记 `lan_update_eligible: false`；即使 helper 已随包存在，当前 `updater_helper_enabled` 仍为 `false`，不会绕过服务协调器执行更新。
 
 ## 安装与卸载
 
