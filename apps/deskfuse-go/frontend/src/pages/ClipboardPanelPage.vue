@@ -15,7 +15,7 @@ import ListEditorDialog from './clipboard/ListEditorDialog.vue'
 import TitleEditorDialog from './clipboard/TitleEditorDialog.vue'
 import type { MenuItem } from './clipboard/menu'
 import { itemMenu } from './clipboard/menus'
-import { contentTypeOf, loadPeers, loadWorkflows, runWorkflow, shareToPeer } from './clipboard/actions'
+import { closeQuickLook, contentTypeOf, loadPeers, loadWorkflows, quickLook, runWorkflow, shareToPeer } from './clipboard/actions'
 import { backend } from '../services/backend'
 import { estimatedHeight, masonryColumns, shouldPreview } from './clipboard/format'
 import { snapshotWorkflowError, snapshotWorkflowRuns } from './clipboard/workflowRuns'
@@ -171,17 +171,23 @@ function rowElement(id: string): HTMLElement | null {
 function selectItem(item: LibraryItem) {
   selectedID.value = item.id
   if (previewID.value) void showPreview(item)
+  if (quickLookOpen) void quickLook(item.id, 'follow').catch(() => undefined)
   if (item.remote && !item.available) wantPayload(item.id)
 }
 
-// 快速预览：非文件条目按原生 ClipboardPreviewPolicy 决定是否可预览；
-// 文件条目改为在访达中显示。浮窗跟随选择移动，不抢面板键盘。
-function togglePreview() {
-  if (previewID.value) { closePreview(); return }
+// 空格只开系统快速查看；面板里的小预览浮窗只由鼠标（右键“预览”）打开。
+let quickLookOpen = false
+function toggleQuickLook() {
   const item = selected.value
   if (!item) return
-  if (contentTypeOf(item) === 'files') { void revealItem(item); return }
-  if (shouldPreview(item, displayMode.value)) void showPreview(item)
+  closePreview()
+  quickLookOpen = true
+  void quickLook(item.id).catch((e) => { quickLookOpen = false; error.value = errorMessage(e) })
+}
+function dismissQuickLook() {
+  if (!quickLookOpen) return
+  quickLookOpen = false
+  void closeQuickLook().catch(() => undefined)
 }
 
 async function showPreview(item: LibraryItem, attempt = 0) {
@@ -443,12 +449,15 @@ function move(direction: 'left' | 'right' | 'up' | 'down') {
     targetID = rows[next].id
   }
   if (!targetID) return
+  // 用方向键回到内容后，空格重新用于预览。
+  searchBox.value?.blur()
   selectedID.value = targetID
   const item = rows.find((row) => row.id === targetID)
   void nextTick(() => {
     rowElement(targetID!)?.scrollIntoView({ block: 'nearest' })
     if (previewID.value && item) requestAnimationFrame(() => { void showPreview(item) })
   })
+  if (quickLookOpen && item) void quickLook(item.id, 'follow').catch(() => undefined)
   if (item?.remote && !item.available) wantPayload(item.id)
 }
 
@@ -480,10 +489,16 @@ function keydown(event: KeyboardEvent) {
     event.preventDefault()
     if (menu.value) { menu.value = null; return }
     if (previewID.value) { closePreview(); return }
-    void backend.invoke('panel.hide')
+    void (async () => {
+      // 快速查看开着时先关它，再按一次 Esc 才收起面板。
+      if (quickLookOpen) { quickLookOpen = false; if (await closeQuickLook().catch(() => false)) return }
+      await backend.invoke('panel.hide')
+    })()
     return
   }
-  if (event.key === ' ' && !editing) { event.preventDefault(); togglePreview(); return }
+  if (event.key === ' ' && !editing) { event.preventDefault(); toggleQuickLook(); return }
+  // 第一个可打印字符把焦点交给搜索框，这次按键随即输入进去（输入法同样生效）。
+  if (!editing && !meta && !event.altKey && event.key.length === 1) { searchBox.value?.focus(); return }
   if (event.key === 'Enter' && !editing) { event.preventDefault(); if (selected.value) void copyItem(selected.value, true); return }
   if ((event.key === 'Backspace' || event.key === 'Delete') && !editing) { event.preventDefault(); void deleteSelected(); return }
   if (event.key === 'ArrowDown') { event.preventDefault(); move('down'); return }
@@ -503,10 +518,12 @@ function onScroll() {
 
 function onPanelShown() {
   closePreview()
+  dismissQuickLook()
   selectedID.value = null
   cursor = null; nextOffset = 0
   void loadSources(); void refreshLibrary(); void loadPage(false)
-  searchBox.value?.focus()
+  // 打开时焦点在内容上：空格预览、方向键选择；敲字才进入搜索。
+  searchBox.value?.blur()
 }
 
 onMounted(() => {
@@ -515,7 +532,8 @@ onMounted(() => {
   // 把 Space/Esc/方向键/回车转回面板，和原生 popover 的 key monitor 一致。
   ;(window as any).__deskfusePreviewKey = (key: string) => {
     if (!previewID.value) return
-    if (key === 'Escape' || key === ' ') { closePreview(); return }
+    if (key === 'Escape') { closePreview(); return }
+    if (key === ' ') { toggleQuickLook(); return }
     if (key === 'Enter') { if (selected.value) void copyItem(selected.value, true); return }
     if (key === 'ArrowDown') { move('down'); return }
     if (key === 'ArrowUp') { move('up'); return }
@@ -527,7 +545,6 @@ onMounted(() => {
   void loadPage(false)
   window.addEventListener('keydown', keydown)
   window.addEventListener('keyup', keyup)
-  searchBox.value?.focus()
   void refreshSnapshot()
   snapshotTimer = setInterval(() => { if (document.visibilityState !== 'hidden') void refreshSnapshot() }, 1500)
   libraryTimer = setInterval(() => {
@@ -541,6 +558,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true; ++generation
   closePreview()
+  dismissQuickLook()
   clearTimeout(searchTimer); clearTimeout(progressTimer); clearInterval(libraryTimer); clearInterval(snapshotTimer)
   window.removeEventListener('keydown', keydown)
   window.removeEventListener('keyup', keyup)

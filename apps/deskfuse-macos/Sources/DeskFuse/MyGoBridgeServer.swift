@@ -475,6 +475,16 @@ enum MyGoSnapshot {
         case "clipboard.reveal":
             guard let id = string("id").flatMap(UInt64.init) else { throw MyGoBridgeError(code: "invalid_params", message: "内容 ID 无效") }
             ClipboardItemActions.revealInFinder(id); return Data(#"{"outcome":"dispatched"}"#.utf8)
+        // 空格：系统快速查看。mode=toggle 开关，follow 只在已打开时切到新条目，close 关闭。
+        case "clipboard.quickLook":
+            let quickLook = ClipboardSystemQuickLook.shared
+            switch string("mode") ?? "toggle" {
+            case "close": return try result(["closed": quickLook.close("bridge")])
+            case let mode:
+                guard let id = string("id").flatMap(UInt64.init) else { throw MyGoBridgeError(code: "invalid_params", message: "内容 ID 无效") }
+                if mode == "follow" { quickLook.follow(id) } else { quickLook.toggle(id) }
+                return Data(#"{"outcome":"dispatched"}"#.utf8)
+            }
         case "clipboard.openInPreview":
             guard let id = string("id").flatMap(UInt64.init) else { throw MyGoBridgeError(code: "invalid_params", message: "内容 ID 无效") }
             ClipboardItemActions.openInPreview(id); return Data(#"{"outcome":"dispatched"}"#.utf8)

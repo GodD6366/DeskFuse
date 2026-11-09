@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import AppKit
 import DeskFuseEngine
@@ -676,7 +677,10 @@ struct MenuBarClipboardView: View {
         presentationOrder = []
         keyboardScrollID = nil
         commandHeld = NSEvent.modifierFlags.contains(.command)
-        session = UUID(); panelActive = true; copying = false; copyError = nil; searchFocused = true
+        session = UUID(); panelActive = true; copying = false; copyError = nil
+        // 打开时焦点在内容上：空格预览、方向键选择；敲字才进入搜索（见 handleKey）。
+        searchFocused = false
+        releaseSearchFocus()
         selectedID = items.first?.id
         // 布局由控制器在弹出时决定（偏好或面板内切换的结果）；竖面保留列表/网格模式。
         guard dockMode else { dockRevealed = true; return }
@@ -692,6 +696,7 @@ struct MenuBarClipboardView: View {
     }
     private func endSession() {
         dismissPreview()
+        ClipboardSystemQuickLook.shared.close("end session")
         dockRevealed = false
         commandHeld = false
         panelActive = false; session = UUID(); copying = false
@@ -705,22 +710,14 @@ struct MenuBarClipboardView: View {
         cancelPreparation()
     }
 
-    /// Read-only preview of the selected record: it never prepares a paste and
-    /// never changes the selection. The bubble appears only once there is
-    /// something to show, so it never sits on screen as a spinner.
-    private func togglePreview() {
-        if previewing {
-            dismissPreview()
-            return
-        }
-        guard let item = selectedItem else { return }
-        if item.fileCount > 0 {
-            ClipboardItemActions.revealInFinder(item.id)
-            return
-        }
-        guard ClipboardPreviewPolicy.shouldPreview(item, displayMode: displayMode) else { return }
-        previewSelected()
+    /// Space 只开系统快速查看；面板里的小预览气泡只由鼠标（右键“预览”）打开。
+    private func toggleQuickLook() {
+        guard let id = selectedID else { return }
+        dismissPreview()
+        ClipboardSystemQuickLook.shared.toggle(id)
     }
+    /// Mouse-only read-only bubble: it never prepares a paste and never changes
+    /// the selection. It appears only once there is something to show.
     private func previewFromMenu(_ item: HistoryItem) {
         selectedID = item.id
         searchFocused = false
@@ -865,6 +862,7 @@ struct MenuBarClipboardView: View {
         controller.present(itemID: id, from: anchor, lockSize: !payload.isPlaceholder,
                            navigate: { keyCode in
             switch keyCode {
+            case 49: toggleQuickLook()
             case 123: moveSelection(.left)
             case 124: moveSelection(.right)
             case 125: moveSelection(.down)
@@ -989,13 +987,17 @@ struct MenuBarClipboardView: View {
                 ClipboardItemActions.revealInFinder(item.id); return true
             }
         }
+        if !editingText, modifiers.isEmpty || modifiers == .shift, startsTyping(event) {
+            beginTyping(event); return true
+        }
         guard modifiers.isEmpty else { return false }
-        // Space opens the read-only quick look for the selected record. While the
+        // Space opens the system Quick Look for the selected record. While the
         // search field has focus the space belongs to the field editor, so it is
         // only claimed once nothing is being typed into.
         if event.keyCode == 49 {
+            ClipboardPanelLog.logger.notice("space editing=\(editingText, privacy: .public) selected=\(selectedID ?? 0, privacy: .public)")
             guard !editingText else { return false }
-            togglePreview()
+            toggleQuickLook()
             return true
         }
         // While a record's title is being edited (not the search field), let the
@@ -1004,7 +1006,9 @@ struct MenuBarClipboardView: View {
         switch event.keyCode {
         case 53:
             // Esc leaves the preview before it reaches the panel itself.
-            if previewing {
+            if ClipboardSystemQuickLook.shared.close("escape") {
+                // 先关快速查看，再按一次 Esc 才收起面板。
+            } else if previewing {
                 dismissPreview()
             } else if dockMode, !query.isEmpty {
                 query = ""
@@ -1034,6 +1038,36 @@ struct MenuBarClipboardView: View {
         default: return false
         }
     }
+    /// 面板成为 key window 时，AppKit 会把第一个文本框设为第一响应者，SwiftUI 的
+    /// FocusState 拦不住。显示完成后把焦点从搜索框交还给窗口本身。
+    private func releaseSearchFocus() {
+        let window = panel.window
+        for delay in [0.0, 0.08] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard let window, panelActive, !searchFocused, window.firstResponder is NSTextView else { return }
+                window.makeFirstResponder(nil)
+                ClipboardPanelLog.logger.notice("released search focus")
+            }
+        }
+    }
+    /// 敲下第一个字符时才进入搜索：把焦点交给搜索框，再把这次按键交给它的
+    /// field editor，输入法组字和光标位置都与直接在框里输入一致。
+    private func beginTyping(_ event: NSEvent) {
+        searchFocused = true
+        let window = panel.window
+        DispatchQueue.main.async {
+            guard let editor = window?.firstResponder as? NSTextView else { return }
+            editor.moveToEndOfDocument(nil)
+            editor.keyDown(with: event)
+        }
+    }
+    /// 可打印字符（含 Shift）算作开始输入；空格、控制键和方向/功能键不算。
+    private func startsTyping(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              let scalar = event.characters?.unicodeScalars.first else { return false }
+        if scalar == " " || CharacterSet.controlCharacters.contains(scalar) { return false }
+        return !(0xF700...0xF8FF).contains(scalar.value)
+    }
 
     /// Arrow navigation shared by the panel keys and the open preview popover.
     /// With the preview up, the previewed record is the base, so up/down keep
@@ -1062,6 +1096,7 @@ struct MenuBarClipboardView: View {
         // The selection may already be the target (a grid jump landing on the
         // selected row), so `onChange(of: selectedID)` alone would miss it.
         if previewing, let id = selectedID { followSelection(id) }
+        if let id = selectedID { ClipboardSystemQuickLook.shared.follow(id) }
     }
 }
 
@@ -1100,4 +1135,8 @@ private struct ClipboardPanelSizing: ViewModifier {
                           height: ClipboardPanelController.shared.panelHeight)
         }
     }
+}
+
+enum ClipboardPanelLog {
+    static let logger = Logger(subsystem: "cc.deskfuse", category: "clipboard_panel")
 }

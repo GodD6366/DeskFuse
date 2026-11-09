@@ -6,7 +6,7 @@ import {
   deviceNames, displaySourceName,
 } from './clipboard/library'
 import { backend } from '../services/backend'
-import { copyItem } from './clipboard/actions'
+import { closeQuickLook, copyItem, quickLook } from './clipboard/actions'
 import {
   filtersOnlyImages, masonryColumns, estimatedHeight, startsDayGroup, dayTitle, normalizeItem,
 } from './clipboard/format'
@@ -135,7 +135,10 @@ const historyEmpty = computed(() => {
 const columns = computed(() => masonryColumns(visibleItems.value, columnCount.value))
 const selection = computed(() => checked.value.size ? checked.value : selectedID.value ? new Set([selectedID.value]) : new Set<string>())
 const selectionCount = computed(() => selection.value.size)
+let quickLookOpen = false
 const selected = computed(() => visibleItems.value.find((item) => item.id === selectedID.value) ?? null)
+// 已打开的系统快速查看跟随选择（键盘或鼠标）切换条目。
+watch(selectedID, (id) => { if (quickLookOpen && id) void quickLook(id, 'follow').catch(() => undefined) })
 const hasMore = computed(() => cursor.value !== null || nextOffset.value !== null)
 const sources = computed<LibraryChoice[]>(() => {
   const seen = new Set<string>()
@@ -397,6 +400,7 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   disposed = true
+  if (quickLookOpen) { quickLookOpen = false; void closeQuickLook().catch(() => undefined) }
   ++generation
   clearTimeout(timer)
   if (libraryTimer) clearInterval(libraryTimer)
@@ -657,7 +661,19 @@ function keydown(e: KeyboardEvent) {
     if (item) { e.preventDefault(); void copy(item) }
     return
   }
-  if (e.key === 'Escape') { clearSelection(); return }
+  // 空格：系统快速查看。主窗口没有小预览浮窗。
+  if (e.key === ' ' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const item = selected.value
+    if (!item) return
+    e.preventDefault()
+    quickLookOpen = true
+    void quickLook(item.id).catch((err) => { quickLookOpen = false; error.value = errorMessage(err) })
+    return
+  }
+  if (e.key === 'Escape') {
+    if (quickLookOpen) { quickLookOpen = false; void closeQuickLook().catch(() => undefined); return }
+    clearSelection(); return
+  }
   if (e.key === 'Backspace' || e.key === 'Delete') {
     if (selectionCount.value) { e.preventDefault(); requestDelete(selectionItems()) }
     return

@@ -105,21 +105,55 @@ export function websiteImageExample(): WorkflowDefinition {
   return flow
 }
 
+const CONCRETE: WorkflowContent[] = ['Text', 'Image', 'Files']
+const SHORT_TITLES: Record<WorkflowContent, string> = { Any: '任意内容', Text: '文字', Image: '图片', Files: '文件' }
+/** 流水线连线上显示的内容类型名。 */
+export const contentLabel = (type: WorkflowContent) => SHORT_TITLES[type]
+
+/** 动作能处理的具体内容类型；不限制输入的动作返回全部。 */
+export function actionAccepts(kind: WorkflowAction): WorkflowContent[] {
+  if (kind === 'Compress' || kind === 'Resize' || kind === 'Convert') return ['Image', 'Files']
+  if (kind === 'TextReplace' || kind === 'TextTrim') return ['Text']
+  if (kind === 'Rename' || kind === 'Zip') return ['Files']
+  return CONCRETE
+}
+
+/** 动作能否接收 `content`；'Any' 视为全部兼容。 */
+export const stepAccepts = (kind: WorkflowAction, content: WorkflowContent) =>
+  content === 'Any' || actionAccepts(kind).includes(content)
+
+/** 动作的输入要求，例如「图片或文件」；不限制输入时为空。 */
+export function acceptRequirement(kind: WorkflowAction): string {
+  const accepted = actionAccepts(kind)
+  return accepted.length >= CONCRETE.length ? '' : accepted.map((t) => SHORT_TITLES[t]).join('或')
+}
+
+/** 步骤执行后输出的内容类型。 */
+export function contentAfter(step: Pick<WorkflowStep, 'kind' | 'shortcut_output'>, current: WorkflowContent): WorkflowContent {
+  if (step.kind === 'SystemShortcut') return step.shortcut_output
+  if (step.kind === 'Zip' || step.kind === 'Rename') return 'Files'
+  if (step.kind === 'TextReplace' || step.kind === 'TextTrim') return 'Text'
+  return current
+}
+
+/** 每个步骤执行之前流入的内容类型；与 Swift `incompatibilities` 使用同一套规则。 */
+export function contentFlow(flow: Pick<WorkflowDefinition, 'input_type' | 'steps'>, start: WorkflowContent = flow.input_type): WorkflowContent[] {
+  let current = start
+  return flow.steps.map((step) => {
+    const before = current
+    current = contentAfter(step, current)
+    return before
+  })
+}
+
 /** 逐步检查内容类型是否能衔接；与 Swift `incompatibilities` 相同。 */
 export function incompatibilities(flow: Pick<WorkflowDefinition, 'input_type' | 'steps'>, start: WorkflowContent = flow.input_type): string[] {
-  let current = start
+  const incoming = contentFlow(flow, start)
   const issues: string[] = []
   flow.steps.forEach((step, index) => {
-    let required: WorkflowContent[] = []
-    if (['Compress', 'Resize', 'Convert'].includes(step.kind)) required = ['Image', 'Files']
-    else if (['TextReplace', 'TextTrim'].includes(step.kind)) required = ['Text']
-    else if (['Rename', 'Zip'].includes(step.kind)) required = ['Files']
-    if (current !== 'Any' && required.length > 0 && !required.includes(current)) {
-      issues.push(`第 ${index + 1} 步「${actionTitle(step.kind)}」不接受${CONTENT_TITLES[current]}`)
+    if (!stepAccepts(step.kind, incoming[index])) {
+      issues.push(`第 ${index + 1} 步「${actionTitle(step.kind)}」不接受${CONTENT_TITLES[incoming[index]]}`)
     }
-    if (step.kind === 'SystemShortcut') current = step.shortcut_output
-    if (step.kind === 'Zip' || step.kind === 'Rename') current = 'Files'
-    if (step.kind === 'TextReplace' || step.kind === 'TextTrim') current = 'Text'
   })
   return issues
 }
@@ -134,4 +168,40 @@ export function acceptsContent(flow: Pick<WorkflowDefinition, 'input_type' | 'st
 
 export function summary(flow: WorkflowDefinition): string {
   return flow.enabled ? `${flow.steps.length} 个步骤 · ${CONTENT_TITLES[flow.input_type]}` : '已停用'
+}
+
+/** 步骤选择器里的分组。 */
+export const ACTION_GROUPS: { title: string; kinds: WorkflowAction[] }[] = [
+  { title: '图片', kinds: ['Compress', 'Resize', 'Convert'] },
+  { title: '文字', kinds: ['TextReplace', 'TextTrim'] },
+  { title: '文件', kinds: ['Rename', 'Zip'] },
+  { title: '系统', kinds: ['SystemShortcut'] },
+]
+
+const FORMAT_TITLES: Record<string, string> = { Png: 'PNG', Jpeg: 'JPEG', Webp: 'WebP', Heic: 'HEIC' }
+const clip = (text: string, max = 14) => (text.length > max ? `${text.slice(0, max)}…` : text)
+
+/** 步骤卡片头部的参数摘要；没有可显示的参数时为 null。 */
+export function stepSummary(step: WorkflowStep): string | null {
+  switch (step.kind) {
+    case 'Compress':
+      return step.target_bytes !== null ? `目标 ${Math.round(step.target_bytes / 1024)} KiB` : `质量 ${step.quality}%`
+    case 'Resize':
+      return step.max_edge !== null ? `最长边 ${step.max_edge} px` : `缩放 ${step.scale_percent ?? 75}%`
+    case 'Convert':
+      return `转为 ${FORMAT_TITLES[step.format] ?? step.format}`
+    case 'TextReplace':
+      return step.find ? `“${clip(step.find)}” → “${clip(step.replacement)}”` : null
+    case 'Rename': {
+      const parts: string[] = []
+      if (step.find) parts.push(`“${clip(step.find)}” → “${clip(step.replacement)}”`)
+      if (step.prefix) parts.push(`前缀“${clip(step.prefix)}”`)
+      if (step.suffix) parts.push(`后缀“${clip(step.suffix)}”`)
+      return parts.length ? parts.join(' · ') : null
+    }
+    case 'SystemShortcut':
+      return step.shortcut_name ? `快捷指令：${step.shortcut_name}` : null
+    default:
+      return null
+  }
 }

@@ -407,13 +407,9 @@ import DeskFuseEngine
     }
     /// Applies the Dock visibility choice; call at launch and whenever it changes.
     func applyDockIconPolicy() {
-        // WebView 模式下产品窗口属于 UI 子进程，Dock 图标归它：宿主再注册一个
-        // regular 应用只会让同一个 bundle 出现两个图标。可见性经桥接推给子进程。
-        if MyGoUIHost.shared.isActive {
-            NSApp.setActivationPolicy(.accessory)
-            MyGoUIHost.shared.pushDockPolicy(visible: dockIconVisible)
-            return
-        }
+        // Keep one stable Dock owner through UI suspension and resumption.
+        // Its reopen delegate already recreates/focuses the product window.
+        MyGoUIHost.shared.pushDockPolicy(visible: false)
         NSApp.setActivationPolicy(dockIconVisible ? .regular : .accessory)
     }
     func setHideDockIcon(_ hidden: Bool) {

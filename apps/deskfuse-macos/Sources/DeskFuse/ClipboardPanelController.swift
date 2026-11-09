@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 import Carbon
 import Observation
 import SwiftUI
@@ -512,6 +513,7 @@ enum ClipboardPanelPreference {
             throw ClipboardPanelFailure.message("原目标应用不可用；内容已复制，可手动粘贴。")
         }
         let presentation = session
+        ClipboardSystemQuickLook.shared.close("webview paste")
         MyGoUIHost.shared.hidePanel()
         pastingFromWebViewPanel = true
         guard target.activate(options: []) else {
@@ -546,6 +548,7 @@ enum ClipboardPanelPreference {
         if MyGoUIHost.shared.isActive { MyGoUIHost.shared.hidePanel() }
         // 嵌套的预览气泡会让外层面板的 performClose 失败，必须先卸掉。
         ClipboardQuickLookController.shared.close()
+        ClipboardSystemQuickLook.shared.close("panel close")
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)
         restoreActivationPolicyIfNeeded()
@@ -573,6 +576,7 @@ enum ClipboardPanelPreference {
         }
         closingForPaste = true
         ClipboardQuickLookController.shared.close()
+        ClipboardSystemQuickLook.shared.close("paste")
         popover.performClose(nil)
         pointerPanel?.orderOut(nil)
         guard target.activate(options: []) else { throw ClipboardPanelFailure.message("无法激活原目标应用；内容已复制。") }
@@ -593,6 +597,17 @@ enum ClipboardPanelPreference {
 private final class ClipboardPointerPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    // 弹窗是 key window 时，系统快速查看从这里找到控制者。
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        ClipboardSystemQuickLook.shared.acceptsControl()
+    }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        ClipboardSystemQuickLook.shared.beginControl(panel)
+    }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        ClipboardSystemQuickLook.shared.endControl(panel)
+    }
 }
 
 enum ClipboardPanelFailure: LocalizedError {

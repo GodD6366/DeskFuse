@@ -35,7 +35,6 @@ const panelLayout = computed(() => props.shortcut !== null && props.shortcut !==
   <div
     class="row" role="option" :data-id="identify === false ? undefined : item.id" :aria-selected="selected"
     :class="{ selected, ring: selected && focused, 'no-hover': hoverable === false }"
-    :title="item.preview"
   >
     <div class="thumb" :title="failed ? '图片不可用' : undefined">
       <img v-if="src && !failed" :src="src" alt="" draggable="false" @load="onLoad" @error="onError" />

@@ -50,6 +50,11 @@ func main() {
 		service.SetNative(native.New())
 		caller = service
 	}
+	// In the macOS split-process build the native host owns the application
+	// lifecycle and Dock icon, including while lightweight mode is resuming.
+	if host != nil {
+		mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
+	}
 	var backend *webview.Backend
 	if os.Getenv("DESKFUSE_UI_DEBUG") != "" {
 		backend = webview.NewWithDebug(caller, func(op string, params any, err error) {

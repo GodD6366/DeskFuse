@@ -177,7 +177,7 @@ private struct ClipboardHistoryContextMenu: NSViewRepresentable {
             menu.addItem(.separator())
 
             if item.fileCount == 0, value.showsPreview, let preview = value.onPreview {
-                add("预览", to: menu, key: " ", modifiers: []) {
+                add("预览", to: menu) {
                     preview()
                 }
             }

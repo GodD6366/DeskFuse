@@ -42,31 +42,16 @@ async function onCopy() {
   }
 }
 
-// 悬停 500ms 后弹出图片大图。
-const popup = ref<{ left: number; top: number } | null>(null)
-let popupTimer: number | undefined
-function enter() {
-  hovering.value = true
-  if (!props.item.has_image) return
-  popupTimer = window.setTimeout(() => {
-    const rect = root.value?.getBoundingClientRect()
-    if (!rect || !src.value) return
-    const left = Math.min(rect.right + 8, window.innerWidth - 624)
-    popup.value = { left: Math.max(8, left), top: Math.max(8, Math.min(rect.top, window.innerHeight - 464)) }
-  }, 500)
-}
-function leave() {
-  hovering.value = false
-  window.clearTimeout(popupTimer)
-  popup.value = null
-}
-onBeforeUnmount(() => { window.clearTimeout(popupTimer); window.clearTimeout(copiedTimer) })
+// 主窗口不做鼠标预览：查看内容用空格打开系统快速查看。
+function enter() { hovering.value = true }
+function leave() { hovering.value = false }
+onBeforeUnmount(() => { window.clearTimeout(copiedTimer) })
 </script>
 
 <template>
   <div
     ref="root" class="card" role="option" :data-id="item.id" :aria-selected="selected"
-    :class="{ selected, hover: hovering }" :title="item.preview"
+    :class="{ selected, hover: hovering }"
     @mouseenter="enter" @mouseleave="leave"
   >
     <img v-if="appIcon" class="watermark" :src="appIcon" alt="" draggable="false" aria-hidden="true" />
@@ -124,11 +109,6 @@ onBeforeUnmount(() => { window.clearTimeout(popupTimer); window.clearTimeout(cop
       </button>
     </div>
 
-    <Teleport to="body">
-      <div v-if="popup && src" class="zoom" :style="{ left: popup.left + 'px', top: popup.top + 'px' }">
-        <img :src="src" alt="图片放大预览" />
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -203,9 +183,4 @@ onBeforeUnmount(() => { window.clearTimeout(popupTimer); window.clearTimeout(cop
 }
 .actions button:disabled { color: var(--secondary, #595959); }
 .actions button.done { color: var(--accent, #3276f3); }
-.zoom {
-  position: fixed; z-index: 800; padding: 12px; border-radius: 12px; pointer-events: none;
-  background: var(--surface, #fff); border: 0.5px solid var(--line, rgba(0, 0, 0, 0.12)); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-}
-.zoom img { display: block; max-width: 600px; max-height: 440px; }
 </style>

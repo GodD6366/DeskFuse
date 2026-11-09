@@ -334,6 +334,39 @@ enum ClipboardPreviewPolicy {
         }
     }
 
+    /// 系统快速查看要文件 URL：文件条目用原文件，图片、富文本和纯文本写进专用临时目录。
+    static func quickLookURLs(_ id: UInt64) async throws -> [URL] {
+        guard let client = AppStore.shared.client else { throw ClipboardActionFailure.message("引擎尚未就绪") }
+        let content = try await loadContent(id, client: client)
+        if !content.filePaths.isEmpty {
+            let urls = content.filePaths.map { URL(fileURLWithPath: $0) }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !urls.isEmpty else {
+                ClipboardLibraryStore.shared.wantPayload(id)
+                throw ClipboardActionFailure.message("文件尚未就绪，请等待获取完成后重试。")
+            }
+            return urls
+        }
+        let data: Data
+        let ext: String
+        if !content.imagePng.isEmpty {
+            data = content.imagePng; ext = "png"
+        } else if !content.rtf.isEmpty {
+            data = content.rtf; ext = "rtf"
+        } else if !content.text.isEmpty {
+            data = Data(content.text.utf8); ext = "txt"
+        } else {
+            throw ClipboardActionFailure.message("没有可预览的内容")
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DeskFuse Quick Look", isDirectory: true)
+        // 只保留当前这一条，避免每次按空格都在临时目录里留下一份。
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("剪贴板 \(id).\(ext)")
+        try data.write(to: url, options: .atomic)
+        return [url]
+    }
+
     private static func presentEditor(id: UInt64, title: String?, hasImage: Bool, fileCount: Int, at point: NSPoint?) async {
         guard let client = AppStore.shared.client else { report("引擎尚未就绪"); return }
         do {
@@ -375,7 +408,7 @@ enum ClipboardPreviewPolicy {
         throw ClipboardActionFailure.message("内容尚未就绪，请等待获取完成后重试。")
     }
 
-    private static func report(_ message: String) {
+    static func report(_ message: String) {
         ClipboardPanelController.shared.reportPasteFailure(message)
         AppStore.shared.error = message
     }

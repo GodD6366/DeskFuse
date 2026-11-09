@@ -215,7 +215,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
         NSLog("DeskFuse UI suspended after %d s without a window", Int(Self.lightweightIdleSeconds))
         suspended = true
         stop()
-        // 界面进程退场后 Dock 图标回到宿主持有，用户点它就能重新拉起界面。
+        // Dock 始终归宿主持有，用户点它就能重新拉起界面。
         AppStore.shared.applyDockIconPolicy()
     }
 
@@ -305,8 +305,7 @@ final class MyGoPipeWriter: @unchecked Sendable {
         } catch { NSLog("MyGo window request encoding failed") }
     }
 
-    /// Dock 图标归持有产品窗口的 UI 进程：宿主只把计算结果推给它，自己保持
-    /// accessory，否则同一个 bundle 会出现两个 Dock 图标。
+    /// UI 子进程保持 accessory，Dock 始终归宿主持有。
     func pushDockPolicy(visible: Bool) {
         send(event: "ui.dock", payload: ["visible": visible])
     }

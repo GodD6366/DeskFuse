@@ -215,8 +215,8 @@ struct ClipboardQuickLookAnchorView: NSViewRepresentable {
                 guard let self, self.presented, event.window === self.window else { return false }
                 switch event.keyCode {
                 case 49:
-                    // 空格打开的预览再按空格关闭。
-                    self.dismissAndNotify()
+                    // 空格属于系统快速查看：列表关掉气泡并打开快速查看。
+                    if let navigate = self.navigateHandler { navigate(event.keyCode) } else { self.dismissAndNotify() }
                     return true
                 case 53:
                     self.dismissAndNotify()

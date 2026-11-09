@@ -13,6 +13,9 @@ export const saveItem = (item: Pick<LibraryItem, 'id' | 'has_image' | 'file_coun
   backend.invoke('clipboard.save', { id: item.id, has_image: item.has_image, file_count: item.file_count })
 export const revealItem = (id: ClipboardId) => backend.invoke('clipboard.reveal', { id })
 export const openInPreview = (id: ClipboardId) => backend.invoke('clipboard.openInPreview', { id })
+/** 空格：系统快速查看。toggle 开关；follow 只在已打开时切到新条目；close 返回关闭前是否开着。 */
+export const quickLook = (id: ClipboardId, mode: 'toggle' | 'follow' = 'toggle') => backend.invoke('clipboard.quickLook', { id, mode })
+export const closeQuickLook = async () => ((await backend.invoke('clipboard.quickLook', { mode: 'close' }))?.value as { closed?: boolean } | undefined)?.closed === true
 /** 图片交给系统外部编辑器、文本打开原生编辑窗口；两者共用原生 edit 动作。 */
 export const editExternally = (item: Pick<LibraryItem, 'id' | 'has_image' | 'file_count'>, title?: string | null) =>
   backend.invoke('clipboard.edit', { id: item.id, has_image: item.has_image, file_count: item.file_count, title: title ?? null })

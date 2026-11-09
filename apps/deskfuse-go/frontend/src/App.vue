@@ -104,7 +104,7 @@ onUnmounted(()=>{stopped=true;if(timer)clearTimeout(timer);window.removeEventLis
    </nav>
    <footer class="sidebar-footer">
     <button class="nav-row" :class="{selected:selected==='settings'}" @click="select('settings')"><Settings :size="16"/><span>设置</span></button>
-    <div v-if="selected==='settings'" class="settings-nav"><button v-for="[id,title] in categories.filter(c=>c[0]!=='workflows'||snapshot?.app?.workflows_enabled!==false)" :key="id" :class="{active:category===id}" @click="category=id">{{title}}</button></div>
+    <div v-if="selected==='settings'" class="settings-nav"><button v-for="[id,title] in categories.filter(c=>c[0]!=='workflows'||snapshot?.app?.workflows_enabled===true||category==='workflows')" :key="id" :class="{active:category===id}" @click="category=id">{{title}}</button></div>
     <div class="health-row"><button ref="healthButton" class="health-button" :aria-expanded="health" aria-haspopup="dialog" @click="toggleHealth" title="查看运行状态与需要处理的问题"><i :class="healthTone"/><span>{{healthText}}</span><ChevronRight v-if="healthIssues.length" :size="12"/></button><button ref="helpButton" class="help-button" :aria-expanded="help" aria-haspopup="dialog" aria-label="帮助与反馈" title="帮助与反馈" @click="toggleHelp(helpButton)"><CircleHelp :size="18"/></button></div>
    </footer>
   </aside>

@@ -1059,6 +1059,8 @@ async fn run_process(
     }
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut last_recovery_check: Option<(SendRecoveryCheck, std::time::Instant)> = None;
+    let mut last_ssid: Option<Option<String>> = None;
+    let mut network_restart_at: Option<std::time::Instant> = None;
     loop {
         tokio::select! {
             c = commands.recv() => match c {
@@ -1072,6 +1074,15 @@ async fn run_process(
                     return Ok(());
                 }
                 Some(value) if host_command_allowed(&value) => {
+                    if let RuntimeCommand::ObserveWifiEnvironment { ssid } = &value {
+                        if last_ssid.as_ref().is_some_and(|previous| previous != ssid) {
+                            // Coalesce transient readings while DHCP and interfaces
+                            // settle. A new process also rebuilds macOS per-process
+                            // LAN policy, which replacing sockets cannot repair.
+                            network_restart_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+                        }
+                        last_ssid = Some(ssid.clone());
+                    }
                     revision += 1;
                     let mut writer = writer.lock().map_err(|e|e.to_string())?;
                     write_frame(&mut writer, &HostMessage::Command { id: revision, value }).map_err(|e|e.to_string())?;
@@ -1089,6 +1100,22 @@ async fn run_process(
             },
             _ = tick.tick() => {
                 if let Some(exit) = process.0.try_wait().map_err(|e|e.to_string())? { return Err(format!("独立输入进程已退出：{exit}")); }
+                if network_restart_at.is_some_and(|at| std::time::Instant::now() >= at) {
+                    *control.send_recovery_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    control.record_recovery("restart_requested", generation, process.0.id(), serde_json::json!({
+                        "reason": "wifi_environment_changed",
+                    }));
+                    if let Some(ssid) = last_ssid.take() {
+                        pending.push_back(RuntimeCommand::ObserveWifiEnvironment { ssid });
+                    }
+                    control.signal(b'Q');
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if process.0.try_wait().map_err(|e|e.to_string())?.is_some() { break; }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    return Err("Wi-Fi 网络已变化，正在重建输入服务".into());
+                }
                 if process_recovery_required(control) {
                     control.record_recovery("restart_requested", generation, process.0.id(), serde_json::json!({
                         "reason": "observer_recovery_required",

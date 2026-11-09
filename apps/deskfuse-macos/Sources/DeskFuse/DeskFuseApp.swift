@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Quartz
 import Darwin
 import DeskFuseEngine
 
@@ -43,6 +44,17 @@ import DeskFuseEngine
 }
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var instanceLockFD: Int32 = -1
+
+    // 主窗口在界面进程里，宿主没有 key window；快速查看沿响应链最终落到这里。
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        ClipboardSystemQuickLook.shared.acceptsControl()
+    }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        ClipboardSystemQuickLook.shared.beginControl(panel)
+    }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        ClipboardSystemQuickLook.shared.endControl(panel)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ClipboardPanelPreference.migrateIfNeeded()

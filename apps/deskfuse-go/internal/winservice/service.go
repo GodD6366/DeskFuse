@@ -310,6 +310,12 @@ func (s *Service) invoke(ctx context.Context, params any, result any) error {
 		return s.clipboardReveal(ctx, args, result)
 	case "clipboard.openInPreview":
 		return s.clipboardOpen(ctx, args, result, action)
+	// Windows 没有系统快速查看：空格用默认查看器打开，follow/close 不做事。
+	case "clipboard.quickLook":
+		if mode, _ := args["mode"].(string); mode == "close" || mode == "follow" {
+			return assign(result, map[string]any{"outcome": "applied", "value": map[string]any{"closed": false}})
+		}
+		return s.clipboardOpen(ctx, args, result, action)
 	case "clipboard.edit":
 		return s.clipboardOpen(ctx, args, result, action)
 	// Window and host actions belong to the process that owns the windows.

@@ -54,6 +54,11 @@ enum SupportCenter {
     static func exportDiagnosticsInteractively(_ store: AppStore, completion: @escaping () -> Void = {}) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = defaultDiagnosticsURL().lastPathComponent
+        // The save panel is created by the native host while the product window
+        // lives in the MyGo child process. Activate the host and put the panel
+        // above the child window, otherwise the click appears to do nothing.
+        NSApp.activate(ignoringOtherApps: true)
+        panel.level = .modalPanel
         // Do not enter a nested AppKit run loop from a SwiftUI action.
         panel.begin { response in
             guard response == .OK, let url = panel.url else { completion(); return }

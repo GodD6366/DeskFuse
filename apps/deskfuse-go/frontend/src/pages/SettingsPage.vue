@@ -8,6 +8,9 @@ import GeneralSettings from './settings/GeneralSettings.vue'
 import PermissionsSettings from './settings/PermissionsSettings.vue'
 import ShortcutSettings from './settings/ShortcutSettings.vue'
 import WorkflowSettings from './settings/WorkflowSettings.vue'
+import AsyncToggle from './settings/AsyncToggle.vue'
+import SettingsRow from './settings/SettingsRow.vue'
+import SettingsSection from './settings/SettingsSection.vue'
 import { preference } from './settings/util'
 
 const props = defineProps<{ category: string; snapshot: Record<string, any> | null }>()
@@ -23,12 +26,12 @@ const LEGACY: Record<string, string> = { storage: 'files', updates: 'about' }
 
 const workflowsEnabled = computed(() => preference(props.snapshot, 'workflows_enabled') === true)
 
-// 工作流关闭后仍停在该分类时，回到剪贴板设置，而不是显示一个已经不存在的页面。
 const selected = computed(() => {
   const name = LEGACY[props.category] ?? props.category
-  const known = (CATEGORIES as readonly string[]).includes(name) ? name : 'general'
-  return known === 'workflows' && !workflowsEnabled.value ? 'clipboard' : known
+  return (CATEGORIES as readonly string[]).includes(name) ? name : 'general'
 })
+// 工作流关闭时，入口仍落到工作流分类：说明它已关闭并就地提供开关，而不是悄悄换成别的页面。
+const workflowsOff = computed(() => selected.value === 'workflows' && !workflowsEnabled.value)
 
 const view = computed(() => ({
   general: GeneralSettings, clipboard: ClipboardSettings, workflows: WorkflowSettings, shortcuts: ShortcutSettings,
@@ -36,14 +39,19 @@ const view = computed(() => ({
 } as Record<string, any>)[selected.value])
 
 // 工作流自带左右分栏；剪贴板/文件有底部保存栏；快捷键有固定页头。它们自己管理滚动与留白。
-const bare = computed(() => ['workflows', 'clipboard', 'files', 'shortcuts'].includes(selected.value))
+const bare = computed(() => !workflowsOff.value && ['workflows', 'clipboard', 'files', 'shortcuts'].includes(selected.value))
 </script>
 
 <template>
   <section class="settings-page" :aria-label="TITLES[selected]">
     <p v-if="!snapshot" class="offline" role="status">后端未连接：下列设置暂时只读，本地草稿仍可编辑，但不会保存。</p>
     <div class="body" :class="{ bare }">
-      <KeepAlive>
+      <SettingsSection v-if="workflowsOff" title="工作流" footer="开启后可在剪贴板里串联多个动作并绑定全局快捷键；也可在“通用 › 功能”中关闭。">
+        <SettingsRow title="工作流未开启" detail="开启后即可新建和编辑流程。">
+          <AsyncToggle :value="false" action="settings.set" :params="(value) => ({ key: 'workflows_enabled', value })" label="工作流" :disabled="!snapshot" />
+        </SettingsRow>
+      </SettingsSection>
+      <KeepAlive v-else>
         <component :is="view" :key="selected" :snapshot="snapshot" @navigate="emit('navigate', $event)" />
       </KeepAlive>
     </div>

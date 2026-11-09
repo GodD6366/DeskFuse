@@ -128,7 +128,7 @@ export function itemMenu(ctx: ItemMenuContext): MenuItem[] {
   })
   items.push({ separator: true }, { label: '删除', icon: 'trash', run: ctx.onDelete }, { separator: true })
   if (item.file_count === 0 && ctx.showsPreview && ctx.onPreview) {
-    items.push({ label: '预览', shortcut: '空格', run: ctx.onPreview })
+    items.push({ label: '预览', run: ctx.onPreview })
   }
   items.push(peersMenu(ctx), workflowsMenu(ctx))
   return items
